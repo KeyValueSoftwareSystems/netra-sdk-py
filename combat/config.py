@@ -24,6 +24,7 @@ class Config:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
+        environment: Optional[str] = None
     ):
         # Application name: from param, else env
         self.app_name = (
@@ -67,6 +68,12 @@ class Config:
                 if (env_tc is not None and env_tc.lower() in ("0", "false"))
                 else True
             )
+
+        # 7. Environment: param override, else env
+        if environment is not None:
+            self.environment = environment
+        else:
+            self.environment = os.getenv("COMBAT_ENV", "local")
 
         # Resource attributes: param override, else parse JSON from env, else empty dict
         if resource_attributes is not None:

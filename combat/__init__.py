@@ -41,6 +41,7 @@ class Combat:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
+        environment: Optional[str] = None,
     ):
         # Acquire lock before checking _initialized to prevent race conditions
         if cls.is_initialized():
@@ -58,6 +59,7 @@ class Combat:
             disable_batch=disable_batch,
             trace_content=trace_content,
             resource_attributes=resource_attributes,
+            environment=environment,
         )
 
         # Initialize tracer (OTLP exporter, span processor, resource)
