@@ -1,5 +1,34 @@
 # Combat SDK
 
+## Development Setup
+
+To set up your development environment for the Combat SDK, run the provided setup script:
+
+```bash
+./setup_dev.sh
+```
+
+This script will:
+
+1. Install all Python dependencies in development mode
+2. Set up pre-commit hooks for code quality
+3. Configure commit message formatting
+
+### Manual Setup
+
+If you prefer to set up manually:
+
+```bash
+# Install dependencies
+pip install -e ".[dev,test]"
+
+# Install pre-commit hooks
+pip install pre-commit
+pre-commit install --install-hooks
+pre-commit install --hook-type commit-msg
+pre-commit install --hook-type pre-push
+```
+
 ## Commit Message Guidelines
 
 We follow the [Conventional Commits](https://www.conventionalcommits.org/) specification:
