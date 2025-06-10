@@ -4,6 +4,7 @@ from typing import Optional, Dict, Any
 
 from .config import Config
 from .tracer import Tracer
+from .session import SessionManager
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
@@ -72,6 +73,47 @@ class Combat:
         )
         cls._initialized = True
         logger.info("Combat successfully initialized.")
+
+    @classmethod
+    def set_session_id(cls, session_id: str) -> None:
+        """
+        Set session_id context attributes in the current OpenTelemetry context.
+
+        Args:
+            session_id: Session identifier
+        """
+        SessionManager.set_session_context("session_id", session_id)
+
+    @classmethod
+    def set_user_id(cls, user_id: str) -> None:
+        """
+        Set user_id context attributes in the current OpenTelemetry context.
+
+        Args:
+            user_id: User identifier
+        """
+        SessionManager.set_session_context("user_id", user_id)
+
+    @classmethod
+    def set_user_account_id(cls, user_account_id: str) -> None:
+        """
+        Set user_account_id context attributes in the current OpenTelemetry context.
+
+        Args:
+            user_account_id: User account identifier
+        """
+        SessionManager.set_session_context("user_account_id", user_account_id)
+
+    @classmethod
+    def set_custom_attributes(cls, key: str, value: Any) -> None:
+        """
+        Set custom attributes context in the current OpenTelemetry context.
+
+        Args:
+            key: Custom attribute key
+            value: Custom attribute value
+        """
+        SessionManager.set_session_context(key, value)
 
 
 __all__ = ["Combat"]
