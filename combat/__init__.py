@@ -115,5 +115,17 @@ class Combat:
         """
         SessionManager.set_session_context(key, value)
 
+    @classmethod
+    def set_custom_event(cls, event_name: str, attributes: Any) -> None:
+        """
+        Set custom event in the current OpenTelemetry context.
+
+        Args:
+            event_name: Name of the custom event
+            attributes: Attributes of the custom event
+            is_blocked: Whether the event is blocked or not
+        """
+        SessionManager.set_custom_event(event_name, attributes)
+
 
 __all__ = ["Combat"]
