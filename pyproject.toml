@@ -6,7 +6,7 @@ authors = [
     {name = "Sooraj Thomas",email = "sooraj@keyvalue.systems"}
 ]
 readme = "README.md"
-requires-python = ">=3.10,<4"
+requires-python = ">=3.10,<3.13"
 dependencies = [
     "opentelemetry-api>=1.34.0,<2.0.0",
     "opentelemetry-sdk>=1.34.0,<2.0.0",
