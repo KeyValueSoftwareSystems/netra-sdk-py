@@ -3,7 +3,8 @@ Scanner module for Combat SDK to implement various scanning capabilities.
 """
 
 from abc import ABC, abstractmethod
-from typing import Tuple, Any, Optional
+from typing import Any, Tuple
+
 from combat.exceptions import InjectionException
 
 
@@ -30,7 +31,6 @@ class Scanner(ABC):
                 - is_valid: Boolean indicating if the prompt passed the scan
                 - risk_score: A score between 0.0 and 1.0 indicating the risk level
         """
-        pass
 
 
 class PromptInjection(Scanner):
@@ -48,7 +48,8 @@ class PromptInjection(Scanner):
             threshold: The threshold value (between 0.0 and 1.0) above which a prompt is considered risky
             match_type: The type of matching to use (from llm_guard.input_scanners.prompt_injection.MatchType)
         """
-        from llm_guard.input_scanners import PromptInjection as LLMGuardPromptInjection
+        from llm_guard.input_scanners import \
+            PromptInjection as LLMGuardPromptInjection
         from llm_guard.input_scanners.prompt_injection import MatchType
 
         self.threshold = threshold

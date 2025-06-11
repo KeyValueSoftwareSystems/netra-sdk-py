@@ -5,14 +5,13 @@ This module provides a unified interface for scanning input prompts using
 various scanner implementations.
 """
 
-from abc import ABC, abstractmethod
-from typing import List, Tuple, Any, Optional, Dict, Union, Type, Callable
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import List, Union
 
-from combat.scanner import Scanner
 from combat import Combat
 from combat.exceptions import InjectionException
+from combat.scanner import Scanner
 
 
 @dataclass
@@ -55,8 +54,9 @@ def get_scanner(scanner_type: Union[str, ScannerType], **kwargs) -> Scanner:
         scanner_type = scanner_type.value
 
     if scanner_type == ScannerType.PROMPT_INJECTION.value:
-        from combat.scanner import PromptInjection
         from llm_guard.input_scanners.prompt_injection import MatchType
+
+        from combat.scanner import PromptInjection
 
         match_type = kwargs.get("match_type", MatchType.FULL)
         threshold = kwargs.get("threshold", 0.5)

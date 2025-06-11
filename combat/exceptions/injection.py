@@ -1,6 +1,6 @@
 # File: combat/exceptions/prompt_injection.py
 
-from typing import Dict, Optional, List, Any
+from typing import List, Optional
 
 
 class InjectionException(Exception):
