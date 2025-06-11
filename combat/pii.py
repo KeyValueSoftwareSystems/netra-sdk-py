@@ -191,7 +191,7 @@ class PIIDetector(ABC):
                     else:
                         attributes["masked_text"] = str(masked_text)
 
-                span.add_event("pii_detection_result", attributes)
+                span.add_event("pii_detected", attributes)
         except (NameError, AttributeError):
             # Tracing is not available or not configured
             pass
@@ -468,11 +468,10 @@ class PresidioPIIDetector(PIIDetector):
             action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
     ) -> None:
         if action_type is None:
-            env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
+            action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "FLAG")
+            env_action = os.getenv("COMBAT_ACTION_TYPE", "FLAG")
             # Ensure action_type is one of the valid literal values
-            if env_action not in ["BLOCK", "FLAG", "MASK"]:
-                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "MASK")
-            else:
+            if env_action in ["BLOCK", "FLAG", "MASK"]:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         try:
@@ -489,7 +488,6 @@ class PresidioPIIDetector(PIIDetector):
         self.entities: Optional[list] = entities if entities else DEFAULT_ENTITIES
         self.score_threshold: float = score_threshold
 
-        # self.analyzer = self._create_flair_analyzer_engine()
         self.analyzer = AnalyzerEngine()
         self.anonymizer = AnonymizerEngine()
 
@@ -514,7 +512,7 @@ class PresidioPIIDetector(PIIDetector):
             score_threshold=self.score_threshold,
         )
 
-        counts: Counter = Counter({res.entity_type: 1 for res in analyzer_results})
+        counts = Counter([res.entity_type for res in analyzer_results])
         has_pii_local = bool(counts)
         masked = text
 
