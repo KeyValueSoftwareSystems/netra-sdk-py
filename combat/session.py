@@ -81,7 +81,7 @@ class SessionManager:
 class SessionSpanProcessor(SpanProcessor):
     """OpenTelemetry span processor that automatically adds session attributes to spans."""
 
-    def on_start(self, span):
+    def on_start(self, span, parent_context=None):
         """Add session attributes to span when it starts."""
         try:
             ctx = otel_context.get_current()

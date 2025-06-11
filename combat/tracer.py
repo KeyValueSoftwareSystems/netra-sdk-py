@@ -8,7 +8,7 @@ import logging
 from typing import Dict, Any, Optional
 
 from opentelemetry import trace
-from opentelemetry.sdk.resources import Resource, SERVICE_NAME
+from opentelemetry.sdk.resources import Resource, SERVICE_NAME, DEPLOYMENT_ENVIRONMENT
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
@@ -45,7 +45,10 @@ class Tracer:
         and sets up either a batch or simple span processor based on configuration.
         """
         # Create Resource with service.name + custom attributes
-        resource_attrs: Dict[str, Any] = {SERVICE_NAME: self.cfg.app_name}
+        resource_attrs: Dict[str, Any] = {
+            SERVICE_NAME: self.cfg.app_name,
+            DEPLOYMENT_ENVIRONMENT: self.cfg.environment,
+        }
         if self.cfg.resource_attributes:
             resource_attrs.update(self.cfg.resource_attributes)
         resource = Resource(attributes=resource_attrs)
