@@ -12,6 +12,7 @@ from typing import Any, Dict
 import json
 from datetime import datetime
 import logging
+from .config import Config
 
 logger = logging.getLogger(__name__)
 
@@ -61,7 +62,7 @@ class SessionManager:
 
             if not current_span or not current_span.is_recording():
                 tracer = trace.get_tracer(__name__)
-                with tracer.start_as_current_span(f"combat.{name}") as span:
+                with tracer.start_as_current_span(f"{Config.LIBRARY_NAME}.{name}") as span:
                     span.add_event(
                         name=name,
                         attributes=attributes,
@@ -90,17 +91,21 @@ class SessionSpanProcessor(SpanProcessor):
             user_account_id = baggage.get_baggage("user_account_id", ctx)
             custom_keys = baggage.get_baggage("custom_keys", ctx)
 
+            span.set_attribute("library.name", Config.LIBRARY_NAME)
+            span.set_attribute("library.version", Config.LIBRARY_VERSION)
+            span.set_attribute("sdk.name", Config.SDK_NAME)
+
             if session_id:
-                span.set_attribute("combat.session_id", session_id)
+                span.set_attribute(f"{Config.LIBRARY_NAME}.session_id", session_id)
             if user_id:
-                span.set_attribute("combat.user_id", user_id)
+                span.set_attribute(f"{Config.LIBRARY_NAME}.user_id", user_id)
             if user_account_id:
-                span.set_attribute("combat.user_account_id", user_account_id)
+                span.set_attribute(f"{Config.LIBRARY_NAME}.user_account_id", user_account_id)
             if custom_keys:
                 for key in custom_keys.split(","):
                     value = baggage.get_baggage(f"custom.{key}", ctx)
                     if value:
-                        span.set_attribute(f"combat.custom.{key}", value)
+                        span.set_attribute(f"{Config.LIBRARY_NAME}.custom.{key}", value)
         except Exception as e:
             logger.exception(f"Error setting span attributes: {e}")
 
