@@ -1,6 +1,7 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Optional, Dict, Any
+from .version import __version__
 
 
 class Config:
@@ -14,6 +15,11 @@ class Config:
       - trace_content:           Whether to capture prompt/completion content (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
     """
+
+    # SDK Constants
+    SDK_NAME = "combat"
+    LIBRARY_NAME = "combat"
+    LIBRARY_VERSION = __version__
 
     def __init__(
         self,
