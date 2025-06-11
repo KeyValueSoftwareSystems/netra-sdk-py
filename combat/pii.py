@@ -7,12 +7,7 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional, Pattern, Union, Literal, Tuple, cast
 
-try:
-    from opentelemetry.trace import get_current_span
-except ImportError:
-    # Stub for when opentelemetry is not available
-    def get_current_span():
-        return None
+from opentelemetry.trace import get_current_span
 
 from combat.exceptions import PIIBlockedException
 
@@ -97,7 +92,7 @@ class PIIDetector(ABC):
     aggregation logic, while requiring subclasses to implement _detect_single_message().
     """
 
-    def __init__(self, action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK") -> None:
+    def __init__(self, action_type: Literal["BLOCK", "FLAG", "MASK"] = "FLAG") -> None:
         """
         Initialize the PII detector.
 
@@ -417,6 +412,13 @@ class RegexPIIDetector(PIIDetector):
             patterns: Optional[Dict[str, Pattern]] = None,
             action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK",
     ) -> None:
+        if action_type is None:
+            env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
+            # Ensure action_type is one of the valid literal values
+            if env_action not in ["BLOCK", "FLAG", "MASK"]:
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "MASK")
+            else:
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         self.patterns: Dict[str, Pattern] = patterns or DEFAULT_PII_PATTERNS
 
@@ -530,36 +532,11 @@ class PresidioPIIDetector(PIIDetector):
 
         return has_pii_local, counts, masked
 
-    def _create_flair_analyzer_engine(
-            self, model_path: str = "flair/ner-english-large"
-    ):
-        """
-        Private helper: set up Presidio AnalyzerEngine with FlairNLP + spaCy.
-        """
-        from presidio_analyzer import AnalyzerEngine, RecognizerRegistry
-        import spacy
-        from presidio_analyzer.nlp_engine import NlpEngineProvider
-        from combat.flair_recognizer import FlairRecognizer
 
-        if not spacy.util.is_package("en_core_web_sm"):
-            spacy.cli.download("en_core_web_sm")
-
-        registry = RecognizerRegistry()
-        registry.load_predefined_recognizers()
-
-        flair_recognizer = FlairRecognizer(model_path=model_path)
-        registry.add_recognizer(flair_recognizer)
-        registry.remove_recognizer("SpacyRecognizer")
-
-        nlp_config = {
-            "nlp_engine_name": "spacy",
-            "models": [{"lang_code": self.language, "model_name": "en_core_web_sm"}],
-        }
-        nlp_engine = NlpEngineProvider(nlp_configuration=nlp_config).create_engine()
-        return AnalyzerEngine(nlp_engine=nlp_engine, registry=registry)
-
-
-def get_default_detector(action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK", entities: Optional[List[str]] = None) -> PIIDetector:
+def get_default_detector(
+        action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
+        entities: Optional[List[str]] = None
+) -> PIIDetector:
     """
     Returns a default PII detector instance (Presidio-based by default).
     If you want regex-based instead, call `set_default_detector(RegexPIIDetector(...))`.
