@@ -4,6 +4,7 @@ Scanner module for Combat SDK to implement various scanning capabilities.
 
 from abc import ABC, abstractmethod
 from typing import Tuple, Any, Optional
+from combat.exceptions import InjectionException
 
 
 class Scanner(ABC):
@@ -15,12 +16,13 @@ class Scanner(ABC):
     """
 
     @abstractmethod
-    def scan(self, prompt: str) -> Tuple[str, bool, float]:
+    def scan(self, prompt: str, is_blocked: bool = False) -> Tuple[str, bool, float]:
         """
         Scan the input prompt and return the sanitized prompt, validity flag, and risk score.
 
         Args:
             prompt: The input prompt to scan
+            is_blocked: If True, raises PromptInjectionBlockedException when violations are detected
 
         Returns:
             Tuple containing:
@@ -55,7 +57,7 @@ class PromptInjection(Scanner):
 
         self.scanner = LLMGuardPromptInjection(threshold=threshold, match_type=match_type)
 
-    def scan(self, prompt: str) -> Tuple[str, bool, float]:
+    def scan(self, prompt: str, is_blocked: bool = False) -> Tuple[str, bool, float]:
         """
         Scan the input prompt for potential prompt injection attempts.
 
@@ -68,4 +70,12 @@ class PromptInjection(Scanner):
                 - is_valid: Boolean indicating if the prompt passed the scan
                 - risk_score: A score between 0.0 and 1.0 indicating the risk level
         """
-        return self.scanner.scan(prompt)
+        sanitized_prompt, is_valid, risk_score = self.scanner.scan(prompt)
+        if not is_valid:
+            raise InjectionException(
+                message=f"Input blocked: detected prompt injection",
+                has_violation=True,
+                violations=["prompt_injection"],
+                is_blocked=is_blocked,
+            )
+        return sanitized_prompt, is_valid, risk_score

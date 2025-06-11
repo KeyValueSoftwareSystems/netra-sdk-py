@@ -12,6 +12,7 @@ from enum import Enum
 
 from combat.scanner import Scanner
 from combat import Combat
+from combat.exceptions import InjectionException
 
 
 @dataclass
@@ -72,35 +73,44 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
     Args:
         prompt: The input prompt to scan
         types: A list of scan types to perform (e.g., ["prompt_injection"] or [ScannerType.PROMPT_INJECTION])
+        is_blocked: If True, raises PromptInjectionException when violations are detected
 
     Returns:
         ScanResult: An object containing:
             - has_violation: True if any violations were detected
             - violations: List of violation types that were detected
             - is_blocked: True if the input should be blocked
-    """
-    scan_result = ScanResult()
 
+    Raises:
+        PromptInjectionBlockedException: If violations are detected and is_blocked is True
+    """
+    violations_detected = []
     for scanner_type in types:
         try:
-            # Get the appropriate scanner for this type
+
             scanner = get_scanner(scanner_type)
+            scanner.scan(prompt)
 
-            # Perform the scan
-            sanitized_prompt, is_valid, risk_score = scanner.scan(prompt)
-
-            # Update the result if there's a violation
-            if not is_valid:
-                scan_result.has_violation = True
-
-                # Convert ScannerType enum to string if needed
-                violation_type = scanner_type.value if isinstance(scanner_type, ScannerType) else scanner_type
-                scan_result.violations.append(violation_type)
-
-            scan_result.is_blocked = is_blocked
         except ValueError as e:
-            continue
-    if scan_result.has_violation:
-        Combat.set_custom_event(event_name="violation_detected", attributes={"has_violation": scan_result.has_violation, "violations": scan_result.violations, "is_blocked": scan_result.is_blocked})
+            raise ValueError(f"Invalid value type: {e}")
 
-    return scan_result
+        except InjectionException as error:
+            violations_detected.append(error.violations[0])
+
+    if violations_detected:
+        Combat.set_custom_event(event_name="violation_detected", attributes={
+            "has_violation": True, "violations": violations_detected, "is_blocked": is_blocked})
+
+    if is_blocked and violations_detected:
+        raise InjectionException(
+            message=f"Input blocked: detected {', '.join(violations_detected)}.",
+            has_violation=True,
+            violations=violations_detected,
+            is_blocked=True
+        )
+
+    return ScanResult(
+        has_violation=bool(violations_detected),
+        violations=violations_detected,
+        is_blocked=is_blocked
+    )
