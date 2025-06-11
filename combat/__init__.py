@@ -1,13 +1,12 @@
 import logging
 import threading
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
 
 from .config import Config
-from .tracer import Tracer
-from .session import SessionManager
-
 # Instrumentor functions
 from .instrumentation import init_instrumentations
+from .session import SessionManager
+from .tracer import Tracer
 
 logger = logging.getLogger(__name__)
 

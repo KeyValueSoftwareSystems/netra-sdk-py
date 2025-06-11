@@ -3,15 +3,15 @@ Session management for PromptOps SDK.
 Handles automatic session and user ID management for applications.
 """
 
-from opentelemetry import context as otel_context
+import logging
+from datetime import datetime
+from typing import Any, Dict
+
 from opentelemetry import baggage
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
-from opentelemetry.trace import Span, get_current_span
-from typing import Any, Dict
-import json
-from datetime import datetime
-import logging
+from opentelemetry.trace import get_current_span
 
 logger = logging.getLogger(__name__)
 

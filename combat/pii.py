@@ -5,7 +5,8 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Pattern, Union, Literal, Tuple, cast
+from typing import (Any, Dict, List, Literal, Optional, Pattern, Tuple, Union,
+                    cast)
 
 from opentelemetry.trace import get_current_span
 
@@ -115,7 +116,6 @@ class PIIDetector(ABC):
         Returns:
             Tuple of (has_pii, counts, masked_text)
         """
-        pass
 
     def _preprocess(self, text: str) -> str:
         """
@@ -333,7 +333,7 @@ class PIIDetector(ABC):
             text = message.get("content", "")
 
             try:
-                result = self._detect_single_message(text)
+                self._detect_single_message(text)
                 # If we get here, no PII was detected
                 masked_list.append({"role": role, "message": text})
             except PIIBlockedException as e:
@@ -375,7 +375,7 @@ class PIIDetector(ABC):
 
         for text in string_list:
             try:
-                result = self._detect_single_message(text)
+                self._detect_single_message(text)
                 # If we get here, no PII was detected
                 masked_list.append(text)
             except PIIBlockedException as e:
@@ -475,9 +475,9 @@ class PresidioPIIDetector(PIIDetector):
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         try:
+            import flair  # noqa: F401
             from presidio_analyzer import AnalyzerEngine  # noqa: F401
             from presidio_anonymizer import AnonymizerEngine
-            import flair  # noqa: F401
         except ImportError as exc:
             raise ImportError(
                 "Presidio-based PII detection requires: presidio-analyzer, "
