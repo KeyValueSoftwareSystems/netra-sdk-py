@@ -32,24 +32,19 @@ class SessionManager:
         """
         try:
             ctx = otel_context.get_current()
-            if session_key == "session_id":
-                ctx = baggage.set_baggage("session_id", value, ctx)
-            elif session_key == "user_id":
-                ctx = baggage.set_baggage("user_id", value, ctx)
-            elif session_key == "user_account_id":
-                ctx = baggage.set_baggage("user_account_id", value, ctx)
-            elif session_key == "custom_attributes":
-                if not isinstance(value, dict):
-                    logger.info("custom_attributes must be a dictionary")
-                    return
-                if not value:
-                    logger.info("custom_attributes dictionary cannot be empty")
-                    return
-
-                custom_keys = list(value.keys())
-                ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
-                for key, val in value.items():
-                    ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
+            if isinstance(value, str) and value:
+                if session_key == "session_id":
+                    ctx = baggage.set_baggage("session_id", value, ctx)
+                elif session_key == "user_id":
+                    ctx = baggage.set_baggage("user_id", value, ctx)
+                elif session_key == "user_account_id":
+                    ctx = baggage.set_baggage("user_account_id", value, ctx)
+            elif isinstance(value, dict) and value:
+                if session_key == "custom_attributes":
+                    custom_keys = list(value.keys())
+                    ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
+                    for key, val in value.items():
+                        ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
             otel_context.attach(ctx)
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
@@ -57,12 +52,11 @@ class SessionManager:
     @staticmethod
     def set_custom_event(name: str, attributes: Dict[str, Any]) -> None:
         """
-        Add an event to the current span and optionally propagate to parent spans if blocked.
+        Add an event to the current span.
 
         Args:
             name: Name of the event (e.g., 'pii_detection', 'error', etc.)
             attributes: Dictionary of attributes associated with the event
-            is_blocked: If True, the event will be propagated to parent spans
         """
         try:
             current_span = get_current_span()
