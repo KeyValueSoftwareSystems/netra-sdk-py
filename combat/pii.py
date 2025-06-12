@@ -260,7 +260,7 @@ class PIIDetector(ABC):
                     else:
                         attributes["masked_text"] = str(e.masked_text)
 
-                span.add_event("pii_detection_result", attributes)
+                span.add_event("pii_detected", attributes)
 
             # Re-raise the exception if action_type is BLOCK
             if self._action_type == "BLOCK":
