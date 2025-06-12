@@ -5,12 +5,12 @@ This module provides decorators for common patterns in Combat SDK.
 
 import functools
 import inspect
-from typing import Any, Callable, Optional, TypeVar, cast
+from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, cast
 
 from opentelemetry import trace
 
 # Type variable for preserving function signature in decorators
-F = TypeVar('F', bound=Callable[..., Any])
+F = TypeVar("F", bound=Callable[..., Any])
 
 
 def workflow(func_or_name: Any = None, *, name: Optional[str] = None) -> Any:
@@ -45,6 +45,7 @@ def workflow(func_or_name: Any = None, *, name: Optional[str] = None) -> Any:
             # This async function will be properly tracked with the span lasting for the entire async execution
             return transformed_data
     """
+
     def decorator(func: F) -> F:
         # Get the module name to use for the tracer
         module_name = func.__module__
@@ -90,7 +91,9 @@ def workflow(func_or_name: Any = None, *, name: Optional[str] = None) -> Any:
         return cast(F, async_wrapper if is_async else sync_wrapper)
 
     # Helper function to add span attributes
-    def _add_span_attributes(span, func, args, kwargs):
+    def _add_span_attributes(
+        span: trace.Span, func: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> None:
         # Add positional arguments as span attributes
         if args:
             try:
