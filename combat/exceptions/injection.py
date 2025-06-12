@@ -19,7 +19,7 @@ class InjectionException(Exception):
         self,
         message: str = "Input blocked due to detected injection.",
         has_violation: bool = True,
-        violations: Optional[List[str]] = None,
+        violations: Optional[List[str]] = [],
         is_blocked: bool = True,
     ) -> None:
         # Always pass the message to the base Exception constructor
