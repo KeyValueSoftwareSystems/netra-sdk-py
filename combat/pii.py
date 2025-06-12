@@ -161,39 +161,6 @@ class PIIDetector(ABC):
 
         return result
 
-    def _record_detection_trace(self, has_pii: bool, counts: Counter[str], masked_text: str) -> None:
-        """
-        Record PII detection results as a trace event if tracing is enabled.
-
-        Args:
-            has_pii: Whether PII was detected
-            counts: Counter of PII entity types found
-            masked_text: The masked version of the text
-        """
-        try:
-            span = get_current_span()
-            if span:
-                attributes = {
-                    "has_pii": has_pii,
-                    "entity_counts": json.dumps(dict(counts)),
-                    "is_blocked": self._action_type == "BLOCK" and has_pii,
-                    "is_masked": self._action_type == "MASK",
-                }
-
-                # Add masked_text to attributes only for MASK action type
-                if self._action_type == "MASK" and has_pii:
-                    if isinstance(masked_text, dict):
-                        attributes["masked_text"] = json.dumps(masked_text)
-                    elif isinstance(masked_text, list):
-                        attributes["masked_text"] = json.dumps(masked_text)
-                    else:
-                        attributes["masked_text"] = str(masked_text)
-
-                span.add_event("pii_detected", attributes)
-        except (NameError, AttributeError):
-            # Tracing is not available or not configured
-            pass
-
     def detect(self, input_data: Union[str, List[Dict[str, str]], List[str], List[Any]]) -> PIIDetectionResult:
         """
         Public entry point. Accepts either:
