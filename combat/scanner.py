@@ -3,7 +3,7 @@ Scanner module for Combat SDK to implement various scanning capabilities.
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Tuple
+from typing import Optional, Tuple
 
 from combat.exceptions import InjectionException
 
@@ -40,7 +40,7 @@ class PromptInjection(Scanner):
     This scanner uses llm_guard's PromptInjection scanner under the hood.
     """
 
-    def __init__(self, threshold: float = 0.5, match_type: Any = None):
+    def __init__(self, threshold: float = 0.5, match_type: Optional[str] = None):
         """
         Initialize the PromptInjection scanner.
 
@@ -48,8 +48,7 @@ class PromptInjection(Scanner):
             threshold: The threshold value (between 0.0 and 1.0) above which a prompt is considered risky
             match_type: The type of matching to use (from llm_guard.input_scanners.prompt_injection.MatchType)
         """
-        from llm_guard.input_scanners import \
-            PromptInjection as LLMGuardPromptInjection
+        from llm_guard.input_scanners import PromptInjection as LLMGuardPromptInjection
         from llm_guard.input_scanners.prompt_injection import MatchType
 
         self.threshold = threshold
@@ -74,7 +73,7 @@ class PromptInjection(Scanner):
         sanitized_prompt, is_valid, risk_score = self.scanner.scan(prompt)
         if not is_valid:
             raise InjectionException(
-                message=f"Input blocked: detected prompt injection",
+                message="Input blocked: detected prompt injection",
                 has_violation=True,
                 violations=["prompt_injection"],
                 is_blocked=is_blocked,

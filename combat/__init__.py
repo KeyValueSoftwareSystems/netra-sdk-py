@@ -3,6 +3,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from .config import Config
+
 # Instrumentor functions
 from .instrumentation import init_instrumentations
 from .session import SessionManager
@@ -41,12 +42,10 @@ class Combat:
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
-    ):
+    ) -> None:
         # Acquire lock before checking _initialized to prevent race conditions
         if cls.is_initialized():
-            logger.warning(
-                "Combat.init() called more than once; ignoring subsequent calls."
-            )
+            logger.warning("Combat.init() called more than once; ignoring subsequent calls.")
             return
 
         # Build Config

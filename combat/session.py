@@ -5,7 +5,7 @@ Handles automatic session and user ID management for applications.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -22,7 +22,7 @@ class SessionManager:
     """Manages session and user context for applications."""
 
     @staticmethod
-    def set_session_context(session_key: str, value: str) -> None:
+    def set_session_context(session_key: str, value: Union[str, Dict[str, str]]) -> None:
         """
         Set session context attributes in the current OpenTelemetry baggage.
 
@@ -39,6 +39,13 @@ class SessionManager:
             elif session_key == "user_account_id":
                 ctx = baggage.set_baggage("user_account_id", value, ctx)
             elif session_key == "custom_attributes":
+                if not isinstance(value, dict):
+                    logger.info("custom_attributes must be a dictionary")
+                    return
+                if not value:
+                    logger.info("custom_attributes dictionary cannot be empty")
+                    return
+
                 custom_keys = list(value.keys())
                 ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
                 for key, val in value.items():
@@ -64,26 +71,18 @@ class SessionManager:
             if not current_span or not current_span.is_recording():
                 tracer = trace.get_tracer(__name__)
                 with tracer.start_as_current_span(f"{Config.LIBRARY_NAME}.{name}") as span:
-                    span.add_event(
-                        name=name,
-                        attributes=attributes,
-                        timestamp=timestamp_ns
-                    )
+                    span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
             else:
                 # Add event to current span
-                current_span.add_event(
-                    name=name,
-                    attributes=attributes,
-                    timestamp=timestamp_ns
-                )
+                current_span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
         except Exception as e:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
 
-class SessionSpanProcessor(SpanProcessor):
+class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """OpenTelemetry span processor that automatically adds session attributes to spans."""
 
-    def on_start(self, span, parent_context=None):
+    def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
         """Add session attributes to span when it starts."""
         try:
             ctx = otel_context.get_current()
@@ -110,11 +109,11 @@ class SessionSpanProcessor(SpanProcessor):
         except Exception as e:
             logger.exception(f"Error setting span attributes: {e}")
 
-    def on_end(self, span):
+    def on_end(self, span: trace.Span) -> None:
         pass
 
-    def force_flush(self, timeout_millis=30000):
+    def force_flush(self, timeout_millis: int = 30000) -> None:
         pass
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         pass

@@ -8,14 +8,14 @@ import logging
 from typing import Any, Dict, Optional
 
 from opentelemetry import trace
-from opentelemetry.exporter.otlp.proto.http.trace_exporter import \
-    OTLPSpanExporter
-from opentelemetry.sdk.resources import (DEPLOYMENT_ENVIRONMENT, SERVICE_NAME,
-                                         Resource)
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
-from opentelemetry.sdk.trace.export import (BatchSpanProcessor,
-                                            ConsoleSpanExporter,
-                                            SimpleSpanProcessor)
+from opentelemetry.sdk.trace.export import (
+    BatchSpanProcessor,
+    ConsoleSpanExporter,
+    SimpleSpanProcessor,
+)
 
 from .config import Config
 from .session import SessionSpanProcessor
@@ -59,9 +59,7 @@ class Tracer:
 
         # Configure exporter based on configuration
         if not self.cfg.otlp_endpoint:
-            logger.warning(
-                "OTLP endpoint not provided, falling back to console exporter"
-            )
+            logger.warning("OTLP endpoint not provided, falling back to console exporter")
             exporter = ConsoleSpanExporter()
         else:
             exporter = OTLPSpanExporter(
