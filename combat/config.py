@@ -1,6 +1,7 @@
 import json
 import os
-from typing import Optional, Dict, Any
+from typing import Any, Dict, Optional
+
 from .version import __version__
 
 

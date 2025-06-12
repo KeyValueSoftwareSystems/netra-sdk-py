@@ -11,11 +11,8 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
-from opentelemetry.trace import Span, get_current_span
-from typing import Any, Dict
-import json
-from datetime import datetime
-import logging
+from opentelemetry.trace import get_current_span
+
 from .config import Config
 
 logger = logging.getLogger(__name__)
