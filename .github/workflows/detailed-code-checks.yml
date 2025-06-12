@@ -1,10 +1,14 @@
 name: Detailed Code Checks
 
 on:
+  # Run on pushes to main branches
   push:
     branches: [ main, master, beta, dev, staging ]
+  # Run on pull requests to specific branches
   pull_request:
     branches: [ main, master, beta, dev, staging ]
+  # Manual trigger from GitHub UI
+  workflow_dispatch:
 
 jobs:
   lint:
