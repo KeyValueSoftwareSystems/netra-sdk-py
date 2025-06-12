@@ -1,0 +1,70 @@
+name: Detailed Code Checks
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install black autoflake isort mypy
+          pip install -e .
+
+      - name: Check for trailing whitespace and end of file issues
+        uses: pre-commit/action@v3.0.0
+        with:
+          extra_args: trailing-whitespace end-of-file-fixer --all-files
+
+      - name: Validate YAML files
+        uses: pre-commit/action@v3.0.0
+        with:
+          extra_args: check-yaml --all-files
+
+      - name: Check for large files
+        uses: pre-commit/action@v3.0.0
+        with:
+          extra_args: check-added-large-files --all-files
+
+      - name: Format with Black
+        run: black --check .
+
+      - name: Remove unused imports with Autoflake
+        run: autoflake --check --remove-all-unused-imports --ignore-init-module-imports --remove-unused-variables .
+
+      - name: Sort imports with isort
+        run: isort --check --profile black .
+
+      - name: Type check with mypy
+        run: mypy .
+
+  commit-check:
+    runs-on: ubuntu-latest
+    if: github.event_name == 'pull_request'
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install commitizen
+        run: pip install commitizen
+
+      - name: Check commit messages
+        run: cz check --rev-range ${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}
