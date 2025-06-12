@@ -8,8 +8,7 @@ from dataclasses import dataclass, field
 from typing import (Any, Dict, List, Literal, Optional, Pattern, Tuple, Union,
                     cast)
 
-from opentelemetry.trace import get_current_span
-
+from combat import Combat
 from combat.exceptions import PIIBlockedException
 
 EMAIL_PATTERN: Pattern = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
@@ -163,39 +162,6 @@ class PIIDetector(ABC):
 
         return result
 
-    def _record_detection_trace(self, has_pii: bool, counts: Counter, masked_text: str) -> None:
-        """
-        Record PII detection results as a trace event if tracing is enabled.
-
-        Args:
-            has_pii: Whether PII was detected
-            counts: Counter of PII entity types found
-            masked_text: The masked version of the text
-        """
-        try:
-            span = get_current_span()
-            if span:
-                attributes = {
-                    "has_pii": has_pii,
-                    "entity_counts": json.dumps(dict(counts)),
-                    "is_blocked": self._action_type == "BLOCK" and has_pii,
-                    "is_masked": self._action_type == "MASK",
-                }
-
-                # Add masked_text to attributes only for MASK action type
-                if self._action_type == "MASK" and has_pii:
-                    if isinstance(masked_text, dict):
-                        attributes["masked_text"] = json.dumps(masked_text)
-                    elif isinstance(masked_text, list):
-                        attributes["masked_text"] = json.dumps(masked_text)
-                    else:
-                        attributes["masked_text"] = str(masked_text)
-
-                span.add_event("pii_detected", attributes)
-        except (NameError, AttributeError):
-            # Tracing is not available or not configured
-            pass
-
     def detect(
             self, input_data: Union[str, List[Dict[str, str]], List[str], List[Any]]
     ) -> PIIDetectionResult:
@@ -242,25 +208,22 @@ class PIIDetector(ABC):
                 raise ValueError(f"Unsupported input type: {type(input_data).__name__}")
         except PIIBlockedException as e:
             # Catch the exception to add it to the span
-            span = get_current_span()
-            if span:
-                attributes = {
-                    "has_pii": e.has_pii,
-                    "entity_counts": json.dumps(e.entity_counts),
-                    "is_blocked": self._action_type == "BLOCK",
-                    "is_masked": self._action_type == "MASK",
-                }
+            attributes = {
+                "has_pii": e.has_pii,
+                "entity_counts": json.dumps(e.entity_counts),
+                "is_blocked": self._action_type == "BLOCK",
+                "is_masked": self._action_type == "MASK",
+            }
 
-                # Add masked_text to attributes only for MASK action type
-                if self._action_type == "MASK":
-                    if isinstance(e.masked_text, dict):
-                        attributes["masked_text"] = json.dumps(e.masked_text)
-                    elif isinstance(e.masked_text, list):
-                        attributes["masked_text"] = json.dumps(e.masked_text)
-                    else:
-                        attributes["masked_text"] = str(e.masked_text)
-
-                span.add_event("pii_detected", attributes)
+            # Add masked_text to attributes only for MASK action type
+            if self._action_type == "MASK":
+                if isinstance(e.masked_text, dict):
+                    attributes["masked_text"] = json.dumps(e.masked_text)
+                elif isinstance(e.masked_text, list):
+                    attributes["masked_text"] = json.dumps(e.masked_text)
+                else:
+                    attributes["masked_text"] = str(e.masked_text)
+            Combat.set_custom_event(event_name="pii_detected", attributes=attributes)
 
             # Re-raise the exception if action_type is BLOCK
             if self._action_type == "BLOCK":
