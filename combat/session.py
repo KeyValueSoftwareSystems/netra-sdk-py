@@ -5,7 +5,7 @@ Handles automatic session and user ID management for applications.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Union
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -22,7 +22,7 @@ class SessionManager:
     """Manages session and user context for applications."""
 
     @staticmethod
-    def set_session_context(session_key: str, value: str) -> None:
+    def set_session_context(session_key: str, value: Union[str, Dict[str, str]]) -> None:
         """
         Set session context attributes in the current OpenTelemetry baggage.
 
@@ -32,17 +32,19 @@ class SessionManager:
         """
         try:
             ctx = otel_context.get_current()
-            if session_key == "session_id":
-                ctx = baggage.set_baggage("session_id", value, ctx)
-            elif session_key == "user_id":
-                ctx = baggage.set_baggage("user_id", value, ctx)
-            elif session_key == "user_account_id":
-                ctx = baggage.set_baggage("user_account_id", value, ctx)
-            elif session_key == "custom_attributes":
-                custom_keys = list(value.keys())
-                ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
-                for key, val in value.items():
-                    ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
+            if isinstance(value, str) and value:
+                if session_key == "session_id":
+                    ctx = baggage.set_baggage("session_id", value, ctx)
+                elif session_key == "user_id":
+                    ctx = baggage.set_baggage("user_id", value, ctx)
+                elif session_key == "user_account_id":
+                    ctx = baggage.set_baggage("user_account_id", value, ctx)
+            elif isinstance(value, dict) and value:
+                if session_key == "custom_attributes":
+                    custom_keys = list(value.keys())
+                    ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
+                    for key, val in value.items():
+                        ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
             otel_context.attach(ctx)
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
@@ -50,12 +52,11 @@ class SessionManager:
     @staticmethod
     def set_custom_event(name: str, attributes: Dict[str, Any]) -> None:
         """
-        Add an event to the current span and optionally propagate to parent spans if blocked.
+        Add an event to the current span.
 
         Args:
             name: Name of the event (e.g., 'pii_detection', 'error', etc.)
             attributes: Dictionary of attributes associated with the event
-            is_blocked: If True, the event will be propagated to parent spans
         """
         try:
             current_span = get_current_span()
@@ -64,26 +65,18 @@ class SessionManager:
             if not current_span or not current_span.is_recording():
                 tracer = trace.get_tracer(__name__)
                 with tracer.start_as_current_span(f"{Config.LIBRARY_NAME}.{name}") as span:
-                    span.add_event(
-                        name=name,
-                        attributes=attributes,
-                        timestamp=timestamp_ns
-                    )
+                    span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
             else:
                 # Add event to current span
-                current_span.add_event(
-                    name=name,
-                    attributes=attributes,
-                    timestamp=timestamp_ns
-                )
+                current_span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
         except Exception as e:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
 
-class SessionSpanProcessor(SpanProcessor):
+class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """OpenTelemetry span processor that automatically adds session attributes to spans."""
 
-    def on_start(self, span, parent_context=None):
+    def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
         """Add session attributes to span when it starts."""
         try:
             ctx = otel_context.get_current()
@@ -110,11 +103,11 @@ class SessionSpanProcessor(SpanProcessor):
         except Exception as e:
             logger.exception(f"Error setting span attributes: {e}")
 
-    def on_end(self, span):
+    def on_end(self, span: trace.Span) -> None:
         pass
 
-    def force_flush(self, timeout_millis=30000):
+    def force_flush(self, timeout_millis: int = 30000) -> None:
         pass
 
-    def shutdown(self):
+    def shutdown(self) -> None:
         pass

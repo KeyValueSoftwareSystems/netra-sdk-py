@@ -5,13 +5,16 @@ This module provides a unified interface for scanning input prompts using
 various scanner implementations.
 """
 
+import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import List, Union
+from typing import Any, Dict, List, Union
 
 from combat import Combat
 from combat.exceptions import InjectionException
 from combat.scanner import Scanner
+
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -24,6 +27,7 @@ class ScanResult:
         violations: List of violation types that were detected
         is_blocked: True if the input should be blocked
     """
+
     has_violation: bool = False
     violations: List[str] = field(default_factory=list)
     is_blocked: bool = False
@@ -33,10 +37,11 @@ class ScannerType(Enum):
     """
     Enum representing the available scanner types.
     """
+
     PROMPT_INJECTION = "prompt_injection"
 
 
-def get_scanner(scanner_type: Union[str, ScannerType], **kwargs) -> Scanner:
+def get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
     """
     Factory function to get a scanner instance based on the specified type.
 
@@ -59,7 +64,12 @@ def get_scanner(scanner_type: Union[str, ScannerType], **kwargs) -> Scanner:
         from combat.scanner import PromptInjection
 
         match_type = kwargs.get("match_type", MatchType.FULL)
-        threshold = kwargs.get("threshold", 0.5)
+        threshold_value = kwargs.get("threshold", 0.5)
+        if not isinstance(threshold_value, (int, float)):
+            logger.info(f"Invalid threshold value: {threshold_value}")
+            threshold = 0.5
+        else:
+            threshold = float(threshold_value)
 
         return PromptInjection(threshold=threshold, match_type=match_type)
     else:
@@ -98,19 +108,17 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
             violations_detected.append(error.violations[0])
 
     if violations_detected:
-        Combat.set_custom_event(event_name="violation_detected", attributes={
-            "has_violation": True, "violations": violations_detected, "is_blocked": is_blocked})
+        Combat.set_custom_event(
+            event_name="violation_detected",
+            attributes={"has_violation": True, "violations": violations_detected, "is_blocked": is_blocked},
+        )
 
     if is_blocked and violations_detected:
         raise InjectionException(
             message=f"Input blocked: detected {', '.join(violations_detected)}.",
             has_violation=True,
             violations=violations_detected,
-            is_blocked=True
+            is_blocked=True,
         )
 
-    return ScanResult(
-        has_violation=bool(violations_detected),
-        violations=violations_detected,
-        is_blocked=is_blocked
-    )
+    return ScanResult(has_violation=bool(violations_detected), violations=violations_detected, is_blocked=is_blocked)

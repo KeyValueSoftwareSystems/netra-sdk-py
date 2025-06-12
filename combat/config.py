@@ -31,21 +31,15 @@ class Config:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
-        environment: Optional[str] = None
+        environment: Optional[str] = None,
     ):
         # Application name: from param, else env
         self.app_name = (
-            app_name
-            or os.getenv("OTEL_SERVICE_NAME")
-            or os.getenv("COMBAT_APP_NAME")
-            or "llm_tracing_service"
+            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("COMBAT_APP_NAME") or "llm_tracing_service"
         )
 
         # OTLP endpoint: if explicit param, else OTEL_EXPORTER_OTLP_ENDPOINT
-        self.otlp_endpoint = (
-            otlp_endpoint
-            or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
-        )
+        self.otlp_endpoint = otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
         # API key: if explicit param, else env COMBAT_API_KEY
         self.api_key = api_key or os.getenv("COMBAT_API_KEY")
@@ -59,22 +53,14 @@ class Config:
         else:
             # Environment var can be "true"/"false"
             env_db = os.getenv("COMBAT_DISABLE_BATCH")
-            self.disable_batch = (
-                True
-                if (env_db is not None and env_db.lower() in ("1", "true"))
-                else False
-            )
+            self.disable_batch = True if (env_db is not None and env_db.lower() in ("1", "true")) else False
 
         # Trace content (prompts/completions)? Default true unless env says false
         if trace_content is not None:
             self.trace_content = trace_content
         else:
             env_tc = os.getenv("COMBAT_TRACE_CONTENT")
-            self.trace_content = (
-                False
-                if (env_tc is not None and env_tc.lower() in ("0", "false"))
-                else True
-            )
+            self.trace_content = False if (env_tc is not None and env_tc.lower() in ("0", "false")) else True
 
         # 7. Environment: param override, else env
         if environment is not None:
@@ -93,6 +79,7 @@ class Config:
                     self.resource_attributes = json.loads(env_ra)
                 except (json.JSONDecodeError, ValueError) as e:
                     import logging
+
                     logger = logging.getLogger(__name__)
                     logger.warning(f"Failed to parse COMBAT_RESOURCE_ATTRS: {e}")
                     self.resource_attributes = {}

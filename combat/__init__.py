@@ -3,6 +3,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from .config import Config
+
 # Instrumentor functions
 from .instrumentation import init_instrumentations
 from .session import SessionManager
@@ -18,7 +19,8 @@ class Combat:
     """
 
     _initialized = False
-    _init_lock = threading.Lock()  # Lock for thread safety during initialization
+    # Use RLock so the thread that already owns the lock can re-acquire it safely
+    _init_lock = threading.RLock()
 
     @classmethod
     def is_initialized(cls) -> bool:
@@ -41,39 +43,40 @@ class Combat:
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
-    ):
-        # Acquire lock before checking _initialized to prevent race conditions
-        if cls.is_initialized():
-            logger.warning(
-                "Combat.init() called more than once; ignoring subsequent calls."
+    ) -> None:
+        # Acquire lock at the start of the method and hold it throughout
+        # to prevent race conditions during initialization
+        with cls._init_lock:
+            # Check if already initialized while holding the lock
+            if cls._initialized:
+                logger.warning("Combat.init() called more than once; ignoring subsequent calls.")
+                return
+
+            # Build Config
+            cfg = Config(
+                app_name=app_name,
+                otlp_endpoint=otlp_endpoint,
+                api_key=api_key,
+                headers=headers,
+                disable_batch=disable_batch,
+                trace_content=trace_content,
+                resource_attributes=resource_attributes,
+                environment=environment,
             )
-            return
 
-        # Build Config
-        cfg = Config(
-            app_name=app_name,
-            otlp_endpoint=otlp_endpoint,
-            api_key=api_key,
-            headers=headers,
-            disable_batch=disable_batch,
-            trace_content=trace_content,
-            resource_attributes=resource_attributes,
-            environment=environment,
-        )
+            # Initialize tracer (OTLP exporter, span processor, resource)
+            Tracer(cfg)
 
-        # Initialize tracer (OTLP exporter, span processor, resource)
-        Tracer(cfg)
-
-        # Instrument all supported modules
-        #    Pass trace_content flag to instrumentors that can capture prompts/completions
-        init_instrumentations(
-            should_enrich_metrics=True,
-            base64_image_uploader=None,
-            instruments=None,
-            block_instruments=None,
-        )
-        cls._initialized = True
-        logger.info("Combat successfully initialized.")
+            # Instrument all supported modules
+            #    Pass trace_content flag to instrumentors that can capture prompts/completions
+            init_instrumentations(
+                should_enrich_metrics=True,
+                base64_image_uploader=None,
+                instruments=None,
+                block_instruments=None,
+            )
+            cls._initialized = True
+            logger.info("Combat successfully initialized.")
 
     @classmethod
     def set_session_id(cls, session_id: str) -> None:
