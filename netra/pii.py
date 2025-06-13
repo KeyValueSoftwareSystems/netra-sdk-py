@@ -5,10 +5,12 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Pattern, Tuple, Union, cast
+from typing import (Any, Dict, List, Literal, Optional, Pattern, Tuple, Union,
+                    cast, Callable)
 
 from netra import Netra
 from netra.exceptions import PIIBlockedException
+from combat.anonymizer import CombatAnonymizer
 
 EMAIL_PATTERN: Pattern[str] = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_PATTERN: Pattern[str] = re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b")
@@ -74,6 +76,8 @@ class PIIDetectionResult:
         masked_text: Input text with PII spans replaced/masked.
             Can be a string for simple inputs, a list of dicts for chat messages,
             or a list of BaseMessage objects for LangChain inputs.
+        original_text: The original text used to call the detect() method.
+            Can be a string, list of strings, list of dictionaries, or any other type.
         is_blocked: True if block_on_pii is enabled and has_pii is True.
         is_masked: True if any text was replaced to mask PII.
         pii_actions: Dictionary mapping action types to lists of PII entities.
@@ -82,6 +86,7 @@ class PIIDetectionResult:
     has_pii: bool = False
     pii_entities: Dict[str, int] = field(default_factory=dict)
     masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = None
+    original_text: Optional[Union[str, List[Dict[str, str]], List[str], List[Any]]] = None
     is_blocked: bool = False
     is_masked: bool = False
     pii_actions: Dict[Any, List[str]] = field(default_factory=dict)
@@ -106,7 +111,7 @@ class PIIDetector(ABC):
         self._action_type: Literal["BLOCK", "FLAG", "MASK"] = action_type
 
     @abstractmethod
-    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str]:
+    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str, Dict[str, str]]:
         """
         Detect PII in a single message.
 
@@ -114,7 +119,7 @@ class PIIDetector(ABC):
             text: The text to detect PII in
 
         Returns:
-            Tuple of (has_pii, counts, masked_text)
+            Tuple of (has_pii, counts, masked_text, entities)
         """
 
     def _preprocess(self, text: str) -> str:
@@ -183,7 +188,7 @@ class PIIDetector(ABC):
                 return self._detect_single_message(input_data)
             elif isinstance(input_data, list):
                 if not input_data:
-                    return PIIDetectionResult()
+                    return PIIDetectionResult(original_text=input_data)
 
                 # Check first item to determine list type
                 first_item = input_data[0]
@@ -236,6 +241,7 @@ class PIIDetector(ABC):
                     has_pii=e.has_pii,
                     pii_entities=e.pii_entities,
                     masked_text=e.masked_text,
+                    original_text=e.original_text,
                     is_blocked=False,
                     is_masked=True,
                     pii_actions=pii_actions,
@@ -246,6 +252,7 @@ class PIIDetector(ABC):
                 has_pii=e.has_pii,
                 pii_entities=e.pii_entities,
                 masked_text=None,
+                original_text=e.original_text,
                 is_blocked=False,
                 is_masked=False,
                 pii_actions=pii_actions,
@@ -261,7 +268,7 @@ class PIIDetector(ABC):
         Returns:
             PIIDetectionResult: The detection result containing PII information
         """
-        has_pii, counts, masked_text = self._detect_pii(text)
+        has_pii, counts, masked_text, entities = self._detect_pii(text)
 
         if has_pii:
             # Create pii_actions based on the action type and detected entities
@@ -273,12 +280,14 @@ class PIIDetector(ABC):
                 masked_text=masked_text,
                 pii_actions=pii_actions,
                 is_blocked=True,
+                original_text=text,
             )
 
         return PIIDetectionResult(
             has_pii=has_pii,
             pii_entities={},
             masked_text=None,  # No PII detected, so no masked text needed
+            original_text=text,
             is_blocked=False,
             is_masked=False,
             pii_actions={},  # No PII detected, so no actions needed
@@ -297,6 +306,7 @@ class PIIDetector(ABC):
         overall_has_pii = False
         total_counts: Counter[str] = Counter()
         masked_list: List[Dict[str, str]] = []
+        entities_list: List[Dict[str, str]] = []
 
         for message in chat_messages:
             role = message.get("role", "unknown")
@@ -330,6 +340,7 @@ class PIIDetector(ABC):
             has_pii=False,
             pii_entities={},
             masked_text=None,
+            original_text=chat_messages,
             is_blocked=False,
             is_masked=False,
             pii_actions={},  # No PII detected, so no actions needed
@@ -348,12 +359,14 @@ class PIIDetector(ABC):
         overall_has_pii = False
         total_counts: Counter[str] = Counter()
         masked_list: List[str] = []
+        entities_list: List[Dict[str, str]] = []
 
         for text in string_list:
             try:
                 self._detect_single_message(text)
                 # If we get here, no PII was detected
                 masked_list.append(text)
+                entities_list.append({})
             except PIIBlockedException as e:
                 # PII was detected
                 overall_has_pii = True
@@ -404,7 +417,7 @@ class RegexPIIDetector(PIIDetector):
         super().__init__(action_type=action_type)
         self.patterns: Dict[str, Pattern[str]] = patterns or DEFAULT_PII_PATTERNS
 
-    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str]:
+    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str, Dict[str, str]]:
         """
         Detect PII in a single message.
 
@@ -412,11 +425,11 @@ class RegexPIIDetector(PIIDetector):
             text: The text to detect PII in
 
         Returns:
-            Tuple of (has_pii, counts, masked_text)
+            Tuple of (has_pii, counts, masked_text, entities)
         """
         text = self._preprocess(text)  # trim & normalize
         if not text:
-            return False, Counter(), ""
+            return False, Counter(), "", {}
 
         spans: Dict[str, List[Tuple[int, int]]] = {}
         counts: Counter[str] = Counter()
@@ -430,16 +443,39 @@ class RegexPIIDetector(PIIDetector):
 
         has_pii_local = bool(counts)
         masked = text
+        entities = {}
+
         if has_pii_local:
             masked = self._mask_spans(text, spans)
 
-        return has_pii_local, counts, masked
+        return has_pii_local, counts, masked, entities
 
 
 class PresidioPIIDetector(PIIDetector):
     """
     Presidio-based PII detector. Overrides _detect_single_message to
     call Presidio's Analyzer + Anonymizer on a string.
+
+    Examples:
+        # Using default hash function
+        detector = PresidioPIIDetector()
+        result = detector.detect("My email is john@example.com")
+
+        # Using custom hash function
+        import hashlib
+        def custom_hash(text: str) -> str:
+            return hashlib.sha256(text.encode()).hexdigest()[:8]
+
+        detector = PresidioPIIDetector(hash_function=custom_hash)
+        result = detector.detect("My email is john@example.com")
+
+        # With custom cache size and other options
+        detector = PresidioPIIDetector(
+            hash_function=custom_hash,
+            anonymizer_cache_size=500,
+            action_type="MASK",
+            score_threshold=0.8
+        )
     """
 
     def __init__(
@@ -448,6 +484,8 @@ class PresidioPIIDetector(PIIDetector):
         language: str = "en",
         score_threshold: float = 0.6,
         action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
+        anonymizer_cache_size: int = 1000,
+        hash_function: Optional[Callable[[str], str]] = None,
     ) -> None:
         if action_type is None:
             action_type = "FLAG"
@@ -457,13 +495,11 @@ class PresidioPIIDetector(PIIDetector):
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         try:
-            import flair  # noqa: F401
             from presidio_analyzer import AnalyzerEngine  # noqa: F401
-            from presidio_anonymizer import AnonymizerEngine
         except ImportError as exc:
             raise ImportError(
-                "Presidio-based PII detection requires: presidio-analyzer, "
-                "presidio-anonymizer, flair. Install via pip."
+                "Presidio-based PII detection requires: presidio-analyzer. "
+                "Install via pip."
             ) from exc
 
         self.language: str = language
@@ -471,9 +507,12 @@ class PresidioPIIDetector(PIIDetector):
         self.score_threshold: float = score_threshold
 
         self.analyzer = AnalyzerEngine()
-        self.anonymizer = AnonymizerEngine()
+        self.anonymizer = CombatAnonymizer(
+            hash_function=hash_function,
+            cache_size=anonymizer_cache_size
+        )
 
-    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str]:
+    def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str, Dict[str, str]]:
         """
         Detect PII in a single message.
 
@@ -481,11 +520,11 @@ class PresidioPIIDetector(PIIDetector):
             text: The text to detect PII in
 
         Returns:
-            Tuple of (has_pii, counts, masked_text)
+            Tuple of (has_pii, counts, masked_text, entities)
         """
         text = self._preprocess(text)
         if not text:
-            return False, Counter(), ""
+            return False, Counter(), "", {}
 
         analyzer_results = self.analyzer.analyze(
             text=text,
@@ -497,22 +536,28 @@ class PresidioPIIDetector(PIIDetector):
         counts = Counter([res.entity_type for res in analyzer_results])
         has_pii_local = bool(counts)
         masked = text
+        entities = {}
 
         if has_pii_local:
             try:
-                anonymized = self.anonymizer.anonymize(text=text, analyzer_results=analyzer_results)
-                masked = anonymized.text
+                anonymized_result = self.anonymizer.anonymize(
+                    text=text, analyzer_results=analyzer_results
+                )
+                masked = anonymized_result["masked_text"]
+                entities = anonymized_result["entities"]
             except Exception:
                 spans: Dict[str, List[Tuple[int, int]]] = {}
                 for res in analyzer_results:
                     spans.setdefault(res.entity_type, []).append((res.start, res.end))
                 masked = self._mask_spans(text, spans)
 
-        return has_pii_local, counts, masked
+        return has_pii_local, counts, masked, entities
 
 
 def get_default_detector(
-    action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None, entities: Optional[List[str]] = None
+        action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
+        entities: Optional[List[str]] = None,
+        hash_function: Optional[Callable[[str], str]] = None,
 ) -> PIIDetector:
     """
     Returns a default PII detector instance (Presidio-based by default).
@@ -524,8 +569,13 @@ def get_default_detector(
             - "FLAG": Detect PII but don't block or mask
             - "MASK": Replace PII with mask tokens (default)
         entities: Optional list of entity types to detect. If None, uses Presidio's default entities
+        hash_function: Optional custom hash function for anonymization. If None, uses default hash function.
     """
-    return PresidioPIIDetector(action_type=action_type, entities=entities)
+    return PresidioPIIDetector(
+        action_type=action_type,
+        entities=entities,
+        hash_function=hash_function
+    )
 
 
 # ---------------------------------------------------------------------------- #
@@ -550,6 +600,35 @@ def get_default_detector(
 # pii_info = default_detector.detect("Call me at 123-456-7890")
 # print(f"Found PII types: {list(pii_info.entity_counts.keys())}")
 #
+# # Using custom hash function with get_default_detector:
+# import hashlib
+# def custom_hash(text: str) -> str:
+#     return hashlib.sha256(text.encode()).hexdigest()[:8]
+#
+# detector_with_custom_hash = get_default_detector(
+#     action_type="MASK",
+#     hash_function=custom_hash
+# )
+# result = detector_with_custom_hash.detect("My email is john@example.com")
+# print(f"Masked text: {result.masked_text}")
+# print(f"Entity mappings: {result.entities}")
+#
+# # Using PresidioPIIDetector directly with custom hash function:
+# from combat.pii import PresidioPIIDetector
+#
+# def md5_hash(text: str) -> str:
+#     return hashlib.md5(text.encode()).hexdigest()[:10]
+#
+# presidio_detector = PresidioPIIDetector(
+#     hash_function=md5_hash,
+#     anonymizer_cache_size=500,
+#     action_type="MASK",
+#     score_threshold=0.8
+# )
+# result = presidio_detector.detect("Contact me at john.doe@company.com or 555-123-4567")
+# print(f"Masked: {result.masked_text}")
+# print(f"Entities: {result.entities}")
+#
 # # You can also manually raise the exception if needed
 # if pii_info.has_pii:
 #     raise PIIBlockedException(
@@ -558,4 +637,5 @@ def get_default_detector(
 #         entity_counts=pii_info.entity_counts,
 #         masked_text=pii_info.masked_text,
 #         is_blocked=True
+#         original_text=pii_info.original_text,
 #     )
