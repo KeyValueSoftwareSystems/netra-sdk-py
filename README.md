@@ -1,5 +1,67 @@
 # Combat SDK
 
+Combat SDK is a Python library for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. It enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments.
+
+## Installation
+
+You can install the Combat SDK using pip:
+
+```bash
+pip install git+https://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@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
+```
+
+Or, using Poetry:
+
+```bash
+poetry add combat-sdk @ git+https://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@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
+```
+
+## Usage
+
+### Basic Setup
+
+Initialize the Combat SDK at the start of your application:
+
+```python
+from combat import Combat
+
+# Initialize with default settings
+Combat.init(app_name="Your application name")
+
+# Or with custom configuration
+api_key = "Your API key"
+headers = f"x-api-key={api_key}"
+Combat.init(
+    app_name="Your application name",
+    otlp_endpoint="https://api.dev.getcombat.ai/telemetry",
+    headers=headers,
+    trace_content=True,
+    environment="Your Application environment"
+)
+```
+
+### Session Management
+
+Track user sessions to correlate telemetry data:
+
+```python
+# Set session identification
+Combat.set_session_id("unique-session-id")
+Combat.set_user_id("user-123")
+Combat.set_user_account_id("account-456")
+
+# Add custom context attributes
+Combat.set_custom_attributes("customer_tier", "premium")
+Combat.set_custom_attributes("region", "us-east")
+
+# Record custom events
+Combat.set_custom_event("user_feedback", {"rating": 5, "comment": "Great response!"})
+```
+
+### Thread Safety
+
+The Combat SDK is designed to be thread-safe. The initialization process is protected with a lock to prevent race conditions when multiple threads attempt to initialize the SDK simultaneously.
+
 ## Development Setup
 
 To set up your development environment for the Combat SDK, run the provided setup script:
