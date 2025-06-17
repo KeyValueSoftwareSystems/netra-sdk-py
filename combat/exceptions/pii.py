@@ -25,7 +25,7 @@ class PIIBlockedException(Exception):
         pii_entities: Optional[Dict[str, int]] = None,
         masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = None,
         blocked: bool = True,
-        pii_actions: Optional[Dict[str, List[str]]] = None,
+        pii_actions: Optional[Dict[Any, List[str]]] = None,
     ) -> None:
         # Always pass the message to the base Exception constructor
         super().__init__(message)
@@ -35,4 +35,4 @@ class PIIBlockedException(Exception):
         self.pii_entities: Dict[str, int] = pii_entities or {}
         self.masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = masked_text
         self.blocked: bool = blocked
-        self.pii_actions: Dict[str, List[str]] = pii_actions or {}
+        self.pii_actions: Dict[Any, List[str]] = pii_actions or {}

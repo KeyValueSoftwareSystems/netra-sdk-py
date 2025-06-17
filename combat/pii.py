@@ -5,7 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional, Pattern, Tuple, Union, cast
+from typing import Any, Dict, List, Literal, Optional, Pattern, Tuple, Union, cast
 
 from combat import Combat
 from combat.exceptions import PIIBlockedException
@@ -84,7 +84,7 @@ class PIIDetectionResult:
     masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = None
     is_blocked: bool = False
     is_masked: bool = False
-    pii_actions: Dict[str, List[str]] = field(default_factory=dict)
+    pii_actions: Dict[Any, List[str]] = field(default_factory=dict)
 
 
 class PIIDetector(ABC):
@@ -93,7 +93,7 @@ class PIIDetector(ABC):
     aggregation logic, while requiring subclasses to implement _detect_single_message().
     """
 
-    def __init__(self, action_type: str = "FLAG") -> None:
+    def __init__(self, action_type: Literal["BLOCK", "FLAG", "MASK"] = "FLAG") -> None:
         """
         Initialize the PII detector.
 
@@ -103,9 +103,7 @@ class PIIDetector(ABC):
                 - "FLAG": Detect PII but don't block or mask
                 - "MASK": Replace PII with mask tokens (default)
         """
-        if action_type not in ["BLOCK", "FLAG", "MASK"]:
-            raise ValueError("action_type must be one of: BLOCK, FLAG, MASK")
-        self._action_type: str = action_type
+        self._action_type: Literal["BLOCK", "FLAG", "MASK"] = action_type
 
     @abstractmethod
     def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str]:
@@ -279,7 +277,7 @@ class PIIDetector(ABC):
 
         return PIIDetectionResult(
             has_pii=has_pii,
-            pii_entities=dict(counts),
+            pii_entities={},
             masked_text=None,  # No PII detected, so no masked text needed
             is_blocked=False,
             is_masked=False,
@@ -394,15 +392,15 @@ class RegexPIIDetector(PIIDetector):
     def __init__(
         self,
         patterns: Optional[Dict[str, Pattern[str]]] = None,
-        action_type: str = "MASK",
+        action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK",
     ) -> None:
         if action_type is None:
             env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
             # Ensure action_type is one of the valid values
             if env_action not in ["BLOCK", "FLAG", "MASK"]:
-                action_type = "MASK"
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
             else:
-                action_type = env_action
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         self.patterns: Dict[str, Pattern[str]] = patterns or DEFAULT_PII_PATTERNS
 
@@ -449,14 +447,14 @@ class PresidioPIIDetector(PIIDetector):
         entities: Optional[List[str]] = None,
         language: str = "en",
         score_threshold: float = 0.6,
-        action_type: Optional[str] = None,
+        action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
     ) -> None:
         if action_type is None:
             action_type = "FLAG"
-            env_action = os.getenv("COMBAT_ACTION_TYPE", "FLAG")
+            env_action = os.getenv("COMBATaction_type", "FLAG")
             # Ensure action_type is one of the valid values
             if env_action in ["BLOCK", "FLAG", "MASK"]:
-                action_type = env_action
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
         try:
             import flair  # noqa: F401
@@ -513,7 +511,9 @@ class PresidioPIIDetector(PIIDetector):
         return has_pii_local, counts, masked
 
 
-def get_default_detector(action_type: Optional[str] = None, entities: Optional[List[str]] = None) -> PIIDetector:
+def get_default_detector(
+    action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None, entities: Optional[List[str]] = None
+) -> PIIDetector:
     """
     Returns a default PII detector instance (Presidio-based by default).
     If you want regex-based instead, call `set_default_detector(RegexPIIDetector(...))`.
