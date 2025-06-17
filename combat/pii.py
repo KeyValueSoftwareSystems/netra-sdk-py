@@ -5,7 +5,7 @@ import re
 from abc import ABC, abstractmethod
 from collections import Counter
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, Optional, Pattern, Tuple, Union, cast
+from typing import Any, Dict, List, Optional, Pattern, Tuple, Union, cast
 
 from combat import Combat
 from combat.exceptions import PIIBlockedException
@@ -70,19 +70,21 @@ class PIIDetectionResult:
     Result of running PII detection on input text.
     Attributes:
         has_pii: True if any PII matches were found.
-        entity_counts: Dictionary mapping PII label -> count of occurrences.
+        pii_entities: Dictionary mapping PII label -> count of occurrences.
         masked_text: Input text with PII spans replaced/masked.
             Can be a string for simple inputs, a list of dicts for chat messages,
             or a list of BaseMessage objects for LangChain inputs.
         is_blocked: True if block_on_pii is enabled and has_pii is True.
         is_masked: True if any text was replaced to mask PII.
+        pii_actions: Dictionary mapping action types to lists of PII entities.
     """
 
     has_pii: bool = False
-    entity_counts: Dict[str, int] = field(default_factory=dict)
+    pii_entities: Dict[str, int] = field(default_factory=dict)
     masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = None
     is_blocked: bool = False
     is_masked: bool = False
+    pii_actions: Dict[str, List[str]] = field(default_factory=dict)
 
 
 class PIIDetector(ABC):
@@ -91,7 +93,7 @@ class PIIDetector(ABC):
     aggregation logic, while requiring subclasses to implement _detect_single_message().
     """
 
-    def __init__(self, action_type: Literal["BLOCK", "FLAG", "MASK"] = "FLAG") -> None:
+    def __init__(self, action_type: str = "FLAG") -> None:
         """
         Initialize the PII detector.
 
@@ -101,7 +103,9 @@ class PIIDetector(ABC):
                 - "FLAG": Detect PII but don't block or mask
                 - "MASK": Replace PII with mask tokens (default)
         """
-        self._action_type: Literal["BLOCK", "FLAG", "MASK"] = action_type
+        if action_type not in ["BLOCK", "FLAG", "MASK"]:
+            raise ValueError("action_type must be one of: BLOCK, FLAG, MASK")
+        self._action_type: str = action_type
 
     @abstractmethod
     def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str]:
@@ -202,12 +206,16 @@ class PIIDetector(ABC):
             else:
                 raise ValueError(f"Unsupported input type: {type(input_data).__name__}")
         except PIIBlockedException as e:
+            # Create pii_actions based on the action type and detected entities
+            pii_actions: Dict[str, List[str]] = {self._action_type: list(e.pii_entities.keys())}
+
             # Catch the exception to add it to the span
             attributes = {
                 "has_pii": e.has_pii,
-                "entity_counts": json.dumps(e.entity_counts),
+                "pii_entities": json.dumps(e.pii_entities),
                 "is_blocked": self._action_type == "BLOCK",
                 "is_masked": self._action_type == "MASK",
+                "pii_actions": json.dumps(pii_actions),
             }
 
             # Add masked_text to attributes only for MASK action type
@@ -228,19 +236,21 @@ class PIIDetector(ABC):
             if self._action_type == "MASK":
                 return PIIDetectionResult(
                     has_pii=e.has_pii,
-                    entity_counts=e.entity_counts,
+                    pii_entities=e.pii_entities,
                     masked_text=e.masked_text,
                     is_blocked=False,
                     is_masked=True,
+                    pii_actions=pii_actions,
                 )
 
             # For FLAG action type, return without masked_text
             return PIIDetectionResult(
                 has_pii=e.has_pii,
-                entity_counts=e.entity_counts,
+                pii_entities=e.pii_entities,
                 masked_text=None,
                 is_blocked=False,
                 is_masked=False,
+                pii_actions=pii_actions,
             )
 
     def _detect_single_message(self, text: str) -> PIIDetectionResult:
@@ -256,20 +266,24 @@ class PIIDetector(ABC):
         has_pii, counts, masked_text = self._detect_pii(text)
 
         if has_pii:
+            # Create pii_actions based on the action type and detected entities
+            pii_actions = {self._action_type: list(counts.keys())}
             raise PIIBlockedException(
                 message="PII detected; blocking enabled.",
                 has_pii=has_pii,
-                entity_counts=dict(counts),
+                pii_entities=dict(counts),
                 masked_text=masked_text,
                 blocked=True,
+                pii_actions=pii_actions,
             )
 
         return PIIDetectionResult(
             has_pii=has_pii,
-            entity_counts=dict(counts),
+            pii_entities=dict(counts),
             masked_text=None,  # No PII detected, so no masked text needed
             is_blocked=False,
             is_masked=False,
+            pii_actions={},  # No PII detected, so no actions needed
         )
 
     def _detect_chat_messages(self, chat_messages: List[Dict[str, str]]) -> PIIDetectionResult:
@@ -297,26 +311,30 @@ class PIIDetector(ABC):
             except PIIBlockedException as e:
                 # PII was detected
                 overall_has_pii = True
-                total_counts.update(e.entity_counts)
+                total_counts.update(e.pii_entities)
                 # Convert masked_text to string if it's not already to prevent type errors
                 masked_text_str = str(e.masked_text) if e.masked_text is not None else ""
                 masked_list.append({"role": role, "message": masked_text_str})
 
         if overall_has_pii:
+            # Create pii_actions based on the action type and detected entities
+            pii_actions = {self._action_type: list(total_counts.keys())}
             raise PIIBlockedException(
                 message="PII detected in one or more messages; blocking enabled.",
                 has_pii=overall_has_pii,
-                entity_counts=dict(total_counts),
+                pii_entities=dict(total_counts),
                 masked_text=masked_list,
                 blocked=True,
+                pii_actions=pii_actions,
             )
 
         return PIIDetectionResult(
             has_pii=False,
-            entity_counts={},
+            pii_entities={},
             masked_text=None,
             is_blocked=False,
             is_masked=False,
+            pii_actions={},  # No PII detected, so no actions needed
         )
 
     def _detect_string_list(self, string_list: List[str]) -> PIIDetectionResult:
@@ -341,26 +359,30 @@ class PIIDetector(ABC):
             except PIIBlockedException as e:
                 # PII was detected
                 overall_has_pii = True
-                total_counts.update(e.entity_counts)
+                total_counts.update(e.pii_entities)
                 # Ensure we're appending a string to the string list
                 masked_text_str = str(e.masked_text) if e.masked_text is not None else ""
                 masked_list.append(masked_text_str)
 
         if overall_has_pii:
+            # Create pii_actions based on the action type and detected entities
+            pii_actions = {self._action_type: list(total_counts.keys())}
             raise PIIBlockedException(
                 message="PII detected in one or more messages; blocking enabled.",
                 has_pii=overall_has_pii,
-                entity_counts=dict(total_counts),
+                pii_entities=dict(total_counts),
                 masked_text=masked_list,
                 blocked=True,
+                pii_actions=pii_actions,
             )
 
         return PIIDetectionResult(
             has_pii=False,
-            entity_counts={},
+            pii_entities={},
             masked_text=None,
             is_blocked=False,
             is_masked=False,
+            pii_actions={},  # No PII detected, so no actions needed
         )
 
 
@@ -372,15 +394,15 @@ class RegexPIIDetector(PIIDetector):
     def __init__(
         self,
         patterns: Optional[Dict[str, Pattern[str]]] = None,
-        action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK",
+        action_type: str = "MASK",
     ) -> None:
         if action_type is None:
             env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
-            # Ensure action_type is one of the valid literal values
+            # Ensure action_type is one of the valid values
             if env_action not in ["BLOCK", "FLAG", "MASK"]:
-                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "MASK")
+                action_type = "MASK"
             else:
-                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
+                action_type = env_action
         super().__init__(action_type=action_type)
         self.patterns: Dict[str, Pattern[str]] = patterns or DEFAULT_PII_PATTERNS
 
@@ -427,14 +449,14 @@ class PresidioPIIDetector(PIIDetector):
         entities: Optional[List[str]] = None,
         language: str = "en",
         score_threshold: float = 0.6,
-        action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
+        action_type: Optional[str] = None,
     ) -> None:
         if action_type is None:
             action_type = "FLAG"
             env_action = os.getenv("COMBAT_ACTION_TYPE", "FLAG")
-            # Ensure action_type is one of the valid literal values
+            # Ensure action_type is one of the valid values
             if env_action in ["BLOCK", "FLAG", "MASK"]:
-                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
+                action_type = env_action
         super().__init__(action_type=action_type)
         try:
             import flair  # noqa: F401
@@ -491,9 +513,7 @@ class PresidioPIIDetector(PIIDetector):
         return has_pii_local, counts, masked
 
 
-def get_default_detector(
-    action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None, entities: Optional[List[str]] = None
-) -> PIIDetector:
+def get_default_detector(action_type: Optional[str] = None, entities: Optional[List[str]] = None) -> PIIDetector:
     """
     Returns a default PII detector instance (Presidio-based by default).
     If you want regex-based instead, call `set_default_detector(RegexPIIDetector(...))`.

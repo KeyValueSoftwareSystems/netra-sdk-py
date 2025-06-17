@@ -18,8 +18,8 @@ class Config:
     """
 
     # SDK Constants
-    SDK_NAME = "combat"
-    LIBRARY_NAME = "combat"
+    SDK_NAME = "netra"
+    LIBRARY_NAME = "netra"
     LIBRARY_VERSION = __version__
 
     def __init__(
