@@ -398,7 +398,7 @@ class RegexPIIDetector(PIIDetector):
             env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
             # Ensure action_type is one of the valid values
             if env_action not in ["BLOCK", "FLAG", "MASK"]:
-                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
+                action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "FLAG")
             else:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
@@ -451,7 +451,7 @@ class PresidioPIIDetector(PIIDetector):
     ) -> None:
         if action_type is None:
             action_type = "FLAG"
-            env_action = os.getenv("COMBATaction_type", "FLAG")
+            env_action = os.getenv("COMBAT_ACTION_TYPE", "FLAG")
             # Ensure action_type is one of the valid values
             if env_action in ["BLOCK", "FLAG", "MASK"]:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
