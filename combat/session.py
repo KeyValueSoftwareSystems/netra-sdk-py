@@ -27,7 +27,7 @@ class SessionManager:
         Set session context attributes in the current OpenTelemetry baggage.
 
         Args:
-            session_key: Key to set in baggage (session_id, user_id, user_account_id, or custom_attributes)
+            session_key: Key to set in baggage (session_id, user_id, tenant_id, or custom_attributes)
             value: Value to set for the key
         """
         try:
@@ -37,8 +37,8 @@ class SessionManager:
                     ctx = baggage.set_baggage("session_id", value, ctx)
                 elif session_key == "user_id":
                     ctx = baggage.set_baggage("user_id", value, ctx)
-                elif session_key == "user_account_id":
-                    ctx = baggage.set_baggage("user_account_id", value, ctx)
+                elif session_key == "tenant_id":
+                    ctx = baggage.set_baggage("tenant_id", value, ctx)
             elif isinstance(value, dict) and value:
                 if session_key == "custom_attributes":
                     custom_keys = list(value.keys())
@@ -82,7 +82,7 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
             ctx = otel_context.get_current()
             session_id = baggage.get_baggage("session_id", ctx)
             user_id = baggage.get_baggage("user_id", ctx)
-            user_account_id = baggage.get_baggage("user_account_id", ctx)
+            tenant_id = baggage.get_baggage("tenant_id", ctx)
             custom_keys = baggage.get_baggage("custom_keys", ctx)
 
             span.set_attribute("library.name", Config.LIBRARY_NAME)
@@ -93,8 +93,8 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 span.set_attribute(f"{Config.LIBRARY_NAME}.session_id", session_id)
             if user_id:
                 span.set_attribute(f"{Config.LIBRARY_NAME}.user_id", user_id)
-            if user_account_id:
-                span.set_attribute(f"{Config.LIBRARY_NAME}.user_account_id", user_account_id)
+            if tenant_id:
+                span.set_attribute(f"{Config.LIBRARY_NAME}.tenant_id", tenant_id)
             if custom_keys:
                 for key in custom_keys.split(","):
                     value = baggage.get_baggage(f"custom.{key}", ctx)

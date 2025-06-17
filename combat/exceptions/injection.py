@@ -1,6 +1,6 @@
 # File: combat/exceptions/prompt_injection.py
 
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 
 class InjectionException(Exception):
@@ -13,6 +13,7 @@ class InjectionException(Exception):
         violations (List[str]): List of violation types that were detected.
         risk_score (float): Risk score from the prompt injection scanner (0.0 to 1.0).
         is_blocked (bool): True if blocking is enabled and prompt injection was detected.
+        violation_actions (Dict[str, List[str]]): Dictionary mapping action types to lists of violations.
     """
 
     def __init__(
@@ -21,6 +22,7 @@ class InjectionException(Exception):
         has_violation: bool = True,
         violations: Optional[List[str]] = [],
         is_blocked: bool = True,
+        violation_actions: Optional[Dict[str, List[str]]] = None,
     ) -> None:
         # Always pass the message to the base Exception constructor
         super().__init__(message)
@@ -29,3 +31,4 @@ class InjectionException(Exception):
         self.has_violation: bool = has_violation
         self.violations: List[str] = violations or []
         self.is_blocked: bool = is_blocked
+        self.violation_actions: Dict[str, List[str]] = violation_actions or {}

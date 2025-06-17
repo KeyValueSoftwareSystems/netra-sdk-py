@@ -5,6 +5,7 @@ This module provides a unified interface for scanning input prompts using
 various scanner implementations.
 """
 
+import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
@@ -26,11 +27,13 @@ class ScanResult:
         has_violation: True if any violations were detected
         violations: List of violation types that were detected
         is_blocked: True if the input should be blocked
+        violation_actions: Dictionary mapping action types to lists of violations
     """
 
     has_violation: bool = False
     violations: List[str] = field(default_factory=list)
     is_blocked: bool = False
+    violation_actions: Dict[str, List[str]] = field(default_factory=dict)
 
 
 class ScannerType(Enum):
@@ -90,6 +93,7 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
             - has_violation: True if any violations were detected
             - violations: List of violation types that were detected
             - is_blocked: True if the input should be blocked
+            - violation_actions: Dictionary mapping action types to lists of violations
 
     Raises:
         PromptInjectionBlockedException: If violations are detected and is_blocked is True
@@ -97,20 +101,29 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
     violations_detected = []
     for scanner_type in types:
         try:
-
             scanner = get_scanner(scanner_type)
             scanner.scan(prompt)
-
         except ValueError as e:
             raise ValueError(f"Invalid value type: {e}")
-
         except InjectionException as error:
             violations_detected.append(error.violations[0])
 
+    # Create dynamic violation actions mapping based on detected violations and blocking status
+    violations_actions = {}
     if violations_detected:
+        if is_blocked:
+            violations_actions["BLOCK"] = violations_detected
+        else:
+            violations_actions["FLAG"] = violations_detected
+
         Combat.set_custom_event(
             event_name="violation_detected",
-            attributes={"has_violation": True, "violations": violations_detected, "is_blocked": is_blocked},
+            attributes={
+                "has_violation": True,
+                "violations": violations_detected,
+                "is_blocked": is_blocked,
+                "violation_actions": json.dumps(violations_actions),
+            },
         )
 
     if is_blocked and violations_detected:
@@ -119,6 +132,12 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
             has_violation=True,
             violations=violations_detected,
             is_blocked=True,
+            violation_actions=violations_actions,
         )
 
-    return ScanResult(has_violation=bool(violations_detected), violations=violations_detected, is_blocked=is_blocked)
+    return ScanResult(
+        has_violation=bool(violations_detected),
+        violations=violations_detected,
+        is_blocked=is_blocked,
+        violation_actions=violations_actions,
+    )

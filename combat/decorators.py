@@ -11,6 +11,8 @@ from typing import Any, Callable, Dict, Optional, Tuple, TypeVar, Union, cast
 
 from opentelemetry import trace
 
+from .config import Config
+
 # Type variables for preserving function and class signatures
 F = TypeVar("F", bound=Callable[..., Any])
 C = TypeVar("C", bound=type)
@@ -57,19 +59,19 @@ def _add_span_attributes(
             input_data[key] = _serialize_value(value)
 
         if input_data:
-            span.set_attribute("combat.entity.input", json.dumps(input_data))
+            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.input", json.dumps(input_data))
 
     except Exception as e:
-        span.set_attribute("combat.entity.input_error", str(e))
+        span.set_attribute(f"{Config.LIBRARY_NAME}.input_error", str(e))
 
 
 def _add_output_attributes(span: trace.Span, result: Any) -> None:
     """Helper function to add output attributes to span."""
     try:
         serialized_output = _serialize_value(result)
-        span.set_attribute("combat.entity.output", serialized_output)
+        span.set_attribute(f"{Config.LIBRARY_NAME}", serialized_output)
     except Exception as e:
-        span.set_attribute("combat.entity.output_error", str(e))
+        span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output_error", str(e))
 
 
 def _create_function_wrapper(func: F, entity_type: str, name: Optional[str] = None) -> F:
@@ -130,7 +132,7 @@ def _create_function_wrapper(func: F, entity_type: str, name: Optional[str] = No
 
                     return result
                 except Exception as e:
-                    span.set_attribute("combat.entity.error", str(e))
+                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
                     span.record_exception(e)
                     raise
 

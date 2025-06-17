@@ -99,14 +99,14 @@ class Combat:
         SessionManager.set_session_context("user_id", user_id)
 
     @classmethod
-    def set_user_account_id(cls, user_account_id: str) -> None:
+    def set_tenant_id(cls, tenant_id: str) -> None:
         """
         Set user_account_id context attributes in the current OpenTelemetry context.
 
         Args:
             user_account_id: User account identifier
         """
-        SessionManager.set_session_context("user_account_id", user_account_id)
+        SessionManager.set_session_context("tenant_id", tenant_id)
 
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
