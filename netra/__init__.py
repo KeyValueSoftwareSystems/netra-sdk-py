@@ -36,8 +36,6 @@ class Netra:
     def init(
         cls,
         app_name: Optional[str] = None,
-        otlp_endpoint: Optional[str] = None,
-        api_key: Optional[str] = None,
         headers: Optional[str] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
@@ -55,8 +53,6 @@ class Netra:
             # Build Config
             cfg = Config(
                 app_name=app_name,
-                otlp_endpoint=otlp_endpoint,
-                api_key=api_key,
                 headers=headers,
                 disable_batch=disable_batch,
                 trace_content=trace_content,
@@ -117,7 +113,7 @@ class Netra:
             key: Custom attribute key
             value: Custom attribute value
         """
-        SessionManager.set_session_context(key, value)
+        SessionManager.set_session_context("custom_attributes", {key: value})
 
     @classmethod
     def set_custom_event(cls, event_name: str, attributes: Any) -> None:

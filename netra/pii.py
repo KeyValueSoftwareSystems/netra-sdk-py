@@ -271,8 +271,8 @@ class PIIDetector(ABC):
                 has_pii=has_pii,
                 pii_entities=dict(counts),
                 masked_text=masked_text,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -305,14 +305,14 @@ class PIIDetector(ABC):
             try:
                 self._detect_single_message(text)
                 # If we get here, no PII was detected
-                masked_list.append({"role": role, "message": text})
+                masked_list.append({"role": role, "content": text})
             except PIIBlockedException as e:
                 # PII was detected
                 overall_has_pii = True
                 total_counts.update(e.pii_entities)
                 # Convert masked_text to string if it's not already to prevent type errors
                 masked_text_str = str(e.masked_text) if e.masked_text is not None else ""
-                masked_list.append({"role": role, "message": masked_text_str})
+                masked_list.append({"role": role, "content": masked_text_str})
 
         if overall_has_pii:
             # Create pii_actions based on the action type and detected entities
@@ -322,8 +322,8 @@ class PIIDetector(ABC):
                 has_pii=overall_has_pii,
                 pii_entities=dict(total_counts),
                 masked_text=masked_list,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -370,8 +370,8 @@ class PIIDetector(ABC):
                 has_pii=overall_has_pii,
                 pii_entities=dict(total_counts),
                 masked_text=masked_list,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -557,5 +557,5 @@ def get_default_detector(
 #         has_pii=pii_info.has_pii,
 #         entity_counts=pii_info.entity_counts,
 #         masked_text=pii_info.masked_text,
-#         blocked=True
+#         is_blocked=True
 #     )

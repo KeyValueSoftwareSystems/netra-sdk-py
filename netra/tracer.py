@@ -5,7 +5,7 @@ including exporter setup and span processor configuration.
 """
 
 import logging
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -64,7 +64,7 @@ class Tracer:
         else:
             exporter = OTLPSpanExporter(
                 endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
-                headers=self._format_headers(),
+                headers=self.cfg.headers,
             )
         # Add combined span processor for session span processing and data aggregation processing
         provider.add_span_processor(CombinedSpanProcessor())
@@ -95,45 +95,3 @@ class Tracer:
         if not endpoint.endswith("/v1/traces"):
             return endpoint.rstrip("/") + "/v1/traces"
         return endpoint
-
-    def _format_headers(self) -> Optional[Dict[str, str]]:
-        """Generate request headers for the OTLP exporter.
-
-        Constructs headers from either:
-        1. Explicit header string in format "key1=value1,key2=value2"
-        2. API key in Authorization bearer format
-
-        Returns:
-            Dictionary of header key-value pairs or None if no headers needed
-        """
-        if self.cfg.headers:
-            # Parse headers from string format: "key1=value1,key2=value2"
-            header_pairs = {}
-            try:
-                if not isinstance(self.cfg.headers, str):
-                    logger.warning("Headers configuration is not a string. Using empty headers.")
-                    return {}
-
-                for pair in self.cfg.headers.split(","):
-                    pair = pair.strip()
-                    if not pair:  # Skip empty pairs
-                        continue
-
-                    if "=" in pair:
-                        try:
-                            key, value = pair.split("=", 1)
-                            header_pairs[key.strip()] = value.strip()
-                        except Exception as e:
-                            logger.warning(f"Failed to parse header pair '{pair}': {str(e)}")
-                    else:
-                        logger.warning(f"Ignoring malformed header without '=' delimiter: '{pair}'")
-
-                return header_pairs
-            except Exception as e:
-                logger.warning(f"Error parsing headers: {str(e)}. Using empty headers.")
-                return {}
-        elif self.cfg.api_key:
-            # Use API key as bearer token
-            return {"Authorization": f"Bearer {self.cfg.api_key}"}
-
-        return None

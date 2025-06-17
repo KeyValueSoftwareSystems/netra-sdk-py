@@ -14,7 +14,7 @@ class PIIBlockedException(Exception):
         masked_text (Union[str, List[Dict[str, str]], List[Any], None]): Input text after masking PII spans.
             Can be a string for simple inputs, a list of dicts for chat messages,
             or a list of BaseMessage objects for LangChain inputs.
-        blocked (bool): True if blocking is enabled and PII was detected.
+        is_blocked (bool): True if blocking is enabled and PII was detected.
         pii_actions (Dict[str, List[str]]): Dictionary mapping action types to lists of PII entities.
     """
 
@@ -24,8 +24,8 @@ class PIIBlockedException(Exception):
         has_pii: bool = True,
         pii_entities: Optional[Dict[str, int]] = None,
         masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = None,
-        blocked: bool = True,
         pii_actions: Optional[Dict[Any, List[str]]] = None,
+        is_blocked: bool = True,
     ) -> None:
         # Always pass the message to the base Exception constructor
         super().__init__(message)
@@ -34,5 +34,5 @@ class PIIBlockedException(Exception):
         self.has_pii: bool = has_pii
         self.pii_entities: Dict[str, int] = pii_entities or {}
         self.masked_text: Optional[Union[str, List[Dict[str, str]], List[Any]]] = masked_text
-        self.blocked: bool = blocked
         self.pii_actions: Dict[Any, List[str]] = pii_actions or {}
+        self.is_blocked: bool = is_blocked

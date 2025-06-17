@@ -2,7 +2,9 @@ import json
 import os
 from typing import Any, Dict, Optional
 
-from .version import __version__
+from opentelemetry.util.re import parse_env_headers
+
+from netra.version import __version__
 
 
 class Config:
@@ -25,8 +27,6 @@ class Config:
     def __init__(
         self,
         app_name: Optional[str] = None,
-        otlp_endpoint: Optional[str] = None,
-        api_key: Optional[str] = None,
         headers: Optional[str] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
@@ -35,17 +35,41 @@ class Config:
     ):
         # Application name: from param, else env
         self.app_name = (
-            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("netra_APP_NAME") or "llm_tracing_service"
+            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("NETRA_APP_NAME") or "llm_tracing_service"
         )
 
         # OTLP endpoint: if explicit param, else OTEL_EXPORTER_OTLP_ENDPOINT
-        self.otlp_endpoint = otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
+        self.otlp_endpoint = os.getenv("NETRA_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
         # API key: if explicit param, else env NETRA_API_KEY
-        self.api_key = api_key or os.getenv("NETRA_API_KEY")
+        self.api_key = os.getenv("NETRA_API_KEY")
+        self.headers = {}
 
         # Custom headers: comma-separated W3C format (if provided, overrides API key)
-        self.headers = headers or os.getenv("NETRA_HEADERS")
+        headers = headers or os.getenv("NETRA_HEADERS")
+
+        if isinstance(headers, str):
+            self.headers = parse_env_headers(headers)
+
+        if self.otlp_endpoint == "https://api.dev.getcombat.ai" and not self.api_key:
+            print("Error: Missing Netra API key, go to https://app.dev.getcombat.ai/api-key to create one")
+            print("Set the NETRA_API_KEY environment variable to the key")
+            return
+
+        # Handle API key authentication based on OTLP endpoint
+        if self.api_key and self.otlp_endpoint:
+            # For Netra endpoints, use x-api-key header
+            if "getcombat" in self.otlp_endpoint.lower():
+                if not self.headers:
+                    self.headers = {"x-api-key": self.api_key}
+                elif "x-api-key" not in self.headers:
+                    self.headers = {**self.headers, "x-api-key": self.api_key}
+            # For other endpoints, set up basic auth
+            else:
+                if not self.headers:
+                    self.headers = {"Authorization": f"Bearer {self.api_key}"}
+                elif "Authorization" not in self.headers:
+                    self.headers = {**self.headers, "Authorization": f"Bearer {self.api_key}"}
 
         # Disable batch span processor?
         if disable_batch is not None:

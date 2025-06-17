@@ -44,7 +44,7 @@ class ScannerType(Enum):
     PROMPT_INJECTION = "prompt_injection"
 
 
-def get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
+def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
     """
     Factory function to get a scanner instance based on the specified type.
 
@@ -101,7 +101,8 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
     violations_detected = []
     for scanner_type in types:
         try:
-            scanner = get_scanner(scanner_type)
+
+            scanner = _get_scanner(scanner_type)
             scanner.scan(prompt)
         except ValueError as e:
             raise ValueError(f"Invalid value type: {e}")
@@ -138,6 +139,6 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
     return ScanResult(
         has_violation=bool(violations_detected),
         violations=violations_detected,
-        is_blocked=is_blocked,
         violation_actions=violations_actions,
+        is_blocked=bool(is_blocked and violations_detected),
     )
