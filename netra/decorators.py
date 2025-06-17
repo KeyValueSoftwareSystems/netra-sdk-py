@@ -1,6 +1,6 @@
-"""Combat decorator utilities.
+"""Netra decorator utilities.
 
-This module provides decorators for common patterns in Combat SDK.
+This module provides decorators for common patterns in Netra SDK.
 Decorators can be applied to both functions and classes.
 """
 
@@ -36,7 +36,7 @@ def _add_span_attributes(
 ) -> None:
     """Helper function to add span attributes from function parameters."""
     # Set entity type
-    span.set_attribute("combat.entity.type", entity_type)
+    span.set_attribute("netra.entity.type", entity_type)
 
     # Add input attributes
     try:
@@ -106,7 +106,7 @@ def _create_function_wrapper(func: F, entity_type: str, name: Optional[str] = No
 
                     return result
                 except Exception as e:
-                    span.set_attribute("combat.entity.error", str(e))
+                    span.set_attribute("netra.entity.error", str(e))
                     span.record_exception(e)
                     raise
 

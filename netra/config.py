@@ -35,45 +35,45 @@ class Config:
     ):
         # Application name: from param, else env
         self.app_name = (
-            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("COMBAT_APP_NAME") or "llm_tracing_service"
+            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("netra_APP_NAME") or "llm_tracing_service"
         )
 
         # OTLP endpoint: if explicit param, else OTEL_EXPORTER_OTLP_ENDPOINT
         self.otlp_endpoint = otlp_endpoint or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
-        # API key: if explicit param, else env COMBAT_API_KEY
-        self.api_key = api_key or os.getenv("COMBAT_API_KEY")
+        # API key: if explicit param, else env NETRA_API_KEY
+        self.api_key = api_key or os.getenv("NETRA_API_KEY")
 
         # Custom headers: comma-separated W3C format (if provided, overrides API key)
-        self.headers = headers or os.getenv("COMBAT_HEADERS")
+        self.headers = headers or os.getenv("NETRA_HEADERS")
 
         # Disable batch span processor?
         if disable_batch is not None:
             self.disable_batch = disable_batch
         else:
             # Environment var can be "true"/"false"
-            env_db = os.getenv("COMBAT_DISABLE_BATCH")
+            env_db = os.getenv("NETRA_DISABLE_BATCH")
             self.disable_batch = True if (env_db is not None and env_db.lower() in ("1", "true")) else False
 
         # Trace content (prompts/completions)? Default true unless env says false
         if trace_content is not None:
             self.trace_content = trace_content
         else:
-            env_tc = os.getenv("COMBAT_TRACE_CONTENT")
+            env_tc = os.getenv("NETRA_TRACE_CONTENT")
             self.trace_content = False if (env_tc is not None and env_tc.lower() in ("0", "false")) else True
 
         # 7. Environment: param override, else env
         if environment is not None:
             self.environment = environment
         else:
-            self.environment = os.getenv("COMBAT_ENV", "local")
+            self.environment = os.getenv("NETRA_ENV", "local")
 
         # Resource attributes: param override, else parse JSON from env, else empty dict
         if resource_attributes is not None:
             self.resource_attributes = resource_attributes
         else:
             # Expecting something like: {"env":"prod","version":"1.0.0"}
-            env_ra = os.getenv("COMBAT_RESOURCE_ATTRS")
+            env_ra = os.getenv("NETRA_RESOURCE_ATTRS")
             if env_ra:
                 try:
                     self.resource_attributes = json.loads(env_ra)
@@ -81,7 +81,7 @@ class Config:
                     import logging
 
                     logger = logging.getLogger(__name__)
-                    logger.warning(f"Failed to parse COMBAT_RESOURCE_ATTRS: {e}")
+                    logger.warning(f"Failed to parse NETRA_RESOURCE_ATTRS: {e}")
                     self.resource_attributes = {}
             else:
                 self.resource_attributes = {}

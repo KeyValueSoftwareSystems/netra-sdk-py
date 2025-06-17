@@ -1,5 +1,5 @@
 """
-Input Scanner module for Combat SDK to implement LLM guard scanning options.
+Input Scanner module for Netra SDK to implement LLM guard scanning options.
 
 This module provides a unified interface for scanning input prompts using
 various scanner implementations.
@@ -11,9 +11,9 @@ from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Dict, List, Union
 
-from combat import Combat
-from combat.exceptions import InjectionException
-from combat.scanner import Scanner
+from netra import Netra
+from netra.exceptions import InjectionException
+from netra.scanner import Scanner
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +64,7 @@ def get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any])
     if scanner_type == ScannerType.PROMPT_INJECTION.value:
         from llm_guard.input_scanners.prompt_injection import MatchType
 
-        from combat.scanner import PromptInjection
+        from netra.scanner import PromptInjection
 
         match_type = kwargs.get("match_type", MatchType.FULL)
         threshold_value = kwargs.get("threshold", 0.5)
@@ -116,7 +116,7 @@ def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = F
         else:
             violations_actions["FLAG"] = violations_detected
 
-        Combat.set_custom_event(
+        Netra.set_custom_event(
             event_name="violation_detected",
             attributes={
                 "has_violation": True,

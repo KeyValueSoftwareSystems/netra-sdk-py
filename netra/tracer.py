@@ -1,4 +1,4 @@
-"""Combat OpenTelemetry tracer configuration module.
+"""Netra OpenTelemetry tracer configuration module.
 
 This module handles the initialization and configuration of OpenTelemetry tracing,
 including exporter setup and span processor configuration.
@@ -17,20 +17,20 @@ from opentelemetry.sdk.trace.export import (
     SimpleSpanProcessor,
 )
 
-from .config import Config
-from .span_processor import CombinedSpanProcessor
+from netra.config import Config
+from netra.span_processor import CombinedSpanProcessor
 
 logger = logging.getLogger(__name__)
 
 
 class Tracer:
     """
-    Configures Combat's OpenTelemetry tracer with OTLP exporter (or Console exporter as fallback)
+    Configures Netra's OpenTelemetry tracer with OTLP exporter (or Console exporter as fallback)
     and appropriate span processor.
     """
 
     def __init__(self, cfg: Config) -> None:
-        """Initialize the Combat tracer with the provided configuration.
+        """Initialize the Netra tracer with the provided configuration.
 
         Args:
             cfg: Configuration object with tracer settings
@@ -78,7 +78,7 @@ class Tracer:
         # Set global tracer provider
         trace.set_tracer_provider(provider)
         logger.info(
-            "Combat TracerProvider initialized: endpoint=%s, disable_batch=%s",
+            "Netra TracerProvider initialized: endpoint=%s, disable_batch=%s",
             self.cfg.otlp_endpoint,
             self.cfg.disable_batch,
         )

@@ -1,4 +1,4 @@
-# File: combat/exceptions/__init__.py
+# File: netra/exceptions/__init__.py
 
 from .injection import InjectionException
 from .pii import PIIBlockedException

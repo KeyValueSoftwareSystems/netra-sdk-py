@@ -1,11 +1,11 @@
 """
-Scanner module for Combat SDK to implement various scanning capabilities.
+Scanner module for Netra SDK to implement various scanning capabilities.
 """
 
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
-from combat.exceptions import InjectionException
+from netra.exceptions import InjectionException
 
 
 class Scanner(ABC):

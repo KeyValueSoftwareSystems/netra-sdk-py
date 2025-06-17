@@ -12,7 +12,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.trace import Context, Span
 
-from .config import Config
+from netra.config import Config
 
 logger = logging.getLogger(__name__)
 

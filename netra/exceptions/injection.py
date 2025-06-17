@@ -1,4 +1,4 @@
-# File: combat/exceptions/prompt_injection.py
+# File: netra/exceptions/injection.py
 
 from typing import Dict, List, Optional
 
