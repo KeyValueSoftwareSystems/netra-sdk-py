@@ -18,7 +18,7 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from .config import Config
-from .session import SessionSpanProcessor
+from .span_processor import CombinedSpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -66,8 +66,8 @@ class Tracer:
                 endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
                 headers=self._format_headers(),
             )
-        # Add session span processor
-        provider.add_span_processor(SessionSpanProcessor())
+        # Add combined span processor for session span processing and data aggregation processing
+        provider.add_span_processor(CombinedSpanProcessor())
 
         # Install appropriate span processor
         if self.cfg.disable_batch:
