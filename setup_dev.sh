@@ -1,7 +1,7 @@
 #!/bin/bash
 set -e
 
-echo "Setting up development environment for Combat SDK..."
+echo "Setting up development environment for Netra SDK..."
 
 # Install Python dependencies
 echo "Installing Python dependencies..."
@@ -18,5 +18,5 @@ pre-commit install --hook-type pre-push
 
 echo "✅ Development environment setup complete!"
 echo ""
-echo "You can now start developing for the Combat SDK."
+echo "You can now start developing for the Netra SDK."
 echo "Run 'pre-commit run --all-files' to verify your setup."

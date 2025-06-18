@@ -1,4 +1,4 @@
-# File: combat/pii.py
+# File: netra/pii.py
 import json
 import os
 import re
@@ -7,8 +7,8 @@ from collections import Counter
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Literal, Optional, Pattern, Tuple, Union, cast
 
-from combat import Combat
-from combat.exceptions import PIIBlockedException
+from netra import Netra
+from netra.exceptions import PIIBlockedException
 
 EMAIL_PATTERN: Pattern[str] = re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}")
 PHONE_PATTERN: Pattern[str] = re.compile(r"\b\d{3}[-.\s]?\d{3}[-.\s]?\d{4}\b")
@@ -224,7 +224,7 @@ class PIIDetector(ABC):
                     attributes["masked_text"] = json.dumps(e.masked_text)
                 else:
                     attributes["masked_text"] = str(e.masked_text)
-            Combat.set_custom_event(event_name="pii_detected", attributes=attributes)
+            Netra.set_custom_event(event_name="pii_detected", attributes=attributes)
 
             # Re-raise the exception if action_type is BLOCK
             if self._action_type == "BLOCK":
@@ -271,8 +271,8 @@ class PIIDetector(ABC):
                 has_pii=has_pii,
                 pii_entities=dict(counts),
                 masked_text=masked_text,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -305,14 +305,14 @@ class PIIDetector(ABC):
             try:
                 self._detect_single_message(text)
                 # If we get here, no PII was detected
-                masked_list.append({"role": role, "message": text})
+                masked_list.append({"role": role, "content": text})
             except PIIBlockedException as e:
                 # PII was detected
                 overall_has_pii = True
                 total_counts.update(e.pii_entities)
                 # Convert masked_text to string if it's not already to prevent type errors
                 masked_text_str = str(e.masked_text) if e.masked_text is not None else ""
-                masked_list.append({"role": role, "message": masked_text_str})
+                masked_list.append({"role": role, "content": masked_text_str})
 
         if overall_has_pii:
             # Create pii_actions based on the action type and detected entities
@@ -322,8 +322,8 @@ class PIIDetector(ABC):
                 has_pii=overall_has_pii,
                 pii_entities=dict(total_counts),
                 masked_text=masked_list,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -370,8 +370,8 @@ class PIIDetector(ABC):
                 has_pii=overall_has_pii,
                 pii_entities=dict(total_counts),
                 masked_text=masked_list,
-                blocked=True,
                 pii_actions=pii_actions,
+                is_blocked=True,
             )
 
         return PIIDetectionResult(
@@ -395,8 +395,8 @@ class RegexPIIDetector(PIIDetector):
         action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK",
     ) -> None:
         if action_type is None:
-            env_action = os.getenv("COMBAT_ACTION_TYPE", "MASK")
-            # Ensure action_type is one of the valid values
+            env_action = os.getenv("NETRA_ACTION_TYPE", "MASK")
+            # Ensure action_type is one of the valid literal values
             if env_action not in ["BLOCK", "FLAG", "MASK"]:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], "FLAG")
             else:
@@ -451,8 +451,8 @@ class PresidioPIIDetector(PIIDetector):
     ) -> None:
         if action_type is None:
             action_type = "FLAG"
-            env_action = os.getenv("COMBAT_ACTION_TYPE", "FLAG")
-            # Ensure action_type is one of the valid values
+            env_action = os.getenv("NETRA_ACTION_TYPE", "FLAG")
+            # Ensure action_type is one of the valid literal values
             if env_action in ["BLOCK", "FLAG", "MASK"]:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
@@ -531,8 +531,8 @@ def get_default_detector(
 # ---------------------------------------------------------------------------- #
 #                                EXAMPLE USAGE                                  #
 # ---------------------------------------------------------------------------- #
-# from combat.pii import RegexPIIDetector, get_default_detector
-# from combat.exceptions.pii import PIIBlockedException
+# from netra.pii import RegexPIIDetector, get_default_detector
+# from netra.exceptions.pii import PIIBlockedException
 #
 # # Create a regex-based detector that blocks on any PII found:
 # regex_detector = RegexPIIDetector(action_type="BLOCK")
@@ -557,5 +557,5 @@ def get_default_detector(
 #         has_pii=pii_info.has_pii,
 #         entity_counts=pii_info.entity_counts,
 #         masked_text=pii_info.masked_text,
-#         blocked=True
+#         is_blocked=True
 #     )

@@ -12,7 +12,7 @@ from .tracer import Tracer
 logger = logging.getLogger(__name__)
 
 
-class Combat:
+class Netra:
     """
     Main SDK class. Call SDK.init(...) at the start of your application
     to configure OpenTelemetry and enable all built-in LLM + VectorDB instrumentations.
@@ -24,10 +24,10 @@ class Combat:
 
     @classmethod
     def is_initialized(cls) -> bool:
-        """Thread-safe check if Combat has been initialized.
+        """Thread-safe check if Netra has been initialized.
 
         Returns:
-            bool: True if Combat has been initialized, False otherwise
+            bool: True if Netra has been initialized, False otherwise
         """
         with cls._init_lock:
             return cls._initialized
@@ -36,8 +36,6 @@ class Combat:
     def init(
         cls,
         app_name: Optional[str] = None,
-        otlp_endpoint: Optional[str] = None,
-        api_key: Optional[str] = None,
         headers: Optional[str] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
@@ -49,14 +47,12 @@ class Combat:
         with cls._init_lock:
             # Check if already initialized while holding the lock
             if cls._initialized:
-                logger.warning("Combat.init() called more than once; ignoring subsequent calls.")
+                logger.warning("Netra.init() called more than once; ignoring subsequent calls.")
                 return
 
             # Build Config
             cfg = Config(
                 app_name=app_name,
-                otlp_endpoint=otlp_endpoint,
-                api_key=api_key,
                 headers=headers,
                 disable_batch=disable_batch,
                 trace_content=trace_content,
@@ -76,7 +72,7 @@ class Combat:
                 block_instruments=None,
             )
             cls._initialized = True
-            logger.info("Combat successfully initialized.")
+            logger.info("Netra successfully initialized.")
 
     @classmethod
     def set_session_id(cls, session_id: str) -> None:
@@ -117,7 +113,7 @@ class Combat:
             key: Custom attribute key
             value: Custom attribute value
         """
-        SessionManager.set_session_context(key, value)
+        SessionManager.set_session_context("custom_attributes", {key: value})
 
     @classmethod
     def set_custom_event(cls, event_name: str, attributes: Any) -> None:
@@ -132,4 +128,4 @@ class Combat:
         SessionManager.set_custom_event(event_name, attributes)
 
 
-__all__ = ["Combat"]
+__all__ = ["Netra"]

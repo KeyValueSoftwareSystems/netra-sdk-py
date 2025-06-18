@@ -1,4 +1,4 @@
-# File: combat/exceptions/prompt_injection.py
+# File: netra/exceptions/injection.py
 
 from typing import Dict, List, Optional
 
@@ -11,7 +11,6 @@ class InjectionException(Exception):
         message (str): Human-readable explanation of why blocking occurred.
         has_violation (bool): True if prompt injection was detected in the provided text.
         violations (List[str]): List of violation types that were detected.
-        risk_score (float): Risk score from the prompt injection scanner (0.0 to 1.0).
         is_blocked (bool): True if blocking is enabled and prompt injection was detected.
         violation_actions (Dict[str, List[str]]): Dictionary mapping action types to lists of violations.
     """
@@ -20,7 +19,7 @@ class InjectionException(Exception):
         self,
         message: str = "Input blocked due to detected injection.",
         has_violation: bool = True,
-        violations: Optional[List[str]] = [],
+        violations: Optional[List[str]] = None,
         is_blocked: bool = True,
         violation_actions: Optional[Dict[str, List[str]]] = None,
     ) -> None:

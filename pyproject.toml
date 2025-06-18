@@ -1,5 +1,5 @@
 [project]
-name = "combat-sdk"
+name = "netra-sdk"
 version = "0.1.0"
 description = "A Python SDK for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. Enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments."
 authors = [
@@ -17,7 +17,7 @@ dependencies = [
 ]
 
 [[tool.poetry.packages]]
-include = "combat"
+include = "netra"
 
 [tool.poetry.group.dev.dependencies]
 flake8 = "^7.2.0"

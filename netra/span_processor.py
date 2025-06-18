@@ -4,8 +4,8 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
-from .session import SessionSpanProcessor
-from .span_aggregation import SpanAggregationProcessor
+from netra.session import SessionSpanProcessor
+from netra.span_aggregation import SpanAggregationProcessor
 
 
 class CombinedSpanProcessor(SpanProcessor):  # type: ignore[misc]

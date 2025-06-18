@@ -1,39 +1,39 @@
-# Combat SDK
+# Netra SDK
 
-Combat SDK is a Python library for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. It enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments.
+Netra SDK is a Python library for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. It enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments.
 
 ## Installation
 
-You can install the Combat SDK using pip:
+You can install the Netra SDK using pip:
 
 ```bash
-pip install git+https://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@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
+pip install git+https://<GITHUB_TOKEN>@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
 ```
 
 Or, using Poetry:
 
 ```bash
-poetry add combat-sdk @ git+https://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@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
+poetry add netra-sdk @ git+https://<GITHUB_TOKEN>@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
 ```
 
 ## Usage
 
 ### Basic Setup
 
-Initialize the Combat SDK at the start of your application:
+Initialize the Netra SDK at the start of your application:
 
 ```python
-from combat import Combat
+from netra import Netra
 
 # Initialize with default settings
-Combat.init(app_name="Your application name")
+Netra.init(app_name="Your application name")
 
 # Or with custom configuration
 api_key = "Your API key"
 headers = f"x-api-key={api_key}"
-Combat.init(
+Netra.init(
     app_name="Your application name",
-    otlp_endpoint="https://api.dev.getcombat.ai/telemetry",
+    otlp_endpoint="https://api.dev.getnetra.ai/telemetry",
     headers=headers,
     trace_content=True,
     environment="Your Application environment"
@@ -46,25 +46,25 @@ Track user sessions to correlate telemetry data:
 
 ```python
 # Set session identification
-Combat.set_session_id("unique-session-id")
-Combat.set_user_id("user-123")
-Combat.set_user_account_id("account-456")
+Netra.set_session_id("unique-session-id")
+Netra.set_user_id("user-123")
+Netra.set_user_account_id("account-456")
 
 # Add custom context attributes
-Combat.set_custom_attributes("customer_tier", "premium")
-Combat.set_custom_attributes("region", "us-east")
+Netra.set_custom_attributes("customer_tier", "premium")
+Netra.set_custom_attributes("region", "us-east")
 
 # Record custom events
-Combat.set_custom_event("user_feedback", {"rating": 5, "comment": "Great response!"})
+Netra.set_custom_event("user_feedback", {"rating": 5, "comment": "Great response!"})
 ```
 
 ### Thread Safety
 
-The Combat SDK is designed to be thread-safe. The initialization process is protected with a lock to prevent race conditions when multiple threads attempt to initialize the SDK simultaneously.
+The Netra SDK is designed to be thread-safe. The initialization process is protected with a lock to prevent race conditions when multiple threads attempt to initialize the SDK simultaneously.
 
 ## Development Setup
 
-To set up your development environment for the Combat SDK, run the provided setup script:
+To set up your development environment for the Netra SDK, run the provided setup script:
 
 ```bash
 ./setup_dev.sh

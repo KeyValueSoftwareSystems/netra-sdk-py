@@ -1,11 +1,11 @@
 """
-Scanner module for Combat SDK to implement various scanning capabilities.
+Scanner module for Netra SDK to implement various scanning capabilities.
 """
 
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
-from combat.exceptions import InjectionException
+from netra.exceptions import InjectionException
 
 
 class Scanner(ABC):
@@ -17,13 +17,12 @@ class Scanner(ABC):
     """
 
     @abstractmethod
-    def scan(self, prompt: str, is_blocked: bool = False) -> Tuple[str, bool, float]:
+    def scan(self, prompt: str) -> Tuple[str, bool, float]:
         """
         Scan the input prompt and return the sanitized prompt, validity flag, and risk score.
 
         Args:
             prompt: The input prompt to scan
-            is_blocked: If True, raises PromptInjectionBlockedException when violations are detected
 
         Returns:
             Tuple containing:
@@ -57,7 +56,7 @@ class PromptInjection(Scanner):
 
         self.scanner = LLMGuardPromptInjection(threshold=threshold, match_type=match_type)
 
-    def scan(self, prompt: str, is_blocked: bool = False) -> Tuple[str, bool, float]:
+    def scan(self, prompt: str) -> Tuple[str, bool, float]:
         """
         Scan the input prompt for potential prompt injection attempts.
 
@@ -76,6 +75,5 @@ class PromptInjection(Scanner):
                 message="Input blocked: detected prompt injection",
                 has_violation=True,
                 violations=["prompt_injection"],
-                is_blocked=is_blocked,
             )
         return sanitized_prompt, is_valid, risk_score
