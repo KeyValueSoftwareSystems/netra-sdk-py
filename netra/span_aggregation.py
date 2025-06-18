@@ -8,6 +8,7 @@ import logging
 from collections import defaultdict
 from typing import Any, Dict, Optional, Set
 
+import httpx
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.trace import Context, Span
@@ -29,9 +30,14 @@ class SpanAggregationData:
         self.has_violation: bool = False
         self.violations: Set[str] = set()
         self.violation_actions: Dict[str, Set[str]] = defaultdict(set)
+        self.has_error: bool = False
 
     def merge_from_other(self, other: "SpanAggregationData") -> None:
         """Merge data from another SpanAggregationData instance."""
+        # Merge error data
+        if other.has_error:
+            self.has_error = True
+
         # Merge tokens - take the maximum values for each model
         for model, token_data in other.tokens.items():
             if model not in self.tokens:
@@ -59,6 +65,10 @@ class SpanAggregationData:
     def to_attributes(self) -> Dict[str, str]:
         """Convert aggregated data to span attributes."""
         attributes = {}
+
+        # Error Data
+        if self.has_error:
+            attributes["has_error"] = str(self.has_error).lower()
 
         # Token usage by model
         if self.tokens:
@@ -208,6 +218,11 @@ class SpanAggregationProcessor(SpanProcessor):  # type: ignore[misc]
 
     def _process_attributes(self, data: SpanAggregationData, attributes: Dict[str, Any]) -> None:
         """Process span attributes for aggregation."""
+        # Extract status code for error identification
+        status_code = attributes.get("http.status_code", 200)
+        if httpx.codes.is_error(status_code):
+            data.has_error = True
+
         # Extract model information
         model = attributes.get("gen_ai.request.model") or attributes.get("gen_ai.response.model")
         if model:
