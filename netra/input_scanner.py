@@ -44,101 +44,90 @@ class ScannerType(Enum):
     PROMPT_INJECTION = "prompt_injection"
 
 
-def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
+class InputScanner:
     """
-    Factory function to get a scanner instance based on the specified type.
-
-    Args:
-        scanner_type: The type of scanner to create (e.g., "prompt_injection" or ScannerType.PROMPT_INJECTION)
-        **kwargs: Additional parameters to pass to the scanner constructor
-
-    Returns:
-        Scanner: An instance of the appropriate scanner
-
-    Raises:
-        ValueError: If the specified scanner type is not supported
+    A factory class for creating input scanners.
     """
-    if isinstance(scanner_type, ScannerType):
-        scanner_type = scanner_type.value
 
-    if scanner_type == ScannerType.PROMPT_INJECTION.value:
-        from llm_guard.input_scanners.prompt_injection import MatchType
+    def __init__(self, scanner_types: List[Union[str, ScannerType]] = [ScannerType.PROMPT_INJECTION]):
+        self.scanner_types = scanner_types
 
-        from netra.scanner import PromptInjection
+    @staticmethod
+    def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
+        """
+        Factory function to get a scanner instance based on the specified type.
 
-        match_type = kwargs.get("match_type", MatchType.FULL)
-        threshold_value = kwargs.get("threshold", 0.5)
-        if not isinstance(threshold_value, (int, float)):
-            logger.info(f"Invalid threshold value: {threshold_value}")
-            threshold = 0.5
+        Args:
+            scanner_type: The type of scanner to create (e.g., "prompt_injection" or ScannerType.PROMPT_INJECTION)
+            **kwargs: Additional parameters to pass to the scanner constructor
+
+        Returns:
+            Scanner: An instance of the appropriate scanner
+
+        Raises:
+            ValueError: If the specified scanner type is not supported
+        """
+        if isinstance(scanner_type, ScannerType):
+            scanner_type = scanner_type.value
+
+        if scanner_type == ScannerType.PROMPT_INJECTION.value:
+            from llm_guard.input_scanners.prompt_injection import MatchType
+
+            from netra.scanner import PromptInjection
+
+            match_type = kwargs.get("match_type", MatchType.FULL)
+            threshold_value = kwargs.get("threshold", 0.5)
+            if not isinstance(threshold_value, (int, float)):
+                logger.info(f"Invalid threshold value: {threshold_value}")
+                threshold = 0.5
+            else:
+                threshold = float(threshold_value)
+
+            return PromptInjection(threshold=threshold, match_type=match_type)
         else:
-            threshold = float(threshold_value)
+            raise ValueError(f"Unsupported scanner type: {scanner_type}")
 
-        return PromptInjection(threshold=threshold, match_type=match_type)
-    else:
-        raise ValueError(f"Unsupported scanner type: {scanner_type}")
+    def scan(self, prompt: str, is_blocked: bool = False) -> ScanResult:
+        violations_detected = []
+        for scanner_type in self.scanner_types:
+            try:
+                scanner = self._get_scanner(scanner_type)
+                scanner.scan(prompt)
+            except ValueError as e:
+                raise ValueError(f"Invalid value type: {e}")
+            except InjectionException as error:
+                violations_detected.append(error.violations[0])
 
+        # Create dynamic violation actions mapping based on detected violations and blocking status
+        violations_actions = {}
+        if violations_detected:
+            if is_blocked:
+                violations_actions["BLOCK"] = violations_detected
+            else:
+                violations_actions["FLAG"] = violations_detected
 
-def scan(prompt: str, types: List[Union[str, ScannerType]], is_blocked: bool = False) -> ScanResult:
-    """
-    Scan the input prompt for potential issues based on specified types of scans.
+            Netra.set_custom_event(
+                event_name="violation_detected",
+                attributes={
+                    "has_violation": True,
+                    "violations": violations_detected,
+                    "is_blocked": is_blocked,
+                    "violation_actions": json.dumps(violations_actions),
+                },
+            )
 
-    Args:
-        prompt: The input prompt to scan
-        types: A list of scan types to perform (e.g., ["prompt_injection"] or [ScannerType.PROMPT_INJECTION])
-        is_blocked: If True, raises PromptInjectionException when violations are detected
+        if is_blocked and violations_detected:
+            raise InjectionException(
+                message=f"Input blocked: detected {', '.join(violations_detected)}.",
+                has_violation=True,
+                violations=violations_detected,
+                is_blocked=True,
+                violation_actions=violations_actions,
+            )
 
-    Returns:
-        ScanResult: An object containing:
-            - has_violation: True if any violations were detected
-            - violations: List of violation types that were detected
-            - is_blocked: True if the input should be blocked
-            - violation_actions: Dictionary mapping action types to lists of violations
-
-    Raises:
-        PromptInjectionBlockedException: If violations are detected and is_blocked is True
-    """
-    violations_detected = []
-    for scanner_type in types:
-        try:
-
-            scanner = _get_scanner(scanner_type)
-            scanner.scan(prompt)
-        except ValueError as e:
-            raise ValueError(f"Invalid value type: {e}")
-        except InjectionException as error:
-            violations_detected.append(error.violations[0])
-
-    # Create dynamic violation actions mapping based on detected violations and blocking status
-    violations_actions = {}
-    if violations_detected:
-        if is_blocked:
-            violations_actions["BLOCK"] = violations_detected
-        else:
-            violations_actions["FLAG"] = violations_detected
-
-        Netra.set_custom_event(
-            event_name="violation_detected",
-            attributes={
-                "has_violation": True,
-                "violations": violations_detected,
-                "is_blocked": is_blocked,
-                "violation_actions": json.dumps(violations_actions),
-            },
-        )
-
-    if is_blocked and violations_detected:
-        raise InjectionException(
-            message=f"Input blocked: detected {', '.join(violations_detected)}.",
-            has_violation=True,
+        return ScanResult(
+            has_violation=bool(violations_detected),
             violations=violations_detected,
-            is_blocked=True,
             violation_actions=violations_actions,
+            is_blocked=bool(is_blocked and violations_detected),
         )
-
-    return ScanResult(
-        has_violation=bool(violations_detected),
-        violations=violations_detected,
-        violation_actions=violations_actions,
-        is_blocked=bool(is_blocked and violations_detected),
-    )
