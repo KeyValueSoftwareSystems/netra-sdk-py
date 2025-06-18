@@ -71,11 +71,20 @@ class InputScanner:
             scanner_type = scanner_type.value
 
         if scanner_type == ScannerType.PROMPT_INJECTION.value:
-            from llm_guard.input_scanners.prompt_injection import MatchType
+            match_type = None
+            try:
+                # Try to import from llm_guard if available
+                from llm_guard.input_scanners.prompt_injection import MatchType
+
+                match_type = kwargs.get("match_type", MatchType.FULL)
+            except ImportError:
+                logger.warning(
+                    "llm-guard package is not installed. Using default match type. "
+                    "To enable full functionality, install with: pip install 'netra-sdk[llm_guard]'"
+                )
 
             from netra.scanner import PromptInjection
 
-            match_type = kwargs.get("match_type", MatchType.FULL)
             threshold_value = kwargs.get("threshold", 0.5)
             if not isinstance(threshold_value, (int, float)):
                 logger.info(f"Invalid threshold value: {threshold_value}")

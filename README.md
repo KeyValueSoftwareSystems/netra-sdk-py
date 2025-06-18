@@ -16,6 +16,26 @@ Or, using Poetry:
 poetry add netra-sdk @ git+https://<GITHUB_TOKEN>@github.com/KeyValueSoftwareSystems/promptops-sdk-py.git@beta
 ```
 
+### Optional Dependencies
+
+Netra SDK supports optional dependencies for enhanced functionality:
+
+#### LLM-Guard for Prompt Injection Protection
+
+To use the full functionality of prompt injection scanning provided by llm-guard:
+
+```bash
+pip install 'netra-sdk[llm_guard]'
+```
+
+Or, using Poetry:
+
+```bash
+poetry add netra-sdk --extras "llm_guard"
+```
+
+**Note for Intel Mac users**: The `llm-guard` package has a dependency on PyTorch, which may cause installation issues on Intel Mac machines. The base SDK will install and function correctly without llm-guard, with limited prompt injection scanning capabilities. When `llm-guard` is not available, Netra will log appropriate warnings and continue to operate with fallback behavior.
+
 ## Usage
 
 ### Basic Setup
