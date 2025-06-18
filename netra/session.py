@@ -61,10 +61,22 @@ class SessionManager:
         try:
             current_span = get_current_span()
             timestamp_ns = int(datetime.now().timestamp() * 1_000_000_000)
+            current_context = otel_context.get_current()
 
             if not current_span or not current_span.is_recording():
                 tracer = trace.get_tracer(__name__)
-                with tracer.start_as_current_span(f"{Config.LIBRARY_NAME}.{name}") as span:
+                # Create a new span linked to the current context
+                span_links = None
+                if current_span and current_span.is_recording():
+                    # If we have a current span that's recording, link to it
+                    span_links = [trace.Link(current_span.get_span_context())]
+
+                # Start a new span with the current context
+                with tracer.start_as_current_span(
+                    f"{Config.LIBRARY_NAME}.{name}",
+                    context=current_context,  # Pass the current context
+                    links=span_links,
+                ) as span:
                     span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
             else:
                 # Add event to current span

@@ -2,10 +2,13 @@
 Scanner module for Netra SDK to implement various scanning capabilities.
 """
 
+import logging
 from abc import ABC, abstractmethod
 from typing import Optional, Tuple
 
 from netra.exceptions import InjectionException
+
+logger = logging.getLogger(__name__)
 
 
 class Scanner(ABC):
@@ -45,16 +48,27 @@ class PromptInjection(Scanner):
 
         Args:
             threshold: The threshold value (between 0.0 and 1.0) above which a prompt is considered risky
-            match_type: The type of matching to use (from llm_guard.input_scanners.prompt_injection.MatchType)
+            match_type: The type of matching to use
+                (from llm_guard.input_scanners.prompt_injection.MatchType)
         """
-        from llm_guard.input_scanners import PromptInjection as LLMGuardPromptInjection
-        from llm_guard.input_scanners.prompt_injection import MatchType
-
         self.threshold = threshold
-        if match_type is None:
-            match_type = MatchType.FULL
+        self.scanner = None
+        self.llm_guard_available = False
 
-        self.scanner = LLMGuardPromptInjection(threshold=threshold, match_type=match_type)
+        try:
+            from llm_guard.input_scanners import PromptInjection as LLMGuardPromptInjection
+            from llm_guard.input_scanners.prompt_injection import MatchType
+
+            if match_type is None:
+                match_type = MatchType.FULL
+
+            self.scanner = LLMGuardPromptInjection(threshold=threshold, match_type=match_type)
+            self.llm_guard_available = True
+        except ImportError:
+            logger.warning(
+                "llm-guard package is not installed. Prompt injection scanning will be limited. "
+                "To enable full functionality, install with: pip install 'netra-sdk[llm_guard]'"
+            )
 
     def scan(self, prompt: str) -> Tuple[str, bool, float]:
         """
@@ -69,6 +83,17 @@ class PromptInjection(Scanner):
                 - is_valid: Boolean indicating if the prompt passed the scan
                 - risk_score: A score between 0.0 and 1.0 indicating the risk level
         """
+        if not self.llm_guard_available or self.scanner is None:
+            # Simple fallback when llm-guard is not available
+            # Always pass validation but log a warning
+            logger.warning(
+                "Using fallback prompt injection detection (llm-guard not available). "
+                "Install the llm_guard optional dependency for full protection."
+            )
+            return prompt, True, 0.0
+
+        # Use llm_guard's scanner to check for prompt injection
+        assert self.scanner is not None  # This helps mypy understand self.scanner is not None here
         sanitized_prompt, is_valid, risk_score = self.scanner.scan(prompt)
         if not is_valid:
             raise InjectionException(
