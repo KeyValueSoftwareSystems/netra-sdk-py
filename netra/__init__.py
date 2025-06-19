@@ -123,9 +123,7 @@ class Netra:
         Args:
             event_name: Name of the custom event
             attributes: Attributes of the custom event
-            is_blocked: Whether the event is blocked or not
         """
         SessionManager.set_custom_event(event_name, attributes)
-
 
 __all__ = ["Netra"]

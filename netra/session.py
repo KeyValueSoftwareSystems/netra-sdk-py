@@ -11,7 +11,6 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
-from opentelemetry.trace import get_current_span
 
 from .config import Config
 
@@ -20,6 +19,29 @@ logger = logging.getLogger(__name__)
 
 class SessionManager:
     """Manages session and user context for applications."""
+
+    # Class variable to track the current span
+    _current_span: Optional[trace.Span] = None
+
+    @classmethod
+    def set_current_span(cls, span: Optional[trace.Span]) -> None:
+        """
+        Set the current span for the session manager.
+
+        Args:
+            span: The current span to store
+        """
+        cls._current_span = span
+
+    @classmethod
+    def get_current_span(cls) -> Optional[trace.Span]:
+        """
+        Get the current span.
+
+        Returns:
+            The stored current span or None if not set
+        """
+        return cls._current_span
 
     @staticmethod
     def set_session_context(session_key: str, value: Union[str, Dict[str, str]]) -> None:
@@ -59,28 +81,18 @@ class SessionManager:
             attributes: Dictionary of attributes associated with the event
         """
         try:
-            current_span = get_current_span()
+            current_span = SessionManager.get_current_span()
             timestamp_ns = int(datetime.now().timestamp() * 1_000_000_000)
-            current_context = otel_context.get_current()
 
-            if not current_span or not current_span.is_recording():
-                tracer = trace.get_tracer(__name__)
-                # Create a new span linked to the current context
-                span_links = None
-                if current_span and current_span.is_recording():
-                    # If we have a current span that's recording, link to it
-                    span_links = [trace.Link(current_span.get_span_context())]
-
-                # Start a new span with the current context
-                with tracer.start_as_current_span(
-                    f"{Config.LIBRARY_NAME}.{name}",
-                    context=current_context,  # Pass the current context
-                    links=span_links,
-                ) as span:
-                    span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
-            else:
-                # Add event to current span
+            if current_span:
+                # Set the event in the current span.
                 current_span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
+            else:
+                # Fallback to creating a new span.
+                ctx = otel_context.get_current()
+                tracer = trace.get_tracer(__name__)
+                with tracer.start_as_current_span(f"{Config.LIBRARY_NAME}.{name}", context=ctx) as span:
+                    span.add_event(name=name, attributes=attributes, timestamp=timestamp_ns)
         except Exception as e:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
@@ -89,8 +101,11 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """OpenTelemetry span processor that automatically adds session attributes to spans."""
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
-        """Add session attributes to span when it starts."""
+        """Add session attributes to span when it starts and store current span."""
         try:
+            # Store the current span in SessionManager
+            SessionManager.set_current_span(span)
+
             ctx = otel_context.get_current()
             session_id = baggage.get_baggage("session_id", ctx)
             user_id = baggage.get_baggage("user_id", ctx)
