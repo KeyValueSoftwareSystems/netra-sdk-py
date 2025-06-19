@@ -221,6 +221,10 @@ class SpanAggregationProcessor(SpanProcessor):  # type: ignore[misc]
                     # Immediately aggregate to parent spans
                     self._aggregate_to_all_parents(span_id)
 
+            # Check if span is still recording before adding event
+            if not span.is_recording():
+                logger.debug(f"Attempted to add event to ended span {span_id}")
+                return None
             return original_add_event(name, attributes, timestamp)
 
         span.add_event = wrapped_add_event
