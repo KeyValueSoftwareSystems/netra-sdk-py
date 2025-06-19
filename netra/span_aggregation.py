@@ -13,6 +13,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.trace import Context, Span
 
+from netra import Netra
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
@@ -31,12 +32,14 @@ class SpanAggregationData:
         self.violations: Set[str] = set()
         self.violation_actions: Dict[str, Set[str]] = defaultdict(set)
         self.has_error: bool = False
+        self.status_codes: Set[int] = set()
 
     def merge_from_other(self, other: "SpanAggregationData") -> None:
         """Merge data from another SpanAggregationData instance."""
         # Merge error data
         if other.has_error:
             self.has_error = True
+            self.status_codes.update(other.status_codes)
 
         # Merge tokens - take the maximum values for each model
         for model, token_data in other.tokens.items():
@@ -67,8 +70,9 @@ class SpanAggregationData:
         attributes = {}
 
         # Error Data
+        attributes["has_error"] = str(self.has_error).lower()
         if self.has_error:
-            attributes["has_error"] = str(self.has_error).lower()
+            attributes["status_codes"] = json.dumps(list(self.status_codes))
 
         # Token usage by model
         if self.tokens:
@@ -189,6 +193,11 @@ class SpanAggregationProcessor(SpanProcessor):  # type: ignore[misc]
         original_set_attribute = span.set_attribute
 
         def wrapped_set_attribute(key: str, value: Any) -> Any:
+            # Status code processing
+            if key == "http.status_code":
+                self._status_code_processing(value)
+
+            # Capture the all the attribute data
             self._captured_data[span_id]["attributes"][key] = value
             return original_set_attribute(key, value)
 
@@ -222,6 +231,7 @@ class SpanAggregationProcessor(SpanProcessor):  # type: ignore[misc]
         status_code = attributes.get("http.status_code", 200)
         if httpx.codes.is_error(status_code):
             data.has_error = True
+            data.status_codes.update([status_code])
 
         # Extract model information
         model = attributes.get("gen_ai.request.model") or attributes.get("gen_ai.response.model")
@@ -331,6 +341,11 @@ class SpanAggregationProcessor(SpanProcessor):  # type: ignore[misc]
             if span_context and span_context.span_id:
                 return f"{span_context.trace_id:032x}-{span_context.span_id:016x}"
         return None
+
+    def _status_code_processing(self, status_code: int) -> None:
+        if httpx.codes.is_error(status_code):
+            event_attributes = {"has_error": True, "status_code": status_code}
+            Netra.set_custom_event(event_name="error_detected", attributes=event_attributes)
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Force flush any pending data."""

@@ -18,7 +18,6 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from netra.config import Config
-from netra.span_processor import CombinedSpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -67,6 +66,8 @@ class Tracer:
                 headers=self.cfg.headers,
             )
         # Add combined span processor for session span processing and data aggregation processing
+        from netra.span_processor import CombinedSpanProcessor
+
         provider.add_span_processor(CombinedSpanProcessor())
 
         # Install appropriate span processor
