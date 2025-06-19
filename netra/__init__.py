@@ -131,4 +131,5 @@ class Netra:
         """
         SessionManager.set_custom_event(event_name, attributes)
 
+
 __all__ = ["Netra"]
