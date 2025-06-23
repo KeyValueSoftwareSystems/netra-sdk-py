@@ -3,6 +3,7 @@ import threading
 from typing import Any, Dict, Optional
 
 from .config import Config
+from .custom_instrumentation import init_qdrant_instrumentor
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
