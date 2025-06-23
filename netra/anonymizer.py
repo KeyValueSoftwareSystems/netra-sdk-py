@@ -1,21 +1,35 @@
 """
-Combat anonymizer for PII data that provides consistent hashing of entities.
+Custom anonymizer for PII data that provides consistent hashing of entities.
 
-This module provides a combat anonymizer that can be used to replace PII entities
+This module provides a custom anonymizer that can be used to replace PII entities
 with consistent hash values, allowing for tracking the same entities across multiple
 texts while maintaining privacy.
 """
 
 import hashlib
 from collections import OrderedDict
+from dataclasses import dataclass
 from typing import Any, Callable, Dict, List, Optional
 
 from presidio_analyzer.recognizer_result import RecognizerResult
 
 
-class CombatAnonymizer:
+@dataclass
+class AnonymizationResult:
     """
-    Combat anonymizer that replaces entities with consistent hash values.
+    Result of anonymization containing the masked text and entity mappings.
+    
+    Attributes:
+        masked_text: The text with PII entities replaced by hash placeholders.
+        entities: Dictionary mapping entity hashes to their original values.
+    """
+    masked_text: str
+    entities: Dict[str, str]
+
+
+class Anonymizer:
+    """
+    Anonymizer that replaces entities with consistent hash values.
     
     This anonymizer takes detected PII entities and replaces them with consistent
     hash values, ensuring that the same entity always gets the same hash.
@@ -25,7 +39,7 @@ class CombatAnonymizer:
     
     def __init__(self, hash_function: Optional[Callable[[str], str]] = None, cache_size: int = 1000):
         """
-        Initialize the CombatAnonymizer.
+        Initialize the Anonymizer.
         
         Args:
             hash_function: Optional custom hash function that takes a string and returns a hash.
@@ -92,7 +106,7 @@ class CombatAnonymizer:
         
         return entity_hash
     
-    def anonymize(self, text: str, analyzer_results: List[RecognizerResult]) -> Dict[str, Any]:
+    def anonymize(self, text: str, analyzer_results: List[RecognizerResult]) -> AnonymizationResult:
         """
         Anonymize text by replacing detected entities with hash values.
         
@@ -101,7 +115,7 @@ class CombatAnonymizer:
             analyzer_results: List of RecognizerResult objects from the Presidio analyzer.
             
         Returns:
-            Dictionary containing the masked text and a mapping of entity hashes to original values.
+            AnonymizationResult containing the masked text and a mapping of entity hashes to original values.
         """
         # Sort results by start index in descending order to avoid offset issues when replacing
         sorted_results = sorted(analyzer_results, key=lambda x: x.start, reverse=True)
@@ -127,7 +141,7 @@ class CombatAnonymizer:
             # Store the mapping of hash to original value
             entities_map[entity_hash] = entity_value
         
-        return {
-            "masked_text": masked_text,
-            "entities": entities_map
-        }
+        return AnonymizationResult(
+            masked_text=masked_text,
+            entities=entities_map
+        )

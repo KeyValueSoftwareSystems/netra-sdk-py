@@ -18,8 +18,8 @@ class PIIBlockedException(Exception):
         pii_actions (Dict[str, List[str]]): Dictionary mapping action types to lists of PII entities.
         original_text (Union[str, List[Dict[str, str]], List[str], List[Any], None]): The original text used to call the detect() method.
             Can be a string, list of strings, list of dictionaries, or any other type.
-        entities (Dict[str, str]): Dictionary mapping masked entity hashes to their original values.
-            Only populated when using CombatAnonymizer for masking.
+        hashed_entities (Dict[str, str]): Dictionary mapping hashed entity values to their original values.
+            Only populated when using Anonymizer for masking.
     """
 
     def __init__(
@@ -31,6 +31,7 @@ class PIIBlockedException(Exception):
         pii_actions: Optional[Dict[Any, List[str]]] = None,
         is_blocked: bool = True,
         original_text: Optional[Union[str, List[Dict[str, str]], List[str], List[Any]]] = None,
+        hashed_entities: Optional[Dict[str, str]] = None,
     ) -> None:
         # Always pass the message to the base Exception constructor
         super().__init__(message)
@@ -42,3 +43,4 @@ class PIIBlockedException(Exception):
         self.pii_actions: Dict[Any, List[str]] = pii_actions or {}
         self.is_blocked: bool = is_blocked
         self.original_text: Optional[Union[str, List[Dict[str, str]], List[str], List[Any]]] = original_text
+        self.hashed_entities: Dict[str, str] = hashed_entities or {}
