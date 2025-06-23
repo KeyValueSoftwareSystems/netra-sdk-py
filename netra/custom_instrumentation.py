@@ -2,7 +2,7 @@ import logging
 from typing import Any
 
 from fastapi import FastAPI
-from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from traceloop.sdk.utils.package_check import is_package_installed
 
 logger = logging.getLogger(__name__)
 
@@ -17,8 +17,10 @@ def init_fastapi_instrumentor() -> None:
 
         # Auto-instrument the app
         try:
-            FastAPIInstrumentor().instrument_app(self)
-            logger.debug("Auto-instrumented FastAPI app")
+            if is_package_installed("fastapi"):
+                from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+
+                FastAPIInstrumentor().instrument_app(self)
         except Exception as e:
             logger.warning(f"Failed to auto-instrument FastAPI: {e}")
 
