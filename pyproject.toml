@@ -15,6 +15,8 @@ dependencies = [
     "presidio-analyzer>=2.2.358,<3.0.0",
     "presidio-anonymizer>=2.2.358,<3.0.0",
     "flair>=0.15.1,<0.16.0",
+    "qdrant-client (>=1.14.3,<2.0.0)",
+    "pinecone-client (>=2.2.2,<6.0.0)"
 ]
 
 [[tool.poetry.packages]]
