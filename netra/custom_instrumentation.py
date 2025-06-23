@@ -17,3 +17,17 @@ def init_qdrant_instrumentor() -> bool:
     except Exception as e:
         logging.error(f"Error initializing Qdrant instrumentor: {e}")
         return False
+
+
+def init_weviate_instrumentor() -> bool:
+    try:
+        if is_package_installed("weaviate-client"):
+            from .weaviate_instrumentor import WeaviateInstrumentor
+
+            instrumentor = WeaviateInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Weaviate instrumentor: {e}")
+        return False

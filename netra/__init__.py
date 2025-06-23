@@ -2,8 +2,10 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
+from traceloop.sdk.instruments import Instruments
+
 from .config import Config
-from .custom_instrumentation import init_qdrant_instrumentor
+from .custom_instrumentation import init_qdrant_instrumentor, init_weviate_instrumentor
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
@@ -70,8 +72,12 @@ class Netra:
                 should_enrich_metrics=True,
                 base64_image_uploader=None,
                 instruments=None,
-                block_instruments=None,
+                block_instruments={Instruments.WEAVIATE, Instruments.QDRANT},
             )
+
+            # Instrument custom modules
+            init_qdrant_instrumentor()
+            init_weviate_instrumentor()
 
             cls._initialized = True
             logger.info("Netra successfully initialized.")
