@@ -14,6 +14,15 @@ def init_instrumentations(
 ) -> None:
     from traceloop.sdk.tracing.tracing import init_instrumentations
 
+    block_instruments = block_instruments or set()
+    block_instruments.update(
+        {
+            Instruments.WEAVIATE,
+            Instruments.QDRANT,
+            Instruments.GOOGLE_GENERATIVEAI,
+        }
+    )
+
     init_instrumentations(
         should_enrich_metrics=should_enrich_metrics,
         base64_image_uploader=base64_image_uploader,
@@ -28,6 +37,14 @@ def init_instrumentations(
     # Initialize FastAPI instrumentation.
     if instruments is None or Instruments.FASTAPI in instruments:
         init_fastapi_instrumentor()
+
+    # Initialize Qdrant instrumentation.
+    if instruments is None or Instruments.QDRANT in instruments:
+        init_qdrant_instrumentor()
+
+    # Initialize Weaviate instrumentation.
+    if instruments is None or Instruments.WEAVIATE in instruments:
+        init_weviate_instrumentor()
 
 
 def init_google_genai_instrumentation() -> bool:
@@ -78,5 +95,45 @@ def init_fastapi_instrumentor() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing FastAPI instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_qdrant_instrumentor() -> bool:
+    """Initialize Qdrant instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("qdrant-client"):
+            from opentelemetry.instrumentation.qdrant import QdrantInstrumentor
+
+            instrumentor = QdrantInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Qdrant instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_weviate_instrumentor() -> bool:
+    """Initialize Weaviate instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("weaviate-client"):
+            from netra.instrumentation.weaviate import WeaviateInstrumentor
+
+            instrumentor = WeaviateInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Weaviate instrumentor: {e}")
         Telemetry().log_exception(e)
         return False

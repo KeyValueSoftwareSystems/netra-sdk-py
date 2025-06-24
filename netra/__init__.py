@@ -72,12 +72,8 @@ class Netra:
                 should_enrich_metrics=True,
                 base64_image_uploader=None,
                 instruments=None,
-                block_instruments={Instruments.WEAVIATE, Instruments.QDRANT},
+                block_instruments=None,
             )
-
-            # Instrument custom modules
-            init_qdrant_instrumentor()
-            init_weviate_instrumentor()
 
             cls._initialized = True
             logger.info("Netra successfully initialized.")
