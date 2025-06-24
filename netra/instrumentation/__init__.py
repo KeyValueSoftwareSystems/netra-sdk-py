@@ -60,16 +60,17 @@ def init_fastapi_instrumentor() -> bool:
         bool: True if initialization was successful, False otherwise.
     """
     try:
+        if not is_package_installed("fastapi"):
+            return True
         original_init = FastAPI.__init__
 
         def _patched_init(self: FastAPI, *args: Any, **kwargs: Any) -> None:
             original_init(self, *args, **kwargs)
 
             try:
-                if is_package_installed("fastapi"):
-                    from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+                from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
 
-                    FastAPIInstrumentor().instrument_app(self)
+                FastAPIInstrumentor().instrument_app(self)
             except Exception as e:
                 logging.warning(f"Failed to auto-instrument FastAPI: {e}")
 
