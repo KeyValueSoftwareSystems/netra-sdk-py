@@ -6511,4 +6511,4 @@ llm-guard = ["llm-guard"]
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.13"
-content-hash = "fc4cdcfd1affc882e5c1b8fc9fe85d21d14621cfda49f2ce4f3610cb7b64775d"
+content-hash = "fcb2937192199afdad8b4f46c03de1232012f191e5583bf7e69f3382af789556"

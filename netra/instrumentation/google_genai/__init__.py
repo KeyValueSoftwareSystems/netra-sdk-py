@@ -3,23 +3,22 @@
 import logging
 import os
 import types
-from typing import Collection
-from netra.instrumentation.google_genai.config import Config
-from netra.instrumentation.google_genai.utils import dont_throw
-from wrapt import wrap_function_wrapper
+from typing import Any, Callable, Collection, Dict, Optional, Tuple, Union
 
 from opentelemetry import context as context_api
-from opentelemetry.trace import get_tracer, SpanKind
-from opentelemetry.trace.status import Status, StatusCode
-
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY, unwrap
-
 from opentelemetry.semconv_ai import (
     SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY,
-    SpanAttributes,
     LLMRequestTypeValues,
+    SpanAttributes,
 )
+from opentelemetry.trace import SpanKind, get_tracer
+from opentelemetry.trace.status import Status, StatusCode
+from wrapt import wrap_function_wrapper
+
+from netra.instrumentation.google_genai.config import Config
+from netra.instrumentation.google_genai.utils import dont_throw
 from netra.instrumentation.google_genai.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -86,28 +85,28 @@ WRAPPED_METHODS = [
 ]
 
 
-def should_send_prompts():
-    return (
-            os.getenv("TRACELOOP_TRACE_CONTENT") or "true"
-    ).lower() == "true" or context_api.get_value("override_enable_content_tracing")
+def should_send_prompts() -> bool:
+    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or context_api.get_value(
+        "override_enable_content_tracing"
+    )
 
 
-def is_streaming_response(response):
+def is_streaming_response(response: Any) -> bool:
     return isinstance(response, types.GeneratorType)
 
 
-def is_async_streaming_response(response):
+def is_async_streaming_response(response: Any) -> bool:
     return isinstance(response, types.AsyncGeneratorType)
 
 
-def _set_span_attribute(span, name, value):
+def _set_span_attribute(span: Any, name: str, value: Any) -> None:
     if value is not None:
         if value != "":
             span.set_attribute(name, value)
     return
 
 
-def _set_input_attributes(span, args, kwargs, llm_model):
+def _set_input_attributes(span: Any, args: tuple[Any, ...], kwargs: dict[str, Any], llm_model: str) -> None:
     if not should_send_prompts():
         return
 
@@ -129,9 +128,9 @@ def _set_input_attributes(span, args, kwargs, llm_model):
         elif isinstance(contents, list):
             # List of content objects
             for i, content in enumerate(contents):
-                if hasattr(content, 'parts'):
+                if hasattr(content, "parts"):
                     for part in content.parts:
-                        if hasattr(part, 'text'):
+                        if hasattr(part, "text"):
                             _set_span_attribute(
                                 span,
                                 f"{SpanAttributes.LLM_PROMPTS}.{i}.content",
@@ -184,38 +183,38 @@ def _set_input_attributes(span, args, kwargs, llm_model):
     # Handle config parameter which might contain generation settings
     if "config" in kwargs and kwargs["config"]:
         config = kwargs["config"]
-        if hasattr(config, 'temperature'):
+        if hasattr(config, "temperature"):
             _set_span_attribute(span, SpanAttributes.LLM_REQUEST_TEMPERATURE, config.temperature)
-        if hasattr(config, 'max_output_tokens'):
+        if hasattr(config, "max_output_tokens"):
             _set_span_attribute(span, SpanAttributes.LLM_REQUEST_MAX_TOKENS, config.max_output_tokens)
-        if hasattr(config, 'top_p'):
+        if hasattr(config, "top_p"):
             _set_span_attribute(span, SpanAttributes.LLM_REQUEST_TOP_P, config.top_p)
-        if hasattr(config, 'top_k'):
+        if hasattr(config, "top_k"):
             _set_span_attribute(span, SpanAttributes.LLM_TOP_K, config.top_k)
 
     return
 
 
 @dont_throw
-def _set_response_attributes(span, response, llm_model):
+def _set_response_attributes(span: Any, response: Any, llm_model: str) -> None:
     _set_span_attribute(span, SpanAttributes.LLM_RESPONSE_MODEL, llm_model)
 
     # Handle response attributes for google.genai package
-    if hasattr(response, 'usage_metadata'):
+    if hasattr(response, "usage_metadata"):
         usage = response.usage_metadata
-        if hasattr(usage, 'total_token_count'):
+        if hasattr(usage, "total_token_count"):
             _set_span_attribute(
                 span,
                 SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
                 usage.total_token_count,
             )
-        if hasattr(usage, 'candidates_token_count'):
+        if hasattr(usage, "candidates_token_count"):
             _set_span_attribute(
                 span,
                 SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
                 usage.candidates_token_count,
             )
-        if hasattr(usage, 'prompt_token_count'):
+        if hasattr(usage, "prompt_token_count"):
             _set_span_attribute(
                 span,
                 SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
@@ -223,33 +222,25 @@ def _set_response_attributes(span, response, llm_model):
             )
 
     # Handle response text
-    if hasattr(response, 'text') and response.text:
-        _set_span_attribute(
-            span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response.text
-        )
-        _set_span_attribute(
-            span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant"
-        )
-    elif hasattr(response, 'candidates') and response.candidates:
+    if hasattr(response, "text") and response.text:
+        _set_span_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response.text)
+        _set_span_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+    elif hasattr(response, "candidates") and response.candidates:
         for index, candidate in enumerate(response.candidates):
-            if hasattr(candidate, 'content') and hasattr(candidate.content, 'parts'):
+            if hasattr(candidate, "content") and hasattr(candidate.content, "parts"):
                 for part in candidate.content.parts:
-                    if hasattr(part, 'text'):
-                        _set_span_attribute(
-                            span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", part.text
-                        )
-                        _set_span_attribute(
-                            span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", "assistant"
-                        )
+                    if hasattr(part, "text"):
+                        _set_span_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", part.text)
+                        _set_span_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", "assistant")
 
     return
 
 
-def _build_from_streaming_response(span, response, llm_model):
+def _build_from_streaming_response(span: Any, response: Any, llm_model: str) -> Any:
     complete_response = ""
     for item in response:
         item_to_yield = item
-        if hasattr(item, 'text'):
+        if hasattr(item, "text"):
             complete_response += str(item.text)
         yield item_to_yield
 
@@ -258,11 +249,11 @@ def _build_from_streaming_response(span, response, llm_model):
     span.end()
 
 
-async def _abuild_from_streaming_response(span, response, llm_model):
+async def _abuild_from_streaming_response(span: Any, response: Any, llm_model: str) -> Any:
     complete_response = ""
     async for item in response:
         item_to_yield = item
-        if hasattr(item, 'text'):
+        if hasattr(item, "text"):
             complete_response += str(item.text)
         yield item_to_yield
 
@@ -271,23 +262,23 @@ async def _abuild_from_streaming_response(span, response, llm_model):
     span.end()
 
 
-def _handle_request(span, args, kwargs, llm_model):
+def _handle_request(span: Any, args: tuple[Any, ...], kwargs: dict[str, Any], llm_model: str) -> None:
     if span.is_recording():
         _set_input_attributes(span, args, kwargs, llm_model)
 
 
 @dont_throw
-def _handle_response(span, response, llm_model):
+def _handle_response(span: Any, response: Any, llm_model: str) -> None:
     if span.is_recording():
         _set_response_attributes(span, response, llm_model)
         span.set_status(Status(StatusCode.OK))
 
 
-def _with_tracer_wrapper(func):
+def _with_tracer_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
     """Helper for providing tracer for wrapper functions."""
 
-    def _with_tracer(tracer, to_wrap):
-        def wrapper(wrapped, instance, args, kwargs):
+    def _with_tracer(tracer: Any, to_wrap: dict[str, Any]) -> Callable[..., Any]:
+        def wrapper(wrapped: Callable[..., Any], instance: Any, args: tuple[Any, ...], kwargs: dict[str, Any]) -> Any:
             return func(tracer, to_wrap, wrapped, instance, args, kwargs)
 
         return wrapper
@@ -296,10 +287,17 @@ def _with_tracer_wrapper(func):
 
 
 @_with_tracer_wrapper
-async def _awrap(tracer, to_wrap, wrapped, instance, args, kwargs):
+async def _awrap(
+    tracer: Any,
+    to_wrap: dict[str, Any],
+    wrapped: Callable[..., Any],
+    instance: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
     """Instruments and calls every function defined in TO_WRAP."""
     if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) or context_api.get_value(
-            SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY
+        SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY
     ):
         return await wrapped(*args, **kwargs)
 
@@ -335,10 +333,17 @@ async def _awrap(tracer, to_wrap, wrapped, instance, args, kwargs):
 
 
 @_with_tracer_wrapper
-def _wrap(tracer, to_wrap, wrapped, instance, args, kwargs):
+def _wrap(
+    tracer: Any,
+    to_wrap: dict[str, Any],
+    wrapped: Callable[..., Any],
+    instance: Any,
+    args: tuple[Any, ...],
+    kwargs: dict[str, Any],
+) -> Any:
     """Instruments and calls every function defined in TO_WRAP."""
     if context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) or context_api.get_value(
-            SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY
+        SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY
     ):
         return wrapped(*args, **kwargs)
 
@@ -373,17 +378,20 @@ def _wrap(tracer, to_wrap, wrapped, instance, args, kwargs):
     return response
 
 
-class GoogleGenAiInstrumentor(BaseInstrumentor):
+class GoogleGenAiInstrumentor(BaseInstrumentor):  # type: ignore
     """An instrumentor for Google GenAI's client library."""
 
-    def __init__(self, exception_logger=None):
+    def __init__(self, exception_logger: Optional[Callable[[Exception], None]]) -> None:
+        # Initialize the parent class
         super().__init__()
-        Config.exception_logger = exception_logger
+        # Set the exception logger in Config
+        if exception_logger is not None:
+            Config.exception_logger = exception_logger
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
 
-    def _instrument(self, **kwargs):
+    def _instrument(self, **kwargs: Any) -> None:
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(__name__, __version__, tracer_provider)
         for wrapped_method in WRAPPED_METHODS:
@@ -394,14 +402,10 @@ class GoogleGenAiInstrumentor(BaseInstrumentor):
             wrap_function_wrapper(
                 wrap_package,
                 f"{wrap_object}.{wrap_method}",
-                (
-                    _awrap(tracer, wrapped_method)
-                    if wrapped_method.get("is_async")
-                    else _wrap(tracer, wrapped_method)
-                ),
+                (_awrap(tracer, wrapped_method) if wrapped_method.get("is_async") else _wrap(tracer, wrapped_method)),
             )
 
-    def _uninstrument(self, **kwargs):
+    def _uninstrument(self, **kwargs: Any) -> None:
         for wrapped_method in WRAPPED_METHODS:
             wrap_package = wrapped_method.get("package")
             wrap_object = wrapped_method.get("object")

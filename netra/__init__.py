@@ -71,6 +71,7 @@ class Netra:
                 instruments=None,
                 block_instruments=None,
             )
+
             cls._initialized = True
             logger.info("Netra successfully initialized.")
 
@@ -125,5 +126,6 @@ class Netra:
             attributes: Attributes of the custom event
         """
         SessionManager.set_custom_event(event_name, attributes)
+
 
 __all__ = ["Netra"]
