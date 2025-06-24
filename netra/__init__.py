@@ -3,7 +3,6 @@ import threading
 from typing import Any, Dict, Optional
 
 from .config import Config
-from .custom_instrumentation import init_fastapi_instrumentor
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
@@ -68,13 +67,10 @@ class Netra:
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
             init_instrumentations(
                 should_enrich_metrics=True,
-                base64_image_uploader=None,
+                base64_image_uploader=lambda x, y, z: "",  # Empty function to satisfy type checker
                 instruments=None,
                 block_instruments=None,
             )
-
-            # Instrument custom modules
-            init_fastapi_instrumentor()
 
             cls._initialized = True
             logger.info("Netra successfully initialized.")
