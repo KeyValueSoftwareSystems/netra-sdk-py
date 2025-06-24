@@ -2,10 +2,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional
 
-from traceloop.sdk.instruments import Instruments
-
 from .config import Config
-from .custom_instrumentation import init_qdrant_instrumentor, init_weviate_instrumentor
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
