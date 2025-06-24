@@ -67,7 +67,7 @@ class Netra:
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
             init_instrumentations(
                 should_enrich_metrics=True,
-                base64_image_uploader=lambda x, y, z: "",  # Empty function to satisfy type checker
+                base64_image_uploader=None,
                 instruments=None,
                 block_instruments=None,
             )

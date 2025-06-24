@@ -8,7 +8,7 @@ from traceloop.sdk.utils.package_check import is_package_installed
 
 def init_instrumentations(
     should_enrich_metrics: bool,
-    base64_image_uploader: Callable[[str, str, str], str],
+    base64_image_uploader: Optional[Callable[[str, str, str], str]],
     instruments: Optional[Set[Instruments]] = None,
     block_instruments: Optional[Set[Instruments]] = None,
 ) -> None:
