@@ -7,9 +7,8 @@ from timeit import default_timer
 from typing import Any, Awaitable, Callable, Collection, Dict, Optional, Union
 from urllib.parse import urlparse
 
-import aiohttp
-from aiohttp import URL, ClientRequest, ClientResponse, ClientSession
-from aiohttp.client import _RequestContextManager
+from aiohttp import ClientRequest, ClientResponse, ClientSession
+from aiohttp.typedefs import URL
 from opentelemetry.instrumentation._semconv import (
     HTTP_DURATION_HISTOGRAM_BUCKETS_NEW,
     HTTP_DURATION_HISTOGRAM_BUCKETS_OLD,
