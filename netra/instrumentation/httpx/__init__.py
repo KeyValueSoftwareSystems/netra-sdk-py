@@ -55,8 +55,9 @@ from opentelemetry.util.http import (
 )
 from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
+from netra.instrumentation.httpx.version import __version__
+
 # Package info for httpx instrumentation
-__version__ = "1.0.0"
 _instruments = ("httpx >= 0.18.0",)
 
 _excluded_urls_from_env = get_excluded_urls("HTTPX")
