@@ -1,7 +1,6 @@
 import logging
 from typing import Any, Callable, Optional, Set
 
-from fastapi import FastAPI
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
@@ -46,6 +45,14 @@ def init_instrumentations(
     if instruments is None or Instruments.WEAVIATE in instruments:
         init_weviate_instrumentor()
 
+    # Initialize HTTPX instrumentation.
+    if instruments is None:
+        init_httpx_instrumentor()
+
+    # Initialize AIOHTTP instrumentation.
+    if instruments is None:
+        init_aiohttp_instrumentor()
+
 
 def init_google_genai_instrumentation() -> bool:
     """Initialize Google GenAI instrumentation.
@@ -79,6 +86,8 @@ def init_fastapi_instrumentor() -> bool:
     try:
         if not is_package_installed("fastapi"):
             return True
+        from fastapi import FastAPI
+
         original_init = FastAPI.__init__
 
         def _patched_init(self: FastAPI, *args: Any, **kwargs: Any) -> None:
@@ -135,5 +144,45 @@ def init_weviate_instrumentor() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Weaviate instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_httpx_instrumentor() -> bool:
+    """Initialize HTTPX instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("httpx"):
+            from netra.instrumentation.httpx import HTTPXInstrumentor
+
+            instrumentor = HTTPXInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing HTTPX instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_aiohttp_instrumentor() -> bool:
+    """Initialize AIOHTTP instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("aiohttp"):
+            from netra.instrumentation.aiohttp import AIOHTTPInstrumentor
+
+            instrumentor = AIOHTTPInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing AIOHTTP instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
