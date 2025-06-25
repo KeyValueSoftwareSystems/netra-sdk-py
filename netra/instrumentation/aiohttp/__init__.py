@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable, Collection, Dict, Optional, Union
 from urllib.parse import urlparse
 
 import aiohttp
-from aiohttp import ClientRequest, ClientResponse, ClientSession
+from aiohttp import URL, ClientRequest, ClientResponse, ClientSession
 from aiohttp.client import _RequestContextManager
 from opentelemetry.instrumentation._semconv import (
     HTTP_DURATION_HISTOGRAM_BUCKETS_NEW,
@@ -199,7 +199,7 @@ def _instrument(
                     # In real implementation, you'd need to access the actual request object
                     request_obj = ClientRequest(
                         method=method,
-                        url=url_str,
+                        url=URL(url_str),
                         headers=headers_dict,
                         data=kwargs.get("data"),
                         params=kwargs.get("params"),
