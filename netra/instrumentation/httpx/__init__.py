@@ -337,8 +337,8 @@ async def _trace_async_request(
             if _report_new(sem_conv_opt_in_mode):
                 _set_http_peer_port_client(span_attributes, parsed_url.port, sem_conv_opt_in_mode)
                 span_attributes[NETWORK_PEER_PORT] = parsed_url.port
-    except ValueError:
-        pass
+    except ValueError as error:
+        logger.error(error)
 
     with (
         tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT, attributes=span_attributes) as span,
@@ -543,13 +543,3 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore
 
     def _uninstrument(self, **kwargs: Any) -> None:
         _uninstrument()
-
-    @staticmethod
-    def uninstrument_client(client: httpx.Client) -> None:
-        """Disables instrumentation on the client object."""
-        _uninstrument_from(client, restore_as_bound_func=True)
-
-    @staticmethod
-    def uninstrument_async_client(client: httpx.AsyncClient) -> None:
-        """Disables instrumentation on the async client object."""
-        _uninstrument_from(client, restore_as_bound_func=True)

@@ -376,18 +376,3 @@ class AioHttpClientInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     def uninstrument_session(session: ClientSession) -> None:
         """Disables instrumentation on the session object."""
         _uninstrument_from(session, restore_as_bound_func=True)
-
-
-# Convenience function for easy instrumentation
-def instrument_aiohttp(**kwargs: Any) -> None:
-    """Instruments aiohttp client with OpenTelemetry tracing.
-
-    Args:
-        **kwargs: Arguments to pass to AioHttpClientInstrumentor().instrument()
-    """
-    AioHttpClientInstrumentor().instrument(**kwargs)
-
-
-def uninstrument_aiohttp() -> None:
-    """Removes OpenTelemetry instrumentation from aiohttp client."""
-    AioHttpClientInstrumentor().uninstrument()
