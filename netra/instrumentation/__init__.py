@@ -176,9 +176,9 @@ def init_aiohttp_instrumentation() -> bool:
     """
     try:
         if is_package_installed("aiohttp"):
-            from netra.instrumentation.aiohttp import AIOHTTPInstrumentor
+            from netra.instrumentation.aiohttp import AioHttpClientInstrumentor
 
-            instrumentor = AIOHTTPInstrumentor()
+            instrumentor = AioHttpClientInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True

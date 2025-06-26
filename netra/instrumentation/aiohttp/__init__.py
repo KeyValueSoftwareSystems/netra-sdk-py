@@ -62,7 +62,7 @@ from netra.instrumentation.aiohttp.version import __version__
 
 logger = logging.getLogger(__name__)
 
-# Package info for httpx instrumentation
+# Package info for aiohttp instrumentation
 _instruments = ("aiohttp >= 3.0.0",)
 
 _excluded_urls_from_env = get_excluded_urls("AIOHTTP_CLIENT")
@@ -376,10 +376,6 @@ class AioHttpClientInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     def uninstrument_session(session: ClientSession) -> None:
         """Disables instrumentation on the session object."""
         _uninstrument_from(session, restore_as_bound_func=True)
-
-
-# Create an alias for the expected class name
-AIOHTTPInstrumentor = AioHttpClientInstrumentor
 
 
 # Convenience function for easy instrumentation
