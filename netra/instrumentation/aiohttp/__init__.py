@@ -82,9 +82,6 @@ def _set_http_status_code_attribute(
         status_code_int = -1
     if metric_attributes is None:
         metric_attributes = {}
-    # When we have durations we should set metrics only once
-    # Also the decision to include status code on a histogram should
-    # not be dependent on tracing decisions.
     _set_status(
         span,
         metric_attributes,
@@ -95,8 +92,6 @@ def _set_http_status_code_attribute(
     )
 
 
-# pylint: disable=unused-argument
-# pylint: disable=R0915
 def _instrument(
     tracer: Tracer,
     duration_histogram_old: Optional[Histogram],
