@@ -34,24 +34,24 @@ def init_instrumentations(
         init_google_genai_instrumentation()
 
     # Initialize FastAPI instrumentation.
-    if instruments is None or Instruments.FASTAPI in instruments:
-        init_fastapi_instrumentor()
+    if instruments is None:
+        init_fastapi_instrumentation()
 
     # Initialize Qdrant instrumentation.
     if instruments is None or Instruments.QDRANT in instruments:
-        init_qdrant_instrumentor()
+        init_qdrant_instrumentation()
 
     # Initialize Weaviate instrumentation.
     if instruments is None or Instruments.WEAVIATE in instruments:
-        init_weviate_instrumentor()
+        init_weviate_instrumentation()
 
     # Initialize HTTPX instrumentation.
     if instruments is None:
-        init_httpx_instrumentor()
+        init_httpx_instrumentation()
 
     # Initialize AIOHTTP instrumentation.
     if instruments is None:
-        init_aiohttp_instrumentor()
+        init_aiohttp_instrumentation()
 
 
 def init_google_genai_instrumentation() -> bool:
@@ -77,7 +77,7 @@ def init_google_genai_instrumentation() -> bool:
         return False
 
 
-def init_fastapi_instrumentor() -> bool:
+def init_fastapi_instrumentation() -> bool:
     """Initialize FastAPI instrumentation.
 
     Returns:
@@ -108,7 +108,7 @@ def init_fastapi_instrumentor() -> bool:
         return False
 
 
-def init_qdrant_instrumentor() -> bool:
+def init_qdrant_instrumentation() -> bool:
     """Initialize Qdrant instrumentation.
 
     Returns:
@@ -128,7 +128,7 @@ def init_qdrant_instrumentor() -> bool:
         return False
 
 
-def init_weviate_instrumentor() -> bool:
+def init_weviate_instrumentation() -> bool:
     """Initialize Weaviate instrumentation.
 
     Returns:
@@ -148,7 +148,7 @@ def init_weviate_instrumentor() -> bool:
         return False
 
 
-def init_httpx_instrumentor() -> bool:
+def init_httpx_instrumentation() -> bool:
     """Initialize HTTPX instrumentation.
 
     Returns:
@@ -168,7 +168,7 @@ def init_httpx_instrumentor() -> bool:
         return False
 
 
-def init_aiohttp_instrumentor() -> bool:
+def init_aiohttp_instrumentation() -> bool:
     """Initialize AIOHTTP instrumentation.
 
     Returns:
