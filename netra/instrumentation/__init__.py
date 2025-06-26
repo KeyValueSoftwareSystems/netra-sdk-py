@@ -1,7 +1,6 @@
 import logging
 from typing import Any, Callable, Optional, Set
 
-from fastapi import FastAPI
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
@@ -35,16 +34,24 @@ def init_instrumentations(
         init_google_genai_instrumentation()
 
     # Initialize FastAPI instrumentation.
-    if instruments is None or Instruments.FASTAPI in instruments:
-        init_fastapi_instrumentor()
+    if instruments is None:
+        init_fastapi_instrumentation()
 
     # Initialize Qdrant instrumentation.
     if instruments is None or Instruments.QDRANT in instruments:
-        init_qdrant_instrumentor()
+        init_qdrant_instrumentation()
 
     # Initialize Weaviate instrumentation.
     if instruments is None or Instruments.WEAVIATE in instruments:
-        init_weviate_instrumentor()
+        init_weviate_instrumentation()
+
+    # Initialize HTTPX instrumentation.
+    if instruments is None:
+        init_httpx_instrumentation()
+
+    # Initialize AIOHTTP instrumentation.
+    if instruments is None:
+        init_aiohttp_instrumentation()
 
 
 def init_google_genai_instrumentation() -> bool:
@@ -70,7 +77,7 @@ def init_google_genai_instrumentation() -> bool:
         return False
 
 
-def init_fastapi_instrumentor() -> bool:
+def init_fastapi_instrumentation() -> bool:
     """Initialize FastAPI instrumentation.
 
     Returns:
@@ -79,6 +86,8 @@ def init_fastapi_instrumentor() -> bool:
     try:
         if not is_package_installed("fastapi"):
             return True
+        from fastapi import FastAPI
+
         original_init = FastAPI.__init__
 
         def _patched_init(self: FastAPI, *args: Any, **kwargs: Any) -> None:
@@ -99,7 +108,7 @@ def init_fastapi_instrumentor() -> bool:
         return False
 
 
-def init_qdrant_instrumentor() -> bool:
+def init_qdrant_instrumentation() -> bool:
     """Initialize Qdrant instrumentation.
 
     Returns:
@@ -119,7 +128,7 @@ def init_qdrant_instrumentor() -> bool:
         return False
 
 
-def init_weviate_instrumentor() -> bool:
+def init_weviate_instrumentation() -> bool:
     """Initialize Weaviate instrumentation.
 
     Returns:
@@ -135,5 +144,45 @@ def init_weviate_instrumentor() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Weaviate instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_httpx_instrumentation() -> bool:
+    """Initialize HTTPX instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("httpx"):
+            from netra.instrumentation.httpx import HTTPXInstrumentor
+
+            instrumentor = HTTPXInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing HTTPX instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_aiohttp_instrumentation() -> bool:
+    """Initialize AIOHTTP instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("aiohttp"):
+            from netra.instrumentation.aiohttp import AioHttpClientInstrumentor
+
+            instrumentor = AioHttpClientInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing AIOHTTP instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
