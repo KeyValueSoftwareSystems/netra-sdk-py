@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import functools
+import logging
 import types
 from timeit import default_timer
 from typing import Any, Callable, Collection, Dict, Optional, Union
@@ -56,6 +57,8 @@ from opentelemetry.util.http import (
 from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
 from netra.instrumentation.httpx.version import __version__
+
+logger = logging.getLogger(__name__)
 
 # Package info for httpx instrumentation
 _instruments = ("httpx >= 0.18.0",)
@@ -212,8 +215,8 @@ def _trace_request(
             if _report_new(sem_conv_opt_in_mode):
                 _set_http_peer_port_client(span_attributes, parsed_url.port, sem_conv_opt_in_mode)
                 span_attributes[NETWORK_PEER_PORT] = parsed_url.port
-    except ValueError:
-        pass
+    except ValueError as error:
+        logger.error(error)
 
     with (
         tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT, attributes=span_attributes) as span,
@@ -223,7 +226,6 @@ def _trace_request(
         if callable(request_hook):
             request_hook(span, request)
 
-        # Inject tracing headers
         headers = dict(request.headers)
         inject(headers)
         request.headers.update(headers)
@@ -247,7 +249,6 @@ def _trace_request(
                 sem_conv_opt_in_mode,
             )
 
-            # Set HTTP version
             if hasattr(result, "http_version"):
                 version_text = result.http_version
                 _set_http_network_protocol_version(metric_labels, version_text, sem_conv_opt_in_mode)
@@ -347,7 +348,6 @@ async def _trace_async_request(
         if callable(request_hook):
             request_hook(span, request)
 
-        # Inject tracing headers
         headers = dict(request.headers)
         inject(headers)
         request.headers.update(headers)
@@ -371,7 +371,6 @@ async def _trace_async_request(
                 sem_conv_opt_in_mode,
             )
 
-            # Set HTTP version
             if hasattr(result, "http_version"):
                 version_text = result.http_version
                 _set_http_network_protocol_version(metric_labels, version_text, sem_conv_opt_in_mode)

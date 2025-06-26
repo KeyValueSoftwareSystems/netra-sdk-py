@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import functools
+import logging
 import types
 from timeit import default_timer
 from typing import Any, Awaitable, Callable, Collection, Dict, Optional, Union
@@ -59,8 +60,9 @@ from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
 from netra.instrumentation.aiohttp.version import __version__
 
-# Package version and dependencies would be defined in separate files
+logger = logging.getLogger(__name__)
 
+# Package info for httpx instrumentation
 _instruments = ("aiohttp >= 3.0.0",)
 
 _excluded_urls_from_env = get_excluded_urls("AIOHTTP_CLIENT")
@@ -105,7 +107,6 @@ def _instrument(
 
     wrapped_request = ClientSession._request
 
-    # pylint: disable-msg=too-many-locals,too-many-branches
     @functools.wraps(wrapped_request)
     async def instrumented_request(self: ClientSession, method: str, url: Any, **kwargs: Any) -> ClientResponse:
         if excluded_urls and excluded_urls.url_disabled(str(url)):
@@ -114,8 +115,6 @@ def _instrument(
         if not is_http_instrumentation_enabled():
             return await wrapped_request(self, method, url, **kwargs)
 
-        # See
-        # https://github.com/open-telemetry/semantic-conventions/blob/main/docs/http/http-spans.md#http-client
         span_name = get_default_span_name(method)
 
         url_str = str(url)
@@ -142,7 +141,6 @@ def _instrument(
             parsed_url = urlparse(url)
             if parsed_url.scheme:
                 if _report_old(sem_conv_opt_in_mode):
-                    # TODO: Support opt-in for url.scheme in new semconv
                     _set_http_scheme(metric_labels, parsed_url.scheme, sem_conv_opt_in_mode)
             if parsed_url.hostname:
                 _set_http_host_client(metric_labels, parsed_url.hostname, sem_conv_opt_in_mode)
@@ -153,16 +151,15 @@ def _instrument(
                         parsed_url.hostname,
                         sem_conv_opt_in_mode,
                     )
-                    # Use semconv library when available
+
                     span_attributes[NETWORK_PEER_ADDRESS] = parsed_url.hostname
             if parsed_url.port:
                 _set_http_peer_port_client(metric_labels, parsed_url.port, sem_conv_opt_in_mode)
                 if _report_new(sem_conv_opt_in_mode):
                     _set_http_peer_port_client(span_attributes, parsed_url.port, sem_conv_opt_in_mode)
-                    # Use semconv library when available
                     span_attributes[NETWORK_PEER_PORT] = parsed_url.port
-        except ValueError:
-            pass
+        except ValueError as error:
+            logger.error(error)
 
         with (
             tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT, attributes=span_attributes) as span,
@@ -171,11 +168,9 @@ def _instrument(
             exception = None
             response = None
 
-            # Inject trace context into headers
             headers = kwargs.get("headers", {})
             if headers is None:
                 headers = {}
-            # Convert to dict if it's aiohttp's CIMultiDict
             if hasattr(headers, "items"):
                 headers_dict = dict(headers.items())
             else:
@@ -189,8 +184,8 @@ def _instrument(
                 try:
                     response = await wrapped_request(self, method, url_str, **kwargs)  # *** PROCEED
 
-                    # Create a ClientRequest object for hooks (simplified version)
-                    # In real implementation, you'd need to access the actual request object
+                    # Create a ClientRequest object for hooks
+
                     request_obj = ClientRequest(
                         method=method,
                         url=URL(url_str),
