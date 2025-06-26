@@ -19,6 +19,7 @@ def init_instrumentations(
             Instruments.WEAVIATE,
             Instruments.QDRANT,
             Instruments.GOOGLE_GENERATIVEAI,
+            Instruments.MISTRAL,
         }
     )
 
@@ -56,6 +57,9 @@ def init_instrumentations(
     # Initialize Cohere instrumentation.
     if instruments is None or Instruments.COHERE in instruments:
         init_cohere_instrumentation()
+
+    if instruments is None or Instruments.MISTRAL in instruments:
+        init_mistral_instrumentor()
 
 
 def init_google_genai_instrumentation() -> bool:
@@ -208,5 +212,26 @@ def init_cohere_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Cohere instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+def init_mistral_instrumentor() -> bool:
+    """Initialize Mistral instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("mistralai"):
+            from netra.instrumentation.mistralai import MistralAiInstrumentor
+
+            instrumentor = MistralAiInstrumentor(
+                exception_logger=lambda e: Telemetry().log_exception(e),
+            )
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"-----Error initializing Mistral instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
