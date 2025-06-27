@@ -1,5 +1,3 @@
-"""OpenTelemetry Cohere instrumentation with proper context propagation"""
-
 import logging
 import os
 from typing import Any, Collection, Dict, Generator, Iterator, List, Optional, Union
