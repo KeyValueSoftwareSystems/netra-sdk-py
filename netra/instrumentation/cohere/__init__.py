@@ -242,62 +242,69 @@ def _llm_request_type_by_method(method_name: Optional[str]) -> LLMRequestTypeVal
 
 
 def _build_from_streaming_response(
-    span: Span, response: Iterator[Any], llm_request_type: LLMRequestTypeValues
+    span: Span, response: Iterator[Any], llm_request_type: LLMRequestTypeValues, context_token: Any
 ) -> Generator[Any, None, None]:
     """Build response from streaming events and set span attributes."""
     response_id = None
     content_parts = []
     usage_info = None
 
-    for event in response:
-        if hasattr(event, "type"):
-            if event.type == "message-start" and hasattr(event, "id"):
-                response_id = event.id
+    try:
+        for event in response:
+            if hasattr(event, "type"):
+                if event.type == "message-start" and hasattr(event, "id"):
+                    response_id = event.id
 
-            elif event.type == "content-delta":
-                if (
-                    hasattr(event, "delta")
-                    and hasattr(event.delta, "message")
-                    and hasattr(event.delta.message, "content")
-                    and hasattr(event.delta.message.content, "text")
-                ):
-                    content_parts.append(event.delta.message.content.text)
+                elif event.type == "content-delta":
+                    if (
+                        hasattr(event, "delta")
+                        and hasattr(event.delta, "message")
+                        and hasattr(event.delta.message, "content")
+                        and hasattr(event.delta.message.content, "text")
+                    ):
+                        content_parts.append(event.delta.message.content.text)
 
-            elif event.type == "message-end":
-                if hasattr(event, "delta") and hasattr(event.delta, "usage"):
-                    usage_info = event.delta.usage
+                elif event.type == "message-end":
+                    if hasattr(event, "delta") and hasattr(event.delta, "usage"):
+                        usage_info = event.delta.usage
 
-        yield event
+            yield event
 
-    if response_id:
-        _set_span_attribute(span, GEN_AI_RESPONSE_ID, response_id)
+        if response_id:
+            _set_span_attribute(span, GEN_AI_RESPONSE_ID, response_id)
 
-    if should_send_prompts() and content_parts:
-        prefix = f"{SpanAttributes.LLM_COMPLETIONS}.0"
-        full_content = "".join(content_parts)
-        _set_span_attribute(span, f"{prefix}.content", full_content)
-        _set_span_attribute(span, f"{prefix}.role", "assistant")
+        if should_send_prompts() and content_parts:
+            prefix = f"{SpanAttributes.LLM_COMPLETIONS}.0"
+            full_content = "".join(content_parts)
+            _set_span_attribute(span, f"{prefix}.content", full_content)
+            _set_span_attribute(span, f"{prefix}.role", "assistant")
 
-    if usage_info and hasattr(usage_info, "billed_units") and usage_info.billed_units:
-        input_tokens = None
-        output_tokens = None
+        if usage_info and hasattr(usage_info, "billed_units") and usage_info.billed_units:
+            input_tokens = None
+            output_tokens = None
 
-        if hasattr(usage_info.billed_units, "input_tokens") and usage_info.billed_units.input_tokens is not None:
-            input_tokens = int(float(usage_info.billed_units.input_tokens))
+            if hasattr(usage_info.billed_units, "input_tokens") and usage_info.billed_units.input_tokens is not None:
+                input_tokens = int(float(usage_info.billed_units.input_tokens))
 
-        if hasattr(usage_info.billed_units, "output_tokens") and usage_info.billed_units.output_tokens is not None:
-            output_tokens = int(float(usage_info.billed_units.output_tokens))
+            if hasattr(usage_info.billed_units, "output_tokens") and usage_info.billed_units.output_tokens is not None:
+                output_tokens = int(float(usage_info.billed_units.output_tokens))
 
-        if input_tokens is not None:
-            _set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, input_tokens)
-        if output_tokens is not None:
-            _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, output_tokens)
-        if input_tokens is not None and output_tokens is not None:
-            total_tokens = input_tokens + output_tokens
-            _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
+            if input_tokens is not None:
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, input_tokens)
+            if output_tokens is not None:
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, output_tokens)
+            if input_tokens is not None and output_tokens is not None:
+                total_tokens = input_tokens + output_tokens
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
 
-    span.set_status(Status(StatusCode.OK))
-    span.end()
+        span.set_status(Status(StatusCode.OK))
+
+    except Exception:
+        span.set_status(Status(StatusCode.ERROR))
+        raise
+    finally:
+        span.end()
+        context_api.detach(context_token)
 
 
 @_with_tracer_wrapper
@@ -322,17 +329,26 @@ def _wrap(tracer: Tracer, to_wrap: Dict[str, str], wrapped: Any, instance: Any, 
             },
         )
 
-        if span.is_recording():
-            _set_input_attributes(span, llm_request_type, kwargs)
+        ctx = set_span_in_context(span)
+        token = context_api.attach(ctx)
 
-        response = wrapped(*args, **kwargs)
+        try:
+            if span.is_recording():
+                _set_input_attributes(span, llm_request_type, kwargs)
 
-        if response:
-            return _build_from_streaming_response(span, response, llm_request_type)
-        else:
+            response = wrapped(*args, **kwargs)
+
+            if response:
+                return _build_from_streaming_response(span, response, llm_request_type, token)
+            else:
+                span.set_status(Status(StatusCode.ERROR))
+                span.end()
+                return response
+        except Exception:
             span.set_status(Status(StatusCode.ERROR))
             span.end()
-            return response
+            context_api.detach(token)
+            raise
     else:
         with tracer.start_as_current_span(
             name,
