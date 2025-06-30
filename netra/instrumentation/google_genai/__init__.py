@@ -359,31 +359,31 @@ async def _awrap(
             context_api.detach(token)
             raise
     else:
-        span = tracer.start_span(
+        with tracer.start_as_current_span(
             name,
             kind=SpanKind.CLIENT,
             attributes={
                 SpanAttributes.LLM_SYSTEM: "Gemini",
                 SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
             },
-        )
+        ) as span:
 
-        _handle_request(span, args, kwargs, llm_model)
+            _handle_request(span, args, kwargs, llm_model)
 
-        response = await wrapped(*args, **kwargs)
-
-        if response:
+            response = await wrapped(*args, **kwargs)
             ctx = set_span_in_context(span)
             token = context_api.attach(ctx)
-            if is_streaming_response(response):
-                return _build_from_streaming_response(span, response, llm_model, token)
-            elif is_async_streaming_response(response):
-                return _abuild_from_streaming_response(span, response, llm_model, token)
-            else:
-                _handle_response(span, response, llm_model)
 
-        span.end()
-        return response
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
+
+            span.end()
+            return response
 
 
 @_with_tracer_wrapper
@@ -447,35 +447,29 @@ def _wrap(
             context_api.detach(token)
             raise
     else:
-        span = tracer.start_span(
+        with tracer.start_as_current_span(
             name,
             kind=SpanKind.CLIENT,
             attributes={
                 SpanAttributes.LLM_SYSTEM: "Gemini",
                 SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
             },
-        )
+        ) as span:
 
-        _handle_request(span, args, kwargs, llm_model)
+            _handle_request(span, args, kwargs, llm_model)
+            response = wrapped(*args, **kwargs)
+            ctx = set_span_in_context(span)
+            token = context_api.attach(ctx)
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
 
-        response = wrapped(*args, **kwargs)
-
-        if response:
-            if is_streaming_response(response):
-                # Fix for mypy error - add missing context_token parameter
-                ctx = set_span_in_context(span)
-                token = context_api.attach(ctx)
-                return _build_from_streaming_response(span, response, llm_model, token)
-            elif is_async_streaming_response(response):
-                # Fix for mypy error - add missing context_token parameter
-                ctx = set_span_in_context(span)
-                token = context_api.attach(ctx)
-                return _abuild_from_streaming_response(span, response, llm_model, token)
-            else:
-                _handle_response(span, response, llm_model)
-
-        span.end()
-        return response
+            span.end()
+            return response
 
 
 class GoogleGenAiInstrumentor(BaseInstrumentor):  # type: ignore
