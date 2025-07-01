@@ -215,6 +215,7 @@ def init_cohere_instrumentation() -> bool:
         Telemetry().log_exception(e)
         return False
 
+
 def init_mistral_instrumentor() -> bool:
     """Initialize Mistral instrumentation.
 

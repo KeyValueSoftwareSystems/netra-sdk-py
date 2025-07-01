@@ -1,10 +1,11 @@
 import logging
 import traceback
+from typing import Any, Callable
 
-from netra.instrumentation.mistralai import Config
+from netra.instrumentation.mistralai.config import Config
 
 
-def dont_throw(func):
+def dont_throw(func: Callable[..., Any]) -> Callable[..., Any]:
     """
     A decorator that wraps the passed in function and logs exceptions instead of throwing them.
 
@@ -14,7 +15,7 @@ def dont_throw(func):
     # Obtain a logger specific to the function's module
     logger = logging.getLogger(func.__module__)
 
-    def wrapper(*args, **kwargs):
+    def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:
             return func(*args, **kwargs)
         except Exception as e:
