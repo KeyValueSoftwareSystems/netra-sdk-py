@@ -69,7 +69,7 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
     """Helper function to add output attributes to span."""
     try:
         serialized_output = _serialize_value(result)
-        span.set_attribute(f"{Config.LIBRARY_NAME}", serialized_output)
+        span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output", serialized_output)
     except Exception as e:
         span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output_error", str(e))
 
