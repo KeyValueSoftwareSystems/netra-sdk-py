@@ -53,6 +53,10 @@ def init_instrumentations(
     if instruments is None:
         init_aiohttp_instrumentation()
 
+    # Initialize Cohere instrumentation.
+    if instruments is None or Instruments.COHERE in instruments:
+        init_cohere_instrumentation()
+
 
 def init_google_genai_instrumentation() -> bool:
     """Initialize Google GenAI instrumentation.
@@ -184,5 +188,25 @@ def init_aiohttp_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing AIOHTTP instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_cohere_instrumentation() -> bool:
+    """Initialize Cohere instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("cohere"):
+            from netra.instrumentation.cohere import CohereInstrumentor
+
+            instrumentor = CohereInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Cohere instrumentor: {e}")
         Telemetry().log_exception(e)
         return False

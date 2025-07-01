@@ -13,7 +13,7 @@ from opentelemetry.semconv_ai import (
     LLMRequestTypeValues,
     SpanAttributes,
 )
-from opentelemetry.trace import SpanKind, get_tracer
+from opentelemetry.trace import SpanKind, get_tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
@@ -236,32 +236,6 @@ def _set_response_attributes(span: Any, response: Any, llm_model: str) -> None:
     return
 
 
-def _build_from_streaming_response(span: Any, response: Any, llm_model: str) -> Any:
-    complete_response = ""
-    for item in response:
-        item_to_yield = item
-        if hasattr(item, "text"):
-            complete_response += str(item.text)
-        yield item_to_yield
-
-    _set_response_attributes(span, complete_response, llm_model)
-    span.set_status(Status(StatusCode.OK))
-    span.end()
-
-
-async def _abuild_from_streaming_response(span: Any, response: Any, llm_model: str) -> Any:
-    complete_response = ""
-    async for item in response:
-        item_to_yield = item
-        if hasattr(item, "text"):
-            complete_response += str(item.text)
-        yield item_to_yield
-
-    _set_response_attributes(span, complete_response, llm_model)
-    span.set_status(Status(StatusCode.OK))
-    span.end()
-
-
 def _handle_request(span: Any, args: tuple[Any, ...], kwargs: dict[str, Any], llm_model: str) -> None:
     if span.is_recording():
         _set_input_attributes(span, args, kwargs, llm_model)
@@ -286,6 +260,44 @@ def _with_tracer_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
     return _with_tracer
 
 
+def _build_from_streaming_response(span: Any, response: Any, llm_model: str, context_token: Any) -> Any:
+    complete_response = ""
+    try:
+        for item in response:
+            item_to_yield = item
+            if hasattr(item, "text"):
+                complete_response += str(item.text)
+            yield item_to_yield
+
+        _set_response_attributes(span, complete_response, llm_model)
+        span.set_status(Status(StatusCode.OK))
+    except Exception:
+        span.set_status(Status(StatusCode.ERROR))
+        raise
+    finally:
+        span.end()
+        context_api.detach(context_token)
+
+
+async def _abuild_from_streaming_response(span: Any, response: Any, llm_model: str, context_token: Any) -> Any:
+    complete_response = ""
+    try:
+        async for item in response:
+            item_to_yield = item
+            if hasattr(item, "text"):
+                complete_response += str(item.text)
+            yield item_to_yield
+
+        _set_response_attributes(span, complete_response, llm_model)
+        span.set_status(Status(StatusCode.OK))
+    except Exception:
+        span.set_status(Status(StatusCode.ERROR))
+        raise
+    finally:
+        span.end()
+        context_api.detach(context_token)
+
+
 @_with_tracer_wrapper
 async def _awrap(
     tracer: Any,
@@ -301,35 +313,77 @@ async def _awrap(
     ):
         return await wrapped(*args, **kwargs)
 
-    # Extract model name from kwargs
     llm_model = kwargs.get("model", "unknown")
     if llm_model != "unknown":
         llm_model = llm_model.replace("models/", "")
 
     name = to_wrap.get("span_name")
-    span = tracer.start_span(
-        name,
-        kind=SpanKind.CLIENT,
-        attributes={
-            SpanAttributes.LLM_SYSTEM: "Gemini",
-            SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
-        },
-    )
+    method_name = to_wrap.get("method")
 
-    _handle_request(span, args, kwargs, llm_model)
+    if method_name == "generate_content_stream":
+        span = tracer.start_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "Gemini",
+                SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
+            },
+        )
 
-    response = await wrapped(*args, **kwargs)
+        ctx = set_span_in_context(span)
+        token = context_api.attach(ctx)
 
-    if response:
-        if is_streaming_response(response):
-            return _build_from_streaming_response(span, response, llm_model)
-        elif is_async_streaming_response(response):
-            return _abuild_from_streaming_response(span, response, llm_model)
-        else:
-            _handle_response(span, response, llm_model)
+        try:
+            _handle_request(span, args, kwargs, llm_model)
 
-    span.end()
-    return response
+            response = await wrapped(*args, **kwargs)
+
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
+                    span.end()
+                    context_api.detach(token)
+            else:
+                span.set_status(Status(StatusCode.ERROR))
+                span.end()
+                context_api.detach(token)
+
+            return response
+        except Exception:
+            span.set_status(Status(StatusCode.ERROR))
+            span.end()
+            context_api.detach(token)
+            raise
+    else:
+        with tracer.start_as_current_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "Gemini",
+                SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
+            },
+        ) as span:
+
+            _handle_request(span, args, kwargs, llm_model)
+
+            response = await wrapped(*args, **kwargs)
+            ctx = set_span_in_context(span)
+            token = context_api.attach(ctx)
+
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
+
+            span.end()
+            return response
 
 
 @_with_tracer_wrapper
@@ -347,35 +401,75 @@ def _wrap(
     ):
         return wrapped(*args, **kwargs)
 
-    # Extract model name from kwargs
     llm_model = kwargs.get("model", "unknown")
     if llm_model != "unknown":
         llm_model = llm_model.replace("models/", "")
 
     name = to_wrap.get("span_name")
-    span = tracer.start_span(
-        name,
-        kind=SpanKind.CLIENT,
-        attributes={
-            SpanAttributes.LLM_SYSTEM: "Gemini",
-            SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
-        },
-    )
+    method_name = to_wrap.get("method")
 
-    _handle_request(span, args, kwargs, llm_model)
+    if method_name == "generate_content_stream":
+        span = tracer.start_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "Gemini",
+                SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
+            },
+        )
 
-    response = wrapped(*args, **kwargs)
+        ctx = set_span_in_context(span)
+        token = context_api.attach(ctx)
 
-    if response:
-        if is_streaming_response(response):
-            return _build_from_streaming_response(span, response, llm_model)
-        elif is_async_streaming_response(response):
-            return _abuild_from_streaming_response(span, response, llm_model)
-        else:
-            _handle_response(span, response, llm_model)
+        try:
+            _handle_request(span, args, kwargs, llm_model)
 
-    span.end()
-    return response
+            response = wrapped(*args, **kwargs)
+
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
+                    span.end()
+                    context_api.detach(token)
+            else:
+                span.set_status(Status(StatusCode.ERROR))
+                span.end()
+                context_api.detach(token)
+
+            return response
+        except Exception:
+            span.set_status(Status(StatusCode.ERROR))
+            span.end()
+            context_api.detach(token)
+            raise
+    else:
+        with tracer.start_as_current_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "Gemini",
+                SpanAttributes.LLM_REQUEST_TYPE: LLMRequestTypeValues.COMPLETION.value,
+            },
+        ) as span:
+
+            _handle_request(span, args, kwargs, llm_model)
+            response = wrapped(*args, **kwargs)
+            ctx = set_span_in_context(span)
+            token = context_api.attach(ctx)
+            if response:
+                if is_streaming_response(response):
+                    return _build_from_streaming_response(span, response, llm_model, token)
+                elif is_async_streaming_response(response):
+                    return _abuild_from_streaming_response(span, response, llm_model, token)
+                else:
+                    _handle_response(span, response, llm_model)
+
+            span.end()
+            return response
 
 
 class GoogleGenAiInstrumentor(BaseInstrumentor):  # type: ignore
