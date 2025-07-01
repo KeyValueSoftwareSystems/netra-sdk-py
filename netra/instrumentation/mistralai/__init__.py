@@ -19,7 +19,7 @@ from opentelemetry.semconv_ai import (
     LLMRequestTypeValues,
     SpanAttributes,
 )
-from opentelemetry.trace import SpanKind, get_tracer
+from opentelemetry.trace import SpanKind, get_tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
@@ -226,7 +226,7 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
 
 
 def _accumulate_streaming_response(
-    span: Any, llm_request_type: LLMRequestTypeValues, response: Any
+    span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
 ) -> Generator[Any, None, None]:
     accumulated_response = ChatCompletionResponse(
         id="",
@@ -237,49 +237,54 @@ def _accumulate_streaming_response(
         usage=UsageInfo(prompt_tokens=0, total_tokens=0, completion_tokens=0),
     )
 
-    for res in response:
-        yield res
+    try:
+        for res in response:
+            yield res
 
-        data = None
-        if hasattr(res, "data"):
-            data = res.data
+            data = None
+            if hasattr(res, "data"):
+                data = res.data
 
-        if data is not None and hasattr(data, "model") and data.model:
-            accumulated_response.model = data.model
-        if data is not None and hasattr(data, "usage") and data.usage:
-            accumulated_response.usage = data.usage
-        # ID is the same for all chunks, so it's safe to overwrite it every time
-        if data is not None and hasattr(data, "id") and data.id:
-            accumulated_response.id = data.id
+            if data is not None and hasattr(data, "model") and data.model:
+                accumulated_response.model = data.model
+            if data is not None and hasattr(data, "usage") and data.usage:
+                accumulated_response.usage = data.usage
+            # ID is the same for all chunks, so it's safe to overwrite it every time
+            if data is not None and hasattr(data, "id") and data.id:
+                accumulated_response.id = data.id
 
-        choices = getattr(data, "choices", [])
-        for idx, choice in enumerate(choices):
-            if len(accumulated_response.choices) <= idx:
-                accumulated_response.choices.append(
-                    ChatCompletionChoice(
-                        index=idx,
-                        message=AssistantMessage(role="assistant", content=""),
-                        finish_reason=choice.finish_reason,
+            choices = getattr(data, "choices", [])
+            for idx, choice in enumerate(choices):
+                if len(accumulated_response.choices) <= idx:
+                    accumulated_response.choices.append(
+                        ChatCompletionChoice(
+                            index=idx,
+                            message=AssistantMessage(role="assistant", content=""),
+                            finish_reason=choice.finish_reason,
+                        )
                     )
-                )
 
-            if hasattr(choice, "finish_reason"):
-                accumulated_response.choices[idx].finish_reason = choice.finish_reason
+                if hasattr(choice, "finish_reason"):
+                    accumulated_response.choices[idx].finish_reason = choice.finish_reason
 
-            # Handle delta content
-            delta = getattr(choice, "delta", None)
-            if delta:
-                if hasattr(delta, "content") and delta.content:
-                    accumulated_response.choices[idx].message.content += delta.content
-                if hasattr(delta, "role") and delta.role:
-                    accumulated_response.choices[idx].message.role = delta.role
+                # Handle delta content
+                delta = getattr(choice, "delta", None)
+                if delta:
+                    if hasattr(delta, "content") and delta.content:
+                        accumulated_response.choices[idx].message.content += delta.content
+                    if hasattr(delta, "role") and delta.role:
+                        accumulated_response.choices[idx].message.role = delta.role
 
-    _set_response_attributes(span, llm_request_type, accumulated_response)
-    span.end()
+        _set_response_attributes(span, llm_request_type, accumulated_response)
+        span.set_status(Status(StatusCode.OK))
+    finally:
+        span.end()
+        if token is not None:
+            context_api.detach(token)
 
 
 async def _aaccumulate_streaming_response(
-    span: Any, llm_request_type: LLMRequestTypeValues, response: Any
+    span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
 ) -> AsyncGenerator[Any, None]:
     accumulated_response = ChatCompletionResponse(
         id="",
@@ -290,45 +295,50 @@ async def _aaccumulate_streaming_response(
         usage=UsageInfo(prompt_tokens=0, total_tokens=0, completion_tokens=0),
     )
 
-    async for res in response:
-        yield res
+    try:
+        async for res in response:
+            yield res
 
-        data = None
-        if hasattr(res, "data"):
-            data = res.data
+            data = None
+            if hasattr(res, "data"):
+                data = res.data
 
-        if data is not None and hasattr(data, "model") and data.model:
-            accumulated_response.model = data.model
-        if data is not None and hasattr(data, "usage") and data.usage:
-            accumulated_response.usage = data.usage
-        # Id is the same for all chunks, so it's safe to overwrite it every time
-        if data is not None and hasattr(data, "id") and data.id:
-            accumulated_response.id = data.id
+            if data is not None and hasattr(data, "model") and data.model:
+                accumulated_response.model = data.model
+            if data is not None and hasattr(data, "usage") and data.usage:
+                accumulated_response.usage = data.usage
+            # Id is the same for all chunks, so it's safe to overwrite it every time
+            if data is not None and hasattr(data, "id") and data.id:
+                accumulated_response.id = data.id
 
-        choices = getattr(data, "choices", [])
-        for idx, choice in enumerate(choices):
-            if len(accumulated_response.choices) <= idx:
-                accumulated_response.choices.append(
-                    ChatCompletionChoice(
-                        index=idx,
-                        message=AssistantMessage(role="assistant", content=""),
-                        finish_reason=choice.finish_reason,
+            choices = getattr(data, "choices", [])
+            for idx, choice in enumerate(choices):
+                if len(accumulated_response.choices) <= idx:
+                    accumulated_response.choices.append(
+                        ChatCompletionChoice(
+                            index=idx,
+                            message=AssistantMessage(role="assistant", content=""),
+                            finish_reason=choice.finish_reason,
+                        )
                     )
-                )
 
-            if hasattr(choice, "finish_reason"):
-                accumulated_response.choices[idx].finish_reason = choice.finish_reason
+                if hasattr(choice, "finish_reason"):
+                    accumulated_response.choices[idx].finish_reason = choice.finish_reason
 
-            # Handle delta content
-            delta = getattr(choice, "delta", None)
-            if delta:
-                if hasattr(delta, "content") and delta.content:
-                    accumulated_response.choices[idx].message.content += delta.content
-                if hasattr(delta, "role") and delta.role:
-                    accumulated_response.choices[idx].message.role = delta.role
+                # Handle delta content
+                delta = getattr(choice, "delta", None)
+                if delta:
+                    if hasattr(delta, "content") and delta.content:
+                        accumulated_response.choices[idx].message.content += delta.content
+                    if hasattr(delta, "role") and delta.role:
+                        accumulated_response.choices[idx].message.role = delta.role
 
-    _set_response_attributes(span, llm_request_type, accumulated_response)
-    span.end()
+        _set_response_attributes(span, llm_request_type, accumulated_response)
+        span.set_status(Status(StatusCode.OK))
+    finally:
+        span.end()
+        if token is not None:
+            context_api.detach(token)
 
 
 def _with_tracer_wrapper(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -369,29 +379,59 @@ def _wrap(
 
     name = to_wrap.get("span_name")
     llm_request_type = _llm_request_type_by_method(to_wrap.get("method"))
-    span = tracer.start_span(
-        name,
-        kind=SpanKind.CLIENT,
-        attributes={
-            SpanAttributes.LLM_SYSTEM: "MistralAI",
-            SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
-        },
-    )
-    if span.is_recording():
-        _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
-    response = wrapped(*args, **kwargs)
+    if to_wrap.get("streaming"):
+        span = tracer.start_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "MistralAI",
+                SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
+            },
+        )
 
-    if response:
-        if span.is_recording():
-            if to_wrap.get("streaming"):
-                return _accumulate_streaming_response(span, llm_request_type, response)
+        ctx = set_span_in_context(span)
+        token = context_api.attach(ctx)
 
-            _set_response_attributes(span, llm_request_type, response)
-            span.set_status(Status(StatusCode.OK))
+        try:
+            if span.is_recording():
+                _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
-    span.end()
-    return response
+            response = wrapped(*args, **kwargs)
+
+            if response:
+                return _accumulate_streaming_response(span, llm_request_type, response, token)
+            else:
+                span.set_status(Status(StatusCode.ERROR))
+                span.end()
+                context_api.detach(token)
+
+            return response
+        except Exception:
+            span.set_status(Status(StatusCode.ERROR))
+            span.end()
+            context_api.detach(token)
+            raise
+    else:
+        with tracer.start_as_current_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "MistralAI",
+                SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
+            },
+        ) as span:
+            if span.is_recording():
+                _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
+
+            response = wrapped(*args, **kwargs)
+
+            if response:
+                if span.is_recording():
+                    _set_response_attributes(span, llm_request_type, response)
+                    span.set_status(Status(StatusCode.OK))
+
+            return response
 
 
 @_with_tracer_wrapper
@@ -411,33 +451,59 @@ async def _awrap(
 
     name = to_wrap.get("span_name")
     llm_request_type = _llm_request_type_by_method(to_wrap.get("method"))
-    span = tracer.start_span(
-        name,
-        kind=SpanKind.CLIENT,
-        attributes={
-            SpanAttributes.LLM_SYSTEM: "MistralAI",
-            SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
-        },
-    )
-
-    if span.is_recording():
-        _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
     if to_wrap.get("streaming"):
-        response = await wrapped(*args, **kwargs)
+        span = tracer.start_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "MistralAI",
+                SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
+            },
+        )
+
+        ctx = set_span_in_context(span)
+        token = context_api.attach(ctx)
+
+        try:
+            if span.is_recording():
+                _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
+
+            response = await wrapped(*args, **kwargs)
+
+            if response:
+                return _aaccumulate_streaming_response(span, llm_request_type, response, token)
+            else:
+                span.set_status(Status(StatusCode.ERROR))
+                span.end()
+                context_api.detach(token)
+
+            return response
+        except Exception:
+            span.set_status(Status(StatusCode.ERROR))
+            span.end()
+            context_api.detach(token)
+            raise
     else:
-        response = await wrapped(*args, **kwargs)
+        with tracer.start_as_current_span(
+            name,
+            kind=SpanKind.CLIENT,
+            attributes={
+                SpanAttributes.LLM_SYSTEM: "MistralAI",
+                SpanAttributes.LLM_REQUEST_TYPE: llm_request_type.value,
+            },
+        ) as span:
+            if span.is_recording():
+                _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
-    if response:
-        if span.is_recording():
-            if to_wrap.get("streaming"):
-                return _aaccumulate_streaming_response(span, llm_request_type, response)
+            response = await wrapped(*args, **kwargs)
 
-            _set_response_attributes(span, llm_request_type, response)
-            span.set_status(Status(StatusCode.OK))
+            if response:
+                if span.is_recording():
+                    _set_response_attributes(span, llm_request_type, response)
+                    span.set_status(Status(StatusCode.OK))
 
-    span.end()
-    return response
+            return response
 
 
 class MistralAiInstrumentor(BaseInstrumentor):  # type: ignore[misc]
