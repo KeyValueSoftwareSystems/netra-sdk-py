@@ -382,7 +382,6 @@ async def _awrap(
                 else:
                     _handle_response(span, response, llm_model)
 
-            span.end()
             return response
 
 
@@ -467,8 +466,6 @@ def _wrap(
                     return _abuild_from_streaming_response(span, response, llm_model, token)
                 else:
                     _handle_response(span, response, llm_model)
-
-            span.end()
             return response
 
 
