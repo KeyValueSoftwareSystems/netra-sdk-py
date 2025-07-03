@@ -65,9 +65,8 @@ class Tracer:
                 endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
                 headers=self.cfg.headers,
             )
-        # Add combined span processor for session span processing and data aggregation processing
-        from netra.processors.session_span_processor import SessionSpanProcessor
-        from netra.processors.span_aggregation_processor import SpanAggregationProcessor
+        # Add span processors for session span processing and data aggregation processing
+        from netra.processors import SessionSpanProcessor, SpanAggregationProcessor
 
         provider.add_span_processor(SessionSpanProcessor())
         provider.add_span_processor(SpanAggregationProcessor())
