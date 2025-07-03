@@ -6,7 +6,7 @@ from .config import Config
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
-from .session import SessionManager
+from .session_manager import SessionManager
 from .tracer import Tracer
 
 logger = logging.getLogger(__name__)
