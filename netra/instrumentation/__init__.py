@@ -164,9 +164,9 @@ def init_httpx_instrumentation() -> bool:
     """
     try:
         if is_package_installed("httpx"):
-            from netra.instrumentation.httpx import HTTPXInstrumentor
+            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
 
-            instrumentor = HTTPXInstrumentor()
+            instrumentor = HTTPXClientInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
@@ -184,7 +184,7 @@ def init_aiohttp_instrumentation() -> bool:
     """
     try:
         if is_package_installed("aiohttp"):
-            from netra.instrumentation.aiohttp import AioHttpClientInstrumentor
+            from opentelemetry.instrumentation.aiohttp_client import AioHttpClientInstrumentor
 
             instrumentor = AioHttpClientInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
