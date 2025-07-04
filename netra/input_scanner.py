@@ -53,7 +53,7 @@ class InputScanner:
         self.scanner_types = scanner_types
 
     @staticmethod
-    def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Dict[str, Any]) -> Scanner:
+    def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Any) -> Scanner:
         """
         Factory function to get a scanner instance based on the specified type.
 

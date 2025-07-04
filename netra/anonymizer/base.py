@@ -1,9 +1,8 @@
 """
-Custom anonymizer for PII data that provides consistent hashing of entities.
+Base anonymizer class for PII data anonymization.
 
-This module provides a custom anonymizer that can be used to replace PII entities
-with consistent hash values, allowing for tracking the same entities across multiple
-texts while maintaining privacy.
+This module provides the base anonymizer class that contains the core anonymization
+logic that can be extended by specific anonymizer implementations.
 """
 
 import hashlib
@@ -28,19 +27,17 @@ class AnonymizationResult:
     entities: Dict[str, str]
 
 
-class Anonymizer:
+class BaseAnonymizer:
     """
-    Anonymizer that replaces entities with consistent hash values.
+    Base anonymizer that replaces entities with consistent hash values.
 
-    This anonymizer takes detected PII entities and replaces them with consistent
-    hash values, ensuring that the same entity always gets the same hash.
-    It also maintains a mapping of hashes to original values using an LRU cache
-    to balance performance and memory consumption.
+    This base anonymizer provides the core anonymization logic that can be
+    extended by specific anonymizer implementations for different entity types.
     """
 
     def __init__(self, hash_function: Optional[Callable[[str], str]] = None, cache_size: int = 1000):
         """
-        Initialize the Anonymizer.
+        Initialize the BaseAnonymizer.
 
         Args:
             hash_function: Optional custom hash function that takes a string and returns a hash.
@@ -50,23 +47,24 @@ class Anonymizer:
         """
         self.hash_function = hash_function or self._default_hash_function
         self.cache_size = cache_size
-        # LRU cache to store seen entities to ensure consistent hashing
-        self._entity_hash_cache: OrderedDict[str, str] = OrderedDict()
 
-    def _default_hash_function(self, text: str) -> str:
+        # Initialize LRU cache for entity hashes
+        if cache_size > 0:
+            self._entity_hash_cache: Optional[OrderedDict[str, str]] = OrderedDict()
+        else:
+            self._entity_hash_cache = None
+
+    def _default_hash_function(self, value: str) -> str:
         """
-        Default hash function that creates a deterministic hash for a given text.
+        Default hash function using SHA-256.
 
         Args:
-            text: The text to hash.
+            value: The string to hash.
 
         Returns:
-            A deterministic hash string for the input text.
+            A hexadecimal hash string.
         """
-        # Use SHA-256 for a secure hash with low collision probability
-        hash_obj = hashlib.sha256(text.encode("utf-8"))
-        # Take first 8 characters of the hex digest for brevity
-        return hash_obj.hexdigest()[:8]
+        return hashlib.sha256(value.encode()).hexdigest()[:8]
 
     def _get_entity_hash(self, entity_type: str, entity_value: str) -> str:
         """
@@ -89,7 +87,7 @@ class Anonymizer:
         cache_key = f"{entity_type}:{entity_value}"
 
         # Check if entity exists in cache and move to end (mark as recently used)
-        if cache_key in self._entity_hash_cache:
+        if self._entity_hash_cache is not None and cache_key in self._entity_hash_cache:
             # Move to end to mark as recently used
             self._entity_hash_cache.move_to_end(cache_key)
             return self._entity_hash_cache[cache_key]
@@ -97,15 +95,31 @@ class Anonymizer:
         # Generate a new hash for this entity
         entity_hash = f"{entity_type}_{self.hash_function(entity_value)}"
 
-        # Add to cache
-        self._entity_hash_cache[cache_key] = entity_hash
+        # Add to cache if cache is enabled
+        if self._entity_hash_cache is not None:
+            self._entity_hash_cache[cache_key] = entity_hash
 
-        # Evict oldest entry if cache exceeds size limit
-        if len(self._entity_hash_cache) > self.cache_size:
-            # Remove the least recently used item (first item)
-            self._entity_hash_cache.popitem(last=False)
+            # Evict oldest entry if cache exceeds size limit
+            if len(self._entity_hash_cache) > self.cache_size:
+                # Remove the least recently used item (first item)
+                self._entity_hash_cache.popitem(last=False)
 
         return entity_hash
+
+    def anonymize_entity(self, entity_type: str, entity_value: str) -> str:
+        """
+        Anonymize a single entity value.
+
+        Args:
+            entity_type: The type of entity (e.g., 'EMAIL', 'PHONE', etc.)
+            entity_value: The original value of the entity.
+
+        Returns:
+            The anonymized entity value.
+        """
+        # Get or create hash for this entity
+        entity_hash = self._get_entity_hash(entity_type, entity_value)
+        return f"<{entity_hash}>"
 
     def anonymize(self, text: str, analyzer_results: List[RecognizerResult]) -> AnonymizationResult:
         """
