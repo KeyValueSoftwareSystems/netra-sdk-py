@@ -2,7 +2,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional, Set
 
-from netra.instrumentation.instruments import NetraInstruments, NetraInstrumentSet
+from netra.instrumentation.instruments import NetraInstrumentSet
 
 from .config import Config
 

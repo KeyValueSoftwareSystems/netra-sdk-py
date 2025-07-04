@@ -16,7 +16,7 @@ class CustomInstruments(Enum):
 
 
 class NetraInstrumentSet(Enum):
-    """A custom enum that stores the original enum class in an 'origin' attribute."""
+    """Custom enum that stores the original enum class in an 'origin' attribute."""
 
     def __new__(cls: Any, value: Any, origin: Any = None) -> Any:
         member = object.__new__(cls)
