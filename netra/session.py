@@ -1,6 +1,5 @@
 import logging
 import time
-from enum import Enum
 from typing import Any, Dict, Literal, Optional
 
 from opentelemetry import context as context_api
@@ -13,13 +12,6 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
-class SessionKind(Enum):
-    VIDEO_GEN = "video_generation"
-    IMAGE_GEN = "image_generation"
-    AUDIO_GEN = "audio_generation"
-    TEXT_GEN = "text_generation"
-
-
 class ATTRIBUTE:
     LLM_SYSTEM = "llm_system"
     MODEL = "model"
@@ -29,6 +21,7 @@ class ATTRIBUTE:
     IMAGE_WIDTH = "image_width"
     TOKENS = "tokens"
     CREDITS = "credits"
+    COST = "cost"
     STATUS = "status"
     DURATION_MS = "duration_ms"
     ERROR_MESSAGE = "error_message"
@@ -39,7 +32,7 @@ class Session:
     Context manager for tracking observability data for external API calls.
 
     Usage:
-        with combat.start_session("video_gen_task", SessionKind.VIDEO_GEN) as session:
+        with combat.start_session("video_gen_task") as session:
             session.set_prompt("A cat playing piano").set_image_height("1024")
 
             # External API call
@@ -48,11 +41,8 @@ class Session:
             session.set_tokens("20").set_credits("30")
     """
 
-    def __init__(
-        self, name: str, kind: SessionKind, attributes: Optional[Dict[str, str]] = None, module_name: str = "combat_sdk"
-    ):
+    def __init__(self, name: str, attributes: Optional[Dict[str, str]] = None, module_name: str = "combat_sdk"):
         self.name = name
-        self.kind = kind
         self.attributes = attributes or {}
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
@@ -62,8 +52,8 @@ class Session:
 
         # OpenTelemetry span management
         self.tracer = trace.get_tracer(module_name)
-        self.span = None
-        self.context_token = None
+        self.span: Optional[trace.Span] = None
+        self.context_token: Optional[Any] = None
 
     def __enter__(self) -> "Session":
         """Start the session, begin time tracking, and create OpenTelemetry span."""
@@ -76,7 +66,7 @@ class Session:
         ctx = set_span_in_context(self.span)
         self.context_token = context_api.attach(ctx)
 
-        logger.info(f"Started session: {self.name} ({self.kind.value})")
+        logger.info(f"Started session: {self.name}")
         return self
 
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Any) -> Literal[False]:
@@ -99,7 +89,8 @@ class Session:
             self.set_attribute(ATTRIBUTE.ERROR_MESSAGE, self.error_message)
             if self.span:
                 self.span.set_status(Status(StatusCode.ERROR, self.error_message))
-                self.span.record_exception(exc_val)
+                if exc_val is not None:
+                    self.span.record_exception(exc_val)
             logger.error(f"Session {self.name} failed: {self.error_message}")
 
         self.set_attribute(ATTRIBUTE.STATUS, self.status)
@@ -155,6 +146,10 @@ class Session:
     def set_credits(self, credits: str) -> "Session":
         """Set the number of credits used."""
         return self.set_attribute(ATTRIBUTE.CREDITS, credits)
+
+    def set_cost(self, cost: str) -> "Session":
+        """Set the cost of the operation."""
+        return self.set_attribute(ATTRIBUTE.COST, cost)
 
     def set_model(self, model: str) -> "Session":
         """Set the model used."""
