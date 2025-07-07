@@ -410,36 +410,7 @@ The SDK includes comprehensive examples in the `examples/` directory:
 - **04_input_scanner/**: Prompt injection detection and prevention
 - **05_llm_tracing/**: LLM provider instrumentation examples
 
-## 🛠️ Development Setup
-
-To set up your development environment for the Netra SDK, run the provided setup script:
-
-```bash
-./setup_dev.sh
-```
-
-This script will:
-
-1. Install all Python dependencies in development mode
-2. Set up pre-commit hooks for code quality
-3. Configure commit message formatting
-
-### Manual Setup
-
-If you prefer to set up manually:
-
-```bash
-# Install dependencies
-pip install -e ".[dev,test]"
-
-# Install pre-commit hooks
-pip install pre-commit
-pre-commit install --install-hooks
-pre-commit install --hook-type commit-msg
-pre-commit install --hook-type pre-push
-```
-
-## 🧪 Testing
+## 🧪 Tests
 
 The Netra SDK includes a comprehensive testing suite in the `tests/` directory. The tests are built using pytest and cover all major components of the SDK.
 
@@ -494,6 +465,35 @@ To run tests by category:
 poetry run pytest -m unit
 poetry run pytest -m integration
 poetry run pytest -m thread_safety
+```
+
+## 🛠️ Development Setup
+
+To set up your development environment for the Netra SDK, run the provided setup script:
+
+```bash
+./setup_dev.sh
+```
+
+This script will:
+
+1. Install all Python dependencies in development mode
+2. Set up pre-commit hooks for code quality
+3. Configure commit message formatting
+
+### Manual Setup
+
+If you prefer to set up manually:
+
+```bash
+# Install dependencies
+pip install -e ".[dev,test]"
+
+# Install pre-commit hooks
+pip install pre-commit
+pre-commit install --install-hooks
+pre-commit install --hook-type commit-msg
+pre-commit install --hook-type pre-push
 ```
 
 ## 🤝 Contributing
