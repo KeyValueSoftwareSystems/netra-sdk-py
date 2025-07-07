@@ -4,17 +4,34 @@ from typing import Any, Callable, Optional, Set
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
+from netra.instrumentation.instruments import CustomInstruments, NetraInstruments
+
 
 def init_instrumentations(
     should_enrich_metrics: bool,
     base64_image_uploader: Optional[Callable[[str, str, str], str]],
-    instruments: Optional[Set[Instruments]] = None,
-    block_instruments: Optional[Set[Instruments]] = None,
+    instruments: Optional[Set[NetraInstruments]] = None,
+    block_instruments: Optional[Set[NetraInstruments]] = None,
 ) -> None:
     from traceloop.sdk.tracing.tracing import init_instrumentations
 
-    block_instruments = block_instruments or set()
-    block_instruments.update(
+    traceloop_instruments = set()
+    traceloop_block_instruments = set()
+    netra_custom_instruments = set()
+    netra_custom_block_instruments = set()
+    if instruments is not None:
+        for instrument in instruments:
+            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
+                netra_custom_instruments.add(getattr(CustomInstruments, instrument.name))
+            else:
+                traceloop_instruments.add(getattr(Instruments, instrument.name))
+    if block_instruments is not None:
+        for instrument in block_instruments:
+            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
+                netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
+            else:
+                traceloop_block_instruments.add(getattr(Instruments, instrument.name))
+    traceloop_block_instruments.update(
         {
             Instruments.WEAVIATE,
             Instruments.QDRANT,
@@ -26,39 +43,41 @@ def init_instrumentations(
     init_instrumentations(
         should_enrich_metrics=should_enrich_metrics,
         base64_image_uploader=base64_image_uploader,
-        instruments=instruments,
-        block_instruments=block_instruments,
+        instruments=traceloop_instruments,
+        block_instruments=traceloop_block_instruments,
     )
 
+    netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
+    netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
     # Initialize Google GenAI instrumentation.
-    if instruments is None or Instruments.GOOGLE_GENERATIVEAI in instruments:
+    if CustomInstruments.GOOGLE_GENERATIVEAI in netra_custom_instruments:
         init_google_genai_instrumentation()
 
     # Initialize FastAPI instrumentation.
-    if instruments is None:
+    if CustomInstruments.FASTAPI in netra_custom_instruments:
         init_fastapi_instrumentation()
 
     # Initialize Qdrant instrumentation.
-    if instruments is None or Instruments.QDRANT in instruments:
+    if CustomInstruments.QDRANTDB in netra_custom_instruments:
         init_qdrant_instrumentation()
 
     # Initialize Weaviate instrumentation.
-    if instruments is None or Instruments.WEAVIATE in instruments:
+    if CustomInstruments.WEAVIATEDB in netra_custom_instruments:
         init_weviate_instrumentation()
 
     # Initialize HTTPX instrumentation.
-    if instruments is None:
+    if CustomInstruments.HTTPX in netra_custom_instruments:
         init_httpx_instrumentation()
 
     # Initialize AIOHTTP instrumentation.
-    if instruments is None:
+    if CustomInstruments.AIOHTTP in netra_custom_instruments:
         init_aiohttp_instrumentation()
 
     # Initialize Cohere instrumentation.
-    if instruments is None or Instruments.COHERE in instruments:
+    if CustomInstruments.COHEREAI in netra_custom_instruments:
         init_cohere_instrumentation()
 
-    if instruments is None or Instruments.MISTRAL in instruments:
+    if CustomInstruments.MISTRALAI in netra_custom_instruments:
         init_mistral_instrumentor()
 
 
