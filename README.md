@@ -65,7 +65,6 @@ api_key = "Your API key"
 headers = f"x-api-key={api_key}"
 Netra.init(
     app_name="Your application name",
-    otlp_endpoint="https://api.dev.getnetra.ai/telemetry",
     headers=headers,
     trace_content=True,
     environment="Your Application environment"
@@ -322,23 +321,7 @@ Netra.init(
 )
 ```
 
-### Environment-based Configuration
 
-Configure via environment variables:
-
-```bash
-# Set PII detection action
-export NETRA_ACTION_TYPE=MASK
-
-# Configure tracing
-export NETRA_TRACE_CONTENT=true
-export NETRA_ENVIRONMENT=production
-```
-
-```python
-# SDK will automatically pick up environment variables
-Netra.init(app_name="Environment App")
-```
 
 ### 🌐 Custom Endpoint Integration
 
@@ -361,15 +344,9 @@ Since Netra SDK follows the **OpenTelemetry standard**, you can integrate it wit
 **Recommended: Environment Variable Configuration (No Code Changes Required)**
 ```bash
 # Set custom OTLP endpoint via environment variables
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://your-custom-backend.com/v1/traces"
-export OTEL_EXPORTER_OTLP_HEADERS="authorization=Bearer your-token"
+export NETRA_OTLP_ENDPOINT="https://your-custom-backend.com/v1/traces"
+export NETRA_HEADERS="authorization=Bearer your-token"
 
-# Example: Jaeger integration
-export OTEL_EXPORTER_OTLP_ENDPOINT="http://localhost:14268/api/traces"
-
-# Example: Custom enterprise backend
-export OTEL_EXPORTER_OTLP_ENDPOINT="https://enterprise-observability.company.com/otlp"
-export OTEL_EXPORTER_OTLP_HEADERS="x-api-key=your-enterprise-key,x-tenant-id=your-tenant"
 ```
 
 ```python
@@ -398,12 +375,6 @@ The SDK includes comprehensive examples in the `examples/` directory:
 - **03_pii_detection/**: PII detection with different engines and modes
 - **04_input_scanner/**: Prompt injection detection and prevention
 - **05_llm_tracing/**: LLM provider instrumentation examples
-
-Each example includes:
-- Detailed documentation and setup instructions
-- Requirements.txt with dependencies
-- Expected output examples
-- Best practices and configuration options
 
 ## 🛠️ Development Setup
 
@@ -474,5 +445,3 @@ docs: update installation instructions
 **Footer** can be used for "BREAKING CHANGE:" or issue references.
 
 ---
-
-**Built with ❤️ by the Netra team**
