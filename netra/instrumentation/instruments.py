@@ -15,7 +15,7 @@ class CustomInstruments(Enum):
     FASTAPI = "fastapi"
 
 
-class NetraInstrumentSet(Enum):
+class NetraInstruments(Enum):
     """Custom enum that stores the original enum class in an 'origin' attribute."""
 
     def __new__(cls: Any, value: Any, origin: Any = None) -> Any:
@@ -33,14 +33,14 @@ for member in Instruments:
 for member in CustomInstruments:
     merged_members[member.name] = (member.value, CustomInstruments)
 
-NetraInstruments = NetraInstrumentSet("NetraInstruments", merged_members)
+InstrumentSet = NetraInstruments("InstrumentSet", merged_members)
 
 
 #####################################################################################
 """
 NetraInstruments follows the given structure. Refer this for usage within Netra SDK:
 
-class NetraInstruments(OriginEnum):
+class InstrumentSet(Enum):
     AIOHTTP = "aiohttp"
     ALEPHALPHA = "alephalpha"
     ANTHROPIC = "anthropic"

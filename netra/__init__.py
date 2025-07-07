@@ -2,7 +2,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional, Set
 
-from netra.instrumentation.instruments import NetraInstrumentSet
+from netra.instrumentation.instruments import NetraInstruments
 
 from .config import Config
 
@@ -43,8 +43,8 @@ class Netra:
         trace_content: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
-        instruments: Optional[Set[NetraInstrumentSet]] = None,
-        block_instruments: Optional[Set[NetraInstrumentSet]] = None,
+        instruments: Optional[Set[NetraInstruments]] = None,
+        block_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
         # Acquire lock at the start of the method and hold it throughout
         # to prevent race conditions during initialization

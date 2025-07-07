@@ -4,14 +4,14 @@ from typing import Any, Callable, Optional, Set
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
-from netra.instrumentation.instruments import CustomInstruments, NetraInstruments, NetraInstrumentSet
+from netra.instrumentation.instruments import CustomInstruments, NetraInstruments
 
 
 def init_instrumentations(
     should_enrich_metrics: bool,
     base64_image_uploader: Optional[Callable[[str, str, str], str]],
-    instruments: Optional[Set[NetraInstrumentSet]] = None,
-    block_instruments: Optional[Set[NetraInstrumentSet]] = None,
+    instruments: Optional[Set[NetraInstruments]] = None,
+    block_instruments: Optional[Set[NetraInstruments]] = None,
 ) -> None:
     from traceloop.sdk.tracing.tracing import init_instrumentations
 
