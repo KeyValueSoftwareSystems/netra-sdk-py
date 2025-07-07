@@ -439,6 +439,63 @@ pre-commit install --hook-type commit-msg
 pre-commit install --hook-type pre-push
 ```
 
+## 🧪 Testing
+
+The Netra SDK includes a comprehensive testing suite in the `tests/` directory. The tests are built using pytest and cover all major components of the SDK.
+
+### Test Structure
+
+- **conftest.py**: Contains shared fixtures, test utilities, and configuration for all tests
+- **test_netra_init.py**: Tests for the main Netra SDK initialization and configuration
+- **test_decorators.py**: Tests for workflow, agent, and task decorators
+- **test_input_scanner.py**: Tests for prompt injection scanning and security features
+
+### Running Tests
+
+To run the full test suite:
+
+```bash
+poetry run pytest
+```
+
+To run specific test modules:
+
+```bash
+poetry run pytest tests/test_netra_init.py
+poetry run pytest tests/test_decorators.py
+```
+
+To run tests with coverage reporting:
+
+```bash
+poetry run pytest --cov=netra --cov-report=html
+```
+
+### Test Fixtures
+
+The testing framework provides several useful fixtures:
+
+- **reset_netra_state**: Automatically resets Netra state before and after each test
+- **clean_environment**: Provides a clean environment by temporarily clearing relevant environment variables
+- **mock_config**, **mock_tracer**, **mock_init_instrumentations**: Mock objects for testing components in isolation
+- **sample_config_params**, **sample_session_data**: Sample data for testing configuration and sessions
+
+### Test Categories
+
+Tests are organized using pytest markers:
+
+- **unit**: Unit tests for individual components
+- **integration**: Integration tests for component interactions
+- **thread_safety**: Tests for thread safety and concurrency
+
+To run tests by category:
+
+```bash
+poetry run pytest -m unit
+poetry run pytest -m integration
+poetry run pytest -m thread_safety
+```
+
 ## 🤝 Contributing
 
 We welcome contributions! Please follow these guidelines:
