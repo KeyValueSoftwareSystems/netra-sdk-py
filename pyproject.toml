@@ -64,6 +64,10 @@ ignore_missing_imports = true
 strict = true
 check_untyped_defs = true
 disallow_untyped_defs = true
+exclude = [
+    "tests/",
+    "test_.*\\.py$"
+]
 
 [build-system]
 requires = ["poetry-core>=2.0.0,<3.0.0"]

@@ -8,6 +8,7 @@ from .config import Config
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
+from .session import Session
 from .session_manager import SessionManager
 from .tracer import Tracer
 
@@ -130,6 +131,18 @@ class Netra:
             attributes: Attributes of the custom event
         """
         SessionManager.set_custom_event(event_name, attributes)
+
+    @classmethod
+    def start_session(
+        cls,
+        name: str,
+        attributes: Optional[Dict[str, str]] = None,
+        module_name: str = "combat_sdk",
+    ) -> Session:
+        """
+        Start a new session.
+        """
+        return Session(name, attributes, module_name)
 
 
 __all__ = ["Netra"]
