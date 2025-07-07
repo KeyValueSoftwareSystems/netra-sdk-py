@@ -29,7 +29,7 @@ repos:
     rev: v1.16.0
     hooks:
     -   id: mypy
-        exclude: ^tests/
+        exclude: ^(tests|examples)/
 -   repo: https://github.com/commitizen-tools/commitizen
     rev: v4.8.3
     hooks:
