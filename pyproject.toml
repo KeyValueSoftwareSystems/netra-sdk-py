@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "netra-sdk"
-version = "0.1.0"
+version = "0.1.1"
 description = "A Python SDK for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. Enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments."
 authors = [
     {name = "Sooraj Thomas",email = "sooraj@keyvalue.systems"}
@@ -36,6 +36,51 @@ dependencies = [
     "presidio-analyzer>=2.2.358,<3.0.0",
     "opentelemetry-instrumentation-httpx>=0.55b1,<1.0.0",
     "opentelemetry-instrumentation-aiohttp-client>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-aio-pika>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-aiohttp-server>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-aiokafka>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-aiopg>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-asyncclick>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-asyncio>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-asyncpg>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-aws-lambda>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-boto>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-boto3sqs>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-botocore>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-cassandra>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-celery>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-click>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-confluent-kafka>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-django>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-elasticsearch>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-falcon>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-flask>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-grpc>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-jinja2>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-kafka-python>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-logging>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-mysql>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-mysqlclient>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pika>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-psycopg>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-psycopg2>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pymemcache>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pymongo>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pymssql>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pymysql>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-pyramid>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-redis>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-remoulade>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-requests>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-sqlalchemy>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-sqlite3>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-starlette>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-system-metrics>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-threading>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-tornado>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-tortoiseorm>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-urllib>=0.55b1,<1.0.0",
+    "opentelemetry-instrumentation-urllib3>=0.55b1,<1.0.0",
 ]
 
 [project.urls]
