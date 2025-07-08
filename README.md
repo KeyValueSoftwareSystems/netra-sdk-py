@@ -149,7 +149,6 @@ class CustomerSupportAgent:
 - **Django** - High-level Python web framework
 - **Flask** - Lightweight WSGI web application framework
 - **Falcon** - High-performance Python web framework
-- **Pyramid** - Small, fast, down-to-earth Python web framework
 - **Starlette** - Lightweight ASGI framework/toolkit
 - **Tornado** - Asynchronous networking library and web framework
 - **gRPC** - High-performance, open-source universal RPC framework
