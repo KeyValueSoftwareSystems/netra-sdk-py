@@ -146,16 +146,47 @@ class CustomerSupportAgent:
 - **AIOHTTP** - Asynchronous HTTP client/server
 - **FastAPI** - Modern web framework for APIs
 - **Requests** - Popular HTTP library for Python
-- **urllib3** - Low-level HTTP client library
+- **Django** - High-level Python web framework
+- **Flask** - Lightweight WSGI web application framework
+- **Falcon** - High-performance Python web framework
+- **Pyramid** - Small, fast, down-to-earth Python web framework
+- **Starlette** - Lightweight ASGI framework/toolkit
+- **Tornado** - Asynchronous networking library and web framework
+- **gRPC** - High-performance, open-source universal RPC framework
+- **Urllib** - Standard Python HTTP client library
+- **Urllib3** - Powerful, user-friendly HTTP client for Python
 
 ### 🗄️ Database Clients
 
 - **PyMySQL** - Pure Python MySQL client
 - **Redis** - In-memory data structure store
+- **SQLAlchemy** - SQL toolkit and Object-Relational Mapper
+- **Psycopg** - Modern PostgreSQL database adapter for Python
+- **Pymongo** - Python driver for MongoDB
+- **Elasticsearch** - Distributed, RESTful search and analytics engine
+- **Cassandra** - Distributed NoSQL database
+- **PyMSSQL** - Simple Microsoft SQL Server client
+- **MySQL Connector** - Official MySQL driver
+- **Sqlite3** - Built-in SQL database engine
+- **Aiopg** - Asynchronous PostgreSQL client
+- **Asyncpg** - Fast asynchronous PostgreSQL client
+- **Pymemcache** - Comprehensive Memcached client
+- **Tortoise ORM** - Easy-to-use asyncio ORM
+
+### 📨 Messaging & Task Queues
+
+- **Celery** - Distributed task queue
+- **Pika** - Pure-Python implementation of the AMQP 0-9-1 protocol
+- **AIO Pika** - Asynchronous AMQP client
+- **Kafka-Python** - Python client for Apache Kafka
+- **AIOKafka** - Asynchronous Python client for Kafka
+- **Confluent-Kafka** - Confluent's Python client for Apache Kafka
+- **Boto3 SQS** - Amazon SQS client via Boto3
 
 ### 🔧 AI Frameworks & Orchestration
 
 - **LangChain** - Framework for developing LLM applications
+- **LangGraph** - Modern framework for LLM applications
 - **LlamaIndex** - Data framework for LLM applications
 - **Haystack** - End-to-end NLP framework
 - **CrewAI** - Multi-agent AI systems
@@ -466,6 +497,7 @@ Netra.init(app_name="Your App")
 - **📈 Rich Ecosystem**: Leverage the entire OpenTelemetry ecosystem
 
 
+
 ## 📚 Examples
 
 The SDK includes comprehensive examples in the `examples/` directory:
@@ -478,60 +510,51 @@ The SDK includes comprehensive examples in the `examples/` directory:
 
 ## 🧪 Tests
 
-The Netra SDK includes a comprehensive testing suite in the `tests/` directory. The tests are built using pytest and cover all major components of the SDK.
-
-### Test Structure
-
-- **conftest.py**: Contains shared fixtures, test utilities, and configuration for all tests
-- **test_netra_init.py**: Tests for the main Netra SDK initialization and configuration
-- **test_decorators.py**: Tests for workflow, agent, and task decorators
-- **test_input_scanner.py**: Tests for prompt injection scanning and security features
+Our test suite is built on `pytest` and is designed to ensure the reliability and stability of the Netra SDK. We follow comprehensive testing standards, including unit, integration, and thread-safety tests.
 
 ### Running Tests
 
-To run the full test suite:
+To run the complete test suite, use the following command from the root of the project:
 
 ```bash
 poetry run pytest
 ```
 
-To run specific test modules:
 
+### Run Specific Test File
+To run a specific test file, use the following command from the root of the project:
 ```bash
 poetry run pytest tests/test_netra_init.py
-poetry run pytest tests/test_decorators.py
 ```
 
-To run tests with coverage reporting:
+### Test Coverage
+
+To generate a test coverage report, you can run:
 
 ```bash
 poetry run pytest --cov=netra --cov-report=html
 ```
 
-### Test Fixtures
+This will create an `htmlcov` directory with a detailed report.
 
-The testing framework provides several useful fixtures:
+### Running Specific Test Categories
 
-- **reset_netra_state**: Automatically resets Netra state before and after each test
-- **clean_environment**: Provides a clean environment by temporarily clearing relevant environment variables
-- **mock_config**, **mock_tracer**, **mock_init_instrumentations**: Mock objects for testing components in isolation
-- **sample_config_params**, **sample_session_data**: Sample data for testing configuration and sessions
-
-### Test Categories
-
-Tests are organized using pytest markers:
-
-- **unit**: Unit tests for individual components
-- **integration**: Integration tests for component interactions
-- **thread_safety**: Tests for thread safety and concurrency
-
-To run tests by category:
+Tests are organized using `pytest` markers. You can run specific categories of tests as follows:
 
 ```bash
+# Run only unit tests (default)
 poetry run pytest -m unit
+
+# Run only integration tests
 poetry run pytest -m integration
+
+# Run only thread-safety tests
 poetry run pytest -m thread_safety
 ```
+
+For more detailed information on our testing strategy, fixtures, and best practices, please refer to the `README.md` file in the `tests` directory.
+
+
 
 ## 🛠️ Development Setup
 
