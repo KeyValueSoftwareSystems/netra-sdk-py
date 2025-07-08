@@ -7,6 +7,8 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation import set_span_in_context
 
+from netra.config import Config
+
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -19,9 +21,15 @@ class ATTRIBUTE:
     NEGATIVE_PROMPT = "negative_prompt"
     IMAGE_HEIGHT = "image_height"
     IMAGE_WIDTH = "image_width"
-    TOKENS = "tokens"
     CREDITS = "credits"
-    COST = "cost"
+    TOTAL_COST = "total_cost"
+    TOTAL_TOKENS = "total_tokens"
+    PROMPT_TOKENS_COST = "prompt_tokens_cost"
+    PROMPT_TOKENS = "prompt_tokens"
+    COMPLETION_TOKENS_COST = "completion_tokens_cost"
+    COMPLETION_TOKENS = "completion_tokens"
+    CACHED_TOKENS_COST = "cached_tokens_cost"
+    CACHED_TOKENS = "cached_tokens"
     STATUS = "status"
     DURATION_MS = "duration_ms"
     ERROR_MESSAGE = "error_message"
@@ -76,7 +84,7 @@ class Session:
 
         # Set duration
         if duration_ms is not None:
-            self.set_attribute(ATTRIBUTE.DURATION_MS, str(round(duration_ms, 2)))
+            self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}", str(round(duration_ms, 2)))
 
         # Handle status and errors
         if exc_type is None and self.status == "pending":
@@ -86,14 +94,14 @@ class Session:
         elif exc_type is not None:
             self.status = "error"
             self.error_message = str(exc_val)
-            self.set_attribute(ATTRIBUTE.ERROR_MESSAGE, self.error_message)
+            self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", self.error_message)
             if self.span:
                 self.span.set_status(Status(StatusCode.ERROR, self.error_message))
                 if exc_val is not None:
                     self.span.record_exception(exc_val)
             logger.error(f"Session {self.name} failed: {self.error_message}")
 
-        self.set_attribute(ATTRIBUTE.STATUS, self.status)
+        self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", self.status)
 
         # Update span attributes with final values
         if self.span:
@@ -125,39 +133,63 @@ class Session:
 
     def set_prompt(self, prompt: str) -> "Session":
         """Set the input prompt."""
-        return self.set_attribute(ATTRIBUTE.PROMPT, prompt)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT}", prompt)
 
     def set_negative_prompt(self, negative_prompt: str) -> "Session":
         """Set the negative prompt."""
-        return self.set_attribute(ATTRIBUTE.NEGATIVE_PROMPT, negative_prompt)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}", negative_prompt)
 
     def set_image_height(self, height: str) -> "Session":
         """Set the image height."""
-        return self.set_attribute(ATTRIBUTE.IMAGE_HEIGHT, height)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.IMAGE_HEIGHT}", height)
 
     def set_image_width(self, width: str) -> "Session":
         """Set the image width."""
-        return self.set_attribute(ATTRIBUTE.IMAGE_WIDTH, width)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.IMAGE_WIDTH}", width)
 
-    def set_tokens(self, tokens: str) -> "Session":
+    def set_total_tokens(self, tokens: str) -> "Session":
         """Set the number of tokens used."""
-        return self.set_attribute(ATTRIBUTE.TOKENS, tokens)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_TOKENS}", tokens)
+
+    def set_prompt_tokens_cost(self, cost: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT_TOKENS_COST}", cost)
+
+    def set_prompt_tokens(self, tokens: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT_TOKENS}", tokens)
+
+    def set_completion_tokens_cost(self, cost: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.COMPLETION_TOKENS_COST}", cost)
+
+    def set_completion_tokens(self, tokens: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.COMPLETION_TOKENS}", tokens)
+
+    def set_cached_tokens_cost(self, cost: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CACHED_TOKENS_COST}", cost)
+
+    def set_cached_tokens(self, tokens: str) -> "Session":
+        """Set the number of tokens used."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CACHED_TOKENS}", tokens)
 
     def set_credits(self, credits: str) -> "Session":
         """Set the number of credits used."""
-        return self.set_attribute(ATTRIBUTE.CREDITS, credits)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CREDITS}", credits)
 
-    def set_cost(self, cost: str) -> "Session":
+    def set_total_cost(self, cost: str) -> "Session":
         """Set the cost of the operation."""
-        return self.set_attribute(ATTRIBUTE.COST, cost)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_COST}", cost)
 
     def set_model(self, model: str) -> "Session":
         """Set the model used."""
-        return self.set_attribute(ATTRIBUTE.MODEL, model)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}", model)
 
     def set_llm_system(self, system: str) -> "Session":
         """Set the LLM system used."""
-        return self.set_attribute(ATTRIBUTE.LLM_SYSTEM, system)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.LLM_SYSTEM}", system)
 
     def set_error(self, error_message: str) -> "Session":
         """Manually set an error message."""
@@ -165,7 +197,7 @@ class Session:
         self.error_message = error_message
         if self.span:
             self.span.set_status(Status(StatusCode.ERROR, error_message))
-        return self.set_attribute(ATTRIBUTE.ERROR_MESSAGE, error_message)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", error_message)
 
     def set_success(self) -> "Session":
         """Manually mark the session as successful."""
