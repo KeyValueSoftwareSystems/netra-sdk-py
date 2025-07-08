@@ -330,6 +330,72 @@ with Netra.start_session("video_generation_task") as session:
 
 ## 🔧 Advanced Configuration
 
+### Environment Variables
+
+Netra SDK can be configured using the following environment variables:
+
+#### Netra-specific Variables
+
+| Variable Name | Description | Default |
+|---------------|-------------|---------|
+| `NETRA_APP_NAME` | Logical name for your service | Falls back to `OTEL_SERVICE_NAME` or `llm_tracing_service` |
+| `NETRA_OTLP_ENDPOINT` | URL for OTLP collector | Falls back to `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `NETRA_API_KEY` | API key for authentication | `None` |
+| `NETRA_HEADERS` | Additional headers in W3C Correlation-Context format | `None` |
+| `NETRA_DISABLE_BATCH` | Disable batch span processor (`true`/`false`) | `false` |
+| `NETRA_TRACE_CONTENT` | Whether to capture prompt/completion content (`true`/`false`) | `true` |
+| `NETRA_ENV` | Deployment environment (e.g., `prod`, `staging`, `dev`) | `local` |
+| `NETRA_RESOURCE_ATTRS` | JSON string of custom resource attributes | `{}` |
+
+#### Standard OpenTelemetry Variables
+
+| Variable Name | Description | Used When |
+|---------------|-------------|-----------|
+| `OTEL_SERVICE_NAME` | Logical name for your service | When `NETRA_APP_NAME` is not set |
+| `OTEL_EXPORTER_OTLP_ENDPOINT` | URL for OTLP collector | When `NETRA_OTLP_ENDPOINT` is not set |
+| `OTEL_EXPORTER_OTLP_HEADERS` | Additional headers for OTLP exporter | When `NETRA_HEADERS` is not set |
+| `OTEL_RESOURCE_ATTRIBUTES` | Additional resource attributes | When `NETRA_RESOURCE_ATTRS` is not set |
+
+### Configuration Precedence
+
+Configuration values are resolved in the following order (highest to lowest precedence):
+
+1. **Code Parameters**: Values passed directly to `Netra.init()`
+2. **Netra Environment Variables**: `NETRA_*` variables
+3. **OpenTelemetry Environment Variables**: Standard `OTEL_*` variables
+4. **Default Values**: Fallback values defined in the SDK
+
+This allows you to:
+- Override any setting directly in code for maximum control
+- Use Netra-specific environment variables for Netra-specific settings
+- Fall back to standard OpenTelemetry variables for compatibility
+- Rely on sensible defaults when no other configuration is provided
+
+**Example**:
+```bash
+export NETRA_APP_NAME="my-ai-service"
+export NETRA_OTLP_ENDPOINT="https://collector.example.com:4318"
+export NETRA_API_KEY="your-api-key-here"
+export NETRA_ENV="production"
+export NETRA_RESOURCE_ATTRS='{"team":"ai", "version":"1.0.0"}'
+```
+
+### Programmatic Configuration
+
+You can also configure the SDK programmatically when initializing:
+
+```python
+from netra import Netra
+
+Netra.init(
+    app_name="my-ai-service",
+    environment="production",
+    resource_attributes={"team": "ai", "version": "1.0.0"},
+    trace_content=True,
+    disable_batch=False
+)
+```
+
 ### Custom Instrumentation Selection
 
 Control which instrumentations are enabled:

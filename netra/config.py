@@ -35,7 +35,7 @@ class Config:
     ):
         # Application name: from param, else env
         self.app_name = (
-            app_name or os.getenv("OTEL_SERVICE_NAME") or os.getenv("NETRA_APP_NAME") or "llm_tracing_service"
+            app_name or os.getenv("NETRA_APP_NAME") or os.getenv("OTEL_SERVICE_NAME") or "llm_tracing_service"
         )
 
         # OTLP endpoint: if explicit param, else OTEL_EXPORTER_OTLP_ENDPOINT
