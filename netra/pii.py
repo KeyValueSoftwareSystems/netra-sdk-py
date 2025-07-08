@@ -26,7 +26,6 @@ DEFAULT_PII_PATTERNS: Dict[str, Pattern[str]] = {
 DEFAULT_ENTITIES: List[str] = [
     "CREDIT_CARD",
     "CRYPTO",
-    "DATE_TIME",
     "EMAIL_ADDRESS",
     "IBAN_CODE",
     "IP_ADDRESS",
@@ -42,16 +41,6 @@ DEFAULT_ENTITIES: List[str] = [
     "US_SSN",
     "UK_NHS",
     "UK_NINO",
-    "ES_NIF",
-    "ES_NIE",
-    "IT_FISCAL_CODE",
-    "IT_DRIVER_LICENSE",
-    "IT_VAT_CODE",
-    "IT_PASSPORT",
-    "IT_IDENTITY_CARD",
-    "PL_PESEL",
-    "SG_NRIC_FIN",
-    "SG_UEN",
     "AU_ABN",
     "AU_ACN",
     "AU_TFN",
@@ -61,7 +50,6 @@ DEFAULT_ENTITIES: List[str] = [
     "IN_VEHICLE_REGISTRATION",
     "IN_VOTER",
     "IN_PASSPORT",
-    "FI_PERSONAL_IDENTITY_CODE",
 ]
 
 

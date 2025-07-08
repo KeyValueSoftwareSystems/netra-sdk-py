@@ -39,6 +39,8 @@ def init_instrumentations(
             Instruments.MISTRAL,
         }
     )
+    if instruments is not None and traceloop_instruments is None and traceloop_block_instruments is None:
+        traceloop_block_instruments = set(Instruments)
 
     init_instrumentations(
         should_enrich_metrics=should_enrich_metrics,
