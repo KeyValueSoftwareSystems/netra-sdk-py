@@ -294,37 +294,6 @@ def init_fastapi_instrumentation() -> bool:
         return False
 
 
-# def init_fastapi_instrumentation() -> bool:
-#     """Initialize FastAPI instrumentation.
-#
-#     Returns:
-#         bool: True if initialization was successful, False otherwise.
-#     """
-#     try:
-#         if not is_package_installed("fastapi"):
-#             return True
-#         from fastapi import FastAPI
-#
-#         original_init = FastAPI.__init__
-#
-#         def _patched_init(self: FastAPI, *args: Any, **kwargs: Any) -> None:
-#             original_init(self, *args, **kwargs)
-#
-#             try:
-#                 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
-#
-#                 FastAPIInstrumentor().instrument_app(self)
-#             except Exception as e:
-#                 logging.warning(f"Failed to auto-instrument FastAPI: {e}")
-#
-#         FastAPI.__init__ = _patched_init
-#         return True
-#     except Exception as e:
-#         logging.error(f"Error initializing FastAPI instrumentor: {e}")
-#         Telemetry().log_exception(e)
-#         return False
-
-
 def init_qdrant_instrumentation() -> bool:
     """Initialize Qdrant instrumentation.
 
