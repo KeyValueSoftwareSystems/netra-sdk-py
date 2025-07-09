@@ -1,4 +1,4 @@
+from netra.processors.error_detection_processor import ErrorDetectionProcessor
 from netra.processors.session_span_processor import SessionSpanProcessor
-from netra.processors.span_aggregation_processor import SpanAggregationProcessor
 
-__all__ = ["SpanAggregationProcessor", "SessionSpanProcessor"]
+__all__ = ["ErrorDetectionProcessor", "SessionSpanProcessor"]
