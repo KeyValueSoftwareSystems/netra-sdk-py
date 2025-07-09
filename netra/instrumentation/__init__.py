@@ -86,10 +86,6 @@ def init_instrumentations(
     if CustomInstruments.AIO_PIKA in netra_custom_instruments:
         init_aio_pika_instrumentation()
 
-    # Initialize aiohttp_server instrumentation.
-    if CustomInstruments.AIOHTTP_SERVER in netra_custom_instruments:
-        init_aiohttp_server_instrumentation()
-
     # Initialize aiokafka instrumentation.
     if CustomInstruments.AIOKAFKA in netra_custom_instruments:
         init_aiokafka_instrumentation()
@@ -113,10 +109,6 @@ def init_instrumentations(
     # Initialize aws_lambda instrumentation.
     if CustomInstruments.AWS_LAMBDA in netra_custom_instruments:
         init_aws_lambda_instrumentation()
-
-    # Initialize boto instrumentation.
-    if CustomInstruments.BOTO in netra_custom_instruments:
-        init_boto_instrumentation()
 
     # Initialize boto3sqs instrumentation.
     if CustomInstruments.BOTO3SQS in netra_custom_instruments:
@@ -209,10 +201,6 @@ def init_instrumentations(
     # Initialize pymysql instrumentation.
     if CustomInstruments.PYMYSQL in netra_custom_instruments:
         init_pymysql_instrumentation()
-
-    # Initialize pyramid instrumentation.
-    if CustomInstruments.PYRAMID in netra_custom_instruments:
-        init_pyramid_instrumentation()
 
     # Initialize redis instrumentation.
     if CustomInstruments.REDIS in netra_custom_instruments:
@@ -455,22 +443,6 @@ def init_aio_pika_instrumentation() -> bool:
         return False
 
 
-def init_aiohttp_server_instrumentation() -> bool:
-    """Initialize aiohttp_server instrumentation."""
-    try:
-        if is_package_installed("aiohttp"):
-            from opentelemetry.instrumentation.aiohttp_server import AioHttpServerInstrumentor
-
-            instrumentor = AioHttpServerInstrumentor()
-            if not instrumentor.is_instrumented_by_opentelemetry:
-                instrumentor.instrument()
-        return True
-    except Exception as e:
-        logging.error(f"Error initializing aiohttp_server instrumentor: {e}")
-        Telemetry().log_exception(e)
-        return False
-
-
 def init_aiokafka_instrumentation() -> bool:
     """Initialize aiokafka instrumentation."""
     try:
@@ -567,22 +539,6 @@ def init_aws_lambda_instrumentation() -> bool:
         return False
 
 
-def init_boto_instrumentation() -> bool:
-    """Initialize boto instrumentation."""
-    try:
-        if is_package_installed("boto"):
-            from opentelemetry.instrumentation.boto import BotoInstrumentor
-
-            instrumentor = BotoInstrumentor()
-            if not instrumentor.is_instrumented_by_opentelemetry:
-                instrumentor.instrument()
-        return True
-    except Exception as e:
-        logging.error(f"Error initializing boto instrumentor: {e}")
-        Telemetry().log_exception(e)
-        return False
-
-
 def init_boto3sqs_instrumentation() -> bool:
     """Initialize boto3sqs instrumentation."""
     try:
@@ -618,7 +574,7 @@ def init_botocore_instrumentation() -> bool:
 def init_cassandra_instrumentation() -> bool:
     """Initialize cassandra instrumentation."""
     try:
-        if is_package_installed("cassandra-driver"):
+        if is_package_installed("cassandra-driver") and is_package_installed("scylla-driver"):
             from opentelemetry.instrumentation.cassandra import CassandraInstrumentor
 
             instrumentor = CassandraInstrumentor()
@@ -947,22 +903,6 @@ def init_pymysql_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing pymysql instrumentor: {e}")
-        Telemetry().log_exception(e)
-        return False
-
-
-def init_pyramid_instrumentation() -> bool:
-    """Initialize pyramid instrumentation."""
-    try:
-        if is_package_installed("pyramid"):
-            from opentelemetry.instrumentation.pyramid import PyramidInstrumentor
-
-            instrumentor = PyramidInstrumentor()
-            if not instrumentor.is_instrumented_by_opentelemetry:
-                instrumentor.instrument()
-        return True
-    except Exception as e:
-        logging.error(f"Error initializing pyramid instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 

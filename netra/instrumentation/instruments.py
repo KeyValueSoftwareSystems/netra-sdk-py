@@ -90,13 +90,11 @@ NetraInstruments follows the given structure. Refer this for usage within Netra 
 
 class InstrumentSet(Enum):
     AIOHTTP = "aiohttp"
-    AIOHTTP_SERVER = "aiohttp_server"
     AIO_PIKA = "aio_pika"
     AIOKAFKA = "aiokafka"
     AIOPG = "aiopg"
     ALEPHALPHA = "alephalpha"
     ANTHROPIC = "anthropic"
-    ASGI = "asgi"
     ASYNCCLICK = "asyncclick"
     ASYNCIO = "asyncio"
     ASYNCPG = "asyncpg"
@@ -145,7 +143,6 @@ class InstrumentSet(Enum):
     PYMONGO = "pymongo"
     PYMSSQL = "pymssql"
     PYMYSQL = "pymysql"
-    PYRAMID = "pyramid"
     QDRANTDB = "qdrant_db"
     REDIS = "redis"
     REMOULADE = "remoulade"
@@ -166,5 +163,4 @@ class InstrumentSet(Enum):
     VERTEXAI = "vertexai"
     WATSONX = "watsonx"
     WEAVIATEDB = "weaviate_db"
-    WSGI = "wsgi"
 """
