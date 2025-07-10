@@ -1,17 +1,26 @@
+import json
 import logging
 import time
-from typing import Any, Dict, Literal, Optional
+from typing import Any, Dict, List, Literal, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation import set_span_in_context
+from pydantic import BaseModel
 
 from netra.config import Config
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+
+class UsageModel(BaseModel):  # type: ignore[misc]
+    model: str
+    type: str
+    unit_used: Optional[int] = None
+    cost_in_usd: Optional[float] = None
 
 
 class ATTRIBUTE:
@@ -22,15 +31,7 @@ class ATTRIBUTE:
     HEIGHT = "height"
     WIDTH = "width"
     OUTPUT_TYPE = "output_type"
-    CREDITS = "credits"
-    TOTAL_COST = "total_cost"
-    TOTAL_TOKENS = "total_tokens"
-    PROMPT_TOKENS_COST = "prompt_tokens_cost"
-    PROMPT_TOKENS = "prompt_tokens"
-    COMPLETION_TOKENS_COST = "completion_tokens_cost"
-    COMPLETION_TOKENS = "completion_tokens"
-    CACHED_TOKENS_COST = "cached_tokens_cost"
-    CACHED_TOKENS = "cached_tokens"
+    USAGE = "usage"
     STATUS = "status"
     DURATION_MS = "duration_ms"
     ERROR_MESSAGE = "error_message"
@@ -47,7 +48,7 @@ class Session:
             # External API call
             result = external_api.generate_video(...)
 
-            session.set_tokens("20").set_credits("30")
+            session.set_usage(usage_data)
     """
 
     def __init__(self, name: str, attributes: Optional[Dict[str, str]] = None, module_name: str = "combat_sdk"):
@@ -152,41 +153,11 @@ class Session:
         """Set the output type."""
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.OUTPUT_TYPE}", output_type)
 
-    def set_total_tokens(self, tokens: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_TOKENS}", tokens)
-
-    def set_prompt_tokens_cost(self, cost: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT_TOKENS_COST}", cost)
-
-    def set_prompt_tokens(self, tokens: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT_TOKENS}", tokens)
-
-    def set_completion_tokens_cost(self, cost: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.COMPLETION_TOKENS_COST}", cost)
-
-    def set_completion_tokens(self, tokens: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.COMPLETION_TOKENS}", tokens)
-
-    def set_cached_tokens_cost(self, cost: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CACHED_TOKENS_COST}", cost)
-
-    def set_cached_tokens(self, tokens: str) -> "Session":
-        """Set the number of tokens used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CACHED_TOKENS}", tokens)
-
-    def set_credits(self, credits: str) -> "Session":
-        """Set the number of credits used."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CREDITS}", credits)
-
-    def set_total_cost(self, cost: str) -> "Session":
-        """Set the cost of the operation."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_COST}", cost)
+    def set_usage(self, usage: List[UsageModel]) -> "Session":
+        """Set the usage data as a JSON string."""
+        usage_dict = [u.model_dump() for u in usage]
+        usage_json = json.dumps(usage_dict)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}", usage_json)
 
     def set_model(self, model: str) -> "Session":
         """Set the model used."""
