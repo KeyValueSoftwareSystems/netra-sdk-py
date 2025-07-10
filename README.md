@@ -587,41 +587,6 @@ pre-commit install --hook-type pre-push
 
 ## 🤝 Contributing
 
-We welcome contributions! Please follow these guidelines:
-
-### Commit Message Format
-
-We use [Conventional Commits](https://www.conventionalcommits.org/) for commit messages:
-
-```
-<type>[optional scope]: <description>
-
-[optional body]
-
-[optional footer(s)]
-```
-
-**Types:**
-- **feat**: A new feature
-- **fix**: A bug fix
-- **docs**: Documentation only changes
-- **style**: Changes that do not affect the meaning of the code
-- **refactor**: A code change that neither fixes a bug nor adds a feature
-- **perf**: A code change that improves performance
-- **test**: Adding missing tests or correcting existing tests
-- **chore**: Changes to the build process or auxiliary tools
-
-**Examples:**
-```
-feat: add support for Claude AI instrumentation
-fix(pii): resolve masking issue with nested objects
-docs: update installation instructions
-```
-
-**Scope** can be used to specify the area of change (e.g., `pii`, `instrumentation`, `decorators`).
-
-**Body** should include the motivation for the change and contrast with previous behavior.
-
-**Footer** can be used for "BREAKING CHANGE:" or issue references.
+We welcome contributions! Please see our [Contributing Guide](CONTRIBUTING.md) for detailed information on how to contribute to the project, including development setup, testing, and our commit message format.
 
 ---
