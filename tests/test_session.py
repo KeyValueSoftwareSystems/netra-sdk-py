@@ -13,6 +13,32 @@ from netra.config import Config
 from netra.session import ATTRIBUTE, Session
 
 
+class TestUsageModel:
+    """Test cases for the UsageModel class."""
+
+    def test_usage_model_initialization_with_optional_fields(self):
+        """Test UsageModel initialization with optional fields set to None."""
+        from netra.session import UsageModel
+
+        # Test with all fields provided
+        usage = UsageModel(model="gpt-4", type="text", unit_used=1000, cost_in_usd=0.02)
+        assert usage.model == "gpt-4"
+        assert usage.type == "text"
+        assert usage.unit_used == 1000
+        assert usage.cost_in_usd == 0.02
+
+    def test_usage_model_without_optional_fields(self):
+        """Test UsageModel initialization without optional fields."""
+        from netra.session import UsageModel
+
+        # Test with optional fields not provided (should default to None)
+        usage = UsageModel(model="gpt-4", type="text")
+        assert usage.model == "gpt-4"
+        assert usage.type == "text"
+        assert usage.unit_used is None
+        assert usage.cost_in_usd is None
+
+
 class TestATTRIBUTE:
     """Test cases for the ATTRIBUTE constants class."""
 
@@ -25,9 +51,6 @@ class TestATTRIBUTE:
             "NEGATIVE_PROMPT",
             "HEIGHT",
             "WIDTH",
-            "TOTAL_TOKENS",
-            "CREDITS",
-            "TOTAL_COST",
             "STATUS",
             "DURATION_MS",
             "ERROR_MESSAGE",
@@ -45,9 +68,6 @@ class TestATTRIBUTE:
         assert ATTRIBUTE.NEGATIVE_PROMPT == "negative_prompt"
         assert ATTRIBUTE.HEIGHT == "height"
         assert ATTRIBUTE.WIDTH == "width"
-        assert ATTRIBUTE.TOTAL_TOKENS == "total_tokens"
-        assert ATTRIBUTE.CREDITS == "credits"
-        assert ATTRIBUTE.TOTAL_COST == "total_cost"
         assert ATTRIBUTE.STATUS == "status"
         assert ATTRIBUTE.DURATION_MS == "duration_ms"
         assert ATTRIBUTE.ERROR_MESSAGE == "error_message"
@@ -156,27 +176,6 @@ class TestSessionAttributeSetters:
         result = self.session.set_width("768")
 
         assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.WIDTH}"] == "768"
-        assert result is self.session
-
-    def test_set_total_tokens(self):
-        """Test set_total_tokens method."""
-        result = self.session.set_total_tokens("100")
-
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_TOKENS}"] == "100"
-        assert result is self.session
-
-    def test_set_credits(self):
-        """Test set_credits method."""
-        result = self.session.set_credits("50")
-
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CREDITS}"] == "50"
-        assert result is self.session
-
-    def test_set_total_cost(self):
-        """Test set_total_cost method."""
-        result = self.session.set_total_cost("0.05")
-
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_COST}"] == "0.05"
         assert result is self.session
 
     def test_set_model(self):
