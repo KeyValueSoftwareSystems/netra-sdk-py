@@ -9,6 +9,7 @@ from unittest.mock import Mock, patch
 
 from opentelemetry.trace import SpanKind, StatusCode
 
+from netra.config import Config
 from netra.session import ATTRIBUTE, Session
 
 
@@ -22,11 +23,11 @@ class TestATTRIBUTE:
             "MODEL",
             "PROMPT",
             "NEGATIVE_PROMPT",
-            "IMAGE_HEIGHT",
-            "IMAGE_WIDTH",
-            "TOKENS",
+            "HEIGHT",
+            "WIDTH",
+            "TOTAL_TOKENS",
             "CREDITS",
-            "COST",
+            "TOTAL_COST",
             "STATUS",
             "DURATION_MS",
             "ERROR_MESSAGE",
@@ -42,11 +43,11 @@ class TestATTRIBUTE:
         assert ATTRIBUTE.MODEL == "model"
         assert ATTRIBUTE.PROMPT == "prompt"
         assert ATTRIBUTE.NEGATIVE_PROMPT == "negative_prompt"
-        assert ATTRIBUTE.IMAGE_HEIGHT == "image_height"
-        assert ATTRIBUTE.IMAGE_WIDTH == "image_width"
-        assert ATTRIBUTE.TOKENS == "tokens"
+        assert ATTRIBUTE.HEIGHT == "height"
+        assert ATTRIBUTE.WIDTH == "width"
+        assert ATTRIBUTE.TOTAL_TOKENS == "total_tokens"
         assert ATTRIBUTE.CREDITS == "credits"
-        assert ATTRIBUTE.COST == "cost"
+        assert ATTRIBUTE.TOTAL_COST == "total_cost"
         assert ATTRIBUTE.STATUS == "status"
         assert ATTRIBUTE.DURATION_MS == "duration_ms"
         assert ATTRIBUTE.ERROR_MESSAGE == "error_message"
@@ -133,63 +134,63 @@ class TestSessionAttributeSetters:
         """Test set_prompt method."""
         result = self.session.set_prompt("Test prompt")
 
-        assert self.session.attributes[ATTRIBUTE.PROMPT] == "Test prompt"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT}"] == "Test prompt"
         assert result is self.session
 
     def test_set_negative_prompt(self):
         """Test set_negative_prompt method."""
         result = self.session.set_negative_prompt("Negative prompt")
 
-        assert self.session.attributes[ATTRIBUTE.NEGATIVE_PROMPT] == "Negative prompt"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}"] == "Negative prompt"
         assert result is self.session
 
     def test_set_image_height(self):
         """Test set_image_height method."""
-        result = self.session.set_image_height("1024")
+        result = self.session.set_height("1024")
 
-        assert self.session.attributes[ATTRIBUTE.IMAGE_HEIGHT] == "1024"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.HEIGHT}"] == "1024"
         assert result is self.session
 
     def test_set_image_width(self):
         """Test set_image_width method."""
-        result = self.session.set_image_width("768")
+        result = self.session.set_width("768")
 
-        assert self.session.attributes[ATTRIBUTE.IMAGE_WIDTH] == "768"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.WIDTH}"] == "768"
         assert result is self.session
 
-    def test_set_tokens(self):
-        """Test set_tokens method."""
-        result = self.session.set_tokens("100")
+    def test_set_total_tokens(self):
+        """Test set_total_tokens method."""
+        result = self.session.set_total_tokens("100")
 
-        assert self.session.attributes[ATTRIBUTE.TOKENS] == "100"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_TOKENS}"] == "100"
         assert result is self.session
 
     def test_set_credits(self):
         """Test set_credits method."""
         result = self.session.set_credits("50")
 
-        assert self.session.attributes[ATTRIBUTE.CREDITS] == "50"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.CREDITS}"] == "50"
         assert result is self.session
 
-    def test_set_cost(self):
-        """Test set_cost method."""
-        result = self.session.set_cost("0.05")
+    def test_set_total_cost(self):
+        """Test set_total_cost method."""
+        result = self.session.set_total_cost("0.05")
 
-        assert self.session.attributes[ATTRIBUTE.COST] == "0.05"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.TOTAL_COST}"] == "0.05"
         assert result is self.session
 
     def test_set_model(self):
         """Test set_model method."""
         result = self.session.set_model("gpt-4")
 
-        assert self.session.attributes[ATTRIBUTE.MODEL] == "gpt-4"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}"] == "gpt-4"
         assert result is self.session
 
     def test_set_llm_system(self):
         """Test set_llm_system method."""
         result = self.session.set_llm_system("openai")
 
-        assert self.session.attributes[ATTRIBUTE.LLM_SYSTEM] == "openai"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.LLM_SYSTEM}"] == "openai"
         assert result is self.session
 
 
@@ -207,7 +208,7 @@ class TestSessionStatusMethods:
 
         assert self.session.status == "error"
         assert self.session.error_message == "Test error message"
-        assert self.session.attributes[ATTRIBUTE.ERROR_MESSAGE] == "Test error message"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error message"
         assert result is self.session
 
     @patch("netra.session.trace.get_tracer")
@@ -359,18 +360,20 @@ class TestSessionContextManager:
         # Verify time tracking
         assert self.session.end_time == 1234567890.623
         duration_ms = (self.session.end_time - self.session.start_time) * 1000
-        assert self.session.attributes[ATTRIBUTE.DURATION_MS] == str(round(duration_ms, 2))
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(round(duration_ms, 2))
 
         # Verify status
         assert self.session.status == "success"
-        assert self.session.attributes[ATTRIBUTE.STATUS] == "success"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "success"
         # Verify span status - check call arguments instead of Status object equality
         self.mock_span.set_status.assert_called_once()
         call_args = self.mock_span.set_status.call_args[0][0]  # Get the Status object
         assert call_args.status_code == StatusCode.OK
 
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.DURATION_MS, str(round(duration_ms, 2)))
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.STATUS, "success")
+        self.mock_span.set_attribute.assert_any_call(
+            f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}", str(round(duration_ms, 2))
+        )
+        self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", "success")
 
         # Verify span and context cleanup
         self.mock_span.end.assert_called_once()
@@ -402,13 +405,13 @@ class TestSessionContextManager:
         # Verify time tracking
         assert self.session.end_time == 1234567890.323
         duration_ms = (self.session.end_time - self.session.start_time) * 1000
-        assert self.session.attributes[ATTRIBUTE.DURATION_MS] == str(round(duration_ms, 2))
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(round(duration_ms, 2))
 
         # Verify error handling
         assert self.session.status == "error"
         assert self.session.error_message == "Test error"
-        assert self.session.attributes[ATTRIBUTE.ERROR_MESSAGE] == "Test error"
-        assert self.session.attributes[ATTRIBUTE.STATUS] == "error"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
+        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "error"
 
         # Verify span error handling - check call arguments instead of Status object equality
         self.mock_span.set_status.assert_called_once()
@@ -417,9 +420,11 @@ class TestSessionContextManager:
         assert call_args.description == "Test error"
 
         self.mock_span.record_exception.assert_called_once_with(test_exception)
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.DURATION_MS, str(round(duration_ms, 2)))
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.STATUS, "error")
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.ERROR_MESSAGE, "Test error")
+        self.mock_span.set_attribute.assert_any_call(
+            f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}", str(round(duration_ms, 2))
+        )
+        self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", "error")
+        self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", "Test error")
 
         # Verify logging
         mock_logger.error.assert_called_once_with("Session test_session failed: Test error")
@@ -450,9 +455,9 @@ class TestSessionContextManager:
 
         # Verify span operations - only duration_ms and status are set, not error_message since no exception occurred
         self.mock_span.set_attribute.assert_any_call(
-            ATTRIBUTE.DURATION_MS, str(round((1234567890.223 - 1234567890.123) * 1000, 2))
+            f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}", str(round((1234567890.223 - 1234567890.123) * 1000, 2))
         )
-        self.mock_span.set_attribute.assert_any_call(ATTRIBUTE.STATUS, "custom_status")
+        self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", "custom_status")
         # error_message is NOT set by __exit__ when there's no exception, even if manually set
         # The span status is set based on the error_message if it exists
         self.mock_span.set_status.assert_not_called()  # Fix: span.set_status should not be called
@@ -481,7 +486,7 @@ class TestSessionContextManager:
         result = self.session.__exit__(None, None, None)
 
         # Verify duration is not calculated
-        assert ATTRIBUTE.DURATION_MS not in self.session.attributes
+        assert f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}" not in self.session.attributes
 
         # Verify other functionality still works
         assert self.session.status == "success"
@@ -515,14 +520,16 @@ class TestSessionIntegration:
         assert result is session
         assert session.status == "error"
         assert session.error_message == "Test error"
-        assert session.attributes[ATTRIBUTE.ERROR_MESSAGE] == "Test error"
+        assert session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
 
         # Verify span operations - check call arguments instead of Status object equality
         mock_span.set_status.assert_called_once()
         call_args = mock_span.set_status.call_args[0][0]  # Get the Status object
         assert call_args.status_code == StatusCode.ERROR
         assert call_args.description == "Test error"
-        mock_span.set_attribute.assert_called_once_with(ATTRIBUTE.ERROR_MESSAGE, "Test error")
+        mock_span.set_attribute.assert_called_once_with(
+            f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", "Test error"
+        )
 
     @patch("netra.session.trace.get_tracer")
     def test_set_success_with_span(self, mock_get_tracer):
