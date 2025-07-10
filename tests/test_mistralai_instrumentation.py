@@ -6,6 +6,11 @@ Minimal tests focusing on core functionality and happy path scenarios.
 from typing import Collection
 from unittest.mock import Mock, patch
 
+import pytest
+
+# Skip tests if mistralai is not installed
+pytest.importorskip("mistralai")
+
 from netra.instrumentation.mistralai import MistralAiInstrumentor, _llm_request_type_by_method, should_send_prompts
 
 
