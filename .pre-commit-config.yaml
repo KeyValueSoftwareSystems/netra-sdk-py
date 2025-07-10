@@ -37,3 +37,14 @@ repos:
         stages: [commit-msg]
     -   id: commitizen-branch
         stages: [pre-push]
+
+-   repo: local
+    hooks:
+    -   id: pytest
+        name: Run tests
+        entry: pytest -xvs
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+        verbose: true

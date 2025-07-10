@@ -340,17 +340,18 @@ Netra.init(app_name="My App")
 with Netra.start_session("video_generation_task") as session:
     # Set attributes before the API call
     session.set_prompt("A cat playing piano")
-    session.set_image_height("1024")
-    session.set_image_width("1024")
+    session.set_height("1024")
+    session.set_width("1024")
+    session.set_output_type("image")
     session.set_model("stable-diffusion-xl")
 
     # Make your external API call
     result = external_api.generate_video(...)
 
     # Set post-call attributes
-    session.set_tokens("1250")
+    session.set_completion_tokens("1250")
     session.set_credits("30")
-    session.set_cost("0.15")
+    session.set_completion_tokens_cost("0.15")
 
     # Add events during session
     session.add_event("processing_completed", {"step": "rendering"})

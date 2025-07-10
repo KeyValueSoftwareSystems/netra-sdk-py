@@ -18,10 +18,10 @@ class TestTracerInitialization:
     @patch("netra.tracer.OTLPSpanExporter")
     @patch("netra.tracer.BatchSpanProcessor")
     @patch("netra.processors.SessionSpanProcessor")
-    @patch("netra.processors.SpanAggregationProcessor")
+    @patch("netra.processors.ErrorDetectionProcessor")
     def test_tracer_initialization_with_otlp_endpoint(
         self,
-        mock_span_agg_processor,
+        mock_error_detection_processor,
         mock_session_processor,
         mock_batch_processor,
         mock_otlp_exporter,
@@ -54,8 +54,8 @@ class TestTracerInitialization:
         mock_session_proc = Mock()
         mock_session_processor.return_value = mock_session_proc
 
-        mock_agg_proc = Mock()
-        mock_span_agg_processor.return_value = mock_agg_proc
+        mock_error_detection_proc = Mock()
+        mock_error_detection_processor.return_value = mock_error_detection_proc
 
         # Act
         Tracer(mock_config)
@@ -75,7 +75,7 @@ class TestTracerInitialization:
 
         # Verify span processors are added
         mock_provider.add_span_processor.assert_any_call(mock_session_proc)
-        mock_provider.add_span_processor.assert_any_call(mock_agg_proc)
+        mock_provider.add_span_processor.assert_any_call(mock_error_detection_proc)
         mock_provider.add_span_processor.assert_any_call(mock_batch_proc)
 
         # Verify batch processor creation
@@ -90,10 +90,10 @@ class TestTracerInitialization:
     @patch("netra.tracer.ConsoleSpanExporter")
     @patch("netra.tracer.SimpleSpanProcessor")
     @patch("netra.processors.SessionSpanProcessor")
-    @patch("netra.processors.SpanAggregationProcessor")
+    @patch("netra.processors.ErrorDetectionProcessor")
     def test_tracer_initialization_with_console_fallback(
         self,
-        mock_span_agg_processor,
+        mock_error_detection_processor,
         mock_session_processor,
         mock_simple_processor,
         mock_console_exporter,
@@ -144,10 +144,10 @@ class TestTracerInitialization:
     @patch("netra.tracer.OTLPSpanExporter")
     @patch("netra.tracer.BatchSpanProcessor")
     @patch("netra.processors.SessionSpanProcessor")
-    @patch("netra.processors.SpanAggregationProcessor")
+    @patch("netra.processors.ErrorDetectionProcessor")
     def test_tracer_initialization_with_minimal_config(
         self,
-        mock_span_agg_processor,
+        mock_error_detection_processor,
         mock_session_processor,
         mock_batch_processor,
         mock_otlp_exporter,
@@ -204,7 +204,7 @@ class TestTracerEndpointFormatting:
             patch("netra.tracer.OTLPSpanExporter"),
             patch("netra.tracer.BatchSpanProcessor"),
             patch("netra.processors.SessionSpanProcessor"),
-            patch("netra.processors.SpanAggregationProcessor"),
+            patch("netra.processors.ErrorDetectionProcessor"),
         ):
 
             tracer = Tracer(mock_config)
@@ -233,7 +233,7 @@ class TestTracerEndpointFormatting:
             patch("netra.tracer.OTLPSpanExporter"),
             patch("netra.tracer.BatchSpanProcessor"),
             patch("netra.processors.SessionSpanProcessor"),
-            patch("netra.processors.SpanAggregationProcessor"),
+            patch("netra.processors.ErrorDetectionProcessor"),
         ):
 
             tracer = Tracer(mock_config)
@@ -262,7 +262,7 @@ class TestTracerEndpointFormatting:
             patch("netra.tracer.OTLPSpanExporter"),
             patch("netra.tracer.BatchSpanProcessor"),
             patch("netra.processors.SessionSpanProcessor"),
-            patch("netra.processors.SpanAggregationProcessor"),
+            patch("netra.processors.ErrorDetectionProcessor"),
         ):
 
             tracer = Tracer(mock_config)
@@ -283,10 +283,10 @@ class TestTracerConfiguration:
     @patch("netra.tracer.OTLPSpanExporter")
     @patch("netra.tracer.BatchSpanProcessor")
     @patch("netra.processors.SessionSpanProcessor")
-    @patch("netra.processors.SpanAggregationProcessor")
+    @patch("netra.processors.ErrorDetectionProcessor")
     def test_tracer_with_custom_resource_attributes(
         self,
-        mock_span_agg_processor,
+        mock_error_detection_processor,
         mock_session_processor,
         mock_batch_processor,
         mock_otlp_exporter,
@@ -325,10 +325,10 @@ class TestTracerConfiguration:
     @patch("netra.tracer.OTLPSpanExporter")
     @patch("netra.tracer.SimpleSpanProcessor")
     @patch("netra.processors.SessionSpanProcessor")
-    @patch("netra.processors.SpanAggregationProcessor")
+    @patch("netra.processors.ErrorDetectionProcessor")
     def test_tracer_with_batch_disabled(
         self,
-        mock_span_agg_processor,
+        mock_error_detection_processor,
         mock_session_processor,
         mock_simple_processor,
         mock_otlp_exporter,
@@ -381,7 +381,7 @@ class TestTracerConfiguration:
             patch("netra.tracer.OTLPSpanExporter"),
             patch("netra.tracer.BatchSpanProcessor"),
             patch("netra.processors.SessionSpanProcessor"),
-            patch("netra.processors.SpanAggregationProcessor"),
+            patch("netra.processors.ErrorDetectionProcessor"),
         ):
 
             # Act

@@ -19,8 +19,9 @@ class ATTRIBUTE:
     MODEL = "model"
     PROMPT = "prompt"
     NEGATIVE_PROMPT = "negative_prompt"
-    IMAGE_HEIGHT = "image_height"
-    IMAGE_WIDTH = "image_width"
+    HEIGHT = "height"
+    WIDTH = "width"
+    OUTPUT_TYPE = "output_type"
     CREDITS = "credits"
     TOTAL_COST = "total_cost"
     TOTAL_TOKENS = "total_tokens"
@@ -139,13 +140,17 @@ class Session:
         """Set the negative prompt."""
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}", negative_prompt)
 
-    def set_image_height(self, height: str) -> "Session":
-        """Set the image height."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.IMAGE_HEIGHT}", height)
+    def set_height(self, height: str) -> "Session":
+        """Set the height."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.HEIGHT}", height)
 
-    def set_image_width(self, width: str) -> "Session":
-        """Set the image width."""
-        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.IMAGE_WIDTH}", width)
+    def set_width(self, width: str) -> "Session":
+        """Set the width."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.WIDTH}", width)
+
+    def set_output_type(self, output_type: str) -> "Session":
+        """Set the output type."""
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.OUTPUT_TYPE}", output_type)
 
     def set_total_tokens(self, tokens: str) -> "Session":
         """Set the number of tokens used."""
