@@ -24,6 +24,7 @@ from netra.decorators import (
     task,
     workflow,
 )
+from netra.session_manager import SessionManager
 
 
 class TestSerializeValue:
@@ -756,3 +757,224 @@ class TestDecoratorEdgeCases:
 
         # Verify docstring is preserved
         assert test_function.__doc__ == "Test function docstring."
+
+
+class TestEntityAttributes:
+    """Test cases for entity attribute functionality."""
+
+    def setup_method(self) -> None:
+        """Set up test fixtures."""
+        self.mock_tracer = Mock()
+        self.mock_span = Mock(spec=trace.Span)
+        self.mock_context_manager = Mock()
+        self.mock_context_manager.__enter__ = Mock(return_value=self.mock_span)
+        self.mock_context_manager.__exit__ = Mock(return_value=None)
+        self.mock_tracer.start_as_current_span.return_value = self.mock_context_manager
+
+        # Clear entity stacks before each test
+        SessionManager.clear_entity_stacks()
+
+    def teardown_method(self) -> None:
+        """Clean up after each test."""
+        # Clear entity stacks after each test
+        SessionManager.clear_entity_stacks()
+
+    def test_session_manager_entity_stack_operations(self) -> None:
+        """Test SessionManager entity stack operations."""
+        # Test initial state
+        assert SessionManager.get_stack_info() == {"workflows": [], "tasks": [], "agents": []}
+
+        # Test pushing entities
+        SessionManager.push_entity("workflow", "test_workflow")
+        SessionManager.push_entity("task", "test_task")
+        SessionManager.push_entity("agent", "test_agent")
+
+        stack_info = SessionManager.get_stack_info()
+        assert stack_info["workflows"] == ["test_workflow"]
+        assert stack_info["tasks"] == ["test_task"]
+        assert stack_info["agents"] == ["test_agent"]
+
+        # Test getting current entity attributes
+        attributes = SessionManager.get_current_entity_attributes()
+        expected_attributes = {
+            f"{Config.LIBRARY_NAME}.workflow.name": "test_workflow",
+            f"{Config.LIBRARY_NAME}.task.name": "test_task",
+            f"{Config.LIBRARY_NAME}.agent.name": "test_agent",
+        }
+        assert attributes == expected_attributes
+
+        # Test popping entities
+        popped_workflow = SessionManager.pop_entity("workflow")
+        popped_task = SessionManager.pop_entity("task")
+        popped_agent = SessionManager.pop_entity("agent")
+
+        assert popped_workflow == "test_workflow"
+        assert popped_task == "test_task"
+        assert popped_agent == "test_agent"
+
+        # Test empty stacks
+        assert SessionManager.get_stack_info() == {"workflows": [], "tasks": [], "agents": []}
+
+    def test_workflow_decorator_entity_management(self) -> None:
+        """Test workflow decorator manages entity stack correctly."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @workflow(name="test_workflow")
+            def test_workflow_func(data: Any) -> Any:
+                # Check that entity is in stack during execution
+                stack_info = SessionManager.get_stack_info()
+                assert "test_workflow" in stack_info["workflows"]
+                return data.upper()
+
+            result = test_workflow_func("hello")
+            assert result == "HELLO"
+
+            # Verify entity is removed from stack after execution
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info["workflows"] == []
+
+    def test_task_decorator_entity_management(self) -> None:
+        """Test task decorator manages entity stack correctly."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @task(name="test_task")
+            def test_task_func(data: Any) -> Any:
+                # Check that entity is in stack during execution
+                stack_info = SessionManager.get_stack_info()
+                assert "test_task" in stack_info["tasks"]
+                return data.lower()
+
+            result = test_task_func("HELLO")
+            assert result == "hello"
+
+            # Verify entity is removed from stack after execution
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info["tasks"] == []
+
+    def test_agent_decorator_entity_management(self) -> None:
+        """Test agent decorator manages entity stack correctly."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @agent(name="test_agent")
+            def test_agent_func(data: Any) -> Any:
+                # Check that entity is in stack during execution
+                stack_info = SessionManager.get_stack_info()
+                assert "test_agent" in stack_info["agents"]
+                return f"Agent processed: {data}"
+
+            result = test_agent_func("input")
+            assert result == "Agent processed: input"
+
+            # Verify entity is removed from stack after execution
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info["agents"] == []
+
+    def test_nested_entity_decorators(self) -> None:
+        """Test nested entity decorators maintain correct stack state."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @task(name="inner_task")
+            def inner_task(data: Any) -> Any:
+                # Check stack contains both workflow and task
+                stack_info = SessionManager.get_stack_info()
+                assert "outer_workflow" in stack_info["workflows"]
+                assert "inner_task" in stack_info["tasks"]
+
+                # Check attributes contain both entities
+                attributes = SessionManager.get_current_entity_attributes()
+                assert f"{Config.LIBRARY_NAME}.workflow.name" in attributes
+                assert f"{Config.LIBRARY_NAME}.task.name" in attributes
+                assert attributes[f"{Config.LIBRARY_NAME}.workflow.name"] == "outer_workflow"
+                assert attributes[f"{Config.LIBRARY_NAME}.task.name"] == "inner_task"
+
+                return data.upper()
+
+            @workflow(name="outer_workflow")
+            def outer_workflow(data: Any) -> Any:
+                # Check stack contains workflow
+                stack_info = SessionManager.get_stack_info()
+                assert "outer_workflow" in stack_info["workflows"]
+
+                # Call nested task
+                result = inner_task(data)
+                return f"Workflow result: {result}"
+
+            result = outer_workflow("test")
+            assert result == "Workflow result: TEST"
+
+            # Verify all entities are cleaned up
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info == {"workflows": [], "tasks": [], "agents": []}
+
+    def test_multiple_entities_same_type(self) -> None:
+        """Test multiple entities of the same type in stack."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @task(name="task2")
+            def task2(data: Any) -> Any:
+                # Check both tasks are in stack
+                stack_info = SessionManager.get_stack_info()
+                assert "task1" in stack_info["tasks"]
+                assert "task2" in stack_info["tasks"]
+
+                # Current task should be the most recent one
+                attributes = SessionManager.get_current_entity_attributes()
+                assert attributes[f"{Config.LIBRARY_NAME}.task.name"] == "task2"
+
+                return data.upper()
+
+            @task(name="task1")
+            def task1(data: Any) -> Any:
+                # Check first task is in stack
+                stack_info = SessionManager.get_stack_info()
+                assert "task1" in stack_info["tasks"]
+
+                # Call nested task
+                result = task2(data)
+                return f"Task1 result: {result}"
+
+            result = task1("test")
+            assert result == "Task1 result: TEST"
+
+            # Verify all tasks are cleaned up
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info["tasks"] == []
+
+    def test_entity_stack_exception_handling(self) -> None:
+        """Test entity stack is properly cleaned up even when exceptions occur."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @workflow(name="failing_workflow")
+            def failing_workflow() -> None:
+                # Check entity is in stack
+                stack_info = SessionManager.get_stack_info()
+                assert "failing_workflow" in stack_info["workflows"]
+                raise ValueError("Test exception")
+
+            with pytest.raises(ValueError, match="Test exception"):
+                failing_workflow()
+
+            # Verify entity is still cleaned up after exception
+            stack_info = SessionManager.get_stack_info()
+            assert stack_info["workflows"] == []
+
+    def test_async_entity_management(self) -> None:
+        """Test entity management with async functions."""
+        with patch("netra.decorators.trace.get_tracer", return_value=self.mock_tracer):
+
+            @agent(name="async_agent")
+            async def async_agent_func(data: Any) -> Any:
+                # Check entity is in stack during execution
+                stack_info = SessionManager.get_stack_info()
+                assert "async_agent" in stack_info["agents"]
+                return f"Async agent: {data}"
+
+            async def run_test():
+                result = await async_agent_func("test")
+                assert result == "Async agent: test"
+
+                # Verify entity is cleaned up
+                stack_info = SessionManager.get_stack_info()
+                assert stack_info["agents"] == []
+
+            asyncio.run(run_test())

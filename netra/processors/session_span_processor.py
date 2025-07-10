@@ -42,6 +42,12 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
                     value = baggage.get_baggage(f"custom.{key}", ctx)
                     if value:
                         span.set_attribute(f"{Config.LIBRARY_NAME}.custom.{key}", value)
+
+            # Add entity attributes from SessionManager
+            entity_attributes = SessionManager.get_current_entity_attributes()
+            for attr_key, attr_value in entity_attributes.items():
+                span.set_attribute(attr_key, attr_value)
+
         except Exception as e:
             logger.exception(f"Error setting span attributes: {e}")
 
