@@ -12,6 +12,7 @@ from typing import Any, Awaitable, Callable, Dict, Optional, ParamSpec, Tuple, T
 from opentelemetry import trace
 
 from .config import Config
+from .session_manager import SessionManager
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -78,6 +79,9 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Push entity to stack before span starts so SessionSpanProcessor can capture it
+            SessionManager.push_entity(entity_type, span_name)
+
             tracer = trace.get_tracer(module_name)
             with tracer.start_as_current_span(span_name) as span:
                 _add_span_attributes(span, func, args, kwargs, entity_type)
@@ -89,6 +93,9 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
                     span.record_exception(e)
                     raise
+                finally:
+                    # Pop entity from stack after function call is done
+                    SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], async_wrapper)
 
@@ -96,6 +103,9 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Push entity to stack before span starts so SessionSpanProcessor can capture it
+            SessionManager.push_entity(entity_type, span_name)
+
             tracer = trace.get_tracer(module_name)
             with tracer.start_as_current_span(span_name) as span:
                 _add_span_attributes(span, func, args, kwargs, entity_type)
@@ -107,6 +117,9 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
                     span.record_exception(e)
                     raise
+                finally:
+                    # Pop entity from stack after function call is done
+                    SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], sync_wrapper)
 

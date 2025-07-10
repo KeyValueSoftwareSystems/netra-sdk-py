@@ -5,7 +5,7 @@ Handles automatic session and user ID management for applications.
 
 import logging
 from datetime import datetime
-from typing import Any, Dict, Optional, Union
+from typing import Any, Dict, List, Optional, Union
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -21,6 +21,11 @@ class SessionManager:
 
     # Class variable to track the current span
     _current_span: Optional[trace.Span] = None
+
+    # Class variables to track separate entity stacks
+    _workflow_stack: List[str] = []
+    _task_stack: List[str] = []
+    _agent_stack: List[str] = []
 
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
@@ -41,6 +46,86 @@ class SessionManager:
             The stored current span or None if not set
         """
         return cls._current_span
+
+    @classmethod
+    def push_entity(cls, entity_type: str, entity_name: str) -> None:
+        """
+        Push an entity onto the appropriate entity stack.
+
+        Args:
+            entity_type: Type of entity (workflow, task, agent)
+            entity_name: Name of the entity
+        """
+        if entity_type == "workflow":
+            cls._workflow_stack.append(entity_name)
+        elif entity_type == "task":
+            cls._task_stack.append(entity_name)
+        elif entity_type == "agent":
+            cls._agent_stack.append(entity_name)
+
+    @classmethod
+    def pop_entity(cls, entity_type: str) -> Optional[str]:
+        """
+        Pop the most recent entity from the specified entity stack.
+
+        Args:
+            entity_type: Type of entity (workflow, task, agent)
+
+        Returns:
+            Entity name or None if stack is empty
+        """
+        if entity_type == "workflow" and cls._workflow_stack:
+            return cls._workflow_stack.pop()
+        elif entity_type == "task" and cls._task_stack:
+            return cls._task_stack.pop()
+        elif entity_type == "agent" and cls._agent_stack:
+            return cls._agent_stack.pop()
+        return None
+
+    @classmethod
+    def get_current_entity_attributes(cls) -> Dict[str, str]:
+        """
+        Get current entity attributes for span annotation.
+
+        Returns:
+            Dictionary of entity attributes to add to spans
+        """
+        attributes = {}
+
+        # Add current workflow if exists
+        if cls._workflow_stack:
+            attributes[f"{Config.LIBRARY_NAME}.workflow.name"] = cls._workflow_stack[-1]
+
+        # Add current task if exists
+        if cls._task_stack:
+            attributes[f"{Config.LIBRARY_NAME}.task.name"] = cls._task_stack[-1]
+
+        # Add current agent if exists
+        if cls._agent_stack:
+            attributes[f"{Config.LIBRARY_NAME}.agent.name"] = cls._agent_stack[-1]
+
+        return attributes
+
+    @classmethod
+    def clear_entity_stacks(cls) -> None:
+        """Clear all entity stacks."""
+        cls._workflow_stack.clear()
+        cls._task_stack.clear()
+        cls._agent_stack.clear()
+
+    @classmethod
+    def get_stack_info(cls) -> Dict[str, List[str]]:
+        """
+        Get information about all current stacks.
+
+        Returns:
+            Dictionary containing all stack contents
+        """
+        return {
+            "workflows": cls._workflow_stack.copy(),
+            "tasks": cls._task_stack.copy(),
+            "agents": cls._agent_stack.copy(),
+        }
 
     @staticmethod
     def set_session_context(session_key: str, value: Union[str, Dict[str, str]]) -> None:
