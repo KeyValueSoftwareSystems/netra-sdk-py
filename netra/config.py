@@ -86,6 +86,9 @@ class Config:
             env_tc = os.getenv("NETRA_TRACE_CONTENT")
             self.trace_content = False if (env_tc is not None and env_tc.lower() in ("0", "false")) else True
 
+        if not self.trace_content:
+            os.environ["TRACELOOP_TRACE_CONTENT"] = "false"
+
         # 7. Environment: param override, else env
         if environment is not None:
             self.environment = environment
