@@ -331,29 +331,38 @@ Netra.set_custom_event(event_name="conversion", attributes={
 Use the custom session tracking utility to track external API calls with detailed observability:
 
 ```python
-from netra import Netra
+from netra import Netra, Session
+from netra.session import UsageModel
 
-# Initialize SDK
-Netra.init(app_name="My App")
-
-# Use session context manager for tracking API calls
-with Netra.start_session("video_generation_task") as session:
-    # Set attributes before the API call
-    session.set_prompt("A cat playing piano")
+# Start a new session
+with Netra.start_session("image_generation") as session:
+    # Set session attributes
+    session.set_prompt("A beautiful sunset over mountains")
+    session.set_negative_prompt("blurry, low quality")
     session.set_height("1024")
     session.set_width("1024")
-    session.set_output_type("image")
-    session.set_model("stable-diffusion-xl")
+    session.set_model("dall-e-3")
+    session.set_llm_system("openai")
 
-    # Make your external API call
-    result = external_api.generate_video(...)
+    # Set usage data with UsageModel
+    usage_data = [
+        UsageModel(
+            model="dall-e-3",
+            type="image_generation",
+            unit_used=1,
+            cost_in_usd=0.02
+        )
+    ]
+    session.set_usage(usage_data)
 
-    # Set post-call attributes
-    session.set_completion_tokens("1250")
-    session.set_credits("30")
-    session.set_completion_tokens_cost("0.15")
+    # Your API calls here
+    # ...
 
-    # Add events during session
+    # Set custom attributes
+    session.set_attribute("custom_key", "custom_value")
+
+    # Add events
+    session.add_event("generation_started", {"step": 1, "status": "processing"})
     session.add_event("processing_completed", {"step": "rendering"})
 
 # Session automatically captures duration, status, and any errors
