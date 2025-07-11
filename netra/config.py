@@ -88,6 +88,8 @@ class Config:
 
         if not self.trace_content:
             os.environ["TRACELOOP_TRACE_CONTENT"] = "false"
+        else:
+            os.environ["TRACELOOP_TRACE_CONTENT"] = "true"
 
         # 7. Environment: param override, else env
         if environment is not None:
