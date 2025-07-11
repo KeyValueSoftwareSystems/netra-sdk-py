@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Optional
+from typing import Any, Optional, Union
 
 import httpx
 from opentelemetry.sdk.trace import SpanProcessor
@@ -66,9 +66,13 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
         # Wrap set_status
         original_set_status = span.set_status
 
-        def wrapped_set_status(status: Status) -> Any:
+        def wrapped_set_status(status: Union[Status, StatusCode]) -> Any:
             # Check if status code is ERROR
-            if status.status_code == StatusCode.ERROR:
+            if isinstance(status, Status):
+                status_code = status.status_code
+            elif isinstance(status, StatusCode):
+                status_code = status
+            if status_code == StatusCode.ERROR:
                 event_attributes = {
                     "has_error": True,
                 }
