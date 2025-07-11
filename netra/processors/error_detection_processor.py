@@ -3,7 +3,7 @@ from typing import Any, Optional
 
 import httpx
 from opentelemetry.sdk.trace import SpanProcessor
-from opentelemetry.trace import Context, Span
+from opentelemetry.trace import Context, Span, Status, StatusCode
 
 from netra import Netra
 
@@ -63,4 +63,18 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
 
             return original_set_attribute(key, value)
 
+        # Wrap set_status
+        original_set_status = span.set_status
+
+        def wrapped_set_status(status: Status) -> Any:
+            # Check if status code is ERROR
+            if status.status_code == StatusCode.ERROR:
+                event_attributes = {
+                    "has_error": True,
+                }
+                Netra.set_custom_event(event_name="error_detected", attributes=event_attributes)
+
+            return original_set_status(status)
+
         span.set_attribute = wrapped_set_attribute
+        span.set_status = wrapped_set_status

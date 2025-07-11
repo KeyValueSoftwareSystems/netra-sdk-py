@@ -91,7 +91,6 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     return result
                 except Exception as e:
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
                     raise
                 finally:
                     # Pop entity from stack after function call is done
@@ -115,7 +114,6 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     return result
                 except Exception as e:
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
                     raise
                 finally:
                     # Pop entity from stack after function call is done
