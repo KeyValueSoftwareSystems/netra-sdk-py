@@ -1,7 +1,7 @@
 """
-Unit tests for the netra.session module.
+Unit tests for the netra.span_wrapper module.
 
-This module tests the Session class and ATTRIBUTE constants used for
+This module tests the SpanWrapper class and ATTRIBUTE constants used for
 tracking observability data with OpenTelemetry integration.
 """
 
@@ -10,7 +10,7 @@ from unittest.mock import Mock, patch
 from opentelemetry.trace import SpanKind, StatusCode
 
 from netra.config import Config
-from netra.session import ATTRIBUTE, Session
+from netra.span_wrapper import ATTRIBUTE, SpanWrapper
 
 
 class TestUsageModel:
@@ -18,7 +18,7 @@ class TestUsageModel:
 
     def test_usage_model_initialization_with_optional_fields(self):
         """Test UsageModel initialization with optional fields set to None."""
-        from netra.session import UsageModel
+        from netra.span_wrapper import UsageModel
 
         # Test with all fields provided
         usage = UsageModel(model="gpt-4", type="text", unit_used=1000, cost_in_usd=0.02)
@@ -29,7 +29,7 @@ class TestUsageModel:
 
     def test_usage_model_without_optional_fields(self):
         """Test UsageModel initialization without optional fields."""
-        from netra.session import UsageModel
+        from netra.span_wrapper import UsageModel
 
         # Test with optional fields not provided (should default to None)
         usage = UsageModel(model="gpt-4", type="text")
@@ -49,8 +49,6 @@ class TestATTRIBUTE:
             "MODEL",
             "PROMPT",
             "NEGATIVE_PROMPT",
-            "HEIGHT",
-            "WIDTH",
             "STATUS",
             "DURATION_MS",
             "ERROR_MESSAGE",
@@ -66,151 +64,136 @@ class TestATTRIBUTE:
         assert ATTRIBUTE.MODEL == "model"
         assert ATTRIBUTE.PROMPT == "prompt"
         assert ATTRIBUTE.NEGATIVE_PROMPT == "negative_prompt"
-        assert ATTRIBUTE.HEIGHT == "height"
-        assert ATTRIBUTE.WIDTH == "width"
+
         assert ATTRIBUTE.STATUS == "status"
         assert ATTRIBUTE.DURATION_MS == "duration_ms"
         assert ATTRIBUTE.ERROR_MESSAGE == "error_message"
 
 
-class TestSessionInitialization:
-    """Test cases for Session class initialization."""
+class TestSpanWrapperInitialization:
+    """Test cases for SpanWrapper class initialization."""
 
-    @patch("netra.session.trace.get_tracer")
-    def test_session_initialization_with_defaults(self, mock_get_tracer):
-        """Test Session initialization with default parameters."""
+    @patch("netra.span_wrapper.trace.get_tracer")
+    def test_span_wrapper_initialization_with_defaults(self, mock_get_tracer):
+        """Test SpanWrapper initialization with default parameters."""
         mock_tracer = Mock()
         mock_get_tracer.return_value = mock_tracer
 
-        session = Session("test_session")
+        span_wrapper = SpanWrapper("test_span")
 
-        assert session.name == "test_session"
-        assert session.attributes == {}
-        assert session.start_time is None
-        assert session.end_time is None
-        assert session.status == "pending"
-        assert session.error_message is None
-        assert session.module_name == "combat_sdk"
-        assert session.tracer == mock_tracer
-        assert session.span is None
-        assert session.context_token is None
+        assert span_wrapper.name == "test_span"
+        assert span_wrapper.attributes == {}
+        assert span_wrapper.start_time is None
+        assert span_wrapper.end_time is None
+        assert span_wrapper.status == "pending"
+        assert span_wrapper.error_message is None
+        assert span_wrapper.module_name == "combat_sdk"
+        assert span_wrapper.tracer == mock_tracer
+        assert span_wrapper.span is None
+        assert span_wrapper.context_token is None
 
         mock_get_tracer.assert_called_once_with("combat_sdk")
 
-    @patch("netra.session.trace.get_tracer")
-    def test_session_initialization_with_custom_parameters(self, mock_get_tracer):
-        """Test Session initialization with custom parameters."""
+    @patch("netra.span_wrapper.trace.get_tracer")
+    def test_span_wrapper_initialization_with_custom_parameters(self, mock_get_tracer):
+        """Test SpanWrapper initialization with custom parameters."""
         mock_tracer = Mock()
         mock_get_tracer.return_value = mock_tracer
 
         custom_attributes = {"key1": "value1", "key2": "value2"}
-        session = Session("custom_session", attributes=custom_attributes, module_name="custom_module")
+        span_wrapper = SpanWrapper("custom_span", attributes=custom_attributes, module_name="custom_module")
 
-        assert session.name == "custom_session"
-        assert session.attributes == custom_attributes
-        assert session.module_name == "custom_module"
-        assert session.tracer == mock_tracer
+        assert span_wrapper.name == "custom_span"
+        assert span_wrapper.attributes == custom_attributes
+        assert span_wrapper.module_name == "custom_module"
+        assert span_wrapper.tracer == mock_tracer
 
         mock_get_tracer.assert_called_once_with("custom_module")
 
-    @patch("netra.session.trace.get_tracer")
-    def test_session_initialization_with_none_attributes(self, mock_get_tracer):
-        """Test Session initialization with None attributes defaults to empty dict."""
+    @patch("netra.span_wrapper.trace.get_tracer")
+    def test_span_wrapper_initialization_with_none_attributes(self, mock_get_tracer):
+        """Test SpanWrapper initialization with None attributes defaults to empty dict."""
         mock_tracer = Mock()
         mock_get_tracer.return_value = mock_tracer
 
-        session = Session("test_session", attributes=None)
+        span_wrapper = SpanWrapper("test_span", attributes=None)
 
-        assert session.attributes == {}
+        assert span_wrapper.attributes == {}
 
 
-class TestSessionAttributeSetters:
-    """Test cases for Session attribute setter methods."""
+class TestSpanWrapperAttributeSetters:
+    """Test cases for SpanWrapper attribute setter methods."""
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
-        with patch("netra.session.trace.get_tracer"):
-            self.session = Session("test_session")
+        with patch("netra.span_wrapper.trace.get_tracer"):
+            self.span_wrapper = SpanWrapper("test_span")
 
     def test_set_attribute_basic(self):
         """Test basic set_attribute functionality."""
-        result = self.session.set_attribute("test_key", "test_value")
+        result = self.span_wrapper.set_attribute("test_key", "test_value")
 
-        assert self.session.attributes["test_key"] == "test_value"
-        assert result is self.session  # Method chaining
+        assert self.span_wrapper.attributes["test_key"] == "test_value"
+        assert result is self.span_wrapper  # Method chaining
 
     def test_set_attribute_with_span(self):
         """Test set_attribute when span exists."""
         mock_span = Mock()
-        self.session.span = mock_span
+        self.span_wrapper.span = mock_span
 
-        result = self.session.set_attribute("test_key", "test_value")
+        result = self.span_wrapper.set_attribute("test_key", "test_value")
 
-        assert self.session.attributes["test_key"] == "test_value"
+        assert self.span_wrapper.attributes["test_key"] == "test_value"
         mock_span.set_attribute.assert_called_once_with("test_key", "test_value")
-        assert result is self.session
+        assert result is self.span_wrapper
 
     def test_set_prompt(self):
         """Test set_prompt method."""
-        result = self.session.set_prompt("Test prompt")
+        result = self.span_wrapper.set_prompt("Test prompt")
 
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT}"] == "Test prompt"
-        assert result is self.session
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT}"] == "Test prompt"
+        assert result is self.span_wrapper
 
     def test_set_negative_prompt(self):
         """Test set_negative_prompt method."""
-        result = self.session.set_negative_prompt("Negative prompt")
+        result = self.span_wrapper.set_negative_prompt("Negative prompt")
 
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}"] == "Negative prompt"
-        assert result is self.session
-
-    def test_set_image_height(self):
-        """Test set_image_height method."""
-        result = self.session.set_height("1024")
-
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.HEIGHT}"] == "1024"
-        assert result is self.session
-
-    def test_set_image_width(self):
-        """Test set_image_width method."""
-        result = self.session.set_width("768")
-
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.WIDTH}"] == "768"
-        assert result is self.session
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}"] == "Negative prompt"
+        assert result is self.span_wrapper
 
     def test_set_model(self):
         """Test set_model method."""
-        result = self.session.set_model("gpt-4")
+        result = self.span_wrapper.set_model("gpt-4")
 
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}"] == "gpt-4"
-        assert result is self.session
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}"] == "gpt-4"
+        assert result is self.span_wrapper
 
     def test_set_llm_system(self):
         """Test set_llm_system method."""
-        result = self.session.set_llm_system("openai")
+        result = self.span_wrapper.set_llm_system("openai")
 
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.LLM_SYSTEM}"] == "openai"
-        assert result is self.session
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.LLM_SYSTEM}"] == "openai"
+        assert result is self.span_wrapper
 
 
-class TestSessionStatusMethods:
-    """Test cases for Session status and error management methods."""
+class TestSpanWrapperStatusMethods:
+    """Test cases for SpanWrapper status and error management methods."""
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
-        with patch("netra.session.trace.get_tracer"):
-            self.session = Session("test_session")
+        with patch("netra.span_wrapper.trace.get_tracer"):
+            self.span_wrapper = SpanWrapper("test_span")
 
     def test_set_error_without_span(self):
         """Test set_error method when no span exists."""
-        result = self.session.set_error("Test error message")
+        result = self.span_wrapper.set_error("Test error message")
 
-        assert self.session.status == "error"
-        assert self.session.error_message == "Test error message"
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error message"
-        assert result is self.session
+        assert self.span_wrapper.status == "error"
+        assert self.span_wrapper.error_message == "Test error message"
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error message"
+        assert result is self.span_wrapper
 
-    @patch("netra.session.trace.get_tracer")
+    @patch("netra.span_wrapper.trace.get_tracer")
     def test_set_success_with_span(self, mock_get_tracer):
         """Test set_success method when span exists."""
         # Setup
@@ -219,15 +202,15 @@ class TestSessionStatusMethods:
         mock_tracer.start_span.return_value = mock_span
         mock_get_tracer.return_value = mock_tracer
 
-        session = Session("test")
-        session.span = mock_span
+        span_wrapper = SpanWrapper("test")
+        span_wrapper.span = mock_span
 
         # Act
-        result = session.set_success()
+        result = span_wrapper.set_success()
 
         # Assert
-        assert result is session
-        assert session.status == "success"
+        assert result is span_wrapper
+        assert span_wrapper.status == "success"
         # set_success only sets span status, not attributes
         mock_span.set_attribute.assert_not_called()
 
@@ -238,66 +221,66 @@ class TestSessionStatusMethods:
 
     def test_set_success_without_span(self):
         """Test set_success method when no span exists."""
-        result = self.session.set_success()
+        result = self.span_wrapper.set_success()
 
-        assert self.session.status == "success"
-        assert result is self.session
+        assert self.span_wrapper.status == "success"
+        assert result is self.span_wrapper
 
     def test_get_current_span(self):
         """Test get_current_span method."""
         mock_span = Mock()
-        self.session.span = mock_span
+        self.span_wrapper.span = mock_span
 
-        result = self.session.get_current_span()
+        result = self.span_wrapper.get_current_span()
 
         assert result is mock_span
 
     def test_get_current_span_none(self):
         """Test get_current_span method when span is None."""
-        result = self.session.get_current_span()
+        result = self.span_wrapper.get_current_span()
 
         assert result is None
 
 
-class TestSessionEventMethods:
-    """Test cases for Session event handling methods."""
+class TestSpanWrapperEventMethods:
+    """Test cases for SpanWrapper event handling methods."""
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
-        with patch("netra.session.trace.get_tracer"):
-            self.session = Session("test_session")
+        with patch("netra.span_wrapper.trace.get_tracer"):
+            self.span_wrapper = SpanWrapper("test_span")
 
     def test_add_event_without_span(self):
         """Test add_event method when no span exists."""
-        result = self.session.add_event("test_event", {"key": "value"})
+        result = self.span_wrapper.add_event("test_event", {"key": "value"})
 
         # Should not raise an error and return self for chaining
-        assert result is self.session
+        assert result is self.span_wrapper
 
     def test_add_event_with_span_and_attributes(self):
         """Test add_event method when span exists with attributes."""
         mock_span = Mock()
-        self.session.span = mock_span
+        self.span_wrapper.span = mock_span
 
         attributes = {"key1": "value1", "key2": "value2"}
-        result = self.session.add_event("test_event", attributes)
+        result = self.span_wrapper.add_event("test_event", attributes)
 
         mock_span.add_event.assert_called_once_with("test_event", attributes)
-        assert result is self.session
+        assert result is self.span_wrapper
 
     def test_add_event_with_span_no_attributes(self):
         """Test add_event method when span exists without attributes."""
         mock_span = Mock()
-        self.session.span = mock_span
+        self.span_wrapper.span = mock_span
 
-        result = self.session.add_event("test_event")
+        result = self.span_wrapper.add_event("test_event")
 
         mock_span.add_event.assert_called_once_with("test_event", {})
-        assert result is self.session
+        assert result is self.span_wrapper
 
 
-class TestSessionContextManager:
-    """Test cases for Session context manager behavior (__enter__ and __exit__)."""
+class TestSpanWrapperContextManager:
+    """Test cases for SpanWrapper context manager behavior (__enter__ and __exit__)."""
 
     def setup_method(self):
         """Set up test fixtures before each test method."""
@@ -305,13 +288,13 @@ class TestSessionContextManager:
         self.mock_span = Mock()
         self.mock_tracer.start_span.return_value = self.mock_span
 
-        with patch("netra.session.trace.get_tracer", return_value=self.mock_tracer):
-            self.session = Session("test_session", {"initial_key": "initial_value"})
+        with patch("netra.span_wrapper.trace.get_tracer", return_value=self.mock_tracer):
+            self.span_wrapper = SpanWrapper("test_span", {"initial_key": "initial_value"})
 
-    @patch("netra.session.time.time")
-    @patch("netra.session.set_span_in_context")
-    @patch("netra.session.context_api.attach")
-    @patch("netra.session.logger")
+    @patch("netra.span_wrapper.time.time")
+    @patch("netra.span_wrapper.set_span_in_context")
+    @patch("netra.span_wrapper.context_api.attach")
+    @patch("netra.span_wrapper.logger")
     def test_enter_method(self, mock_logger, mock_attach, mock_set_span_in_context, mock_time):
         """Test __enter__ method functionality."""
         mock_time.return_value = 1234567890.123
@@ -320,50 +303,52 @@ class TestSessionContextManager:
         mock_token = Mock()
         mock_attach.return_value = mock_token
 
-        result = self.session.__enter__()
+        result = self.span_wrapper.__enter__()
 
         # Verify time tracking
-        assert self.session.start_time == 1234567890.123
+        assert self.span_wrapper.start_time == 1234567890.123
 
         # Verify span creation
         self.mock_tracer.start_span.assert_called_once_with(
-            name="test_session", kind=SpanKind.CLIENT, attributes={"initial_key": "initial_value"}
+            name="test_span", kind=SpanKind.CLIENT, attributes={"initial_key": "initial_value"}
         )
-        assert self.session.span is self.mock_span
+        assert self.span_wrapper.span is self.mock_span
 
         # Verify context management
         mock_set_span_in_context.assert_called_once_with(self.mock_span)
         mock_attach.assert_called_once_with(mock_context)
-        assert self.session.context_token is mock_token
+        assert self.span_wrapper.context_token is mock_token
 
         # Verify logging
-        mock_logger.info.assert_called_once_with("Started session: test_session")
+        mock_logger.info.assert_called_once_with("Started span wrapper: test_span")
 
         # Verify return value
-        assert result is self.session
+        assert result is self.span_wrapper
 
-    @patch("netra.session.time.time")
-    @patch("netra.session.context_api.detach")
-    @patch("netra.session.logger")
+    @patch("netra.span_wrapper.time.time")
+    @patch("netra.span_wrapper.context_api.detach")
+    @patch("netra.span_wrapper.logger")
     def test_exit_method_success_no_exception(self, mock_logger, mock_detach, mock_time):
         """Test __exit__ method with successful completion (no exception)."""
-        # Setup session state
-        self.session.start_time = 1234567890.123
+        # Setup span wrapper state
+        self.span_wrapper.start_time = 1234567890.123
         mock_time.return_value = 1234567890.623  # 500ms later
-        self.session.span = self.mock_span
+        self.span_wrapper.span = self.mock_span
         mock_token = Mock()
-        self.session.context_token = mock_token
+        self.span_wrapper.context_token = mock_token
 
-        result = self.session.__exit__(None, None, None)
+        result = self.span_wrapper.__exit__(None, None, None)
 
         # Verify time tracking
-        assert self.session.end_time == 1234567890.623
-        duration_ms = (self.session.end_time - self.session.start_time) * 1000
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(round(duration_ms, 2))
+        assert self.span_wrapper.end_time == 1234567890.623
+        duration_ms = (self.span_wrapper.end_time - self.span_wrapper.start_time) * 1000
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(
+            round(duration_ms, 2)
+        )
 
         # Verify status
-        assert self.session.status == "success"
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "success"
+        assert self.span_wrapper.status == "success"
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "success"
         # Verify span status - check call arguments instead of Status object equality
         self.mock_span.set_status.assert_called_once()
         call_args = self.mock_span.set_status.call_args[0][0]  # Get the Status object
@@ -379,38 +364,40 @@ class TestSessionContextManager:
         mock_detach.assert_called_once_with(mock_token)
 
         # Verify logging
-        mock_logger.info.assert_called_once_with("Ended session: test_session (Status: success, Duration: 500.00ms)")
+        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: success, Duration: 500.00ms)")
 
         # Verify return value (should not suppress exceptions)
         assert result is False
 
-    @patch("netra.session.time.time")
-    @patch("netra.session.context_api.detach")
-    @patch("netra.session.logger")
+    @patch("netra.span_wrapper.time.time")
+    @patch("netra.span_wrapper.context_api.detach")
+    @patch("netra.span_wrapper.logger")
     def test_exit_method_with_exception(self, mock_logger, mock_detach, mock_time):
         """Test __exit__ method when an exception occurs."""
-        # Setup session state
-        self.session.start_time = 1234567890.123
+        # Setup span wrapper state
+        self.span_wrapper.start_time = 1234567890.123
         mock_time.return_value = 1234567890.323  # 200ms later
-        self.session.span = self.mock_span
+        self.span_wrapper.span = self.mock_span
         mock_token = Mock()
-        self.session.context_token = mock_token
+        self.span_wrapper.context_token = mock_token
 
         # Create test exception
         test_exception = ValueError("Test error")
 
-        result = self.session.__exit__(ValueError, test_exception, None)
+        result = self.span_wrapper.__exit__(ValueError, test_exception, None)
 
         # Verify time tracking
-        assert self.session.end_time == 1234567890.323
-        duration_ms = (self.session.end_time - self.session.start_time) * 1000
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(round(duration_ms, 2))
+        assert self.span_wrapper.end_time == 1234567890.323
+        duration_ms = (self.span_wrapper.end_time - self.span_wrapper.start_time) * 1000
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}"] == str(
+            round(duration_ms, 2)
+        )
 
         # Verify error handling
-        assert self.session.status == "error"
-        assert self.session.error_message == "Test error"
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
-        assert self.session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "error"
+        assert self.span_wrapper.status == "error"
+        assert self.span_wrapper.error_message == "Test error"
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}"] == "error"
 
         # Verify span error handling - check call arguments instead of Status object equality
         self.mock_span.set_status.assert_called_once()
@@ -426,31 +413,31 @@ class TestSessionContextManager:
         self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", "Test error")
 
         # Verify logging
-        mock_logger.error.assert_called_once_with("Session test_session failed: Test error")
-        mock_logger.info.assert_called_once_with("Ended session: test_session (Status: error, Duration: 200.00ms)")
+        mock_logger.error.assert_called_once_with("Span wrapper test_span failed: Test error")
+        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: error, Duration: 200.00ms)")
 
         # Verify return value (should not suppress exceptions)
         assert result is False
 
-    @patch("netra.session.time.time")
-    @patch("netra.session.context_api.detach")
-    @patch("netra.session.logger")
+    @patch("netra.span_wrapper.time.time")
+    @patch("netra.span_wrapper.context_api.detach")
+    @patch("netra.span_wrapper.logger")
     def test_exit_method_with_manual_status_change(self, mock_logger, mock_detach, mock_time):
         """Test __exit__ method when status was manually changed before exit."""
-        # Setup session state with manual status change
-        self.session.start_time = 1234567890.123
+        # Setup span wrapper state with manual status change
+        self.span_wrapper.start_time = 1234567890.123
         mock_time.return_value = 1234567890.223  # 100ms later
-        self.session.span = self.mock_span
-        self.session.status = "custom_status"  # Manually set status
-        self.session.error_message = "custom_error"
+        self.span_wrapper.span = self.mock_span
+        self.span_wrapper.status = "custom_status"  # Manually set status
+        self.span_wrapper.error_message = "custom_error"
         mock_token = Mock()
-        self.session.context_token = mock_token
+        self.span_wrapper.context_token = mock_token
 
-        result = self.session.__exit__(None, None, None)
+        result = self.span_wrapper.__exit__(None, None, None)
 
         # Verify that status is not overridden to "success"
-        assert self.session.status == "custom_status"
-        assert self.session.error_message == "custom_error"
+        assert self.span_wrapper.status == "custom_status"
+        assert self.span_wrapper.error_message == "custom_error"
 
         # Verify span operations - only duration_ms and status are set, not error_message since no exception occurred
         self.mock_span.set_attribute.assert_any_call(
@@ -467,40 +454,40 @@ class TestSessionContextManager:
 
         # Verify logging
         mock_logger.info.assert_called_once_with(
-            "Ended session: test_session (Status: custom_status, Duration: 100.00ms)"
+            "Ended span wrapper: test_span (Status: custom_status, Duration: 100.00ms)"
         )
 
         # Verify return value (should not suppress exceptions)
         assert result is False
 
-    @patch("netra.session.time.time")
-    @patch("netra.session.context_api.detach")
-    @patch("netra.session.logger")
+    @patch("netra.span_wrapper.time.time")
+    @patch("netra.span_wrapper.context_api.detach")
+    @patch("netra.span_wrapper.logger")
     def test_exit_method_no_start_time(self, mock_logger, mock_detach, mock_time):
         """Test __exit__ method when start_time is None."""
-        # Setup session state without start_time
-        self.session.start_time = None
-        self.session.span = self.mock_span
+        # Setup span wrapper state without start_time
+        self.span_wrapper.start_time = None
+        self.span_wrapper.span = self.mock_span
 
-        result = self.session.__exit__(None, None, None)
+        result = self.span_wrapper.__exit__(None, None, None)
 
         # Verify duration is not calculated
-        assert f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}" not in self.session.attributes
+        assert f"{Config.LIBRARY_NAME}.{ATTRIBUTE.DURATION_MS}" not in self.span_wrapper.attributes
 
         # Verify other functionality still works
-        assert self.session.status == "success"
+        assert self.span_wrapper.status == "success"
 
         # Verify logging without duration
-        mock_logger.info.assert_called_once_with("Ended session: test_session (Status: success)")
+        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: success)")
 
         # Verify return value (should not suppress exceptions)
         assert result is False
 
 
-class TestSessionIntegration:
-    """Integration tests for Session as a context manager."""
+class TestSpanWrapperIntegration:
+    """Integration tests for SpanWrapper as a context manager."""
 
-    @patch("netra.session.trace.get_tracer")
+    @patch("netra.span_wrapper.trace.get_tracer")
     def test_set_error_with_span(self, mock_get_tracer):
         """Test set_error method when span exists."""
         # Setup
@@ -509,17 +496,17 @@ class TestSessionIntegration:
         mock_tracer.start_span.return_value = mock_span
         mock_get_tracer.return_value = mock_tracer
 
-        session = Session("test")
-        session.span = mock_span
+        span_wrapper = SpanWrapper("test")
+        span_wrapper.span = mock_span
 
         # Act
-        result = session.set_error("Test error")
+        result = span_wrapper.set_error("Test error")
 
         # Assert
-        assert result is session
-        assert session.status == "error"
-        assert session.error_message == "Test error"
-        assert session.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
+        assert result is span_wrapper
+        assert span_wrapper.status == "error"
+        assert span_wrapper.error_message == "Test error"
+        assert span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}"] == "Test error"
 
         # Verify span operations - check call arguments instead of Status object equality
         mock_span.set_status.assert_called_once()
@@ -530,7 +517,7 @@ class TestSessionIntegration:
             f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", "Test error"
         )
 
-    @patch("netra.session.trace.get_tracer")
+    @patch("netra.span_wrapper.trace.get_tracer")
     def test_set_success_with_span(self, mock_get_tracer):
         """Test set_success method when span exists."""
         # Setup
@@ -539,15 +526,15 @@ class TestSessionIntegration:
         mock_tracer.start_span.return_value = mock_span
         mock_get_tracer.return_value = mock_tracer
 
-        session = Session("test")
-        session.span = mock_span
+        span_wrapper = SpanWrapper("test")
+        span_wrapper.span = mock_span
 
         # Act
-        result = session.set_success()
+        result = span_wrapper.set_success()
 
         # Assert
-        assert result is session
-        assert session.status == "success"
+        assert result is span_wrapper
+        assert span_wrapper.status == "success"
         # set_success only sets span status, not attributes
         mock_span.set_attribute.assert_not_called()
 
