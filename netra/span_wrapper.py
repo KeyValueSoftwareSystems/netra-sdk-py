@@ -18,8 +18,8 @@ logger = logging.getLogger(__name__)
 
 class UsageModel(BaseModel):  # type: ignore[misc]
     model: str
-    type: str
-    unit_used: Optional[int] = None
+    usage_type: str
+    units_used: Optional[int] = None
     cost_in_usd: Optional[float] = None
 
 

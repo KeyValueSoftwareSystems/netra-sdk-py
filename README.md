@@ -345,8 +345,8 @@ with Netra.start_span("image_generation") as span:
     usage_data = [
         UsageModel(
             model="dall-e-3",
-            type="image_generation",
-            unit_used=1,
+            usage_type="image_generation",
+            units_used=1,
             cost_in_usd=0.02
         )
     ]

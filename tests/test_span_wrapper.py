@@ -21,10 +21,10 @@ class TestUsageModel:
         from netra.span_wrapper import UsageModel
 
         # Test with all fields provided
-        usage = UsageModel(model="gpt-4", type="text", unit_used=1000, cost_in_usd=0.02)
+        usage = UsageModel(model="gpt-4", usage_type="text", units_used=1000, cost_in_usd=0.02)
         assert usage.model == "gpt-4"
-        assert usage.type == "text"
-        assert usage.unit_used == 1000
+        assert usage.usage_type == "text"
+        assert usage.units_used == 1000
         assert usage.cost_in_usd == 0.02
 
     def test_usage_model_without_optional_fields(self):
@@ -32,10 +32,10 @@ class TestUsageModel:
         from netra.span_wrapper import UsageModel
 
         # Test with optional fields not provided (should default to None)
-        usage = UsageModel(model="gpt-4", type="text")
+        usage = UsageModel(model="gpt-4", usage_type="text")
         assert usage.model == "gpt-4"
-        assert usage.type == "text"
-        assert usage.unit_used is None
+        assert usage.usage_type == "text"
+        assert usage.units_used is None
         assert usage.cost_in_usd is None
 
 
