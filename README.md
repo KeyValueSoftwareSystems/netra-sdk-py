@@ -326,46 +326,44 @@ Netra.set_custom_event(event_name="conversion", attributes={
     "value": 99.99
 })
 ```
-## 🔄 Custom Session Tracking
+## 🔄 Custom Span Tracking
 
-Use the custom session tracking utility to track external API calls with detailed observability:
+Use the custom span tracking utility to track external API calls with detailed observability:
 
 ```python
-from netra import Netra, Session
-from netra.session import UsageModel
+from netra import Netra, UsageModel
 
-# Start a new session
-with Netra.start_session("image_generation") as session:
-    # Set session attributes
-    session.set_prompt("A beautiful sunset over mountains")
-    session.set_negative_prompt("blurry, low quality")
-    session.set_height("1024")
-    session.set_width("1024")
-    session.set_model("dall-e-3")
-    session.set_llm_system("openai")
+# Start a new span
+with Netra.start_span("image_generation") as span:
+    # Set span attributes
+    span.set_prompt("A beautiful sunset over mountains")
+    span.set_negative_prompt("blurry, low quality")
+    span.set_model("dall-e-3")
+    span.set_llm_system("openai")
 
     # Set usage data with UsageModel
     usage_data = [
         UsageModel(
             model="dall-e-3",
-            type="image_generation",
-            unit_used=1,
+            usage_type="image_generation",
+            units_used=1,
             cost_in_usd=0.02
         )
     ]
-    session.set_usage(usage_data)
+    span.set_usage(usage_data)
 
     # Your API calls here
     # ...
 
     # Set custom attributes
-    session.set_attribute("custom_key", "custom_value")
+    span.set_attribute("custom_key", "custom_value")
 
     # Add events
-    session.add_event("generation_started", {"step": 1, "status": "processing"})
-    session.add_event("processing_completed", {"step": "rendering"})
+    span.add_event("generation_started", {"step": "1", "status": "processing"})
+    span.add_event("processing_completed", {"step": "rendering"})
 
-# Session automatically captures duration, status, and any errors
+    # Get the current active open telemetry span
+    current_span = span.get_current_span()
 ```
 
 ## 🔧 Advanced Configuration

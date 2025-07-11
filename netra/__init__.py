@@ -8,8 +8,8 @@ from .config import Config
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
-from .session import Session
 from .session_manager import SessionManager
+from .span_wrapper import SpanWrapper, UsageModel
 from .tracer import Tracer
 
 logger = logging.getLogger(__name__)
@@ -133,16 +133,16 @@ class Netra:
         SessionManager.set_custom_event(event_name, attributes)
 
     @classmethod
-    def start_session(
+    def start_span(
         cls,
         name: str,
         attributes: Optional[Dict[str, str]] = None,
         module_name: str = "combat_sdk",
-    ) -> Session:
+    ) -> SpanWrapper:
         """
         Start a new session.
         """
-        return Session(name, attributes, module_name)
+        return SpanWrapper(name, attributes, module_name)
 
 
-__all__ = ["Netra"]
+__all__ = ["Netra", "UsageModel"]
