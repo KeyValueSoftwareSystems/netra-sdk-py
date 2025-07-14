@@ -1,9 +1,9 @@
 import logging
-from typing import Any, Optional, Union
+from typing import Any, Optional
 
 import httpx
 from opentelemetry.sdk.trace import SpanProcessor
-from opentelemetry.trace import Context, Span, Status, StatusCode
+from opentelemetry.trace import Context, Span
 
 from netra import Netra
 
@@ -48,8 +48,8 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
 
     def _status_code_processing(self, status_code: int) -> None:
         if httpx.codes.is_error(status_code):
-            event_attributes = {"has_error": True, "status_code": status_code}
-            Netra.set_custom_event(event_name="error_detected", attributes=event_attributes)
+            event_attributes = {"exception.message": status_code}
+            Netra.set_custom_event(event_name="exception", attributes=event_attributes)
 
     def _wrap_span_methods(self, span: Span, span_id: str) -> Any:
         """Wrap span methods to capture attributes and events."""
@@ -63,22 +63,4 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
 
             return original_set_attribute(key, value)
 
-        # Wrap set_status
-        original_set_status = span.set_status
-
-        def wrapped_set_status(status: Union[Status, StatusCode]) -> Any:
-            # Check if status code is ERROR
-            if isinstance(status, Status):
-                status_code = status.status_code
-            elif isinstance(status, StatusCode):
-                status_code = status
-            if status_code == StatusCode.ERROR:
-                event_attributes = {
-                    "has_error": True,
-                }
-                Netra.set_custom_event(event_name="error_detected", attributes=event_attributes)
-
-            return original_set_status(status)
-
         span.set_attribute = wrapped_set_attribute
-        span.set_status = wrapped_set_status
