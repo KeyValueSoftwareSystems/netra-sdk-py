@@ -4,8 +4,7 @@ from typing import Any, Optional
 import httpx
 from opentelemetry.sdk.trace import SpanProcessor
 from opentelemetry.trace import Context, Span
-
-from netra import Netra
+from starlette.exceptions import HTTPException
 
 logger = logging.getLogger(__name__)
 
@@ -46,10 +45,12 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
         except Exception:
             return None
 
-    def _status_code_processing(self, status_code: int) -> None:
+    def _status_code_processing(self, status_code: int, span: Span) -> None:
         if httpx.codes.is_error(status_code):
-            event_attributes = {"exception.message": status_code}
-            Netra.set_custom_event(event_name="exception", attributes=event_attributes)
+            try:
+                raise HTTPException(status_code=status_code)
+            except Exception as e:
+                span.record_exception(exception=e)
 
     def _wrap_span_methods(self, span: Span, span_id: str) -> Any:
         """Wrap span methods to capture attributes and events."""
@@ -59,7 +60,7 @@ class ErrorDetectionProcessor(SpanProcessor):  # type: ignore[misc]
         def wrapped_set_attribute(key: str, value: Any) -> Any:
             # Status code processing
             if key == "http.status_code":
-                self._status_code_processing(value)
+                self._status_code_processing(value, span)
 
             return original_set_attribute(key, value)
 
