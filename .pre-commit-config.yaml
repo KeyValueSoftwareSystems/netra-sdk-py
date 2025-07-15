@@ -30,3 +30,13 @@ repos:
     hooks:
     -   id: mypy
         exclude: ^(tests|examples)/
+-   repo: local
+    hooks:
+    -   id: pytest
+        name: Run tests
+        entry: pytest -xvs
+        language: system
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+        verbose: true
