@@ -9,6 +9,7 @@ class CustomInstruments(Enum):
     COHEREAI = "cohere_ai"
     HTTPX = "httpx"
     MISTRALAI = "mistral_ai"
+    OPENAI = "openai"
     QDRANTDB = "qdrant_db"
     WEAVIATEDB = "weaviate_db"
     GOOGLE_GENERATIVEAI = "google_genai"
