@@ -13,6 +13,42 @@ from netra.config import Config
 from netra.span_wrapper import ATTRIBUTE, SpanWrapper
 
 
+class TestActionModel:
+    """Test cases for the ActionModel class."""
+
+    def test_action_model_initialization(self):
+        """Test ActionModel initialization with all fields."""
+        from netra.span_wrapper import ActionModel
+
+        action = ActionModel(
+            action="DB",
+            action_type="INSERT",
+            affected_records=[{"record_id": "123", "record_type": "user"}],
+            metadata={"id": "adfadf", "duration": "10"},
+            success=True,
+        )
+
+        assert action.action == "DB"
+        assert action.action_type == "INSERT"
+        assert len(action.affected_records) == 1
+        assert action.affected_records[0]["record_id"] == "123"
+        assert action.affected_records[0]["record_type"] == "user"
+        assert action.metadata == {"id": "adfadf", "duration": "10"}
+        assert action.success is True
+
+    def test_action_model_with_minimal_fields(self):
+        """Test ActionModel initialization with only required fields."""
+        from netra.span_wrapper import ActionModel
+
+        action = ActionModel(action="DB", action_type="SELECT", success=False)
+
+        assert action.action == "DB"
+        assert action.action_type == "SELECT"
+        assert action.affected_records == None
+        assert action.metadata == None
+        assert action.success is False
+
+
 class TestUsageModel:
     """Test cases for the UsageModel class."""
 
@@ -49,6 +85,7 @@ class TestATTRIBUTE:
             "MODEL",
             "PROMPT",
             "NEGATIVE_PROMPT",
+            "ACTION",
             "STATUS",
             "DURATION_MS",
             "ERROR_MESSAGE",
@@ -64,7 +101,7 @@ class TestATTRIBUTE:
         assert ATTRIBUTE.MODEL == "model"
         assert ATTRIBUTE.PROMPT == "prompt"
         assert ATTRIBUTE.NEGATIVE_PROMPT == "negative_prompt"
-
+        assert ATTRIBUTE.ACTION == "action"
         assert ATTRIBUTE.STATUS == "status"
         assert ATTRIBUTE.DURATION_MS == "duration_ms"
         assert ATTRIBUTE.ERROR_MESSAGE == "error_message"
@@ -166,6 +203,58 @@ class TestSpanWrapperAttributeSetters:
         result = self.span_wrapper.set_model("gpt-4")
 
         assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}"] == "gpt-4"
+        assert result is self.span_wrapper
+
+    def test_set_action(self):
+        """Test set_action method with ActionModel."""
+        from netra.span_wrapper import ActionModel
+
+        action = ActionModel(
+            action="DB",
+            action_type="INSERT",
+            success=True,
+            affected_records=[{"record_id": "123", "record_type": "user"}],
+            metadata={"id": "adfadf", "duration": "10"},
+        )
+
+        result = self.span_wrapper.set_action([action])
+
+        # The action should be serialized to JSON in the attributes
+        expected_json = (
+            '[{"action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
+            ': [{"record_id": "123", "record_type": "user"}], "metadata"'
+            ': {"id": "adfadf", "duration": "10"}}]'
+        )
+
+        assert self.span_wrapper.attributes[f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ACTION}"] == expected_json
+        assert result is self.span_wrapper
+
+    def test_set_action_with_span(self):
+        """Test set_action when span exists."""
+        from netra.span_wrapper import ActionModel
+
+        # Setup mock span
+        mock_span = Mock()
+        self.span_wrapper.span = mock_span
+
+        action = ActionModel(
+            action="DB",
+            action_type="INSERT",
+            affected_records=[{"record_id": "123", "record_type": "user"}],
+            metadata={"id": "adfadf", "duration": "10"},
+            success=True,
+        )
+
+        result = self.span_wrapper.set_action([action])
+
+        # Verify span.set_attribute was called with the correct arguments
+        expected_json = (
+            '[{"action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
+            ': [{"record_id": "123", "record_type": "user"}], "metadata"'
+            ': {"id": "adfadf", "duration": "10"}}]'
+        )
+
+        mock_span.set_attribute.assert_called_once_with(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ACTION}", expected_json)
         assert result is self.span_wrapper
 
     def test_set_llm_system(self):
