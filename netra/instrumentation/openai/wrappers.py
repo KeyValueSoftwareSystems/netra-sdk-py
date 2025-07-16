@@ -143,6 +143,7 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
                 span.end()
                 raise
         else:
@@ -196,6 +197,7 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
                 span.end()
                 raise
         else:
@@ -248,6 +250,7 @@ def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
                 span.end()
                 raise
         else:
@@ -302,6 +305,7 @@ def acompletion_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
                 span.end()
                 raise
         else:
