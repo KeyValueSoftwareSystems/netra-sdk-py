@@ -9,7 +9,7 @@ from .config import Config
 # Instrumentor functions
 from .instrumentation import init_instrumentations
 from .session_manager import SessionManager
-from .span_wrapper import SpanWrapper, UsageModel
+from .span_wrapper import ActionModel, SpanWrapper, UsageModel
 from .tracer import Tracer
 
 logger = logging.getLogger(__name__)
@@ -145,4 +145,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name)
 
 
-__all__ = ["Netra", "UsageModel"]
+__all__ = ["Netra", "UsageModel", "ActionModel"]

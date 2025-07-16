@@ -16,6 +16,14 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 
+class ActionModel(BaseModel):  # type: ignore[misc]
+    action: str
+    action_type: str
+    success: bool
+    affected_records: Optional[List[Dict[str, str]]] = None
+    metadata: Optional[Dict[str, str]] = None
+
+
 class UsageModel(BaseModel):  # type: ignore[misc]
     model: str
     usage_type: str
@@ -32,6 +40,7 @@ class ATTRIBUTE:
     STATUS = "status"
     DURATION_MS = "duration_ms"
     ERROR_MESSAGE = "error_message"
+    ACTION = "action"
 
 
 class SpanWrapper:
@@ -143,6 +152,12 @@ class SpanWrapper:
         usage_dict = [u.model_dump() for u in usage]
         usage_json = json.dumps(usage_dict)
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}", usage_json)
+
+    def set_action(self, action: List[ActionModel]) -> "SpanWrapper":
+        """Set the action data as a JSON string."""
+        action_dict = [a.model_dump() for a in action]
+        action_json = json.dumps(action_dict)
+        return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ACTION}", action_json)
 
     def set_model(self, model: str) -> "SpanWrapper":
         """Set the model used."""
