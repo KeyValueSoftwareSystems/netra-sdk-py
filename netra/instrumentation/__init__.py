@@ -37,6 +37,7 @@ def init_instrumentations(
             Instruments.QDRANT,
             Instruments.GOOGLE_GENERATIVEAI,
             Instruments.MISTRAL,
+            Instruments.OPENAI,
         }
     )
     if instruments is not None and traceloop_instruments is None and traceloop_block_instruments is None:
@@ -81,6 +82,10 @@ def init_instrumentations(
 
     if CustomInstruments.MISTRALAI in netra_custom_instruments:
         init_mistral_instrumentor()
+
+    # Initialize OpenAI instrumentation.
+    if CustomInstruments.OPENAI in netra_custom_instruments:
+        init_openai_instrumentation()
 
     # Initialize aio_pika instrumentation.
     if CustomInstruments.AIO_PIKA in netra_custom_instruments:
@@ -412,6 +417,26 @@ def init_mistral_instrumentor() -> bool:
         return True
     except Exception as e:
         logging.error(f"-----Error initializing Mistral instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_openai_instrumentation() -> bool:
+    """Initialize OpenAI instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("openai"):
+            from netra.instrumentation.openai import NetraOpenAIInstrumentor
+
+            instrumentor = NetraOpenAIInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing OpenAI instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 
