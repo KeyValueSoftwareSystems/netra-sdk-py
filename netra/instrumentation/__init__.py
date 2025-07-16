@@ -287,7 +287,7 @@ def init_fastapi_instrumentation() -> bool:
     """
     try:
         if is_package_installed("fastapi"):
-            from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+            from netra.instrumentation.fastapi import FastAPIInstrumentor
 
             instrumentor = FastAPIInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:

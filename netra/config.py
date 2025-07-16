@@ -51,7 +51,7 @@ class Config:
         if isinstance(headers, str):
             self.headers = parse_env_headers(headers)
 
-        if self.otlp_endpoint == "https://api.dev.getcombat.ai" and not self.api_key:
+        if self.otlp_endpoint in ["https://api.dev.getcombat.ai", "https://api.eu.getnetra.ai"] and not self.api_key:
             print("Error: Missing Netra API key, go to https://app.dev.getcombat.ai/api-key to create one")
             print("Set the NETRA_API_KEY environment variable to the key")
             return
@@ -59,7 +59,7 @@ class Config:
         # Handle API key authentication based on OTLP endpoint
         if self.api_key and self.otlp_endpoint:
             # For Netra endpoints, use x-api-key header
-            if "getcombat" in self.otlp_endpoint.lower():
+            if "getcombat" in self.otlp_endpoint.lower() or "getnetra" in self.otlp_endpoint.lower():
                 if not self.headers:
                     self.headers = {"x-api-key": self.api_key}
                 elif "x-api-key" not in self.headers:
