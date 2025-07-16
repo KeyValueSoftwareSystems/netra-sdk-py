@@ -1,0 +1,167 @@
+from enum import Enum
+from typing import Any
+
+from traceloop.sdk import Instruments
+
+
+class CustomInstruments(Enum):
+    AIOHTTP = "aiohttp"
+    COHEREAI = "cohere_ai"
+    HTTPX = "httpx"
+    MISTRALAI = "mistral_ai"
+    OPENAI = "openai"
+    QDRANTDB = "qdrant_db"
+    WEAVIATEDB = "weaviate_db"
+    GOOGLE_GENERATIVEAI = "google_genai"
+    FASTAPI = "fastapi"
+    AIO_PIKA = "aio_pika"
+    AIOHTTP_SERVER = "aiohttp_server"
+    AIOKAFKA = "aiokafka"
+    AIOPG = "aiopg"
+    ASGI = "asgi"
+    ASYNCCLICK = "asyncclick"
+    ASYNCIO = "asyncio"
+    ASYNCPG = "asyncpg"
+    AWS_LAMBDA = "aws_lambda"
+    BOTO = "boto"
+    BOTO3SQS = "boto3sqs"
+    BOTOCORE = "botocore"
+    CASSANDRA = "cassandra"
+    CELERY = "celery"
+    CLICK = "click"
+    CONFLUENT_KAFKA = "confluent_kafka"
+    DBAPI = "dbapi"
+    DJANGO = "django"
+    ELASTICSEARCH = "elasticsearch"
+    FALCON = "falcon"
+    FLASK = "flask"
+    GRPC = "grpc"
+    JINJA2 = "jinja2"
+    KAFKA_PYTHON = "kafka_python"
+    LOGGING = "logging"
+    MYSQL = "mysql"
+    MYSQLCLIENT = "mysqlclient"
+    PIKA = "pika"
+    PSYCOPG = "psycopg"
+    PSYCOPG2 = "psycopg2"
+    PYMEMCACHE = "pymemcache"
+    PYMONGO = "pymongo"
+    PYMSSQL = "pymssql"
+    PYMYSQL = "pymysql"
+    PYRAMID = "pyramid"
+    REDIS = "redis"
+    REMOULADE = "remoulade"
+    REQUESTS = "requests"
+    SQLALCHEMY = "sqlalchemy"
+    SQLITE3 = "sqlite3"
+    STARLETTE = "starlette"
+    SYSTEM_METRICS = "system_metrics"
+    THREADING = "threading"
+    TORNADO = "tornado"
+    TORTOISEORM = "tortoiseorm"
+    URLLIB = "urllib"
+    URLLIB3 = "urllib3"
+    WSGI = "wsgi"
+
+
+class NetraInstruments(Enum):
+    """Custom enum that stores the original enum class in an 'origin' attribute."""
+
+    def __new__(cls: Any, value: Any, origin: Any = None) -> Any:
+        member = object.__new__(cls)
+        member._value_ = value
+        member.origin = origin
+        return member
+
+
+merged_members = {}
+
+for member in Instruments:
+    merged_members[member.name] = (member.value, Instruments)
+
+for member in CustomInstruments:
+    merged_members[member.name] = (member.value, CustomInstruments)
+
+InstrumentSet = NetraInstruments("InstrumentSet", merged_members)
+
+
+#####################################################################################
+"""
+NetraInstruments follows the given structure. Refer this for usage within Netra SDK:
+
+class InstrumentSet(Enum):
+    AIOHTTP = "aiohttp"
+    AIO_PIKA = "aio_pika"
+    AIOKAFKA = "aiokafka"
+    AIOPG = "aiopg"
+    ALEPHALPHA = "alephalpha"
+    ANTHROPIC = "anthropic"
+    ASYNCCLICK = "asyncclick"
+    ASYNCIO = "asyncio"
+    ASYNCPG = "asyncpg"
+    AWS_LAMBDA = "aws_lambda"
+    BEDROCK = "bedrock"
+    BOTO = "boto"
+    BOTO3SQS = "boto3sqs"
+    BOTOCORE = "botocore"
+    CASSANDRA = "cassandra"
+    CELERY = "celery"
+    CHROMA = "chroma"
+    CLICK = "click"
+    COHEREAI = "cohere_ai"
+    CONFLUENT_KAFKA = "confluent_kafka"
+    CREW = "crew"
+    DBAPI = "dbapi"
+    DJANGO = "django"
+    ELASTICSEARCH = "elasticsearch"
+    FALCON = "falcon"
+    FASTAPI = "fastapi"
+    FLASK = "flask"
+    GOOGLE_GENERATIVEAI = "google_genai"
+    GROQ = "groq"
+    GRPC = "grpc"
+    HAYSTACK = "haystack"
+    HTTPX = "httpx"
+    JINJA2 = "jinja2"
+    KAFKA_PYTHON = "kafka_python"
+    LANCEDB = "lancedb"
+    LANGCHAIN = "langchain"
+    LLAMA_INDEX = "llama_index"
+    LOGGING = "logging"
+    MARQO = "marqo"
+    MCP = "mcp"
+    MILVUS = "milvus"
+    MISTRALAI = "mistral_ai"
+    MYSQL = "mysql"
+    MYSQLCLIENT = "mysqlclient"
+    OLLAMA = "ollama"
+    OPENAI = "openai"
+    PIKA = "pika"
+    PINECONE = "pinecone"
+    PSYCOPG = "psycopg"
+    PSYCOPG2 = "psycopg2"
+    PYMEMCACHE = "pymemcache"
+    PYMONGO = "pymongo"
+    PYMSSQL = "pymssql"
+    PYMYSQL = "pymysql"
+    QDRANTDB = "qdrant_db"
+    REDIS = "redis"
+    REMOULADE = "remoulade"
+    REPLICATE = "replicate"
+    REQUESTS = "requests"
+    SAGEMAKER = "sagemaker"
+    SQLALCHEMY = "sqlalchemy"
+    SQLITE3 = "sqlite3"
+    STARLETTE = "starlette"
+    SYSTEM_METRICS = "system_metrics"
+    THREADING = "threading"
+    TOGETHER = "together"
+    TORNADO = "tornado"
+    TORTOISEORM = "tortoiseorm"
+    TRANSFORMERS = "transformers"
+    URLLIB = "urllib"
+    URLLIB3 = "urllib3"
+    VERTEXAI = "vertexai"
+    WATSONX = "watsonx"
+    WEAVIATEDB = "weaviate_db"
+"""

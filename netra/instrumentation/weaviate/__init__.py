@@ -1,0 +1,121 @@
+"""OpenTelemetry Weaviate instrumentation"""
+
+import importlib
+import logging
+from typing import Collection, Optional
+
+from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.instrumentation.utils import unwrap
+from opentelemetry.instrumentation.weaviate.config import Config
+from opentelemetry.instrumentation.weaviate.version import __version__
+from opentelemetry.instrumentation.weaviate.wrapper import _wrap
+from opentelemetry.trace import get_tracer
+from wrapt import wrap_function_wrapper
+
+logger = logging.getLogger(__name__)
+
+_instruments = ("weaviate-client >= 3.26.0, <5",)
+
+WRAPPED_METHODS = [
+    {
+        "module": "weaviate.collections.collections",
+        "object": "_Collections",
+        "method": "get",
+        "span_name": "db.weaviate.collections.get",
+    },
+    {
+        "module": "weaviate.collections.collections",
+        "object": "_Collections",
+        "method": "create",
+        "span_name": "db.weaviate.collections.create",
+    },
+    {
+        "module": "weaviate.collections.collections",
+        "object": "_Collections",
+        "method": "create_from_dict",
+        "span_name": "db.weaviate.collections.create_from_dict",
+    },
+    {
+        "module": "weaviate.collections.collections",
+        "object": "_Collections",
+        "method": "delete",
+        "span_name": "db.weaviate.collections.delete",
+    },
+    {
+        "module": "weaviate.collections.collections",
+        "object": "_Collections",
+        "method": "delete_all",
+        "span_name": "db.weaviate.collections.delete_all",
+    },
+    {
+        "module": "weaviate.collections.data",
+        "object": "_DataCollection",
+        "method": "insert",
+        "span_name": "db.weaviate.collections.data.insert",
+    },
+    {
+        "module": "weaviate.collections.data",
+        "object": "_DataCollection",
+        "method": "replace",
+        "span_name": "db.weaviate.collections.data.replace",
+    },
+    {
+        "module": "weaviate.collections.data",
+        "object": "_DataCollection",
+        "method": "update",
+        "span_name": "db.weaviate.collections.data.update",
+    },
+    {
+        "module": "weaviate.collections.batch.collection",
+        "object": "_BatchCollection",
+        "method": "add_object",
+        "span_name": "db.weaviate.collections.batch.add_object",
+    },
+    {
+        "module": "weaviate.collections.grpc.query",
+        "object": "_QueryGRPC",
+        "method": "get",
+        "span_name": "db.weaviate.collections.query.get",
+    },
+    {
+        "module": "weaviate.client",
+        "object": "WeaviateClient",
+        "method": "graphql_raw_query",
+        "span_name": "db.weaviate.client.graphql_raw_query",
+    },
+]
+
+
+class WeaviateInstrumentor(BaseInstrumentor):  # type: ignore[misc]
+    """An instrumentor for Weaviate's client library."""
+
+    def __init__(self, exception_logger: Optional[logging.Logger] = None):
+        super().__init__()
+        Config.exception_logger = exception_logger
+
+    def instrumentation_dependencies(self) -> Collection[str]:
+        return _instruments
+
+    def _instrument(self, **kwargs):  # type: ignore[no-untyped-def]
+        tracer_provider = kwargs.get("tracer_provider")
+        tracer = get_tracer(__name__, __version__, tracer_provider)
+        for wrapped_method in WRAPPED_METHODS:
+            wrap_module = wrapped_method.get("module")
+            wrap_object = wrapped_method.get("object")
+            wrap_method = wrapped_method.get("method")
+            module = importlib.import_module(wrap_module)  # type: ignore[arg-type]
+            if getattr(module, wrap_object, None):  # type: ignore[arg-type]
+                wrap_function_wrapper(
+                    wrap_module,
+                    f"{wrap_object}.{wrap_method}",
+                    _wrap(tracer, wrapped_method),
+                )
+
+    def _uninstrument(self, **kwargs):  # type: ignore[no-untyped-def]
+        for wrapped_method in WRAPPED_METHODS:
+            wrap_module = wrapped_method.get("module")
+            wrap_object = wrapped_method.get("object")
+            module = importlib.import_module(wrap_module)  # type: ignore[arg-type]
+            wrapped = getattr(module, wrap_object, None)  # type: ignore[arg-type]
+            if wrapped:
+                unwrap(wrapped, wrapped_method.get("method"))
