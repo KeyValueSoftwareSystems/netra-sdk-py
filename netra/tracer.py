@@ -66,10 +66,9 @@ class Tracer:
                 headers=self.cfg.headers,
             )
         # Add span processors for session span processing and data aggregation processing
-        from netra.processors import ErrorDetectionProcessor, SessionSpanProcessor
+        from netra.processors import SessionSpanProcessor
 
         provider.add_span_processor(SessionSpanProcessor())
-        provider.add_span_processor(ErrorDetectionProcessor())
 
         # Install appropriate span processor
         if self.cfg.disable_batch:
