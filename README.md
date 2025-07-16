@@ -364,6 +364,58 @@ with Netra.start_span("image_generation") as span:
 
     # Get the current active open telemetry span
     current_span = span.get_current_span()
+
+    # Track database operations and other actions
+    action = ActionModel(
+        action="DB",
+        action_type="INSERT",
+        affected_records=[
+            {"record_id": "user_123", "record_type": "user"},
+            {"record_id": "profile_456", "record_type": "profile"}
+        ],
+        metadata={
+            "table": "users",
+            "operation_id": "tx_789",
+            "duration_ms": "45"
+        },
+        success=True
+    )
+    span.set_action([action])
+
+    # Record API calls
+    api_action = ActionModel(
+        action="API",
+        action_type="CALL",
+        metadata={
+            "endpoint": "/api/v1/process",
+            "method": "POST",
+            "status_code": 200,
+            "duration_ms": "120"
+        },
+        success=True
+    )
+    span.set_action([api_action])
+```
+
+### Action Tracking Schema
+
+Action tracking follows this schema:
+
+```python
+[
+    {
+        "action": str,                # Type of action (e.g., "DB", "API", "CACHE")
+        "action_type": str,           # Action subtype (e.g., "INSERT", "SELECT", "CALL")
+        "affected_records": [         # Optional: List of records affected
+            {
+                "record_id": str,     # ID of the affected record
+                "record_type": str    # Type of the record
+            }
+        ],
+        "metadata": Dict[str, str],   # Additional metadata as key-value pairs
+        "success": bool              # Whether the action succeeded
+    }
+]
 ```
 
 ## 🔧 Advanced Configuration
