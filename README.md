@@ -406,7 +406,7 @@ Action tracking follows this schema:
 ```python
 [
     {
-        "start_time": str,            # Start time of the action
+        "start_time": str,            # Start time of the action in ISO 8601 format with microseconds and Z suffix (e.g., 2025-07-18T14:30:45.123456Z)
         "action": str,                # Type of action (e.g., "DB", "API", "CACHE")
         "action_type": str,           # Action subtype (e.g., "INSERT", "SELECT", "CALL")
         "affected_records": [         # Optional: List of records affected
