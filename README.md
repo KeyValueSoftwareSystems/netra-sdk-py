@@ -367,6 +367,7 @@ with Netra.start_span("image_generation") as span:
 
     # Track database operations and other actions
     action = ActionModel(
+        start_time="2025-07-18T10:29:30.855287Z",
         action="DB",
         action_type="INSERT",
         affected_records=[
@@ -384,6 +385,7 @@ with Netra.start_span("image_generation") as span:
 
     # Record API calls
     api_action = ActionModel(
+        start_time="2025-07-18T10:29:30.855287Z",
         action="API",
         action_type="CALL",
         metadata={
@@ -404,6 +406,7 @@ Action tracking follows this schema:
 ```python
 [
     {
+        "start_time": str,            # Start time of the action
         "action": str,                # Type of action (e.g., "DB", "API", "CACHE")
         "action_type": str,           # Action subtype (e.g., "INSERT", "SELECT", "CALL")
         "affected_records": [         # Optional: List of records affected

@@ -1,6 +1,7 @@
 import json
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Dict, List, Literal, Optional
 
 from opentelemetry import context as context_api
@@ -17,6 +18,7 @@ logger = logging.getLogger(__name__)
 
 
 class ActionModel(BaseModel):  # type: ignore[misc]
+    start_time: str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
     action: str
     action_type: str
     success: bool
