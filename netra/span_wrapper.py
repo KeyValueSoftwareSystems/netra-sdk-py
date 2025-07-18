@@ -28,7 +28,7 @@ class ActionModel(BaseModel):  # type: ignore[misc]
 
     @field_validator("start_time")  # type: ignore[misc]
     @classmethod
-    def validate_time_format(cls, value: str) -> None:
+    def validate_time_format(cls, value: str) -> str:
         """Validate that start_time is in ISO 8601 format with microseconds and Z suffix."""
         # Pattern for ISO 8601 with microseconds: YYYY-MM-DDTHH:MM:SS.ffffffZ
         pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
@@ -39,6 +39,7 @@ class ActionModel(BaseModel):  # type: ignore[misc]
                 f"YYYY-MM-DDTHH:MM:SS.ffffffZ (e.g., 2025-07-18T14:30:45.123456Z). "
                 f"Got: {value}"
             )
+        return value
 
 
 class UsageModel(BaseModel):  # type: ignore[misc]
