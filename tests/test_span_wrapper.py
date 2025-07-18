@@ -21,6 +21,7 @@ class TestActionModel:
         from netra.span_wrapper import ActionModel
 
         action = ActionModel(
+            start_time="2025-07-18T10:29:30.855287Z",
             action="DB",
             action_type="INSERT",
             affected_records=[{"record_id": "123", "record_type": "user"}],
@@ -28,6 +29,7 @@ class TestActionModel:
             success=True,
         )
 
+        assert action.start_time == "2025-07-18T10:29:30.855287Z"
         assert action.action == "DB"
         assert action.action_type == "INSERT"
         assert len(action.affected_records) == 1
@@ -40,8 +42,9 @@ class TestActionModel:
         """Test ActionModel initialization with only required fields."""
         from netra.span_wrapper import ActionModel
 
-        action = ActionModel(action="DB", action_type="SELECT", success=False)
+        action = ActionModel(start_time="2025-07-18T10:29:30.855287Z", action="DB", action_type="SELECT", success=False)
 
+        assert action.start_time == "2025-07-18T10:29:30.855287Z"
         assert action.action == "DB"
         assert action.action_type == "SELECT"
         assert action.affected_records == None
@@ -210,6 +213,7 @@ class TestSpanWrapperAttributeSetters:
         from netra.span_wrapper import ActionModel
 
         action = ActionModel(
+            start_time="2025-07-18T10:29:30.855287Z",
             action="DB",
             action_type="INSERT",
             success=True,
@@ -221,7 +225,7 @@ class TestSpanWrapperAttributeSetters:
 
         # The action should be serialized to JSON in the attributes
         expected_json = (
-            '[{"action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
+            '[{"start_time": "2025-07-18T10:29:30.855287Z", "action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
             ': [{"record_id": "123", "record_type": "user"}], "metadata"'
             ': {"id": "adfadf", "duration": "10"}}]'
         )
@@ -238,6 +242,7 @@ class TestSpanWrapperAttributeSetters:
         self.span_wrapper.span = mock_span
 
         action = ActionModel(
+            start_time="2025-07-18T10:29:30.855287Z",
             action="DB",
             action_type="INSERT",
             affected_records=[{"record_id": "123", "record_type": "user"}],
@@ -249,7 +254,7 @@ class TestSpanWrapperAttributeSetters:
 
         # Verify span.set_attribute was called with the correct arguments
         expected_json = (
-            '[{"action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
+            '[{"start_time": "2025-07-18T10:29:30.855287Z", "action": "DB", "action_type": "INSERT", "success": true, "affected_records"'
             ': [{"record_id": "123", "record_type": "user"}], "metadata"'
             ': {"id": "adfadf", "duration": "10"}}]'
         )
