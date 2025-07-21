@@ -88,7 +88,10 @@ class Netra:
         Args:
             session_id: Session identifier
         """
-        SessionManager.set_session_context("session_id", session_id)
+        if session_id:
+            SessionManager.set_session_context("session_id", session_id)
+        else:
+            logger.warning("Session ID must be provided for setting session_id.")
 
     @classmethod
     def set_user_id(cls, user_id: str) -> None:
@@ -98,7 +101,10 @@ class Netra:
         Args:
             user_id: User identifier
         """
-        SessionManager.set_session_context("user_id", user_id)
+        if user_id:
+            SessionManager.set_session_context("user_id", user_id)
+        else:
+            logger.warning("User ID must be provided for setting user_id.")
 
     @classmethod
     def set_tenant_id(cls, tenant_id: str) -> None:
@@ -108,7 +114,10 @@ class Netra:
         Args:
             user_account_id: User account identifier
         """
-        SessionManager.set_session_context("tenant_id", tenant_id)
+        if tenant_id:
+            SessionManager.set_session_context("tenant_id", tenant_id)
+        else:
+            logger.warning("Tenant ID must be provided for setting tenant_id.")
 
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
@@ -119,7 +128,10 @@ class Netra:
             key: Custom attribute key
             value: Custom attribute value
         """
-        SessionManager.set_session_context("custom_attributes", {key: value})
+        if key and value:
+            SessionManager.set_session_context("custom_attributes", {key: value})
+        else:
+            logger.warning("Both key and value must be provided for custom attributes.")
 
     @classmethod
     def set_custom_event(cls, event_name: str, attributes: Any) -> None:
@@ -130,7 +142,10 @@ class Netra:
             event_name: Name of the custom event
             attributes: Attributes of the custom event
         """
-        SessionManager.set_custom_event(event_name, attributes)
+        if event_name and attributes:
+            SessionManager.set_custom_event(event_name, attributes)
+        else:
+            logger.warning("Both event_name and attributes must be provided for custom events.")
 
     @classmethod
     def start_span(
