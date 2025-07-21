@@ -12,6 +12,9 @@ from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
+from opentelemetry.semconv_ai import (
+    SpanAttributes,
+)
 from opentelemetry.trace import Span, SpanKind, Tracer
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
@@ -55,34 +58,39 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         return
 
     # Set operation type
-    span.set_attribute("llm.request.type", operation_type)
+    span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
 
     # Common attributes
     if kwargs.get("model"):
-        span.set_attribute("llm.request.model", kwargs["model"])
+        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MODEL}", kwargs["model"])
 
     if kwargs.get("temperature") is not None:
-        span.set_attribute("llm.request.temperature", kwargs["temperature"])
+        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TEMPERATURE}", kwargs["temperature"])
 
     if kwargs.get("max_tokens") is not None:
-        span.set_attribute("llm.request.max_tokens", kwargs["max_tokens"])
+        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs["max_tokens"])
 
     if kwargs.get("stream") is not None:
-        span.set_attribute("llm.stream", kwargs["stream"])
+        span.set_attribute("gen_ai.stream", kwargs["stream"])
 
     # Chat-specific attributes
     if operation_type == "chat" and kwargs.get("messages"):
         messages = kwargs["messages"]
         if isinstance(messages, list) and len(messages) > 0:
-            span.set_attribute("llm.prompts.0.role", messages[0].get("role", ""))
-            span.set_attribute("llm.prompts.0.content", str(messages[0].get("content", "")))
+            for index, message in enumerate(messages):
+                if hasattr(message, "content"):
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", "user")
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", message.content)
+                elif isinstance(message, dict):
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", "")))
 
     # Response-specific attributes
     if operation_type == "response":
         if kwargs.get("instructions"):
-            span.set_attribute("llm.instructions", kwargs["instructions"])
+            span.set_attribute("gen_ai.instructions", kwargs["instructions"])
         if kwargs.get("input"):
-            span.set_attribute("llm.input", kwargs["input"])
+            span.set_attribute("gen_ai.input", kwargs["input"])
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -91,33 +99,36 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
         return
 
     if response_dict.get("model"):
-        span.set_attribute("llm.response.model", response_dict["model"])
+        span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
 
     if response_dict.get("id"):
-        span.set_attribute("llm.response.id", response_dict["id"])
+        span.set_attribute("gen_ai.response.id", response_dict["id"])
 
     # Usage information
     usage = response_dict.get("usage", {})
     if usage:
         if usage.get("prompt_tokens"):
-            span.set_attribute("llm.usage.prompt_tokens", usage["prompt_tokens"])
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
         if usage.get("completion_tokens"):
-            span.set_attribute("llm.usage.completion_tokens", usage["completion_tokens"])
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
+        if usage.get("cache_read_input_token"):
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_token"])
         if usage.get("total_tokens"):
-            span.set_attribute("llm.usage.total_tokens", usage["total_tokens"])
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
 
     # Response content
     choices = response_dict.get("choices", [])
-    if choices and len(choices) > 0:
-        first_choice = choices[0]
-        if first_choice.get("message", {}).get("content"):
-            span.set_attribute("llm.completions.0.content", first_choice["message"]["content"])
-        if first_choice.get("finish_reason"):
-            span.set_attribute("llm.completions.0.finish_reason", first_choice["finish_reason"])
+    for index, choice in enumerate(choices):
+        if choice.get("message", {}).get("role"):
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
+        if choice.get("message", {}).get("content"):
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["message"]["content"])
+        if choice.get("finish_reason"):
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
 
     # For responses.create
     if response_dict.get("output_text"):
-        span.set_attribute("llm.response.output_text", response_dict["output_text"])
+        span.set_attribute("gen_ai.response.output_text", response_dict["output_text"])
 
 
 def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
