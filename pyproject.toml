@@ -4,7 +4,7 @@ build-backend = "poetry.core.masonry.api"
 
 [project]
 name = "netra-sdk"
-version = "0.1.14"
+version = "0.1.15"
 description = "A Python SDK for AI application observability that provides OpenTelemetry-based monitoring, tracing, and PII protection for LLM and vector database applications. Enables easy instrumentation, session tracking, and privacy-focused data collection for AI systems in production environments."
 authors = [
     {name = "Sooraj Thomas",email = "sooraj@keyvalue.systems"}
@@ -32,7 +32,7 @@ dependencies = [
     "opentelemetry-api>=1.34.0,<2.0.0",
     "opentelemetry-sdk>=1.34.0,<2.0.0",
     "opentelemetry-instrumentation-fastapi>=0.55b1,<1.0.0",
-    "traceloop-sdk>=0.40.7,<0.41.0",
+    "traceloop-sdk>=0.40.7,<0.43.0",
     "presidio-analyzer>=2.2.358,<3.0.0",
     "opentelemetry-instrumentation-httpx>=0.55b1,<1.0.0",
     "opentelemetry-instrumentation-aiohttp-client>=0.55b1,<1.0.0",
