@@ -8,7 +8,13 @@ texts while maintaining privacy.
 
 from typing import Callable, List, Optional
 
-from presidio_analyzer.recognizer_result import RecognizerResult
+try:
+    from presidio_analyzer.recognizer_result import RecognizerResult
+except Exception:
+    raise ImportError(
+        "PII Detetcion requires the 'presidio' packages: Install them explicitly as they are not available with the base SDK. Use pip install 'netra-sdk[presidio]' to install them."
+    )
+
 
 from .base import AnonymizationResult, BaseAnonymizer
 from .fp_anonymizer import FormatPreservingEmailAnonymizer
