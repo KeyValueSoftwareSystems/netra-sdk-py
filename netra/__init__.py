@@ -2,7 +2,7 @@ import logging
 import threading
 from typing import Any, Dict, Optional, Set
 
-from netra.instrumentation.instruments import NetraInstruments
+from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
 from .config import Config
 
@@ -70,6 +70,7 @@ class Netra:
 
             # Instrument all supported modules
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
+
             init_instrumentations(
                 should_enrich_metrics=True,
                 base64_image_uploader=None,

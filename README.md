@@ -32,6 +32,21 @@ poetry add netra-sdk
 
 Netra SDK supports optional dependencies for enhanced functionality:
 
+#### Presidio for PII Detection
+To use the PII detection features provided by Netra SDK:
+
+```bash
+pip install 'netra-sdk[presidio]'
+```
+
+Or, using Poetry:
+
+```bash
+poetry add netra-sdk --extras "presidio"
+```
+
+
+
 #### LLM-Guard for Prompt Injection Protection
 
 To use the full functionality of prompt injection scanning provided by llm-guard:
@@ -56,6 +71,7 @@ Initialize the Netra SDK at the start of your application:
 
 ```python
 from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
 
 # Initialize with default settings
 Netra.init(app_name="Your application name")
@@ -67,7 +83,8 @@ Netra.init(
     app_name="Your application name",
     headers=headers,
     trace_content=True,
-    environment="Your Application environment"
+    environment="Your Application environment",
+    instruments={InstrumentSet.OPENAI, InstrumentSet.ANTHROPIC},
 )
 ```
 
@@ -497,7 +514,7 @@ Control which instrumentations are enabled:
 from netra import Netra
 from netra.instrumentation.instruments import InstrumentSet
 
-# Enable specific instruments only
+# Enable specific instruments
 Netra.init(
     app_name="Selective App",
     instruments={
@@ -545,9 +562,10 @@ export NETRA_HEADERS="authorization=Bearer your-token"
 
 ```python
 from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
 
 # Simple initialization - SDK automatically picks up environment variables
-Netra.init(app_name="Your App")
+Netra.init(app_name="Your App", instruments={InstrumentSet})
 # No endpoint configuration needed in code!
 ```
 

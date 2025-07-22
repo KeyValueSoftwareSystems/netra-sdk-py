@@ -31,6 +31,20 @@ def init_instrumentations(
                 netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_block_instruments.add(getattr(Instruments, instrument.name))
+
+    # If no instruments are provided for instrumentation
+    if instruments is None:
+        traceloop_block_instruments = set(Instruments)
+        netra_custom_block_instruments = set(CustomInstruments)
+
+    # If only custom instruments from netra are provided for instrumentation
+    if instruments is not None and not traceloop_instruments and not traceloop_block_instruments:
+        traceloop_block_instruments = set(Instruments)
+
+    # If only traceloop instruments are provided for instrumentation
+    if instruments is not None and not netra_custom_instruments and not netra_custom_block_instruments:
+        netra_custom_block_instruments = set(CustomInstruments)
+
     traceloop_block_instruments.update(
         {
             Instruments.WEAVIATE,
@@ -40,8 +54,6 @@ def init_instrumentations(
             Instruments.OPENAI,
         }
     )
-    if instruments is not None and traceloop_instruments is None and traceloop_block_instruments is None:
-        traceloop_block_instruments = set(Instruments)
 
     init_instrumentations(
         should_enrich_metrics=should_enrich_metrics,
