@@ -74,7 +74,7 @@ from netra import Netra
 from netra.instrumentation.instruments import InstrumentSet
 
 # Initialize with default settings
-Netra.init(app_name="Your application name")
+Netra.init(app_name="Your application name", instruments={InstrumentSet.OPENAI, InstrumentSet.ANTHROPIC})
 
 # Or with custom configuration
 api_key = "Your API key"
@@ -316,9 +316,10 @@ Track user sessions and add custom context:
 
 ```python
 from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
 
 # Initialize SDK
-Netra.init(app_name="My App")
+Netra.init(app_name="My App", instruments={InstrumentSet.OPENAI})
 
 # Set session identification
 Netra.set_session_id("unique-session-id")
@@ -496,13 +497,15 @@ You can also configure the SDK programmatically when initializing:
 
 ```python
 from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
 
 Netra.init(
     app_name="my-ai-service",
     environment="production",
     resource_attributes={"team": "ai", "version": "1.0.0"},
     trace_content=True,
-    disable_batch=False
+    disable_batch=False,
+    instruments={InstrumentSet.OPENAI}
 )
 ```
 
