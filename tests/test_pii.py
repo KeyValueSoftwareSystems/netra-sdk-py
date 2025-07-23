@@ -146,7 +146,9 @@ class TestGetDefaultDetector:
         detector = get_default_detector()
 
         assert detector == mock_detector
-        mock_presidio.assert_called_once_with(action_type=None, entities=None, hash_function=None)
+        mock_presidio.assert_called_once_with(
+            action_type=None, entities=None, hash_function=None, nlp_configuration=None
+        )
 
     @patch("netra.pii.PresidioPIIDetector")
     def test_get_default_detector_with_custom_parameters(self, mock_presidio):
@@ -161,7 +163,7 @@ class TestGetDefaultDetector:
 
         assert detector == mock_detector
         mock_presidio.assert_called_once_with(
-            action_type="MASK", entities=custom_entities, hash_function=custom_hash_func
+            action_type="MASK", entities=custom_entities, hash_function=custom_hash_func, nlp_configuration=None
         )
 
 
