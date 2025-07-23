@@ -1,4 +1,6 @@
 import logging
+from contextlib import redirect_stderr, redirect_stdout
+from io import StringIO
 from typing import Any, Callable, Optional, Set
 
 from traceloop.sdk import Instruments, Telemetry
@@ -55,12 +57,13 @@ def init_instrumentations(
         }
     )
 
-    init_instrumentations(
-        should_enrich_metrics=should_enrich_metrics,
-        base64_image_uploader=base64_image_uploader,
-        instruments=traceloop_instruments,
-        block_instruments=traceloop_block_instruments,
-    )
+    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+        init_instrumentations(
+            should_enrich_metrics=should_enrich_metrics,
+            base64_image_uploader=base64_image_uploader,
+            instruments=traceloop_instruments,
+            block_instruments=traceloop_block_instruments,
+        )
 
     netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
