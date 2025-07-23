@@ -253,6 +253,119 @@ print(f"Masked text: {result.masked_text}")
 print(f"PII entities: {result.pii_entities}")
 ```
 
+#### Custom Models for PII Detection
+
+The `PresidioPIIDetector` supports custom NLP models through the `nlp_configuration` parameter, allowing you to use specialized models for improved PII detection accuracy. You can configure custom spaCy, Stanza, or transformers models:
+
+##### NLP Configuration Example
+
+Follow this configuration structure to provide your custom models.
+```python
+nlp_configuration = {
+    "nlp_engine_name": "spacy|stanza|transformers",
+    "models": [
+        {
+            "lang_code": "en",  # Language code
+            "model_name": "model_identifier"  # Varies by engine type
+        }
+    ],
+    "ner_model_configuration": {  # Optional, mainly for transformers
+        # Additional configuration options
+    }
+}
+```
+
+##### Using Custom spaCy Models
+
+```python
+from netra.pii import PresidioPIIDetector
+
+# Configure custom spaCy model
+spacy_config = {
+    "nlp_engine_name": "spacy",
+    "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}]
+}
+
+detector = PresidioPIIDetector(
+    nlp_configuration=spacy_config,
+    action_type="MASK",
+    score_threshold=0.8
+)
+
+text = "Dr. Sarah Wilson works at 123 Main St, New York"
+result = detector.detect(text)
+print(f"Detected entities: {result.pii_entities}")
+```
+
+##### Using Stanza Models
+
+```python
+from netra.pii import PresidioPIIDetector
+
+# Configure Stanza model
+stanza_config = {
+    "nlp_engine_name": "stanza",
+    "models": [{"lang_code": "en", "model_name": "en"}]
+}
+
+detector = PresidioPIIDetector(
+    nlp_configuration=stanza_config,
+    action_type="FLAG"
+)
+
+text = "Contact Alice Smith at alice@company.com"
+result = detector.detect(text)
+print(f"PII detected: {result.has_pii}")
+```
+
+##### Using Transformers Models
+
+For advanced NER capabilities, you can use transformer-based models:
+
+```python
+from netra.pii import PresidioPIIDetector
+
+# Configure transformers model with entity mapping
+transformers_config = {
+    "nlp_engine_name": "transformers",
+    "models": [{
+        "lang_code": "en",
+        "model_name": {
+            "spacy": "en_core_web_sm",
+            "transformers": "dbmdz/bert-large-cased-finetuned-conll03-english"
+        }
+    }],
+    "ner_model_configuration": {
+        "labels_to_ignore": ["O"],
+        "model_to_presidio_entity_mapping": {
+            "PER": "PERSON",
+            "LOC": "LOCATION",
+            "ORG": "ORGANIZATION",
+            "MISC": "MISC"
+        },
+        "low_confidence_score_multiplier": 0.4,
+        "low_score_entity_names": ["ORG"]
+    }
+}
+
+detector = PresidioPIIDetector(
+    nlp_configuration=transformers_config,
+    action_type="MASK"
+)
+
+text = "Microsoft Corporation is located in Redmond, Washington"
+result = detector.detect(text)
+print(f"Masked text: {result.masked_text}")
+```
+
+
+
+**Note**: Custom model configuration allows for:
+- **Better accuracy** with domain-specific models
+- **Multi-language support** by specifying different language codes
+- **Fine-tuned models** trained on your specific data
+- **Performance optimization** by choosing models suited to your use case
+
 #### Regex-based Detection
 ```python
 from netra.pii import RegexPIIDetector
@@ -477,102 +590,6 @@ Configuration values are resolved in the following order (highest to lowest prec
 4. **Default Values**: Fallback values defined in the SDK
 
 This allows you to:
-- Override any setting directly in code for maximum control
-- Use Netra-specific environment variables for Netra-specific settings
-- Fall back to standard OpenTelemetry variables for compatibility
-- Rely on sensible defaults when no other configuration is provided
-
-**Example**:
-```bash
-export NETRA_APP_NAME="my-ai-service"
-export NETRA_OTLP_ENDPOINT="https://collector.example.com:4318"
-export NETRA_API_KEY="your-api-key-here"
-export NETRA_ENV="production"
-export NETRA_RESOURCE_ATTRS='{"team":"ai", "version":"1.0.0"}'
-```
-
-### Programmatic Configuration
-
-You can also configure the SDK programmatically when initializing:
-
-```python
-from netra import Netra
-from netra.instrumentation.instruments import InstrumentSet
-
-Netra.init(
-    app_name="my-ai-service",
-    environment="production",
-    resource_attributes={"team": "ai", "version": "1.0.0"},
-    trace_content=True,
-    disable_batch=False,
-    instruments={InstrumentSet.OPENAI}
-)
-```
-
-### Custom Instrumentation Selection
-
-Control which instrumentations are enabled:
-
-```python
-from netra import Netra
-from netra.instrumentation.instruments import InstrumentSet
-
-# Enable specific instruments
-Netra.init(
-    app_name="Selective App",
-    instruments={
-        InstrumentSet.OPENAI,
-        InstrumentSet.WEAVIATEDB,
-        InstrumentSet.FASTAPI
-    }
-)
-
-# Block specific instruments
-Netra.init(
-    app_name="Blocked App",
-    block_instruments={
-        InstrumentSet.HTTPX,  # Don't trace HTTPX calls
-        InstrumentSet.REDIS   # Don't trace Redis operations
-    }
-)
-```
-
-### 🌐 Custom Endpoint Integration
-
-Since Netra SDK follows the **OpenTelemetry standard**, you can integrate it with any OpenTelemetry-compatible observability backend:
-
-#### Popular OpenTelemetry Backends
-- **Jaeger** - Distributed tracing platform
-- **Zipkin** - Distributed tracing system
-- **Prometheus** - Monitoring and alerting toolkit
-- **Grafana** - Observability and data visualization
-- **New Relic** - Full-stack observability platform
-- **Datadog** - Monitoring and analytics platform
-- **Honeycomb** - Observability for complex systems
-- **Lightstep** - Distributed tracing and observability
-- **AWS X-Ray** - Distributed tracing service
-- **Google Cloud Trace** - Distributed tracing system
-
-#### Custom Endpoint Configuration
-
-**Recommended: Environment Variable Configuration (No Code Changes Required)**
-```bash
-# Set custom OTLP endpoint via environment variables
-export NETRA_OTLP_ENDPOINT="https://your-custom-backend.com/v1/traces"
-export NETRA_HEADERS="authorization=Bearer your-token"
-
-```
-
-```python
-from netra import Netra
-from netra.instrumentation.instruments import InstrumentSet
-
-# Simple initialization - SDK automatically picks up environment variables
-Netra.init(app_name="Your App", instruments={InstrumentSet})
-# No endpoint configuration needed in code!
-```
-
-#### Benefits of OpenTelemetry Compatibility
 - **🔄 Vendor Agnostic**: Switch between observability platforms without code changes
 - **📊 Standard Format**: Consistent telemetry data across all tools
 - **🔧 Flexible Integration**: Works with existing observability infrastructure

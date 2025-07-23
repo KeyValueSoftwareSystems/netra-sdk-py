@@ -577,7 +577,7 @@ class PresidioPIIDetector(PIIDetector):
     call Presidio's Analyzer + Anonymizer on a string.
 
     Examples:
-        # Using default hash function
+        # Using default configuration
         detector = PresidioPIIDetector()
         result = detector.detect("My email is john@example.com")
 
@@ -592,6 +592,41 @@ class PresidioPIIDetector(PIIDetector):
             action_type="MASK",
             score_threshold=0.8
         )
+
+        # Using custom spaCy model configuration
+        spacy_config = {
+            "nlp_engine_name": "spacy",
+            "models": [{"lang_code": "en", "model_name": "en_core_web_lg"}]
+        }
+        detector = PresidioPIIDetector(nlp_configuration=spacy_config)
+
+        # Using Stanza model configuration
+        stanza_config = {
+            "nlp_engine_name": "stanza",
+            "models": [{"lang_code": "en", "model_name": "en"}]
+        }
+        detector = PresidioPIIDetector(nlp_configuration=stanza_config)
+
+        # Using transformers model configuration
+        transformers_config = {
+            "nlp_engine_name": "transformers",
+            "models": [{
+                "lang_code": "en",
+                "model_name": {
+                    "spacy": "en_core_web_sm",
+                    "transformers": "dbmdz/bert-large-cased-finetuned-conll03-english"
+                }
+            }],
+            "ner_model_configuration": {
+                "labels_to_ignore": ["O"],
+                "model_to_presidio_entity_mapping": {
+                    "PER": "PERSON",
+                    "LOC": "LOCATION",
+                    "ORG": "ORGANIZATION"
+                }
+            }
+        }
+        detector = PresidioPIIDetector(nlp_configuration=transformers_config)
     """
 
     def __init__(
@@ -602,7 +637,35 @@ class PresidioPIIDetector(PIIDetector):
         action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
         anonymizer_cache_size: int = 1000,
         hash_function: Optional[Callable[[str], str]] = None,
+        nlp_configuration: Optional[Dict[str, Any]] = None,
     ) -> None:
+        """
+        Initialize the Presidio PII detector.
+
+        Args:
+            entities: List of entity types to detect. If None, uses DEFAULT_ENTITIES.
+            language: Language code for detection (default: "en").
+            score_threshold: Minimum confidence score for detections (default: 0.6).
+            action_type: Action to take when PII is detected ("BLOCK", "FLAG", "MASK").
+            anonymizer_cache_size: Size of the anonymizer cache (default: 1000).
+            hash_function: Custom hash function for anonymization.
+            nlp_configuration: Dictionary containing NLP engine configuration.
+                Format: {
+                    "nlp_engine_name": "spacy|stanza|transformers",
+                    "models": [{"lang_code": "en", "model_name": "model_name"}],
+                    "ner_model_configuration": {...}  # Optional, for transformers
+                }
+
+                For spaCy and Stanza:
+                - model_name should be a string (e.g., "en_core_web_lg", "en")
+
+                For transformers:
+                - model_name should be a dict with "spacy" and "transformers" keys
+                - Example: {"spacy": "en_core_web_sm", "transformers": "model_path"}
+
+        Raises:
+            ImportError: If presidio-analyzer is not installed or required NLP library is missing.
+        """
         if action_type is None:
             action_type = "FLAG"
             env_action = os.getenv("NETRA_ACTION_TYPE", "FLAG")
@@ -610,17 +673,98 @@ class PresidioPIIDetector(PIIDetector):
             if env_action in ["BLOCK", "FLAG", "MASK"]:
                 action_type = cast(Literal["BLOCK", "FLAG", "MASK"], env_action)
         super().__init__(action_type=action_type)
+
+        # Import presidio-analyzer
         try:
             from presidio_analyzer import AnalyzerEngine  # noqa: F401
         except ImportError as exc:
-            raise ImportError("Presidio-based PII detection requires: presidio-analyzer. " "Install via pip.") from exc
+            raise ImportError("Presidio-based PII detection requires: presidio-analyzer. Install via pip.") from exc
 
         self.language: str = language
         self.entities: Optional[List[str]] = entities if entities else DEFAULT_ENTITIES
         self.score_threshold: float = score_threshold
 
-        self.analyzer = AnalyzerEngine()
+        # Initialize AnalyzerEngine with custom or default NLP engine
+        if nlp_configuration is not None:
+            self.analyzer = self._create_analyzer_with_custom_nlp(nlp_configuration)
+        else:
+            # Use default AnalyzerEngine
+            self.analyzer = AnalyzerEngine()
+
         self.anonymizer = Anonymizer(hash_function=hash_function, cache_size=anonymizer_cache_size)
+
+    def _create_analyzer_with_custom_nlp(self, nlp_configuration: Dict[str, Any]) -> Any:
+        """
+        Create an AnalyzerEngine with custom NLP configuration.
+
+        Args:
+            nlp_configuration: Dictionary containing NLP engine configuration.
+
+        Returns:
+            AnalyzerEngine instance with custom NLP engine.
+
+        Raises:
+            ImportError: If required NLP library is not available.
+        """
+        try:
+            from presidio_analyzer import AnalyzerEngine
+            from presidio_analyzer.nlp_engine import NlpEngineProvider
+        except ImportError as exc:
+            raise ImportError("Presidio-based PII detection requires: presidio-analyzer. Install via pip.") from exc
+
+        # Validate and prepare configuration
+        engine_name = nlp_configuration.get("nlp_engine_name", "").lower()
+
+        # Perform lazy imports based on engine type
+        if engine_name == "spacy":
+            self._ensure_spacy_available()
+        elif engine_name == "stanza":
+            self._ensure_stanza_available()
+        elif engine_name == "transformers":
+            self._ensure_transformers_available()
+        else:
+            # Default behavior - let Presidio handle it
+            pass
+
+        # Create NLP engine from configuration
+        provider = NlpEngineProvider(nlp_configuration=nlp_configuration)
+        custom_nlp_engine = provider.create_engine()
+
+        # Extract supported languages from configuration
+        supported_languages = [self.language]
+        if "models" in nlp_configuration:
+            supported_languages = [model["lang_code"] for model in nlp_configuration["models"]]
+
+        return AnalyzerEngine(nlp_engine=custom_nlp_engine, supported_languages=supported_languages)
+
+    def _ensure_spacy_available(self) -> None:
+        """Ensure spaCy is available when needed."""
+        try:
+            import spacy  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "spaCy is required for spaCy-based PII detection. Install via: pip install spacy"
+            ) from exc
+
+    def _ensure_stanza_available(self) -> None:
+        """Ensure Stanza is available when needed."""
+        try:
+            import stanza  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "Stanza is required for Stanza-based PII detection. Install via: pip install stanza"
+            ) from exc
+
+    def _ensure_transformers_available(self) -> None:
+        """Ensure transformers is available when needed."""
+        try:
+            import torch  # noqa: F401
+            import transformers  # noqa: F401
+        except ImportError as exc:
+            raise ImportError(
+                "Transformers and PyTorch are required for transformers-based PII detection. "
+                "Install via: pip install transformers torch"
+            ) from exc
 
     def _detect_pii(self, text: str) -> Tuple[bool, Counter[str], str, Dict[str, str]]:
         """
@@ -666,6 +810,7 @@ def get_default_detector(
     action_type: Optional[Literal["BLOCK", "FLAG", "MASK"]] = None,
     entities: Optional[List[str]] = None,
     hash_function: Optional[Callable[[str], str]] = None,
+    nlp_configuration: Optional[Dict[str, Any]] = None,
 ) -> PIIDetector:
     """
     Returns a default PII detector instance (Presidio-based by default).
@@ -678,8 +823,11 @@ def get_default_detector(
             - "MASK": Replace PII with mask tokens (default)
         entities: Optional list of entity types to detect. If None, uses Presidio's default entities
         hash_function: Optional custom hash function for anonymization. If None, uses default hash function.
+        nlp_configuration: Dictionary containing NLP engine configuration for custom models.
     """
-    return PresidioPIIDetector(action_type=action_type, entities=entities, hash_function=hash_function)
+    return PresidioPIIDetector(
+        action_type=action_type, entities=entities, hash_function=hash_function, nlp_configuration=nlp_configuration
+    )
 
 
 # ---------------------------------------------------------------------------- #
