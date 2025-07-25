@@ -9,7 +9,7 @@ import json
 import logging
 from dataclasses import dataclass, field
 from enum import Enum
-from typing import Any, Dict, List, Union
+from typing import Any, Dict, List, Optional, Union
 
 from netra import Netra
 from netra.exceptions import InjectionException
@@ -49,8 +49,13 @@ class InputScanner:
     A factory class for creating input scanners.
     """
 
-    def __init__(self, scanner_types: List[Union[str, ScannerType]] = [ScannerType.PROMPT_INJECTION]):
+    def __init__(
+        self,
+        scanner_types: List[Union[str, ScannerType]] = [ScannerType.PROMPT_INJECTION],
+        model_configuration: Optional[Dict[str, Any]] = None,
+    ):
         self.scanner_types = scanner_types
+        self.model_configuration = model_configuration
 
     @staticmethod
     def _get_scanner(scanner_type: Union[str, ScannerType], **kwargs: Any) -> Scanner:
@@ -92,7 +97,10 @@ class InputScanner:
             else:
                 threshold = float(threshold_value)
 
-            return PromptInjection(threshold=threshold, match_type=match_type)
+            # Extract model configuration if provided
+            model_configuration = kwargs.get("model_configuration")
+
+            return PromptInjection(threshold=threshold, match_type=match_type, model_configuration=model_configuration)
         else:
             raise ValueError(f"Unsupported scanner type: {scanner_type}")
 
@@ -100,7 +108,7 @@ class InputScanner:
         violations_detected = []
         for scanner_type in self.scanner_types:
             try:
-                scanner = self._get_scanner(scanner_type)
+                scanner = self._get_scanner(scanner_type, model_configuration=self.model_configuration)
                 scanner.scan(prompt)
             except ValueError as e:
                 raise ValueError(f"Invalid value type: {e}")
