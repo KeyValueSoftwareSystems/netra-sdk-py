@@ -407,7 +407,7 @@ class TestInputScannerIntegration:
             result = scanner.scan(prompt)
 
             assert result.has_violation is False
-            mock_get_scanner.assert_called_once_with(ScannerType.PROMPT_INJECTION)
+            mock_get_scanner.assert_called_once_with(ScannerType.PROMPT_INJECTION, model_configuration=None)
 
 
 class TestInputScannerErrorHandling:
@@ -459,7 +459,7 @@ class TestInputScannerEdgeCases:
 
             assert result.has_violation is False
             assert result.violations == []
-            mock_get_scanner.assert_called_once_with(ScannerType.PROMPT_INJECTION)
+            mock_get_scanner.assert_called_once_with(ScannerType.PROMPT_INJECTION, model_configuration=None)
 
     def test_scan_result_is_blocked_logic(self) -> None:
         """Test ScanResult is_blocked logic with various combinations."""
