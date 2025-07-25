@@ -446,9 +446,9 @@ from netra.input_scanner import InputScanner, ScannerType
 
 # Sample custom model configurations
 custom_model_config_1 = {
-      "model": "martin-ha/toxic-comment-model",
+      "model": "deepset/deberta-v3-base-injection",
       "device": "cpu",
-      "max_length": 256,
+      "max_length": 512,
       "torch_dtype": "float32"
     }
 
