@@ -1,15 +1,14 @@
 import json
 import logging
-import re
 import time
-from datetime import datetime, timezone
+from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from opentelemetry.trace.propagation import set_span_in_context
-from pydantic import BaseModel, field_validator
+from pydantic import BaseModel
 
 from netra.config import Config
 
@@ -19,27 +18,12 @@ logger = logging.getLogger(__name__)
 
 
 class ActionModel(BaseModel):  # type: ignore[misc]
-    start_time: str = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%fZ")
+    start_time: str = str((datetime.now().timestamp() * 1_000_000_000))
     action: str
     action_type: str
     success: bool
     affected_records: Optional[List[Dict[str, str]]] = None
     metadata: Optional[Dict[str, str]] = None
-
-    @field_validator("start_time")  # type: ignore[misc]
-    @classmethod
-    def validate_time_format(cls, value: str) -> str:
-        """Validate that start_time is in ISO 8601 format with microseconds and Z suffix."""
-        # Pattern for ISO 8601 with microseconds: YYYY-MM-DDTHH:MM:SS.ffffffZ
-        pattern = r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{6}Z$"
-
-        if not re.match(pattern, value):
-            raise ValueError(
-                f"start_time must be in ISO 8601 format with microseconds: "
-                f"YYYY-MM-DDTHH:MM:SS.ffffffZ (e.g., 2025-07-18T14:30:45.123456Z). "
-                f"Got: {value}"
-            )
-        return value
 
 
 class UsageModel(BaseModel):  # type: ignore[misc]
