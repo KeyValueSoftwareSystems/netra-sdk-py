@@ -10,6 +10,7 @@ class CustomInstruments(Enum):
     HTTPX = "httpx"
     MISTRALAI = "mistral_ai"
     OPENAI = "openai"
+    PYDANTIC_AI = "pydantic_ai"
     QDRANTDB = "qdrant_db"
     WEAVIATEDB = "weaviate_db"
     GOOGLE_GENERATIVEAI = "google_genai"

@@ -97,6 +97,10 @@ def init_instrumentations(
     if CustomInstruments.OPENAI in netra_custom_instruments:
         init_openai_instrumentation()
 
+    # Initialize Pydantic AI instrumentation.
+    if CustomInstruments.PYDANTIC_AI in netra_custom_instruments:
+        init_pydantic_ai_instrumentation()
+
     # Initialize aio_pika instrumentation.
     if CustomInstruments.AIO_PIKA in netra_custom_instruments:
         init_aio_pika_instrumentation()
@@ -1117,5 +1121,21 @@ def init_urllib3_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing urllib3 instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_pydantic_ai_instrumentation() -> bool:
+    """Initialize pydantic-ai instrumentation."""
+    try:
+        if is_package_installed("pydantic-ai"):
+            from netra.instrumentation.pydantic_ai import NetraPydanticAIInstrumentor
+
+            instrumentor = NetraPydanticAIInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing pydantic-ai instrumentation: {e}")
         Telemetry().log_exception(e)
         return False
