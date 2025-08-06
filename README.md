@@ -206,6 +206,7 @@ class CustomerSupportAgent:
 - **LlamaIndex** - Data framework for LLM applications
 - **Haystack** - End-to-end NLP framework
 - **CrewAI** - Multi-agent AI systems
+- **Pydantic AI** - AI model communication standard
 - **MCP (Model Context Protocol)** - AI model communication standard
 
 ## 🛡️ Privacy Protection & Security
