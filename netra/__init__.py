@@ -89,6 +89,8 @@ class Netra:
         Args:
             session_id: Session identifier
         """
+        if not isinstance(session_id, str):
+            raise TypeError(f"session_id must be a string, got {type(session_id)}")
         if session_id:
             SessionManager.set_session_context("session_id", session_id)
         else:
@@ -102,6 +104,8 @@ class Netra:
         Args:
             user_id: User identifier
         """
+        if not isinstance(user_id, str):
+            raise TypeError(f"user_id must be a string, got {type(user_id)}")
         if user_id:
             SessionManager.set_session_context("user_id", user_id)
         else:
@@ -115,6 +119,8 @@ class Netra:
         Args:
             user_account_id: User account identifier
         """
+        if not isinstance(tenant_id, str):
+            raise TypeError(f"tenant_id must be a string, got {type(tenant_id)}")
         if tenant_id:
             SessionManager.set_session_context("tenant_id", tenant_id)
         else:
