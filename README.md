@@ -93,7 +93,7 @@ Netra.init(
 Use decorators to automatically trace your functions and classes:
 
 ```python
-from netra.decorators import workflow, agent, task
+from netra.decorators import workflow, agent, task, span
 
 @workflow
 def data_processing_workflow(data):
@@ -111,6 +111,11 @@ def data_validation_task(data):
     """Task for validating input data"""
     return validate_schema(data)
 
+@span
+def data_processing_span(data):
+    """Span for processing data"""
+    return process_data(data)
+
 # Works with async functions too
 @workflow(name="Async Data Pipeline")
 async def async_workflow(data):
@@ -125,6 +130,16 @@ class CustomerSupportAgent:
 
     def escalate_issue(self, issue):
         return self.forward_to_human(issue)
+
+@task
+async def async_task(data):
+    """Task for processing data"""
+    return await process_data_async(data)
+
+@span
+async def async_span(data):
+    """Span for processing data"""
+    return await process_data_async(data)
 ```
 
 ## 🔍 Supported Instrumentations

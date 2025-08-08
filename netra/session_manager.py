@@ -26,6 +26,7 @@ class SessionManager:
     _workflow_stack: List[str] = []
     _task_stack: List[str] = []
     _agent_stack: List[str] = []
+    _span_stack: List[str] = []
 
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
@@ -53,7 +54,7 @@ class SessionManager:
         Push an entity onto the appropriate entity stack.
 
         Args:
-            entity_type: Type of entity (workflow, task, agent)
+            entity_type: Type of entity (workflow, task, agent, span)
             entity_name: Name of the entity
         """
         if entity_type == "workflow":
@@ -62,6 +63,8 @@ class SessionManager:
             cls._task_stack.append(entity_name)
         elif entity_type == "agent":
             cls._agent_stack.append(entity_name)
+        elif entity_type == "span":
+            cls._span_stack.append(entity_name)
 
     @classmethod
     def pop_entity(cls, entity_type: str) -> Optional[str]:
@@ -69,7 +72,7 @@ class SessionManager:
         Pop the most recent entity from the specified entity stack.
 
         Args:
-            entity_type: Type of entity (workflow, task, agent)
+            entity_type: Type of entity (workflow, task, agent, span)
 
         Returns:
             Entity name or None if stack is empty
@@ -80,6 +83,8 @@ class SessionManager:
             return cls._task_stack.pop()
         elif entity_type == "agent" and cls._agent_stack:
             return cls._agent_stack.pop()
+        elif entity_type == "span" and cls._span_stack:
+            return cls._span_stack.pop()
         return None
 
     @classmethod
@@ -104,6 +109,10 @@ class SessionManager:
         if cls._agent_stack:
             attributes[f"{Config.LIBRARY_NAME}.agent.name"] = cls._agent_stack[-1]
 
+        # Add current span if exists
+        if cls._span_stack:
+            attributes[f"{Config.LIBRARY_NAME}.span.name"] = cls._span_stack[-1]
+
         return attributes
 
     @classmethod
@@ -112,6 +121,7 @@ class SessionManager:
         cls._workflow_stack.clear()
         cls._task_stack.clear()
         cls._agent_stack.clear()
+        cls._span_stack.clear()
 
     @classmethod
     def get_stack_info(cls) -> Dict[str, List[str]]:
@@ -125,6 +135,7 @@ class SessionManager:
             "workflows": cls._workflow_stack.copy(),
             "tasks": cls._task_stack.copy(),
             "agents": cls._agent_stack.copy(),
+            "spans": cls._span_stack.copy(),
         }
 
     @staticmethod

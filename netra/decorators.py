@@ -176,3 +176,18 @@ def task(
     if target is not None:
         return decorator(target)
     return decorator
+
+
+def span(
+    target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
+) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
+    def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
+        if inspect.isclass(obj):
+            return _wrap_class_methods(cast(C, obj), "span", name)
+        else:
+            # When obj is a function, it should be type Callable[P, R]
+            return _create_function_wrapper(cast(Callable[P, R], obj), "span", name)
+
+    if target is not None:
+        return decorator(target)
+    return decorator
