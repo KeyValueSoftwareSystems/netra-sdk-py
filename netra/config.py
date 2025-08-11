@@ -17,6 +17,7 @@ class Config:
       - disable_batch:           Whether to disable batch span processor (bool)
       - trace_content:           Whether to capture prompt/completion content (bool)
       - debug_mode:              Whether to enable SDK logging; default False (bool)
+      - enable_root_span:        Whether to create a process root span; default False (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
     """
 
@@ -32,6 +33,7 @@ class Config:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
+        enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
     ):
@@ -105,6 +107,13 @@ class Config:
             self.environment = environment
         else:
             self.environment = os.getenv("NETRA_ENV", "local")
+
+        # Enable a long-lived root span for the process? Default False.
+        if enable_root_span is not None:
+            self.enable_root_span = enable_root_span
+        else:
+            env_root = os.getenv("NETRA_ENABLE_ROOT_SPAN")
+            self.enable_root_span = True if (env_root is not None and env_root.lower() in ("1", "true")) else False
 
         # Resource attributes: param override, else parse JSON from env, else empty dict
         if resource_attributes is not None:

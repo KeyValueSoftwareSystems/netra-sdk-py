@@ -1,6 +1,11 @@
+import atexit
 import logging
 import threading
 from typing import Any, Dict, Optional, Set
+
+from opentelemetry import context as context_api
+from opentelemetry import trace
+from opentelemetry.trace import SpanKind
 
 from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
@@ -27,6 +32,8 @@ class Netra:
     _initialized = False
     # Use RLock so the thread that already owns the lock can re-acquire it safely
     _init_lock = threading.RLock()
+    _root_span = None
+    _root_ctx_token = None
 
     @classmethod
     def is_initialized(cls) -> bool:
@@ -46,6 +53,7 @@ class Netra:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
+        enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
@@ -66,6 +74,7 @@ class Netra:
                 disable_batch=disable_batch,
                 trace_content=trace_content,
                 debug_mode=debug_mode,
+                enable_root_span=enable_root_span,
                 resource_attributes=resource_attributes,
                 environment=environment,
             )
@@ -105,6 +114,61 @@ class Netra:
 
             cls._initialized = True
             logger.info("Netra successfully initialized.")
+
+            # Create and attach a long-lived root span if enabled
+            if cfg.enable_root_span:
+                tracer = trace.get_tracer("netra.root.span")
+                root_name = f"{Config.LIBRARY_NAME}.root.span"
+                root_span = tracer.start_span(root_name, kind=SpanKind.INTERNAL)
+                # Add useful attributes
+                if cfg.app_name:
+                    root_span.set_attribute("service.name", cfg.app_name)
+                root_span.set_attribute("netra.environment", cfg.environment)
+                root_span.set_attribute("netra.library.version", Config.LIBRARY_VERSION)
+
+                # Attach span to current context so subsequent spans become its children
+                ctx = trace.set_span_in_context(root_span)
+                token = context_api.attach(ctx)
+
+                # Save for potential shutdown/cleanup and session tracking
+                cls._root_span = root_span
+                cls._root_ctx_token = token
+                try:
+                    SessionManager.set_current_span(root_span)
+                except Exception:
+                    pass
+                logger.info("Netra root span created and attached to context.")
+
+                # Ensure cleanup at process exit
+                atexit.register(cls.shutdown)
+
+    @classmethod
+    def shutdown(cls) -> None:
+        """Optional cleanup to end the root span and detach context."""
+        with cls._init_lock:
+            if cls._root_ctx_token is not None:
+                try:
+                    context_api.detach(cls._root_ctx_token)
+                except Exception:
+                    pass
+                finally:
+                    cls._root_ctx_token = None
+            if cls._root_span is not None:
+                try:
+                    cls._root_span.end()
+                except Exception:
+                    pass
+                finally:
+                    cls._root_span = None
+            # Try to flush and shutdown the tracer provider to ensure export
+            try:
+                provider = trace.get_tracer_provider()
+                if hasattr(provider, "force_flush"):
+                    provider.force_flush()
+                if hasattr(provider, "shutdown"):
+                    provider.shutdown()
+            except Exception:
+                pass
 
     @classmethod
     def set_session_id(cls, session_id: str) -> None:
