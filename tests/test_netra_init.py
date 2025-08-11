@@ -55,6 +55,8 @@ class TestNetraInitialization:
             trace_content=None,
             resource_attributes=None,
             environment=None,
+            enable_root_span=None,
+            debug_mode=None,
         )
 
         # Verify Tracer was initialized
@@ -84,6 +86,8 @@ class TestNetraInitialization:
             "trace_content": False,
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
+            "enable_root_span": False,
+            "debug_mode": True,
         }
 
         app_name = "test-app"
@@ -100,6 +104,8 @@ class TestNetraInitialization:
             trace_content=trace_content,
             resource_attributes=resource_attributes,
             environment=environment,
+            enable_root_span=False,
+            debug_mode=True,
         )
 
         # Verify Config was created with custom values
