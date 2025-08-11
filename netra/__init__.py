@@ -12,7 +12,10 @@ from .session_manager import SessionManager
 from .span_wrapper import ActionModel, SpanWrapper, UsageModel
 from .tracer import Tracer
 
+# Package-level logger. Attach NullHandler by default so library does not emit logs
+# unless explicitly enabled by the user via debug_mode.
 logger = logging.getLogger(__name__)
+logger.addHandler(logging.NullHandler())
 
 
 class Netra:
@@ -42,6 +45,7 @@ class Netra:
         headers: Optional[str] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
+        debug_mode: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
@@ -61,9 +65,30 @@ class Netra:
                 headers=headers,
                 disable_batch=disable_batch,
                 trace_content=trace_content,
+                debug_mode=debug_mode,
                 resource_attributes=resource_attributes,
                 environment=environment,
             )
+
+            # Configure package logging based on debug mode
+            pkg_logger = logging.getLogger("netra")
+            # Prevent propagating to root to avoid duplicate logs
+            pkg_logger.propagate = False
+            # Clear existing handlers to avoid duplicates across repeated init attempts
+            pkg_logger.handlers.clear()
+            if cfg.debug_mode:
+                pkg_logger.setLevel(logging.DEBUG)
+                handler = logging.StreamHandler()
+                formatter = logging.Formatter(
+                    fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
+                    datefmt="%Y-%m-%d %H:%M:%S",
+                )
+                handler.setFormatter(formatter)
+                pkg_logger.addHandler(handler)
+            else:
+                # Silence SDK logs entirely unless debug is enabled
+                pkg_logger.setLevel(logging.CRITICAL)
+                pkg_logger.addHandler(logging.NullHandler())
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)
