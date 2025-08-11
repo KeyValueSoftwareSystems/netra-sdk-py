@@ -16,6 +16,7 @@ class Config:
       - headers:                 Additional headers (W3C Correlation-Context format)
       - disable_batch:           Whether to disable batch span processor (bool)
       - trace_content:           Whether to capture prompt/completion content (bool)
+      - debug_mode:              Whether to enable SDK logging; default False (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
     """
 
@@ -30,6 +31,7 @@ class Config:
         headers: Optional[str] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
+        debug_mode: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
     ):
@@ -90,6 +92,13 @@ class Config:
             os.environ["TRACELOOP_TRACE_CONTENT"] = "false"
         else:
             os.environ["TRACELOOP_TRACE_CONTENT"] = "true"
+
+        # Debug mode: enable SDK logging only when True. Default False.
+        if debug_mode is not None:
+            self.debug_mode = debug_mode
+        else:
+            env_dbg = os.getenv("NETRA_DEBUG")
+            self.debug_mode = True if (env_dbg is not None and env_dbg.lower() in ("1", "true")) else False
 
         # 7. Environment: param override, else env
         if environment is not None:
