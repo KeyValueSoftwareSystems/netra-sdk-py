@@ -65,9 +65,10 @@ class Tracer:
                 endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
                 headers=self.cfg.headers,
             )
-        # Add span processors for session span processing and data aggregation processing
-        from netra.processors import SessionSpanProcessor
+        # Add span processors: first instrumentation wrapper, then session processor
+        from netra.processors import InstrumentationSpanProcessor, SessionSpanProcessor
 
+        provider.add_span_processor(InstrumentationSpanProcessor())
         provider.add_span_processor(SessionSpanProcessor())
 
         # Install appropriate span processor
