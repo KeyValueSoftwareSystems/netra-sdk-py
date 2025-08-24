@@ -7,12 +7,15 @@ Decorators can be applied to both functions and classes.
 import functools
 import inspect
 import json
+import logging
 from typing import Any, Awaitable, Callable, Dict, Optional, ParamSpec, Tuple, TypeVar, Union, cast
 
 from opentelemetry import trace
 
 from .config import Config
 from .session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -89,7 +92,7 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     SessionManager.register_span(span_name, span)
                     SessionManager.set_current_span(span)
                 except Exception:
-                    pass
+                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
@@ -104,7 +107,7 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     try:
                         SessionManager.unregister_span(span_name, span)
                     except Exception:
-                        pass
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], async_wrapper)
@@ -123,7 +126,7 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     SessionManager.register_span(span_name, span)
                     SessionManager.set_current_span(span)
                 except Exception:
-                    pass
+                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
@@ -138,7 +141,7 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     try:
                         SessionManager.unregister_span(span_name, span)
                     except Exception:
-                        pass
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], sync_wrapper)
