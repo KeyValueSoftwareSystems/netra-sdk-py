@@ -255,5 +255,30 @@ class Netra:
         """
         return SpanWrapper(name, attributes, module_name)
 
+    @classmethod
+    def set_input(cls, value: Any, span_name: Optional[str] = None) -> None:
+        """
+        Set custom attribute `netra.span.input` on a target span.
+
+        Args:
+            value: Input payload to record (string or JSON-serializable object)
+            span_name: Optional. When provided, sets the attribute on the span registered
+                       with this name. Otherwise sets on the active span.
+        """
+        SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.input", value, span_name)
+
+    @classmethod
+    def set_output(cls, value: Any, span_name: Optional[str] = None) -> None:
+        """
+        Set custom attribute `netra.span.output` on a target span.
+
+        Args:
+            value: Output payload to record (string or JSON-serializable object)
+            span_name: Optional. When provided, sets the attribute on the span registered
+                       with this name. Otherwise sets on the active span.
+        """
+        if value:
+            SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.output", value, span_name)
+
 
 __all__ = ["Netra", "UsageModel", "ActionModel"]
