@@ -7,12 +7,15 @@ Decorators can be applied to both functions and classes.
 import functools
 import inspect
 import json
+import logging
 from typing import Any, Awaitable, Callable, Dict, Optional, ParamSpec, Tuple, TypeVar, Union, cast
 
 from opentelemetry import trace
 
 from .config import Config
 from .session_manager import SessionManager
+
+logger = logging.getLogger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -84,6 +87,13 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
             tracer = trace.get_tracer(module_name)
             with tracer.start_as_current_span(span_name) as span:
+                # Register the span by name for cross-context attribute setting
+                try:
+                    SessionManager.register_span(span_name, span)
+                    SessionManager.set_current_span(span)
+                except Exception:
+                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
+
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
                     result = await cast(Awaitable[Any], func(*args, **kwargs))
@@ -93,7 +103,11 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
                     raise
                 finally:
-                    # Pop entity from stack after function call is done
+                    # Unregister and pop entity from stack after function call is done
+                    try:
+                        SessionManager.unregister_span(span_name, span)
+                    except Exception:
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], async_wrapper)
@@ -107,6 +121,13 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
             tracer = trace.get_tracer(module_name)
             with tracer.start_as_current_span(span_name) as span:
+                # Register the span by name for cross-context attribute setting
+                try:
+                    SessionManager.register_span(span_name, span)
+                    SessionManager.set_current_span(span)
+                except Exception:
+                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
+
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
                     result = func(*args, **kwargs)
@@ -116,7 +137,11 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
                     raise
                 finally:
-                    # Pop entity from stack after function call is done
+                    # Unregister and pop entity from stack after function call is done
+                    try:
+                        SessionManager.unregister_span(span_name, span)
+                    except Exception:
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
 
         return cast(Callable[P, R], sync_wrapper)

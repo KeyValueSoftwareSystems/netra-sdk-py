@@ -11,6 +11,7 @@ from opentelemetry.trace.propagation import set_span_in_context
 from pydantic import BaseModel
 
 from netra.config import Config
+from netra.session_manager import SessionManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -84,6 +85,14 @@ class SpanWrapper:
         ctx = set_span_in_context(self.span)
         self.context_token = context_api.attach(ctx)
 
+        # Register with SessionManager for name-based lookup
+        try:
+            SessionManager.register_span(self.name, self.span)
+            # Optionally set as current span for SDK consumers that rely on it
+            SessionManager.set_current_span(self.span)
+        except Exception:
+            logger.exception("Failed to register span '%s' with SessionManager", self.name)
+
         logger.info(f"Started span wrapper: {self.name}")
         return self
 
@@ -120,6 +129,11 @@ class SpanWrapper:
 
         # End OpenTelemetry span and detach context
         if self.span:
+            # Unregister from SessionManager before ending span
+            try:
+                SessionManager.unregister_span(self.name, self.span)
+            except Exception:
+                logger.exception("Failed to unregister span '%s' from SessionManager", self.name)
             self.span.end()
         if self.context_token:
             context_api.detach(self.context_token)
