@@ -5,21 +5,92 @@ including exporter setup and span processor configuration.
 """
 
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List, Sequence
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
 from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import (
     BatchSpanProcessor,
     ConsoleSpanExporter,
     SimpleSpanProcessor,
+    SpanExporter,
+    SpanExportResult,
 )
 
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
+    """
+    SpanExporter wrapper that filters out spans by name.
+
+    Matching rules:
+    - Exact match: pattern "Foo" blocks span.name == "Foo".
+    - Prefix match: pattern ending with '*' (e.g., "CloudSpanner.*") blocks spans whose
+      names start with the prefix before '*', e.g., "CloudSpanner.", "CloudSpanner.Query".
+    - Suffix match: pattern starting with '*' (e.g., "*.Query") blocks spans whose
+      names end with the suffix after '*', e.g., "DB.Query", "Search.Query".
+    """
+
+    def __init__(self, exporter: SpanExporter, patterns: Sequence[str]) -> None:
+        self._exporter = exporter
+        # Normalize once for efficient checks
+        exact: List[str] = []
+        prefixes: List[str] = []
+        suffixes: List[str] = []
+        for p in patterns:
+            if not p:
+                continue
+            if p.endswith("*") and not p.startswith("*"):
+                prefixes.append(p[:-1])
+            elif p.startswith("*") and not p.endswith("*"):
+                suffixes.append(p[1:])
+            else:
+                exact.append(p)
+        self._exact = set(exact)
+        self._prefixes = prefixes
+        self._suffixes = suffixes
+
+    def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        filtered: List[ReadableSpan] = []
+        for s in spans:
+            name = getattr(s, "name", None)
+            if name is None:
+                filtered.append(s)
+                continue
+            if name in self._exact:
+                continue
+            blocked = False
+            for pref in self._prefixes:
+                if name.startswith(pref):
+                    blocked = True
+                    break
+            if not blocked and self._suffixes:
+                for suf in self._suffixes:
+                    if name.endswith(suf):
+                        blocked = True
+                        break
+            if not blocked:
+                filtered.append(s)
+        if not filtered:
+            return SpanExportResult.SUCCESS
+        return self._exporter.export(filtered)
+
+    def shutdown(self) -> None:
+        try:
+            self._exporter.shutdown()
+        except Exception:
+            pass
+
+    def force_flush(self, timeout_millis: int = 30000) -> Any:
+        try:
+            return self._exporter.force_flush(timeout_millis)
+        except Exception:
+            return True
 
 
 class Tracer:
@@ -65,6 +136,14 @@ class Tracer:
                 endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
                 headers=self.cfg.headers,
             )
+        # Wrap exporter with filtering if blocked span patterns are provided
+        try:
+            patterns = getattr(self.cfg, "blocked_spans", None)
+            if patterns:
+                exporter = FilteringSpanExporter(exporter, patterns)
+                logger.info("Enabled FilteringSpanExporter with %d pattern(s)", len(patterns))
+        except Exception as e:
+            logger.warning("Failed to enable FilteringSpanExporter: %s", e)
         # Add span processors: first instrumentation wrapper, then session processor
         from netra.processors import InstrumentationSpanProcessor, ScrubbingSpanProcessor, SessionSpanProcessor
 

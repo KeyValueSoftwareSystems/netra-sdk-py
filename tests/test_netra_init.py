@@ -58,6 +58,7 @@ class TestNetraInitialization:
             enable_root_span=None,
             enable_scrubbing=None,
             debug_mode=None,
+            blocked_spans=None,
         )
 
         # Verify Tracer was initialized
@@ -90,6 +91,7 @@ class TestNetraInitialization:
             "enable_root_span": False,
             "enable_scrubbing": None,
             "debug_mode": True,
+            "blocked_spans": None,
         }
 
         app_name = "test-app"
@@ -108,6 +110,7 @@ class TestNetraInitialization:
             environment=environment,
             enable_root_span=False,
             debug_mode=True,
+            blocked_spans=None,
         )
 
         # Verify Config was created with custom values
