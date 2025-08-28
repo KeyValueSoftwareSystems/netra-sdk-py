@@ -66,10 +66,14 @@ class Tracer:
                 headers=self.cfg.headers,
             )
         # Add span processors: first instrumentation wrapper, then session processor
-        from netra.processors import InstrumentationSpanProcessor, SessionSpanProcessor
+        from netra.processors import InstrumentationSpanProcessor, ScrubbingSpanProcessor, SessionSpanProcessor
 
         provider.add_span_processor(InstrumentationSpanProcessor())
         provider.add_span_processor(SessionSpanProcessor())
+
+        # Add scrubbing processor if enabled
+        if self.cfg.enable_scrubbing:
+            provider.add_span_processor(ScrubbingSpanProcessor())
 
         # Install appropriate span processor
         if self.cfg.disable_batch:

@@ -56,6 +56,7 @@ class Netra:
         enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
+        enable_scrubbing: Optional[bool] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
         block_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
@@ -77,6 +78,7 @@ class Netra:
                 enable_root_span=enable_root_span,
                 resource_attributes=resource_attributes,
                 environment=environment,
+                enable_scrubbing=enable_scrubbing,
             )
 
             # Configure package logging based on debug mode
