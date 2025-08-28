@@ -93,6 +93,10 @@ def init_instrumentations(
     if CustomInstruments.MISTRALAI in netra_custom_instruments:
         init_mistral_instrumentor()
 
+    # Initialize LiteLLM instrumentation.
+    if CustomInstruments.LITELLM in netra_custom_instruments:
+        init_litellm_instrumentation()
+
     # Initialize OpenAI instrumentation.
     if CustomInstruments.OPENAI in netra_custom_instruments:
         init_openai_instrumentation()
@@ -431,6 +435,26 @@ def init_mistral_instrumentor() -> bool:
         return True
     except Exception as e:
         logging.error(f"-----Error initializing Mistral instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_litellm_instrumentation() -> bool:
+    """Initialize LiteLLM instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("litellm"):
+            from netra.instrumentation.litellm import LiteLLMInstrumentor
+
+            instrumentor = LiteLLMInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing LiteLLM instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 

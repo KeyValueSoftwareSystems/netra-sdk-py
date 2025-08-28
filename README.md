@@ -223,6 +223,7 @@ async def async_span(data):
 - **CrewAI** - Multi-agent AI systems
 - **Pydantic AI** - AI model communication standard
 - **MCP (Model Context Protocol)** - AI model communication standard
+- **LiteLLM** - LLM provider agnostic client
 
 ## 🛡️ Privacy Protection & Security
 
