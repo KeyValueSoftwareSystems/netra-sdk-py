@@ -146,8 +146,5 @@ class Config:
             self.enable_scrubbing = True if (env_scrub is not None and env_scrub.lower() in ("1", "true")) else False
 
         # Blocked span names/prefix patterns
-        # Accept as:
-        #  - constructor list of strings
-        #  - NETRA_BLOCKED_SPANS env: JSON array (e.g., ["Foo","Bar.*"]) or comma-separated string (e.g., "Foo,Bar.*")
         if blocked_spans is not None:
             self.blocked_spans = blocked_spans
