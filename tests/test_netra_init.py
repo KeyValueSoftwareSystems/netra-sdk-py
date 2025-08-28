@@ -56,6 +56,7 @@ class TestNetraInitialization:
             resource_attributes=None,
             environment=None,
             enable_root_span=None,
+            enable_scrubbing=None,
             debug_mode=None,
         )
 
@@ -87,6 +88,7 @@ class TestNetraInitialization:
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
             "enable_root_span": False,
+            "enable_scrubbing": None,
             "debug_mode": True,
         }
 

@@ -73,7 +73,7 @@ class Tracer:
 
         # Add scrubbing processor if enabled
         if self.cfg.enable_scrubbing:
-            provider.add_span_processor(ScrubbingSpanProcessor())
+            provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
 
         # Install appropriate span processor
         if self.cfg.disable_batch:

@@ -14,16 +14,19 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     # Common patterns for sensitive data detection (based on pydantic logfire scrubbing)
     SENSITIVE_PATTERNS = {
-        "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", re.IGNORECASE),
-        "phone": re.compile(r"\b(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}\b"),
-        "ssn": re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"),
-        "credit_card": re.compile(
-            r"\b(?:4[0-9]{12}(?:[0-9]{3})?|5[1-5][0-9]{14}|3[47][0-9]{13}|3[0-9]{13}|6(?:011|5[0-9]{2})[0-9]{12})\b"
+        # API keys first to avoid other patterns interfering
+        "api_key": re.compile(
+            r"(?:Token:\s*\S{32,})"  # scrub entire "Token: <value>" where value is 32+ non-space
+            r"|(?:sk-[A-Za-z0-9]{16,})"  # scrub only the sk-... token (keep labels like "API Key:")
         ),
-        "api_key": re.compile(r"\b[A-Za-z0-9]{20,}\b"),
-        "password": re.compile(r"(?i)(?:password|passwd|pwd|secret|token|key)\s*[:=]\s*[^\s]+"),
-        "bearer_token": re.compile(r"Bearer\s+[A-Za-z0-9\-._~+/]+=*", re.IGNORECASE),
-        "authorization": re.compile(r"(?i)authorization\s*:\s*[^\s]+"),
+        "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", re.IGNORECASE),
+        "phone": re.compile(r"(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}"),
+        # Run credit card BEFORE SSN to avoid SSN partially matching inside card numbers
+        "credit_card": re.compile(r"(?<!\d)(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})(?!\d)"),
+        "ssn": re.compile(r"\b\d{3}-?\d{2}-?\d{4}\b"),
+        "password": re.compile(r"(?i)(?:password|passwd|pwd|secret|token)\s*[:=]\s*\S+"),
+        "bearer_token": re.compile(r"(?i)(?:authorization:\s*)?bearer\s+[A-Za-z0-9\-._~+/]+=*"),
+        "authorization": re.compile(r"(?i)authorization\s*:\s*\S+"),
     }
 
     # Sensitive attribute keys that should be scrubbed
@@ -49,9 +52,9 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         "set-cookie",
     }
 
-    def __init__(self, scrub_replacement: str = "[SCRUBBED - SENSITIVE CONTENT DETECTED]") -> None:
+    def __init__(self):  # type: ignore[no-untyped-def]
         """Initialize the scrubbing span processor."""
-        self.scrub_replacement = scrub_replacement
+        self.scrub_replacement = "[SCRUBBED]"
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
         """Process span when it starts - no scrubbing needed here."""
@@ -82,11 +85,11 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         Returns:
             Tuple of (scrubbed_key, scrubbed_value)
         """
-        # Check if key itself is sensitive
-        if self._is_sensitive_key(key):
+        # Check if key itself is sensitive and value is a simple type (string, number, etc.)
+        if self._is_sensitive_key(key) and not isinstance(value, (dict, list, tuple)):
             return key, self.scrub_replacement
 
-        # Scrub value if it's a string
+        # Scrub value based on its type
         if isinstance(value, str):
             scrubbed_value = self._scrub_string_value(value)
             return key, scrubbed_value
@@ -120,9 +123,14 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         scrubbed_value = value
 
+        # Early catch-all for contiguous 13-19 digit sequences (credit/debit cards)
+        scrubbed_value = re.sub(r"(?<!\d)\d{13,19}(?!\d)", self.scrub_replacement, scrubbed_value)
+
         for pattern_name, pattern in self.SENSITIVE_PATTERNS.items():
             if pattern.search(scrubbed_value):
                 scrubbed_value = pattern.sub(self.scrub_replacement, scrubbed_value)
+
+        # No extra fallback required now that we pre-scrub 13-19 digit sequences
 
         return scrubbed_value
 
