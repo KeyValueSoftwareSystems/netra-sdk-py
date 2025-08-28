@@ -20,6 +20,7 @@ class Config:
       - enable_root_span:        Whether to create a process root span; default False (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
       - enable_scrubbing:        Whether to enable pydantic logfire scrubbing; default False (bool)
+      - blocked_spans:           List of span names (prefix/suffix patterns) to block from being exported to the tracing backend
     """
 
     # SDK Constants
