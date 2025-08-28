@@ -19,6 +19,7 @@ class Config:
       - debug_mode:              Whether to enable SDK logging; default False (bool)
       - enable_root_span:        Whether to create a process root span; default False (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
+      - enable_scrubbing:        Whether to enable pydantic logfire scrubbing; default False (bool)
     """
 
     # SDK Constants
@@ -38,6 +39,7 @@ class Config:
         enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
+        enable_scrubbing: Optional[bool] = None,
     ):
         # Application name: from param, else env
         self.app_name = (
@@ -134,3 +136,10 @@ class Config:
                     self.resource_attributes = {}
             else:
                 self.resource_attributes = {}
+
+        # Enable scrubbing with pydantic logfire? Default False.
+        if enable_scrubbing is not None:
+            self.enable_scrubbing = enable_scrubbing
+        else:
+            env_scrub = os.getenv("NETRA_ENABLE_SCRUBBING")
+            self.enable_scrubbing = True if (env_scrub is not None and env_scrub.lower() in ("1", "true")) else False
