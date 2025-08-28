@@ -83,7 +83,7 @@ dependencies = [
 "Homepage" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py"
 "Documentation" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py/blob/main/README.md"
 "Repository" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py"
-"Bug Tracker" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py/issues"
+"Changelog" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py/blob/main/CHANGELOG.md"
 
 [[tool.poetry.packages]]
 include = "netra"
