@@ -5,7 +5,7 @@ This module tests the SpanWrapper class and ATTRIBUTE constants used for
 tracking observability data with OpenTelemetry integration.
 """
 
-from unittest.mock import Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 from opentelemetry.trace import SpanKind, StatusCode
 
@@ -130,7 +130,9 @@ class TestSpanWrapperInitialization:
         assert span_wrapper.module_name == "combat_sdk"
         assert span_wrapper.tracer == mock_tracer
         assert span_wrapper.span is None
-        assert span_wrapper.context_token is None
+        # internal context manager placeholder exists and is None at init
+        assert hasattr(span_wrapper, "_span_cm")
+        assert span_wrapper._span_cm is None
 
         mock_get_tracer.assert_called_once_with("combat_sdk")
 
@@ -386,32 +388,27 @@ class TestSpanWrapperContextManager:
             self.span_wrapper = SpanWrapper("test_span", {"initial_key": "initial_value"})
 
     @patch("netra.span_wrapper.time.time")
-    @patch("netra.span_wrapper.set_span_in_context")
-    @patch("netra.span_wrapper.context_api.attach")
     @patch("netra.span_wrapper.logger")
-    def test_enter_method(self, mock_logger, mock_attach, mock_set_span_in_context, mock_time):
+    def test_enter_method(self, mock_logger, mock_time):
         """Test __enter__ method functionality."""
         mock_time.return_value = 1234567890.123
-        mock_context = Mock()
-        mock_set_span_in_context.return_value = mock_context
-        mock_token = Mock()
-        mock_attach.return_value = mock_token
+        # Configure tracer to return a context manager whose __enter__ returns span
+        mock_cm = MagicMock()
+        mock_cm.__enter__.return_value = self.mock_span
+        self.mock_tracer.start_as_current_span.return_value = mock_cm
 
         result = self.span_wrapper.__enter__()
 
         # Verify time tracking
         assert self.span_wrapper.start_time == 1234567890.123
 
-        # Verify span creation
-        self.mock_tracer.start_span.assert_called_once_with(
-            name="test_span", kind=SpanKind.CLIENT, attributes={"initial_key": "initial_value"}
-        )
+        # Verify span creation via context manager and current-span enter
+        self.mock_tracer.start_as_current_span.assert_called_once()
+        args, kwargs = self.mock_tracer.start_as_current_span.call_args
+        assert kwargs["name"] == "test_span"
+        assert kwargs["kind"] == SpanKind.CLIENT
+        assert kwargs["attributes"] == {"initial_key": "initial_value"}
         assert self.span_wrapper.span is self.mock_span
-
-        # Verify context management
-        mock_set_span_in_context.assert_called_once_with(self.mock_span)
-        mock_attach.assert_called_once_with(mock_context)
-        assert self.span_wrapper.context_token is mock_token
 
         # Verify logging
         mock_logger.info.assert_called_once_with("Started span wrapper: test_span")
@@ -420,16 +417,15 @@ class TestSpanWrapperContextManager:
         assert result is self.span_wrapper
 
     @patch("netra.span_wrapper.time.time")
-    @patch("netra.span_wrapper.context_api.detach")
     @patch("netra.span_wrapper.logger")
-    def test_exit_method_success_no_exception(self, mock_logger, mock_detach, mock_time):
+    def test_exit_method_success_no_exception(self, mock_logger, mock_time):
         """Test __exit__ method with successful completion (no exception)."""
         # Setup span wrapper state
         self.span_wrapper.start_time = 1234567890.123
         mock_time.return_value = 1234567890.623  # 500ms later
         self.span_wrapper.span = self.mock_span
-        mock_token = Mock()
-        self.span_wrapper.context_token = mock_token
+        mock_cm = MagicMock()
+        self.span_wrapper._span_cm = mock_cm
 
         result = self.span_wrapper.__exit__(None, None, None)
 
@@ -453,9 +449,8 @@ class TestSpanWrapperContextManager:
         )
         self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", "success")
 
-        # Verify span and context cleanup
-        self.mock_span.end.assert_called_once()
-        mock_detach.assert_called_once_with(mock_token)
+        # Verify span/context cleanup via context manager __exit__
+        mock_cm.__exit__.assert_called_once_with(None, None, None)
 
         # Verify logging
         mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: success, Duration: 500.00ms)")
@@ -464,16 +459,15 @@ class TestSpanWrapperContextManager:
         assert result is False
 
     @patch("netra.span_wrapper.time.time")
-    @patch("netra.span_wrapper.context_api.detach")
     @patch("netra.span_wrapper.logger")
-    def test_exit_method_with_exception(self, mock_logger, mock_detach, mock_time):
+    def test_exit_method_with_exception(self, mock_logger, mock_time):
         """Test __exit__ method when an exception occurs."""
         # Setup span wrapper state
         self.span_wrapper.start_time = 1234567890.123
         mock_time.return_value = 1234567890.323  # 200ms later
         self.span_wrapper.span = self.mock_span
-        mock_token = Mock()
-        self.span_wrapper.context_token = mock_token
+        mock_cm = MagicMock()
+        self.span_wrapper._span_cm = mock_cm
 
         # Create test exception
         test_exception = ValueError("Test error")
@@ -514,9 +508,8 @@ class TestSpanWrapperContextManager:
         assert result is False
 
     @patch("netra.span_wrapper.time.time")
-    @patch("netra.span_wrapper.context_api.detach")
     @patch("netra.span_wrapper.logger")
-    def test_exit_method_with_manual_status_change(self, mock_logger, mock_detach, mock_time):
+    def test_exit_method_with_manual_status_change(self, mock_logger, mock_time):
         """Test __exit__ method when status was manually changed before exit."""
         # Setup span wrapper state with manual status change
         self.span_wrapper.start_time = 1234567890.123
@@ -524,8 +517,8 @@ class TestSpanWrapperContextManager:
         self.span_wrapper.span = self.mock_span
         self.span_wrapper.status = "custom_status"  # Manually set status
         self.span_wrapper.error_message = "custom_error"
-        mock_token = Mock()
-        self.span_wrapper.context_token = mock_token
+        mock_cm = MagicMock()
+        self.span_wrapper._span_cm = mock_cm
 
         result = self.span_wrapper.__exit__(None, None, None)
 
@@ -542,9 +535,8 @@ class TestSpanWrapperContextManager:
         # The span status is set based on the error_message if it exists
         self.mock_span.set_status.assert_not_called()  # Fix: span.set_status should not be called
 
-        # Verify span and context cleanup
-        self.mock_span.end.assert_called_once()
-        mock_detach.assert_called_once_with(mock_token)
+        # Verify span/context cleanup via context manager __exit__
+        mock_cm.__exit__.assert_called_once_with(None, None, None)
 
         # Verify logging
         mock_logger.info.assert_called_once_with(
@@ -555,13 +547,14 @@ class TestSpanWrapperContextManager:
         assert result is False
 
     @patch("netra.span_wrapper.time.time")
-    @patch("netra.span_wrapper.context_api.detach")
     @patch("netra.span_wrapper.logger")
-    def test_exit_method_no_start_time(self, mock_logger, mock_detach, mock_time):
+    def test_exit_method_no_start_time(self, mock_logger, mock_time):
         """Test __exit__ method when start_time is None."""
         # Setup span wrapper state without start_time
         self.span_wrapper.start_time = None
         self.span_wrapper.span = self.mock_span
+        mock_cm = MagicMock()
+        self.span_wrapper._span_cm = mock_cm
 
         result = self.span_wrapper.__exit__(None, None, None)
 
