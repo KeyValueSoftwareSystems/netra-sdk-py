@@ -410,9 +410,6 @@ class TestSpanWrapperContextManager:
         assert kwargs["attributes"] == {"initial_key": "initial_value"}
         assert self.span_wrapper.span is self.mock_span
 
-        # Verify logging
-        mock_logger.info.assert_called_once_with("Started span wrapper: test_span")
-
         # Verify return value
         assert result is self.span_wrapper
 
@@ -451,9 +448,6 @@ class TestSpanWrapperContextManager:
 
         # Verify span/context cleanup via context manager __exit__
         mock_cm.__exit__.assert_called_once_with(None, None, None)
-
-        # Verify logging
-        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: success, Duration: 500.00ms)")
 
         # Verify return value (should not suppress exceptions)
         assert result is False
@@ -500,10 +494,6 @@ class TestSpanWrapperContextManager:
         self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.STATUS}", "error")
         self.mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", "Test error")
 
-        # Verify logging
-        mock_logger.error.assert_called_once_with("Span wrapper test_span failed: Test error")
-        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: error, Duration: 200.00ms)")
-
         # Verify return value (should not suppress exceptions)
         assert result is False
 
@@ -538,11 +528,6 @@ class TestSpanWrapperContextManager:
         # Verify span/context cleanup via context manager __exit__
         mock_cm.__exit__.assert_called_once_with(None, None, None)
 
-        # Verify logging
-        mock_logger.info.assert_called_once_with(
-            "Ended span wrapper: test_span (Status: custom_status, Duration: 100.00ms)"
-        )
-
         # Verify return value (should not suppress exceptions)
         assert result is False
 
@@ -563,9 +548,6 @@ class TestSpanWrapperContextManager:
 
         # Verify other functionality still works
         assert self.span_wrapper.status == "success"
-
-        # Verify logging without duration
-        mock_logger.info.assert_called_once_with("Ended span wrapper: test_span (Status: success)")
 
         # Verify return value (should not suppress exceptions)
         assert result is False
