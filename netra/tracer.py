@@ -62,19 +62,40 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             if name is None:
                 filtered.append(s)
                 continue
-            if name in self._exact:
-                continue
-            blocked = False
-            for pref in self._prefixes:
-                if name.startswith(pref):
-                    blocked = True
-                    break
-            if not blocked and self._suffixes:
-                for suf in self._suffixes:
-                    if name.endswith(suf):
+            # Only apply blocked span patterns to root-level spans (no valid parent)
+            parent = getattr(s, "parent", None)
+            # Determine if the span has a valid parent. SpanContext.is_valid may be a property or method.
+            has_valid_parent = False
+            if parent is not None:
+                is_valid_attr = getattr(parent, "is_valid", None)
+                if callable(is_valid_attr):
+                    try:
+                        has_valid_parent = bool(is_valid_attr())
+                    except Exception:
+                        has_valid_parent = False
+                else:
+                    has_valid_parent = bool(is_valid_attr)
+
+            is_root_span = parent is None or not has_valid_parent
+
+            if is_root_span:
+                # Apply name-based blocking only for root spans
+                if name in self._exact:
+                    continue
+                blocked = False
+                for pref in self._prefixes:
+                    if name.startswith(pref):
                         blocked = True
                         break
-            if not blocked:
+                if not blocked and self._suffixes:
+                    for suf in self._suffixes:
+                        if name.endswith(suf):
+                            blocked = True
+                            break
+                if not blocked:
+                    filtered.append(s)
+            else:
+                # Do not block child spans based on name
                 filtered.append(s)
         if not filtered:
             return SpanExportResult.SUCCESS

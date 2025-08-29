@@ -4,7 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.33] - 2025-08-28
+## [0.1.34] - 2025-08-29
+
+- Changed block spans from being exported to block root level spans from being exported
+
+## [0.1.33] - 2025-08-29
 
 - Added utility to block specific spans from being exported to the tracing backend.
 - Fixed context detachment issue in span wrapper.
