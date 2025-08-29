@@ -37,6 +37,7 @@ class TestTracerInitialization:
         mock_config.resource_attributes = {"custom.attr": "value"}
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         mock_resource_instance = Mock()
         mock_resource.return_value = mock_resource_instance
@@ -104,6 +105,7 @@ class TestTracerInitialization:
         mock_config.resource_attributes = None
         mock_config.disable_batch = True  # Use simple processor
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         mock_resource_instance = Mock()
         mock_resource.return_value = mock_resource_instance
@@ -157,6 +159,7 @@ class TestTracerInitialization:
         mock_config.resource_attributes = {}
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         mock_resource_instance = Mock()
         mock_resource.return_value = mock_resource_instance
@@ -190,6 +193,7 @@ class TestTracerEndpointFormatting:
         mock_config.resource_attributes = {}
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         with (
             patch("netra.tracer.trace"),
@@ -219,6 +223,7 @@ class TestTracerEndpointFormatting:
         mock_config.resource_attributes = {}
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         with (
             patch("netra.tracer.trace"),
@@ -248,6 +253,7 @@ class TestTracerEndpointFormatting:
         mock_config.resource_attributes = {}
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         with (
             patch("netra.tracer.trace"),
@@ -297,6 +303,7 @@ class TestTracerConfiguration:
         mock_config.resource_attributes = custom_attrs
         mock_config.disable_batch = False
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         # Act
         Tracer(mock_config)
@@ -336,6 +343,7 @@ class TestTracerConfiguration:
         mock_config.resource_attributes = {}
         mock_config.disable_batch = True
         mock_config.enable_scrubbing = False
+        mock_config.blocked_spans = []
 
         mock_provider = Mock()
         mock_tracer_provider.return_value = mock_provider

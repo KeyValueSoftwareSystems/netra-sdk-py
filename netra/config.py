@@ -1,6 +1,6 @@
 import json
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 from opentelemetry.util.re import parse_env_headers
 
@@ -20,6 +20,7 @@ class Config:
       - enable_root_span:        Whether to create a process root span; default False (bool)
       - resource_attributes:     Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
       - enable_scrubbing:        Whether to enable pydantic logfire scrubbing; default False (bool)
+      - blocked_spans:           List of span names (prefix/suffix patterns) to block from being exported to the tracing backend
     """
 
     # SDK Constants
@@ -40,6 +41,7 @@ class Config:
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         enable_scrubbing: Optional[bool] = None,
+        blocked_spans: Optional[List[str]] = None,
     ):
         # Application name: from param, else env
         self.app_name = (
@@ -143,3 +145,7 @@ class Config:
         else:
             env_scrub = os.getenv("NETRA_ENABLE_SCRUBBING")
             self.enable_scrubbing = True if (env_scrub is not None and env_scrub.lower() in ("1", "true")) else False
+
+        # Blocked span names/prefix patterns
+        if blocked_spans is not None:
+            self.blocked_spans = blocked_spans

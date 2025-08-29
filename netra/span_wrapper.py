@@ -4,10 +4,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
-from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
-from opentelemetry.trace.propagation import set_span_in_context
 from pydantic import BaseModel
 
 from netra.config import Config
@@ -72,18 +70,19 @@ class SpanWrapper:
         # OpenTelemetry span management
         self.tracer = trace.get_tracer(module_name)
         self.span: Optional[trace.Span] = None
-        self.context_token: Optional[Any] = None
+        # Internal context manager to manage current-span scope safely
+        self._span_cm: Optional[Any] = None
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
         self.start_time = time.time()
 
-        # Create OpenTelemetry span
-        self.span = self.tracer.start_span(name=self.name, kind=SpanKind.CLIENT, attributes=self.attributes)
-
-        # Set span in context
-        ctx = set_span_in_context(self.span)
-        self.context_token = context_api.attach(ctx)
+        # Create OpenTelemetry span and make it current using OTel's context manager
+        # Store the context manager so we can close it in __exit__
+        self._span_cm = self.tracer.start_as_current_span(
+            name=self.name, kind=SpanKind.CLIENT, attributes=self.attributes
+        )
+        self.span = self._span_cm.__enter__()
 
         # Register with SessionManager for name-based lookup
         try:
@@ -93,7 +92,6 @@ class SpanWrapper:
         except Exception:
             logger.exception("Failed to register span '%s' with SessionManager", self.name)
 
-        logger.info(f"Started span wrapper: {self.name}")
         return self
 
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Any) -> Literal[False]:
@@ -127,22 +125,19 @@ class SpanWrapper:
             for key, value in self.attributes.items():
                 self.span.set_attribute(key, value)
 
-        # End OpenTelemetry span and detach context
+        # End OpenTelemetry span via the context manager (also clears current context)
         if self.span:
             # Unregister from SessionManager before ending span
             try:
                 SessionManager.unregister_span(self.name, self.span)
             except Exception:
                 logger.exception("Failed to unregister span '%s' from SessionManager", self.name)
-            self.span.end()
-        if self.context_token:
-            context_api.detach(self.context_token)
-
-        logger.info(
-            f"Ended span wrapper: {self.name} (Status: {self.status}, Duration: {duration_ms:.2f}ms)"
-            if duration_ms is not None
-            else f"Ended span wrapper: {self.name} (Status: {self.status})"
-        )
+        if self._span_cm is not None:
+            try:
+                # Delegate to OTel CM to properly end span and restore context
+                self._span_cm.__exit__(exc_type, exc_val, exc_tb)
+            finally:
+                self._span_cm = None
 
         # Don't suppress exceptions
         return False

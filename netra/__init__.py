@@ -1,7 +1,7 @@
 import atexit
 import logging
 import threading
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
@@ -57,6 +57,7 @@ class Netra:
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         enable_scrubbing: Optional[bool] = None,
+        blocked_spans: Optional[List[str]] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
         block_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
@@ -79,6 +80,7 @@ class Netra:
                 resource_attributes=resource_attributes,
                 environment=environment,
                 enable_scrubbing=enable_scrubbing,
+                blocked_spans=blocked_spans,
             )
 
             # Configure package logging based on debug mode
