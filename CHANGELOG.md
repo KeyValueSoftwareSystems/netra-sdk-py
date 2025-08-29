@@ -7,6 +7,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [0.1.33] - 2025-08-28
 
 - Added utility to block specific spans from being exported to the tracing backend.
+- Fixed context detachment issue in span wrapper.
 
 ## [0.1.32] - 2025-08-28
 
