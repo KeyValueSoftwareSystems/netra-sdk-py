@@ -25,4 +25,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.33]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.34]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
