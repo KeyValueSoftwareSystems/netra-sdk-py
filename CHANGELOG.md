@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.35] - 2025-09-01
+
+- Patch fix for set_input and set_output methods to set attributes on root span if no span is provided
+- Patch fix to create streaming aware decorators
+
 ## [0.1.34] - 2025-08-29
 
 - Changed block spans from being exported to block root level spans from being exported
