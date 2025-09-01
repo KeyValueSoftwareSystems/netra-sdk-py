@@ -222,16 +222,17 @@ class Netra:
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
         """
-        Set custom attributes context in the current OpenTelemetry context.
+        Set a custom attribute on the currently active OpenTelemetry span only.
 
         Args:
             key: Custom attribute key
             value: Custom attribute value
         """
         if key and value:
-            SessionManager.set_session_context("custom_attributes", {key: value})
+            SessionManager.set_attribute_on_active_span(f"{Config.LIBRARY_NAME}.custom.{key}", value)
         else:
             logger.warning("Both key and value must be provided for custom attributes.")
+            return
 
     @classmethod
     def set_custom_event(cls, event_name: str, attributes: Any) -> None:
