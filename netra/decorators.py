@@ -8,7 +8,26 @@ import functools
 import inspect
 import json
 import logging
-from typing import Any, Awaitable, Callable, Dict, Optional, ParamSpec, Tuple, TypeVar, Union, cast
+from typing import (
+    Any,
+    AsyncGenerator,
+    Awaitable,
+    Callable,
+    Dict,
+    Generator,
+    Optional,
+    ParamSpec,
+    Tuple,
+    TypeVar,
+    Union,
+    cast,
+)
+
+try:
+    # Optional import: only present in FastAPI/Starlette environments
+    from starlette.responses import StreamingResponse
+except Exception:  # pragma: no cover - starlette may not be installed in some environments
+    StreamingResponse = None
 
 from opentelemetry import trace
 
@@ -73,6 +92,176 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output_error", str(e))
 
 
+def _is_streaming_response(obj: Any) -> bool:
+    """Return True if obj is a Starlette StreamingResponse instance."""
+    if StreamingResponse is None:
+        return False
+    try:
+        return isinstance(obj, StreamingResponse)
+    except Exception:
+        return False
+
+
+def _is_async_generator(obj: Any) -> bool:
+    return inspect.isasyncgen(obj)
+
+
+def _is_sync_generator(obj: Any) -> bool:
+    return inspect.isgenerator(obj)
+
+
+def _wrap_async_generator_with_span(
+    span: trace.Span,
+    agen: AsyncGenerator[Any, None],
+    span_name: str,
+    entity_type: str,
+) -> AsyncGenerator[Any, None]:
+    """Wrap an async generator so the span remains current for the full iteration and ends afterwards."""
+
+    async def _wrapped() -> AsyncGenerator[Any, None]:
+        # Activate span for the entire iteration
+        with trace.use_span(span, end_on_exit=False):
+            try:
+                async for item in agen:
+                    yield item
+            except Exception as e:
+                try:
+                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
+                    span.record_exception(e)
+                finally:
+                    span.end()
+                    # De-register and pop entity at the very end for streaming lifecycle
+                    try:
+                        SessionManager.unregister_span(span_name, span)
+                    except Exception:
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                    SessionManager.pop_entity(entity_type)
+                raise
+            else:
+                # Normal completion
+                span.end()
+                try:
+                    SessionManager.unregister_span(span_name, span)
+                except Exception:
+                    logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                SessionManager.pop_entity(entity_type)
+
+    return _wrapped()
+
+
+def _wrap_sync_generator_with_span(
+    span: trace.Span,
+    gen: Generator[Any, None, None],
+    span_name: str,
+    entity_type: str,
+) -> Generator[Any, None, None]:
+    """Wrap a sync generator so the span remains current for the full iteration and ends afterwards."""
+
+    def _wrapped() -> Generator[Any, None, None]:
+        with trace.use_span(span, end_on_exit=False):
+            try:
+                for item in gen:
+                    yield item
+            except Exception as e:
+                try:
+                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
+                    span.record_exception(e)
+                finally:
+                    span.end()
+                    try:
+                        SessionManager.unregister_span(span_name, span)
+                    except Exception:
+                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                    SessionManager.pop_entity(entity_type)
+                raise
+            else:
+                span.end()
+                try:
+                    SessionManager.unregister_span(span_name, span)
+                except Exception:
+                    logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                SessionManager.pop_entity(entity_type)
+
+    return _wrapped()
+
+
+def _wrap_streaming_response_with_span(
+    span: trace.Span,
+    resp: Any,
+    span_name: str,
+    entity_type: str,
+) -> Any:
+    """Wrap StreamingResponse.body_iterator with a generator that keeps span current and ends it afterwards."""
+    try:
+        body_iter = getattr(resp, "body_iterator", None)
+        if body_iter is None:
+            return resp
+        # Async iterator
+        if inspect.isasyncgen(body_iter) or hasattr(body_iter, "__aiter__"):
+
+            async def _aiter_wrapper():  # type: ignore[no-untyped-def]
+                with trace.use_span(span, end_on_exit=False):
+                    try:
+                        async for chunk in body_iter:
+                            yield chunk
+                    except Exception as e:
+                        try:
+                            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
+                            span.record_exception(e)
+                        finally:
+                            span.end()
+                            try:
+                                SessionManager.unregister_span(span_name, span)
+                            except Exception:
+                                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                            SessionManager.pop_entity(entity_type)
+                        raise
+                    else:
+                        span.end()
+                        try:
+                            SessionManager.unregister_span(span_name, span)
+                        except Exception:
+                            logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                        SessionManager.pop_entity(entity_type)
+
+            resp.body_iterator = _aiter_wrapper()  # type: ignore[no-untyped-call]
+            return resp
+
+        # Sync iterator
+        if inspect.isgenerator(body_iter) or hasattr(body_iter, "__iter__"):
+
+            def _iter_wrapper():  # type: ignore[no-untyped-def]
+                with trace.use_span(span, end_on_exit=False):
+                    try:
+                        for chunk in body_iter:
+                            yield chunk
+                    except Exception as e:
+                        try:
+                            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
+                            span.record_exception(e)
+                        finally:
+                            span.end()
+                            try:
+                                SessionManager.unregister_span(span_name, span)
+                            except Exception:
+                                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                            SessionManager.pop_entity(entity_type)
+                        raise
+                    else:
+                        span.end()
+                        try:
+                            SessionManager.unregister_span(span_name, span)
+                        except Exception:
+                            logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+                        SessionManager.pop_entity(entity_type)
+
+            resp.body_iterator = _iter_wrapper()  # type: ignore[no-untyped-call]
+            return resp
+    except Exception:
+        logger.exception("Failed to wrap StreamingResponse with span '%s'", span_name)
+    return resp
+
+
 def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optional[str] = None) -> Callable[P, R]:
     module_name = func.__name__
     is_async = inspect.iscoroutinefunction(func)
@@ -82,33 +271,50 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Push entity to stack before span starts so SessionSpanProcessor can capture it
+            # Push entity before span starts so processors can capture it
             SessionManager.push_entity(entity_type, span_name)
 
             tracer = trace.get_tracer(module_name)
-            with tracer.start_as_current_span(span_name) as span:
-                # Register the span by name for cross-context attribute setting
-                try:
-                    SessionManager.register_span(span_name, span)
-                    SessionManager.set_current_span(span)
-                except Exception:
-                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
+            span = tracer.start_span(span_name)
+            # Register and activate span
+            try:
+                SessionManager.register_span(span_name, span)
+                SessionManager.set_current_span(span)
+            except Exception:
+                logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
+            with trace.use_span(span, end_on_exit=False):
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
                     result = await cast(Awaitable[Any], func(*args, **kwargs))
-                    _add_output_attributes(span, result)
-                    return result
                 except Exception as e:
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    raise
-                finally:
-                    # Unregister and pop entity from stack after function call is done
+                    span.record_exception(e)
+                    span.end()
                     try:
                         SessionManager.unregister_span(span_name, span)
                     except Exception:
                         logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
+                    raise
+
+            # If result is streaming, defer span end to when stream completes
+            if _is_streaming_response(result):
+                return _wrap_streaming_response_with_span(span, result, span_name, entity_type)
+            if _is_async_generator(result):
+                return _wrap_async_generator_with_span(span, result, span_name, entity_type)
+            if _is_sync_generator(result):
+                return _wrap_sync_generator_with_span(span, result, span_name, entity_type)
+
+            # Non-streaming: finalize now
+            _add_output_attributes(span, result)
+            span.end()
+            try:
+                SessionManager.unregister_span(span_name, span)
+            except Exception:
+                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+            SessionManager.pop_entity(entity_type)
+            return result
 
         return cast(Callable[P, R], async_wrapper)
 
@@ -116,33 +322,50 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
-            # Push entity to stack before span starts so SessionSpanProcessor can capture it
+            # Push entity before span starts so processors can capture it
             SessionManager.push_entity(entity_type, span_name)
 
             tracer = trace.get_tracer(module_name)
-            with tracer.start_as_current_span(span_name) as span:
-                # Register the span by name for cross-context attribute setting
-                try:
-                    SessionManager.register_span(span_name, span)
-                    SessionManager.set_current_span(span)
-                except Exception:
-                    logger.exception("Failed to register span '%s' with SessionManager", span_name)
+            span = tracer.start_span(span_name)
+            # Register and activate span
+            try:
+                SessionManager.register_span(span_name, span)
+                SessionManager.set_current_span(span)
+            except Exception:
+                logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
+            with trace.use_span(span, end_on_exit=False):
                 _add_span_attributes(span, func, args, kwargs, entity_type)
                 try:
                     result = func(*args, **kwargs)
-                    _add_output_attributes(span, result)
-                    return result
                 except Exception as e:
                     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    raise
-                finally:
-                    # Unregister and pop entity from stack after function call is done
+                    span.record_exception(e)
+                    span.end()
                     try:
                         SessionManager.unregister_span(span_name, span)
                     except Exception:
                         logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
                     SessionManager.pop_entity(entity_type)
+                    raise
+
+            # If result is streaming, defer span end to when stream completes
+            if _is_streaming_response(result):
+                return _wrap_streaming_response_with_span(span, result, span_name, entity_type)
+            if _is_async_generator(result):
+                return _wrap_async_generator_with_span(span, result, span_name, entity_type)  # type: ignore[arg-type]
+            if _is_sync_generator(result):
+                return _wrap_sync_generator_with_span(span, result, span_name, entity_type)  # type: ignore[arg-type]
+
+            # Non-streaming: finalize now
+            _add_output_attributes(span, result)
+            span.end()
+            try:
+                SessionManager.unregister_span(span_name, span)
+            except Exception:
+                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+            SessionManager.pop_entity(entity_type)
+            return result
 
         return cast(Callable[P, R], sync_wrapper)
 

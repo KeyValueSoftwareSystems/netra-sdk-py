@@ -31,6 +31,10 @@ class SessionManager:
     # Span registry: name -> stack of spans (most-recent last)
     _spans_by_name: Dict[str, List[trace.Span]] = {}
 
+    # Global stack of active spans in creation order (oldest first, newest last)
+    # Maintained for spans registered via SessionManager (e.g., SpanWrapper)
+    _active_spans: List[trace.Span] = []
+
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
         """
@@ -62,6 +66,8 @@ class SessionManager:
                 cls._spans_by_name[name] = [span]
             else:
                 stack.append(span)
+            # Track globally as active
+            cls._active_spans.append(span)
         except Exception:
             logger.exception("Failed to register span '%s'", name)
 
@@ -81,6 +87,11 @@ class SessionManager:
                     break
             if not stack:
                 cls._spans_by_name.pop(name, None)
+            # Also remove from global active list (remove last matching instance)
+            for i in range(len(cls._active_spans) - 1, -1, -1):
+                if cls._active_spans[i] is span:
+                    cls._active_spans.pop(i)
+                    break
         except Exception:
             logger.exception("Failed to unregister span '%s'", name)
 
@@ -240,12 +251,13 @@ class SessionManager:
     @classmethod
     def set_attribute_on_target_span(cls, attr_key: str, attr_value: Any, span_name: Optional[str] = None) -> None:
         """
-        Best-effort setter to annotate the active span with the provided attribute.
+        Best-effort setter to annotate a target span with the provided attribute.
 
-        If span_name is provided, we look up that span via SessionManager's registry and set
-        the attribute on that span explicitly. Otherwise, we annotate the active span.
-        We first try the OpenTelemetry current span; if that's invalid, we fall back to
-        the SDK-managed current span from `SessionManager`.
+        Behavior:
+        - If span_name is provided, set the attribute on the span registered with that name.
+        - If no span_name is provided, attempt to set the attribute on the SDK root span
+          (created when Netra.init(enable_root_span=True)). If the root span is unavailable,
+          fall back to the currently active span (OTel current span or SDK-managed current span).
         """
         try:
             # Convert attribute value to a JSON-safe string representation
@@ -268,10 +280,41 @@ class SessionManager:
                 target.set_attribute(attr_key, attr_str)
                 return
 
-            # Otherwise annotate the active span
+            # Otherwise, attempt to set on the root-most span in the current trace
+            candidate = None
+
+            # Determine current trace_id from the active/current span
             current_span = trace.get_current_span()
             has_valid_current = getattr(current_span, "is_recording", None) is not None and current_span.is_recording()
-            candidate = current_span if has_valid_current else cls.get_current_span()
+            base_span = current_span if has_valid_current else cls.get_current_span()
+            trace_id: Optional[int] = None
+            try:
+                if base_span is not None and hasattr(base_span, "get_span_context"):
+                    sc = base_span.get_span_context()
+                    trace_id = getattr(sc, "trace_id", None)
+            except Exception:
+                trace_id = None
+
+            # Find the earliest active span in this process that belongs to the same trace
+            if trace_id is not None:
+                try:
+                    for s in cls._active_spans:
+                        if s is None:
+                            continue
+                        if not getattr(s, "is_recording", lambda: False)():
+                            continue
+                        sc = getattr(s, "get_span_context", lambda: None)()
+                        if sc is None:
+                            continue
+                        if getattr(sc, "trace_id", None) == trace_id:
+                            candidate = s
+                            break
+                except Exception:
+                    candidate = None
+
+            # Fallback to the current active span if no root-most could be found
+            if candidate is None:
+                candidate = base_span
             if candidate is None:
                 logger.debug("No active span found to set attribute %s", attr_key)
                 return
