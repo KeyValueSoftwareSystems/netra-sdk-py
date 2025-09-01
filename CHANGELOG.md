@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.36] - 2025-09-01
+
+- Added a trace level method set_prompt to set prompt on any active span
+
 ## [0.1.35] - 2025-09-01
 
 - Patch fix for set_input and set_output methods to set attributes on root span if no span is provided
@@ -30,4 +34,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.35]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.36]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main

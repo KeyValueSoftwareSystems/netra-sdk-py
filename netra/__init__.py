@@ -284,5 +284,18 @@ class Netra:
         if value:
             SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.output", value, span_name)
 
+    @classmethod
+    def set_prompt(cls, value: Any, span_name: Optional[str] = None) -> None:
+        """
+        Set custom attribute `netra.span.prompt` on a target span.
+
+        Args:
+            value: Prompt payload to record (string or JSON-serializable object)
+            span_name: Optional. When provided, sets the attribute on the span registered
+                       with this name. Otherwise sets on the active span.
+        """
+        if value:
+            SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.prompt", value, span_name)
+
 
 __all__ = ["Netra", "UsageModel", "ActionModel"]
