@@ -196,9 +196,21 @@ class SessionManager:
         }
 
     @staticmethod
-    def set_session_context(session_key: str, value: Union[str, Dict[str, str]]) -> None:
+    def set_session_context(
+        session_key: str,
+        value: Union[str, Dict[str, str]],
+        attach_globally: bool = False,
+    ) -> None:
         """
-        Set session context attributes in the current OpenTelemetry baggage.
+        Set session context attributes in OpenTelemetry baggage.
+
+        Behavior:
+        - Adds values to baggage on the current context.
+        - To avoid context token mismatch errors, this method only attaches the
+          modified context when it is safe (no active recording span), unless
+          forced via attach_globally=True.
+        - When not attaching (e.g., inside an active span), it annotates the
+          current span with equivalent attributes for visibility.
 
         Args:
             session_key: Key to set in baggage (session_id, user_id, tenant_id, or custom_attributes)
@@ -219,7 +231,20 @@ class SessionManager:
                     ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
                     for key, val in value.items():
                         ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
-            otel_context.attach(ctx)
+
+            # Decide whether to attach globally. We only attach if there is no
+            # active recording span (safe point) or if the caller forces it.
+            current_span = trace.get_current_span()
+            has_active_span = bool(current_span and getattr(current_span, "is_recording", lambda: False)())
+            if attach_globally or not has_active_span:
+                otel_context.attach(ctx)
+            else:
+                # Best-effort: annotate the current span for observability
+                if isinstance(value, str) and value:
+                    current_span.set_attribute(f"{Config.LIBRARY_NAME}.session.{session_key}", value)
+                elif isinstance(value, dict) and value and session_key == "custom_attributes":
+                    for key, val in value.items():
+                        current_span.set_attribute(f"{Config.LIBRARY_NAME}.session.custom.{key}", str(val))
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
 
@@ -321,3 +346,31 @@ class SessionManager:
             candidate.set_attribute(attr_key, attr_str)
         except Exception as e:
             logger.exception("Failed setting attribute %s: %s", attr_key, e)
+
+    @staticmethod
+    def set_attribute_on_active_span(attr_key: str, attr_value: Any) -> None:
+        """
+        Set an attribute strictly on the currently active OpenTelemetry span.
+
+        - Does not fall back to any root span.
+        - Does not mutate global baggage/context.
+        - If no active recording span is present, logs a warning and returns.
+        """
+        try:
+            span = trace.get_current_span()
+            if span and getattr(span, "is_recording", lambda: False)():
+                # Convert attr_value to a JSON-safe string if needed
+                try:
+                    if isinstance(attr_value, str):
+                        v = attr_value
+                    else:
+                        import json
+
+                        v = json.dumps(attr_value)
+                except Exception:
+                    v = str(attr_value)
+                span.set_attribute(attr_key, v)
+            else:
+                logger.warning("No active span to set attribute '%s'", attr_key)
+        except Exception:
+            logger.exception("Failed to set attribute '%s' on active span", attr_key)

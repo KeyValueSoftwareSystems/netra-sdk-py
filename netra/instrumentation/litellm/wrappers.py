@@ -47,115 +47,127 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     """Set request attributes on span"""
     if not span.is_recording():
         return
+    try:
+        # Set operation type
+        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
+        span.set_attribute(f"{SpanAttributes.LLM_SYSTEM}", "LiteLLM")
 
-    # Set operation type
-    span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
-    span.set_attribute(f"{SpanAttributes.LLM_SYSTEM}", "LiteLLM")
+        # Common attributes
+        if kwargs.get("model"):
+            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MODEL}", kwargs["model"])
 
-    # Common attributes
-    if kwargs.get("model"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MODEL}", kwargs["model"])
+        if kwargs.get("temperature") is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TEMPERATURE}", kwargs["temperature"])
 
-    if kwargs.get("temperature") is not None:
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TEMPERATURE}", kwargs["temperature"])
+        if kwargs.get("max_tokens") is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs["max_tokens"])
 
-    if kwargs.get("max_tokens") is not None:
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs["max_tokens"])
+        if kwargs.get("stream") is not None:
+            span.set_attribute("gen_ai.stream", kwargs["stream"])
 
-    if kwargs.get("stream") is not None:
-        span.set_attribute("gen_ai.stream", kwargs["stream"])
+        # Chat completion specific attributes
+        if operation_type == "chat" and kwargs.get("messages"):
+            messages = kwargs["messages"]
+            if isinstance(messages, list) and len(messages) > 0:
+                for index, message in enumerate(messages):
+                    if isinstance(message, dict):
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
+                        span.set_attribute(
+                            f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", ""))
+                        )
 
-    # Chat completion specific attributes
-    if operation_type == "chat" and kwargs.get("messages"):
-        messages = kwargs["messages"]
-        if isinstance(messages, list) and len(messages) > 0:
-            for index, message in enumerate(messages):
-                if isinstance(message, dict):
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", "")))
+        # Embedding specific attributes
+        if operation_type == "embedding" and kwargs.get("input"):
+            input_data = kwargs["input"]
+            if isinstance(input_data, str):
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
+            elif isinstance(input_data, list):
+                for index, text in enumerate(input_data):
+                    if isinstance(text, str):
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", text)
 
-    # Embedding specific attributes
-    if operation_type == "embedding" and kwargs.get("input"):
-        input_data = kwargs["input"]
-        if isinstance(input_data, str):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
-        elif isinstance(input_data, list):
-            for index, text in enumerate(input_data):
-                if isinstance(text, str):
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", text)
-
-    # Image generation specific attributes
-    if operation_type == "image_generation":
-        if kwargs.get("prompt"):
-            span.set_attribute("gen_ai.prompt", kwargs["prompt"])
-        if kwargs.get("n"):
-            span.set_attribute("gen_ai.request.n", kwargs["n"])
-        if kwargs.get("size"):
-            span.set_attribute("gen_ai.request.size", kwargs["size"])
-        if kwargs.get("quality"):
-            span.set_attribute("gen_ai.request.quality", kwargs["quality"])
-        if kwargs.get("style"):
-            span.set_attribute("gen_ai.request.style", kwargs["style"])
+        # Image generation specific attributes
+        if operation_type == "image_generation":
+            if kwargs.get("prompt"):
+                span.set_attribute("gen_ai.prompt", kwargs["prompt"])
+            if kwargs.get("n"):
+                span.set_attribute("gen_ai.request.n", kwargs["n"])
+            if kwargs.get("size"):
+                span.set_attribute("gen_ai.request.size", kwargs["size"])
+            if kwargs.get("quality"):
+                span.set_attribute("gen_ai.request.quality", kwargs["quality"])
+            if kwargs.get("style"):
+                span.set_attribute("gen_ai.request.style", kwargs["style"])
+    except Exception as e:
+        logger.error(f"Failed to set attributes for LiteLLM span: {e}")
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any], operation_type: str) -> None:
     """Set response attributes on span"""
     if not span.is_recording():
         return
+    try:
+        if response_dict.get("model"):
+            span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
 
-    if response_dict.get("model"):
-        span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
+        if response_dict.get("id"):
+            span.set_attribute("gen_ai.response.id", response_dict["id"])
 
-    if response_dict.get("id"):
-        span.set_attribute("gen_ai.response.id", response_dict["id"])
+        # Usage information
+        usage = response_dict.get("usage", {})
+        if usage:
+            if usage.get("prompt_tokens"):
+                span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
+            if usage.get("completion_tokens"):
+                span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
+            if usage.get("cache_read_input_tokens"):
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_tokens"]
+                )
+            if usage.get("cache_creation_input_tokens"):
+                span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage["cache_creation_input_tokens"])
+            if usage.get("total_tokens"):
+                span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
 
-    # Usage information
-    usage = response_dict.get("usage", {})
-    if usage:
-        if usage.get("prompt_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
-        if usage.get("completion_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
-        if usage.get("cache_read_input_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_tokens"])
-        if usage.get("cache_creation_input_tokens"):
-            span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage["cache_creation_input_tokens"])
-        if usage.get("total_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
+        # Chat completion response content
+        if operation_type == "chat":
+            choices = response_dict.get("choices", [])
+            for index, choice in enumerate(choices):
+                if choice.get("message", {}).get("role"):
+                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
+                if choice.get("message", {}).get("content"):
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["message"]["content"]
+                    )
+                if choice.get("finish_reason"):
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"]
+                    )
 
-    # Chat completion response content
-    if operation_type == "chat":
-        choices = response_dict.get("choices", [])
-        for index, choice in enumerate(choices):
-            if choice.get("message", {}).get("role"):
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
-            if choice.get("message", {}).get("content"):
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["message"]["content"])
-            if choice.get("finish_reason"):
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
+        # Embedding response content
+        elif operation_type == "embedding":
+            data = response_dict.get("data", [])
+            for index, embedding_data in enumerate(data):
+                if embedding_data.get("index") is not None:
+                    span.set_attribute(f"gen_ai.response.embeddings.{index}.index", embedding_data["index"])
+                if embedding_data.get("embedding"):
+                    # Don't log the actual embedding vector, just its dimensions
+                    embedding_vector = embedding_data["embedding"]
+                    if isinstance(embedding_vector, list):
+                        span.set_attribute(f"gen_ai.response.embeddings.{index}.dimensions", len(embedding_vector))
 
-    # Embedding response content
-    elif operation_type == "embedding":
-        data = response_dict.get("data", [])
-        for index, embedding_data in enumerate(data):
-            if embedding_data.get("index") is not None:
-                span.set_attribute(f"gen_ai.response.embeddings.{index}.index", embedding_data["index"])
-            if embedding_data.get("embedding"):
-                # Don't log the actual embedding vector, just its dimensions
-                embedding_vector = embedding_data["embedding"]
-                if isinstance(embedding_vector, list):
-                    span.set_attribute(f"gen_ai.response.embeddings.{index}.dimensions", len(embedding_vector))
-
-    # Image generation response content
-    elif operation_type == "image_generation":
-        data = response_dict.get("data", [])
-        for index, image_data in enumerate(data):
-            if image_data.get("url"):
-                span.set_attribute(f"gen_ai.response.images.{index}.url", image_data["url"])
-            if image_data.get("b64_json"):
-                span.set_attribute(f"gen_ai.response.images.{index}.has_b64_json", True)
-            if image_data.get("revised_prompt"):
-                span.set_attribute(f"gen_ai.response.images.{index}.revised_prompt", image_data["revised_prompt"])
+        # Image generation response content
+        elif operation_type == "image_generation":
+            data = response_dict.get("data", [])
+            for index, image_data in enumerate(data):
+                if image_data.get("url"):
+                    span.set_attribute(f"gen_ai.response.images.{index}.url", image_data["url"])
+                if image_data.get("b64_json"):
+                    span.set_attribute(f"gen_ai.response.images.{index}.has_b64_json", True)
+                if image_data.get("revised_prompt"):
+                    span.set_attribute(f"gen_ai.response.images.{index}.revised_prompt", image_data["revised_prompt"])
+    except Exception as e:
+        logger.error(f"Failed to set attributes for LiteLLM span: {e}")
 
 
 def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
