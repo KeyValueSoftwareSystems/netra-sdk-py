@@ -89,7 +89,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
             # Set this span's instrumentation name
             name = self._detect_raw_instrumentation_name(span)
-            print(name)
             if name in ALLOWED_INSTRUMENTATION_NAMES:
                 span.set_attribute(f"{Config.LIBRARY_NAME}.instrumentation.name", name)
         except Exception:

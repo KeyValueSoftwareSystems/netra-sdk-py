@@ -225,26 +225,7 @@ class SessionManager:
                     ctx = baggage.set_baggage("user_id", value, ctx)
                 elif session_key == "tenant_id":
                     ctx = baggage.set_baggage("tenant_id", value, ctx)
-            elif isinstance(value, dict) and value:
-                if session_key == "custom_attributes":
-                    custom_keys = list(value.keys())
-                    ctx = baggage.set_baggage("custom_keys", ",".join(custom_keys), ctx)
-                    for key, val in value.items():
-                        ctx = baggage.set_baggage(f"custom.{key}", str(val), ctx)
-
-            # Decide whether to attach globally. We only attach if there is no
-            # active recording span (safe point) or if the caller forces it.
-            current_span = trace.get_current_span()
-            has_active_span = bool(current_span and getattr(current_span, "is_recording", lambda: False)())
-            if attach_globally or not has_active_span:
                 otel_context.attach(ctx)
-            else:
-                # Best-effort: annotate the current span for observability
-                if isinstance(value, str) and value:
-                    current_span.set_attribute(f"{Config.LIBRARY_NAME}.session.{session_key}", value)
-                elif isinstance(value, dict) and value and session_key == "custom_attributes":
-                    for key, val in value.items():
-                        current_span.set_attribute(f"{Config.LIBRARY_NAME}.session.custom.{key}", str(val))
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
 
