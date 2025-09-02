@@ -30,13 +30,15 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         if scope is not None:
             name = getattr(scope, "name", None)
             if isinstance(name, str) and name:
-                # Normalize common pattern like 'opentelemetry.instrumentation.httpx' -> 'httpx'
-                try:
-                    base = name.rsplit(".", 1)[-1].strip()
-                    if base:
-                        return base
-                except Exception:
-                    pass
+                # Only truncate when coming from known namespaces
+                if name.startswith("opentelemetry.instrumentation.") or name.startswith("netra.instrumentation."):
+                    try:
+                        base = name.rsplit(".", 1)[-1].strip()
+                        if base:
+                            return base
+                    except Exception:
+                        pass
+                # Otherwise, return as-is
                 return name
         return None
 
@@ -87,7 +89,8 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
             # Set this span's instrumentation name
             name = self._detect_raw_instrumentation_name(span)
-            if name and any(allowed in name for allowed in ALLOWED_INSTRUMENTATION_NAMES):
+            print(name)
+            if name in ALLOWED_INSTRUMENTATION_NAMES:
                 span.set_attribute(f"{Config.LIBRARY_NAME}.instrumentation.name", name)
         except Exception:
             pass
