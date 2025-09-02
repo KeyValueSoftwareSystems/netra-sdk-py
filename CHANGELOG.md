@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.39] - 2025-09-02
+
+- Refactored code to remove duplicate code
+
 ## [0.1.38] - 2025-09-02
 
 - Fixed instrumentation name detection issue
@@ -42,4 +46,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.38]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.39]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
