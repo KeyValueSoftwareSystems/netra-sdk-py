@@ -206,11 +206,12 @@ class TestCreateFunctionWrapper:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         def original_func(x: int, y: int) -> int:
             return x + y
@@ -224,7 +225,7 @@ class TestCreateFunctionWrapper:
         mock_session_manager.push_entity.assert_called_once_with("workflow", "test_span")
         mock_session_manager.pop_entity.assert_called_once_with("workflow")
         mock_trace.get_tracer.assert_called_once_with("original_func")
-        mock_tracer.start_as_current_span.assert_called_once_with("test_span")
+        mock_tracer.start_span.assert_called_once_with("test_span")
 
     @patch("netra.decorators.SessionManager")
     @patch("netra.decorators.trace")
@@ -234,13 +235,12 @@ class TestCreateFunctionWrapper:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
-        mock_context_manager.__aenter__ = Mock(return_value=mock_span)
-        mock_context_manager.__aexit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         async def original_async_func(x: int, y: int) -> int:
             return x * y
@@ -261,7 +261,7 @@ class TestCreateFunctionWrapper:
         mock_session_manager.push_entity.assert_called_once_with("agent", "async_test_span")
         mock_session_manager.pop_entity.assert_called_once_with("agent")
         mock_trace.get_tracer.assert_called_once_with("original_async_func")
-        mock_tracer.start_as_current_span.assert_called_once_with("async_test_span")
+        mock_tracer.start_span.assert_called_once_with("async_test_span")
 
     @patch("netra.decorators.SessionManager")
     @patch("netra.decorators.trace")
@@ -271,11 +271,12 @@ class TestCreateFunctionWrapper:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         def failing_func():
             raise ValueError("Test error")
@@ -299,11 +300,12 @@ class TestCreateFunctionWrapper:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         def test_function():
             return "success"
@@ -314,7 +316,7 @@ class TestCreateFunctionWrapper:
 
         # Assert
         assert result == "success"
-        mock_tracer.start_as_current_span.assert_called_once_with("test_function")
+        mock_tracer.start_span.assert_called_once_with("test_function")
 
 
 class TestWrapClassMethods:
@@ -553,11 +555,12 @@ class TestDecoratorIntegration:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         @workflow
         def main_workflow(data: str) -> str:
@@ -602,13 +605,12 @@ class TestDecoratorIntegration:
         mock_tracer = Mock()
         mock_span = Mock()
         mock_context_manager = Mock()
-        mock_context_manager.__enter__ = Mock(return_value=mock_span)
+        mock_context_manager.__enter__ = Mock(return_value=None)
         mock_context_manager.__exit__ = Mock(return_value=None)
-        mock_context_manager.__aenter__ = Mock(return_value=mock_span)
-        mock_context_manager.__aexit__ = Mock(return_value=None)
 
         mock_trace.get_tracer.return_value = mock_tracer
-        mock_tracer.start_as_current_span.return_value = mock_context_manager
+        mock_tracer.start_span.return_value = mock_span
+        mock_trace.use_span.return_value = mock_context_manager
 
         @agent
         async def async_agent(query: str) -> str:

@@ -11,6 +11,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from netra import Netra
+from netra.config import Config
 
 
 class TestNetraInitialization:
@@ -224,17 +225,17 @@ class TestNetraSessionManagement:
 
         mock_set_session_context.assert_called_once_with("tenant_id", tenant_id)
 
-    @patch("netra.SessionManager.set_session_context")
-    def test_set_custom_attributes(self, mock_set_session_context: MagicMock) -> None:
+    @patch("netra.SessionManager.set_attribute_on_active_span")
+    def test_set_custom_attributes(self, mock_set_attr_active: MagicMock) -> None:
         """Test setting custom attributes."""
         key = "custom_key"
         value = "custom_value"
         Netra.set_custom_attributes(key, value)
 
-        mock_set_session_context.assert_called_once_with("custom_attributes", {key: value})
+        mock_set_attr_active.assert_called_once_with(f"{Config.LIBRARY_NAME}.custom.{key}", value)
 
-    @patch("netra.SessionManager.set_session_context")
-    def test_set_custom_attributes_with_various_types(self, mock_set_session_context: MagicMock) -> None:
+    @patch("netra.SessionManager.set_attribute_on_active_span")
+    def test_set_custom_attributes_with_various_types(self, mock_set_attr_active: MagicMock) -> None:
         """Test setting custom attributes with different value types."""
         test_cases = [
             ("string_key", "string_value"),
@@ -249,9 +250,9 @@ class TestNetraSessionManagement:
             Netra.set_custom_attributes(key, value)
 
         # Verify all calls were made with correct parameters
-        expected_calls = [("custom_attributes", {key: value}) for key, value in test_cases]
+        expected_calls = [(f"{Config.LIBRARY_NAME}.custom.{key}", value) for key, value in test_cases]
 
-        actual_calls = [call.args for call in mock_set_session_context.call_args_list]
+        actual_calls = [call.args for call in mock_set_attr_active.call_args_list]
         assert actual_calls == expected_calls
 
     @patch("netra.SessionManager.set_custom_event")
@@ -319,7 +320,7 @@ class TestNetraIntegration:
         with Netra._init_lock:
             Netra._initialized = False
 
-    @patch("netra.SessionManager.set_session_context")
+    @patch("netra.SessionManager.set_attribute_on_active_span")
     @patch("netra.SessionManager.set_custom_event")
     @patch("netra.init_instrumentations")
     @patch("netra.Tracer")
@@ -328,7 +329,7 @@ class TestNetraIntegration:
         mock_tracer: MagicMock,
         mock_init_instrumentations: MagicMock,
         mock_set_custom_event: MagicMock,
-        mock_set_session_context: MagicMock,
+        mock_set_attr_active: MagicMock,
     ) -> None:
         """Test a complete workflow of initialization and session management."""
         # Initialize SDK
@@ -348,15 +349,9 @@ class TestNetraIntegration:
         mock_tracer.assert_called_once()
         mock_init_instrumentations.assert_called_once()
 
-        # Verify session management calls
-        expected_session_calls = [
-            ("session_id", "session-123"),
-            ("user_id", "user-456"),
-            ("tenant_id", "tenant-789"),
-            ("custom_attributes", {"feature_flag": "enabled"}),
-        ]
-        actual_session_calls = [call.args for call in mock_set_session_context.call_args_list]
-        assert actual_session_calls == expected_session_calls
+        # Verify session management calls for IDs
+        # session_id, user_id, tenant_id are set via set_session_context internally; we only assert custom attr here
+        mock_set_attr_active.assert_called_once_with(f"{Config.LIBRARY_NAME}.custom.feature_flag", "enabled")
 
         mock_set_custom_event.assert_called_once_with("user_login", {"timestamp": "2024-01-01T00:00:00Z"})
 
