@@ -5,6 +5,7 @@ Tests the happy path scenarios for session management functionality.
 
 from unittest.mock import Mock, patch
 
+from netra.config import Config
 from netra.session_manager import SessionManager
 
 
@@ -91,27 +92,26 @@ class TestSessionManagerContext:
 
     @patch("netra.session_manager.otel_context")
     @patch("netra.session_manager.baggage")
-    def test_set_custom_attributes_context(self, mock_baggage, mock_context):
-        """Test setting custom attributes in context."""
-        # Arrange
-        mock_ctx = Mock()
-        mock_context.get_current.return_value = mock_ctx
-        mock_baggage.set_baggage.return_value = mock_ctx
-        custom_attrs = {"model": "gpt-4", "temperature": "0.7"}
+    def test_set_attribute_on_active_span_serializes_and_sets(self, mock_baggage, mock_context):
+        """Test setting custom attribute on active span (no baggage)."""
+        # Arrange: mock an active recording span
+        with patch("netra.session_manager.trace") as mock_trace:
+            mock_span = Mock()
+            mock_span.is_recording.return_value = True
+            mock_trace.get_current_span.return_value = mock_span
 
-        # Act
-        SessionManager.set_session_context("custom_attributes", custom_attrs)
+            # Act: set attributes of various types
+            SessionManager.set_attribute_on_active_span(f"{Config.LIBRARY_NAME}.custom.model", "gpt-4")
+            SessionManager.set_attribute_on_active_span(f"{Config.LIBRARY_NAME}.custom.temperature", 0.7)
+            SessionManager.set_attribute_on_active_span(f"{Config.LIBRARY_NAME}.custom.params", {"a": 1, "b": [1, 2]})
 
-        # Assert
-        mock_context.get_current.assert_called_once()
-        # Should set custom_keys and individual custom attributes
-        expected_calls = [
-            (("custom_keys", "model,temperature", mock_ctx),),
-            (("custom.model", "gpt-4", mock_ctx),),
-            (("custom.temperature", "0.7", mock_ctx),),
-        ]
-        assert mock_baggage.set_baggage.call_count == 3
-        mock_context.attach.assert_called_once_with(mock_ctx)
+            # Assert: attributes set on span, not baggage
+            calls = [c.args for c in mock_span.set_attribute.call_args_list]
+            assert (f"{Config.LIBRARY_NAME}.custom.model", "gpt-4") in calls
+            assert (f"{Config.LIBRARY_NAME}.custom.temperature", "0.7") in calls
+            # dict gets JSON-serialized
+            assert (f"{Config.LIBRARY_NAME}.custom.params", '{"a": 1, "b": [1, 2]}') in calls
+            mock_baggage.set_baggage.assert_not_called()
 
 
 class TestSessionManagerCustomEvents:
