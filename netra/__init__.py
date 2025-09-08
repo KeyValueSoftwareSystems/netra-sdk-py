@@ -13,7 +13,7 @@ from .config import Config, ConversationType
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
-from .session_manager import SessionManager
+from .session_manager import ConversationType, SessionManager
 from .span_wrapper import ActionModel, SpanWrapper, UsageModel
 from .tracer import Tracer
 
