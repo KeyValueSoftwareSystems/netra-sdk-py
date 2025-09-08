@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.40] - 2025-09-08
+
+- Added span level conversation support
+
 ## [0.1.39] - 2025-09-02
 
 - Refactored code to remove duplicate code
