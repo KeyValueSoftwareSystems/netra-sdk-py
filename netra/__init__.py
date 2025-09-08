@@ -9,7 +9,7 @@ from opentelemetry.trace import SpanKind
 
 from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
-from .config import Config
+from .config import Config, ConversationType
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
