@@ -1,10 +1,17 @@
 import json
 import os
+from enum import Enum
 from typing import Any, Dict, List, Optional
 
 from opentelemetry.util.re import parse_env_headers
 
 from netra.version import __version__
+
+
+class ConversationType(str, Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+    SYSTEM = "system"
 
 
 class Config:

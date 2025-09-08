@@ -9,7 +9,7 @@ from opentelemetry.trace import SpanKind
 
 from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
-from .config import Config
+from .config import Config, ConversationType
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
@@ -249,6 +249,15 @@ class Netra:
             logger.warning("Both event_name and attributes must be provided for custom events.")
 
     @classmethod
+    def add_conversation(cls, type: ConversationType, field_name: str, value: Any) -> None:
+        """
+        Append a conversation entry and set span attribute 'conversation' as an array.
+        If a conversation array already exists for the current active span, this appends
+        to it; otherwise, it initializes a new array.
+        """
+        SessionManager.add_conversation(type=type, field_name=field_name, value=value)
+
+    @classmethod
     def start_span(
         cls,
         name: str,
@@ -259,44 +268,6 @@ class Netra:
         Start a new session.
         """
         return SpanWrapper(name, attributes, module_name)
-
-    @classmethod
-    def set_input(cls, value: Any, span_name: Optional[str] = None) -> None:
-        """
-        Set custom attribute `netra.span.input` on a target span.
-
-        Args:
-            value: Input payload to record (string or JSON-serializable object)
-            span_name: Optional. When provided, sets the attribute on the span registered
-                       with this name. Otherwise sets on the active span.
-        """
-        SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.input", value, span_name)
-
-    @classmethod
-    def set_output(cls, value: Any, span_name: Optional[str] = None) -> None:
-        """
-        Set custom attribute `netra.span.output` on a target span.
-
-        Args:
-            value: Output payload to record (string or JSON-serializable object)
-            span_name: Optional. When provided, sets the attribute on the span registered
-                       with this name. Otherwise sets on the active span.
-        """
-        if value:
-            SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.output", value, span_name)
-
-    @classmethod
-    def set_prompt(cls, value: Any, span_name: Optional[str] = None) -> None:
-        """
-        Set custom attribute `netra.span.prompt` on a target span.
-
-        Args:
-            value: Prompt payload to record (string or JSON-serializable object)
-            span_name: Optional. When provided, sets the attribute on the span registered
-                       with this name. Otherwise sets on the active span.
-        """
-        if value:
-            SessionManager.set_attribute_on_target_span(f"{Config.LIBRARY_NAME}.span.prompt", value, span_name)
 
 
 __all__ = ["Netra", "UsageModel", "ActionModel"]

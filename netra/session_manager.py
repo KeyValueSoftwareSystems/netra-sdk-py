@@ -11,7 +11,7 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
-from .config import Config
+from .config import Config, ConversationType
 
 logger = logging.getLogger(__name__)
 
@@ -254,79 +254,64 @@ class SessionManager:
         except Exception as e:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
-    @classmethod
-    def set_attribute_on_target_span(cls, attr_key: str, attr_value: Any, span_name: Optional[str] = None) -> None:
+    @staticmethod
+    def add_conversation(type: ConversationType, field_name: str, value: Any) -> None:
         """
-        Best-effort setter to annotate a target span with the provided attribute.
+        Append a conversation entry and set span attribute 'conversation' as an array.
 
-        Behavior:
-        - If span_name is provided, set the attribute on the span registered with that name.
-        - If no span_name is provided, attempt to set the attribute on the SDK root span
-          (created when Netra.init(enable_root_span=True)). If the root span is unavailable,
-          fall back to the currently active span (OTel current span or SDK-managed current span).
+        Stored attribute format:
+        conversation: [
+          { "type": "input/output/system", "field_name": "sample_name", "value": "sample_value" },
+          ...
+        ]
         """
+
+        # Hard runtime validation of input types and values
+        if not isinstance(type, ConversationType):
+            raise TypeError("type must be a ConversationType enum value (input, output, system)")
+        normalized_type = type.value
+
+        if not isinstance(field_name, str):
+            raise TypeError(f"field_name must be a string, got {type(field_name)}")
+        if not field_name:
+            raise ValueError("field_name must be a non-empty string")
+
+        if value is None:
+            raise ValueError("value must not be None")
+
         try:
-            # Convert attribute value to a JSON-safe string representation
+            span = trace.get_current_span()
+            if not (span and getattr(span, "is_recording", lambda: False)()):
+                logger.warning("No active span to add conversation attribute.")
+                return
+
+            existing: List[Dict[str, Any]] = []
+            raw_data = None
+
             try:
-                if isinstance(attr_value, str):
-                    attr_str = attr_value
-                else:
+                attrs = getattr(span, "_attributes", None)
+                if attrs is not None and hasattr(attrs, "get"):
+                    raw_data = attrs.get("conversation")
+            except Exception:
+                logger.exception("Failed to retrieve conversation attribute")
+            if raw_data:
+                try:
                     import json
 
-                    attr_str = json.dumps(attr_value)
-            except Exception:
-                attr_str = str(attr_value)
-
-            # If a target span name is provided, use the registry for explicit lookup
-            if span_name is not None:
-                target = cls.get_span_by_name(span_name)
-                if target is None:
-                    logger.debug("No span found with name '%s' to set attribute %s", span_name, attr_key)
-                    return
-                target.set_attribute(attr_key, attr_str)
-                return
-
-            # Otherwise, attempt to set on the root-most span in the current trace
-            candidate = None
-
-            # Determine current trace_id from the active/current span
-            current_span = trace.get_current_span()
-            has_valid_current = getattr(current_span, "is_recording", None) is not None and current_span.is_recording()
-            base_span = current_span if has_valid_current else cls.get_current_span()
-            trace_id: Optional[int] = None
-            try:
-                if base_span is not None and hasattr(base_span, "get_span_context"):
-                    sc = base_span.get_span_context()
-                    trace_id = getattr(sc, "trace_id", None)
-            except Exception:
-                trace_id = None
-
-            # Find the earliest active span in this process that belongs to the same trace
-            if trace_id is not None:
-                try:
-                    for s in cls._active_spans:
-                        if s is None:
-                            continue
-                        if not getattr(s, "is_recording", lambda: False)():
-                            continue
-                        sc = getattr(s, "get_span_context", lambda: None)()
-                        if sc is None:
-                            continue
-                        if getattr(sc, "trace_id", None) == trace_id:
-                            candidate = s
-                            break
+                    if isinstance(raw_data, str):
+                        parsed = json.loads(raw_data)
+                    if isinstance(parsed, list):
+                        existing = parsed
                 except Exception:
-                    candidate = None
+                    existing = []
 
-            # Fallback to the current active span if no root-most could be found
-            if candidate is None:
-                candidate = base_span
-            if candidate is None:
-                logger.debug("No active span found to set attribute %s", attr_key)
-                return
-            candidate.set_attribute(attr_key, attr_str)
+            # Append new entry
+            entry: Dict[str, Any] = {"type": normalized_type, "field_name": field_name, "value": value}
+            existing.append(entry)
+
+            SessionManager.set_attribute_on_active_span("conversation", existing)
         except Exception as e:
-            logger.exception("Failed setting attribute %s: %s", attr_key, e)
+            logger.exception("Failed to add conversation attribute: %s", e)
 
     @staticmethod
     def set_attribute_on_active_span(attr_key: str, attr_value: Any) -> None:
