@@ -5,15 +5,22 @@ Handles automatic session and user ID management for applications.
 
 import logging
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Optional, Union
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
-from .config import Config, ConversationType
+from netra.config import Config
 
 logger = logging.getLogger(__name__)
+
+
+class ConversationType(str, Enum):
+    INPUT = "input"
+    OUTPUT = "output"
+    SYSTEM = "system"
 
 
 class SessionManager:

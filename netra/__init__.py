@@ -9,11 +9,11 @@ from opentelemetry.trace import SpanKind
 
 from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
-from .config import Config, ConversationType
+from .config import Config
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
-from .session_manager import SessionManager
+from .session_manager import ConversationType, SessionManager
 from .span_wrapper import ActionModel, SpanWrapper, UsageModel
 from .tracer import Tracer
 
