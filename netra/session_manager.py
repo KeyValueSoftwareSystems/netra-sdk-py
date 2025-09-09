@@ -262,7 +262,7 @@ class SessionManager:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
     @staticmethod
-    def add_conversation(conversation_type: ConversationType, field_name: str, value: Any) -> None:
+    def add_conversation(conversation_type: ConversationType, role: str, value: Any) -> None:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
 
@@ -278,10 +278,10 @@ class SessionManager:
             raise TypeError("conversation_type must be a ConversationType enum value (input, output, system)")
         normalized_type = conversation_type.value
 
-        if not isinstance(field_name, str):
-            raise TypeError(f"field_name must be a string, got {type(field_name)}")
-        if not field_name:
-            raise ValueError("field_name must be a non-empty string")
+        if not isinstance(role, str):
+            raise TypeError(f"role must be a string, got {type(role)}")
+        if not role:
+            raise ValueError("role must be a non-empty string")
 
         if not value:
             raise ValueError("value must not be empty")
@@ -313,7 +313,12 @@ class SessionManager:
                     existing = []
 
             # Append new entry
-            entry: Dict[str, Any] = {"type": normalized_type, "field_name": field_name, "value": value}
+            entry: Dict[str, Any] = {"type": normalized_type, "role": role, "value": value}
+            # Add value_type and media_type based on value type for backend parsing
+            if isinstance(value, str):
+                entry["format"] = "text"
+            elif isinstance(value, dict):
+                entry["format"] = "json"
             existing.append(entry)
 
             SessionManager.set_attribute_on_active_span("conversation", existing)

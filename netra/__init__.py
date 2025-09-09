@@ -249,13 +249,13 @@ class Netra:
             logger.warning("Both event_name and attributes must be provided for custom events.")
 
     @classmethod
-    def add_conversation(cls, conversation_type: ConversationType, field_name: str, value: Any) -> None:
+    def add_conversation(cls, conversation_type: ConversationType, role: str, value: Any) -> None:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
         If a conversation array already exists for the current active span, this appends
         to it; otherwise, it initializes a new array.
         """
-        SessionManager.add_conversation(conversation_type=conversation_type, field_name=field_name, value=value)
+        SessionManager.add_conversation(conversation_type=conversation_type, role=role, value=value)
 
     @classmethod
     def start_span(
