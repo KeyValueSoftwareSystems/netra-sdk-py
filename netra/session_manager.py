@@ -262,7 +262,7 @@ class SessionManager:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
     @staticmethod
-    def add_conversation(type: ConversationType, field_name: str, value: Any) -> None:
+    def add_conversation(conversation_type: ConversationType, field_name: str, value: Any) -> None:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
 
@@ -274,17 +274,17 @@ class SessionManager:
         """
 
         # Hard runtime validation of input types and values
-        if not isinstance(type, ConversationType):
-            raise TypeError("type must be a ConversationType enum value (input, output, system)")
-        normalized_type = type.value
+        if not isinstance(conversation_type, ConversationType):
+            raise TypeError("conversation_type must be a ConversationType enum value (input, output, system)")
+        normalized_type = conversation_type.value
 
         if not isinstance(field_name, str):
             raise TypeError(f"field_name must be a string, got {type(field_name)}")
         if not field_name:
             raise ValueError("field_name must be a non-empty string")
 
-        if value is None:
-            raise ValueError("value must not be None")
+        if not value:
+            raise ValueError("value must not be empty")
 
         try:
             span = trace.get_current_span()
