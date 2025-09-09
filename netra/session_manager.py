@@ -262,7 +262,7 @@ class SessionManager:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
     @staticmethod
-    def add_conversation(conversation_type: ConversationType, role: str, value: Any) -> None:
+    def add_conversation(conversation_type: ConversationType, role: str, content: Any) -> None:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
 
@@ -283,8 +283,8 @@ class SessionManager:
         if not role:
             raise ValueError("role must be a non-empty string")
 
-        if not value:
-            raise ValueError("value must not be empty")
+        if not content:
+            raise ValueError("content must not be empty")
 
         try:
             span = trace.get_current_span()
@@ -313,11 +313,11 @@ class SessionManager:
                     existing = []
 
             # Append new entry
-            entry: Dict[str, Any] = {"type": normalized_type, "role": role, "value": value}
+            entry: Dict[str, Any] = {"type": normalized_type, "role": role, "content": content}
             # Add value_type and media_type based on value type for backend parsing
-            if isinstance(value, str):
+            if isinstance(content, str):
                 entry["format"] = "text"
-            elif isinstance(value, dict):
+            elif isinstance(content, dict):
                 entry["format"] = "json"
             existing.append(entry)
 

@@ -80,8 +80,8 @@ dependencies = [
 ]
 
 [project.urls]
-"Homepage" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py"
-"Documentation" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py/blob/main/README.md"
+"Homepage" = "https://getnetra.ai/"
+"Documentation" = "https://docs.getnetra.ai/introduction"
 "Repository" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py"
 "Changelog" = "https://github.com/KeyValueSoftwareSystems/netra-sdk-py/blob/main/CHANGELOG.md"
 
