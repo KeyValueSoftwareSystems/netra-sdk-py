@@ -20,7 +20,6 @@ logger = logging.getLogger(__name__)
 class ConversationType(str, Enum):
     INPUT = "input"
     OUTPUT = "output"
-    SYSTEM = "system"
 
 
 class SessionManager:
