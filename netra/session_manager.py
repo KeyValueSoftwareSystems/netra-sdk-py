@@ -315,8 +315,6 @@ class SessionManager:
                     parsed: Any = None
                     if isinstance(raw_data, str):
                         parsed = json.loads(raw_data)
-                    elif isinstance(raw_data, list):
-                        parsed = raw_data
                     if isinstance(parsed, list):
                         existing = parsed
                 except Exception:
