@@ -299,8 +299,6 @@ class SessionManager:
             existing: List[Dict[str, Any]] = []
             raw_data = None
 
-            # Read existing conversation directly from the span's private attributes to avoid
-            # triggering any truncation logic in wrapped set_attribute.
             try:
                 attrs = getattr(span, "_attributes", None)
                 if attrs is not None and hasattr(attrs, "get"):
