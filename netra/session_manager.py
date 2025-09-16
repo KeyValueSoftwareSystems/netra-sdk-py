@@ -281,7 +281,7 @@ class SessionManager:
         if not isinstance(role, str):
             raise TypeError(f"role must be a string, got {type(role)}")
 
-        if not isinstance(content, (str, dict, list)):
+        if not isinstance(content, (str, dict)):
             raise TypeError(f"content must be a string or dict, got {type(content)}")
 
         if not role:
@@ -331,8 +331,6 @@ class SessionManager:
             if isinstance(processed_content, str):
                 entry["format"] = "text"
             elif isinstance(processed_content, dict):
-                entry["format"] = "json"
-            elif isinstance(processed_content, list):
                 entry["format"] = "json"
             existing.append(entry)
 
