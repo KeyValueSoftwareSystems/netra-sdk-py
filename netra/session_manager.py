@@ -13,6 +13,7 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from netra.config import Config
+from netra.utils import process_content_for_max_len
 
 logger = logging.getLogger(__name__)
 
@@ -279,6 +280,10 @@ class SessionManager:
 
         if not isinstance(role, str):
             raise TypeError(f"role must be a string, got {type(role)}")
+
+        if not isinstance(content, (str, dict, list)):
+            raise TypeError(f"content must be a string or dict, got {type(content)}")
+
         if not role:
             raise ValueError("role must be a non-empty string")
 
@@ -294,33 +299,53 @@ class SessionManager:
             existing: List[Dict[str, Any]] = []
             raw_data = None
 
+            # Read existing conversation directly from the span's private attributes to avoid
+            # triggering any truncation logic in wrapped set_attribute.
             try:
                 attrs = getattr(span, "_attributes", None)
                 if attrs is not None and hasattr(attrs, "get"):
                     raw_data = attrs.get("conversation")
             except Exception:
                 logger.exception("Failed to retrieve conversation attribute")
+
             if raw_data:
                 try:
                     import json
 
+                    parsed: Any = None
                     if isinstance(raw_data, str):
                         parsed = json.loads(raw_data)
+                    elif isinstance(raw_data, list):
+                        parsed = raw_data
                     if isinstance(parsed, list):
                         existing = parsed
                 except Exception:
                     existing = []
 
-            # Append new entry
-            entry: Dict[str, Any] = {"type": normalized_type, "role": role, "content": content}
-            # Add value_type and media_type based on value type for backend parsing
-            if isinstance(content, str):
+            # Enforce per-entry content length limit without breaking the entire conversation structure
+            max_len = Config.CONVERSATION_CONTENT_MAX_LEN
+            processed_content = process_content_for_max_len(content, max_len)
+
+            entry: Dict[str, Any] = {"type": normalized_type, "role": role, "content": processed_content}
+            # Add format based on processed value type for backend parsing
+            if isinstance(processed_content, str):
                 entry["format"] = "text"
-            elif isinstance(content, dict):
+            elif isinstance(processed_content, dict):
+                entry["format"] = "json"
+            elif isinstance(processed_content, list):
                 entry["format"] = "json"
             existing.append(entry)
 
-            SessionManager.set_attribute_on_active_span("conversation", existing)
+            # Bypass global attribute value truncation by writing directly to the span's
+            # private attribute store. We intentionally avoid span.set_attribute here.
+            try:
+                import json
+
+                payload = json.dumps(existing, default=str)
+                attrs = getattr(span, "_attributes", None)
+                attrs["conversation"] = payload  # type: ignore[index]
+            except Exception:
+                logger.exception("Failed to set conversation attribute directly on span")
         except Exception as e:
             logger.exception("Failed to add conversation attribute: %s", e)
 
