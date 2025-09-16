@@ -291,11 +291,14 @@ class SessionManager:
             raise ValueError("content must not be empty")
 
         try:
+
+            # Get active recording span
             span = trace.get_current_span()
             if not (span and getattr(span, "is_recording", lambda: False)()):
                 logger.warning("No active span to add conversation attribute.")
                 return
 
+            # Load existing conversation (JSON string -> list)
             existing: List[Dict[str, Any]] = []
             raw_data = None
 
@@ -322,7 +325,9 @@ class SessionManager:
             max_len = Config.CONVERSATION_CONTENT_MAX_LEN
             processed_content = process_content_for_max_len(content, max_len)
 
+            # Create a conversation entry
             entry: Dict[str, Any] = {"type": normalized_type, "role": role, "content": processed_content}
+
             # Add format based on processed value type for backend parsing
             if isinstance(processed_content, str):
                 entry["format"] = "text"
