@@ -28,7 +28,9 @@ class Config:
     LIBRARY_NAME = "netra"
     LIBRARY_VERSION = __version__
     # Maximum length for any attribute value (strings and bytes). Processors should honor this.
-    ATTRIBUTE_MAX_LEN = 1000
+    ATTRIBUTE_MAX_LEN = 2000
+    # Maximum length specifically for conversation entry content (strings or JSON when serialized)
+    CONVERSATION_CONTENT_MAX_LEN = 1000
 
     def __init__(
         self,
