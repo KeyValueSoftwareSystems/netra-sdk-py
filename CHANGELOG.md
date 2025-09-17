@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.43] - 2025-09-17
+
+- Fixed conversation content length issue
+- Added utils module to handle common tasks
+
 ## [0.1.42] - 2025-09-09
 
 - Refactored conversation attribute format to be more consistent with OpenTelemetry
@@ -58,4 +63,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.42]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.43]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
