@@ -57,49 +57,73 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         filtered: List[ReadableSpan] = []
-        for s in spans:
-            name = getattr(s, "name", None)
-            if name is None:
-                filtered.append(s)
+        blocked_parent_map: Dict[Any, Any] = {}
+        for span in spans:
+            name = getattr(span, "name", None)
+            if name is None or not self._is_blocked(name):
+                filtered.append(span)
                 continue
-            # Only apply blocked span patterns to root-level spans (no valid parent)
-            parent = getattr(s, "parent", None)
-            # Determine if the span has a valid parent. SpanContext.is_valid may be a property or method.
-            has_valid_parent = False
-            if parent is not None:
-                is_valid_attr = getattr(parent, "is_valid", None)
-                if callable(is_valid_attr):
-                    try:
-                        has_valid_parent = bool(is_valid_attr())
-                    except Exception:
-                        has_valid_parent = False
-                else:
-                    has_valid_parent = bool(is_valid_attr)
 
-            is_root_span = parent is None or not has_valid_parent
-
-            if is_root_span:
-                # Apply name-based blocking only for root spans
-                if name in self._exact:
-                    continue
-                blocked = False
-                for pref in self._prefixes:
-                    if name.startswith(pref):
-                        blocked = True
-                        break
-                if not blocked and self._suffixes:
-                    for suf in self._suffixes:
-                        if name.endswith(suf):
-                            blocked = True
-                            break
-                if not blocked:
-                    filtered.append(s)
-            else:
-                # Do not block child spans based on name
-                filtered.append(s)
+            span_context = getattr(span, "context", None)
+            span_id = getattr(span_context, "span_id", None) if span_context else None
+            if span_id is not None:
+                blocked_parent_map[span_id] = getattr(span, "parent", None)
+        if blocked_parent_map:
+            self._reparent_blocked_children(filtered, blocked_parent_map)
         if not filtered:
             return SpanExportResult.SUCCESS
         return self._exporter.export(filtered)
+
+    def _is_blocked(self, name: str) -> bool:
+        if name in self._exact:
+            return True
+        for pref in self._prefixes:
+            if name.startswith(pref):
+                return True
+        for suf in self._suffixes:
+            if name.endswith(suf):
+                return True
+        return False
+
+    def _reparent_blocked_children(
+        self,
+        spans: Sequence[ReadableSpan],
+        blocked_parent_map: Dict[Any, Any],
+    ) -> None:
+        if not blocked_parent_map:
+            return
+
+        for span in spans:
+            parent_context = getattr(span, "parent", None)
+            if parent_context is None:
+                continue
+
+            updated_parent = parent_context
+            visited: set[Any] = set()
+            changed = False
+
+            while updated_parent is not None:
+                parent_span_id = getattr(updated_parent, "span_id", None)
+                if parent_span_id not in blocked_parent_map or parent_span_id in visited:
+                    break
+                visited.add(parent_span_id)
+                updated_parent = blocked_parent_map[parent_span_id]
+                changed = True
+
+            if changed:
+                self._set_span_parent(span, updated_parent)
+
+    def _set_span_parent(self, span: ReadableSpan, parent: Any) -> None:
+        if hasattr(span, "_parent"):
+            try:
+                span._parent = parent
+                return
+            except Exception:
+                pass
+        try:
+            setattr(span, "parent", parent)
+        except Exception:
+            logger.debug("Failed to reparent span %s", getattr(span, "name", "<unknown>"), exc_info=True)
 
     def shutdown(self) -> None:
         try:
