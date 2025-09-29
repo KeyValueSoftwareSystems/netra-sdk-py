@@ -4,6 +4,8 @@ import time
 from datetime import datetime
 from typing import Any, Dict, List, Literal, Optional
 
+from opentelemetry import baggage
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
 from pydantic import BaseModel
@@ -14,6 +16,9 @@ from netra.session_manager import SessionManager
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# Baggage key for local-only blocked spans patterns
+_LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
 
 
 class ActionModel(BaseModel):  # type: ignore[misc]
@@ -72,10 +77,28 @@ class SpanWrapper:
         self.span: Optional[trace.Span] = None
         # Internal context manager to manage current-span scope safely
         self._span_cm: Optional[Any] = None
+        # Token for locally attached baggage (if any)
+        self._local_block_token: Optional[object] = None
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
         self.start_time = time.time()
+
+        # If user provided local blocked patterns in attributes, attach them as baggage
+        try:
+            patterns = None
+            # Accept either explicit key or short key for convenience
+            if isinstance(self.attributes.get("netra.local_blocked_spans"), list):
+                patterns = [p for p in self.attributes.get("netra.local_blocked_spans", []) if isinstance(p, str) and p]
+            elif isinstance(self.attributes.get("blocked_spans"), list):
+                patterns = [p for p in self.attributes.get("blocked_spans", []) if isinstance(p, str) and p]
+            if patterns:
+                payload = json.dumps(patterns)
+                self._local_block_token = otel_context.attach(
+                    baggage.set_baggage(_LOCAL_BLOCKED_SPANS_BAGGAGE_KEY, payload, context=otel_context.get_current())
+                )
+        except Exception:
+            logger.debug("Failed to attach local blocked spans baggage on span start", exc_info=True)
 
         # Create OpenTelemetry span and make it current using OTel's context manager
         # Store the context manager so we can close it in __exit__
@@ -138,6 +161,15 @@ class SpanWrapper:
                 self._span_cm.__exit__(exc_type, exc_val, exc_tb)
             finally:
                 self._span_cm = None
+
+        # Detach local blocking baggage if we attached it
+        if self._local_block_token is not None:
+            try:
+                otel_context.detach(self._local_block_token)
+            except Exception:
+                logger.debug("Failed to detach local blocked spans baggage token", exc_info=True)
+            finally:
+                self._local_block_token = None
 
         # Don't suppress exceptions
         return False
