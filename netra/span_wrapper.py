@@ -63,9 +63,16 @@ class SpanWrapper:
             span.set_usage(usage_data)
     """
 
-    def __init__(self, name: str, attributes: Optional[Dict[str, str]] = None, module_name: str = "combat_sdk"):
+    def __init__(
+        self,
+        name: str,
+        attributes: Optional[Dict[str, str]] = None,
+        module_name: str = "combat_sdk",
+        as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+    ):
         self.name = name
         self.attributes = attributes or {}
+
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
         self.status = "pending"
@@ -79,6 +86,11 @@ class SpanWrapper:
         self._span_cm: Optional[Any] = None
         # Token for locally attached baggage (if any)
         self._local_block_token: Optional[object] = None
+
+        if as_type is not None:
+            if as_type not in ["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]:
+                raise ValueError(f"Invalid span type: {as_type}")
+            self.attributes["netra.span.type"] = as_type
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""

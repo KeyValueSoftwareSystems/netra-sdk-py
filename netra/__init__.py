@@ -1,7 +1,7 @@
 import atexit
 import logging
 import threading
-from typing import Any, Dict, List, Optional, Set
+from typing import Any, Dict, List, Literal, Optional, Set
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
@@ -263,11 +263,12 @@ class Netra:
         name: str,
         attributes: Optional[Dict[str, str]] = None,
         module_name: str = "combat_sdk",
+        as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
     ) -> SpanWrapper:
         """
         Start a new session.
         """
-        return SpanWrapper(name, attributes, module_name)
+        return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
 __all__ = ["Netra", "UsageModel", "ActionModel"]

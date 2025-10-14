@@ -15,6 +15,7 @@ from typing import (
     Callable,
     Dict,
     Generator,
+    Literal,
     Optional,
     ParamSpec,
     Tuple,
@@ -262,7 +263,12 @@ def _wrap_streaming_response_with_span(
     return resp
 
 
-def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optional[str] = None) -> Callable[P, R]:
+def _create_function_wrapper(
+    func: Callable[P, R],
+    entity_type: str,
+    name: Optional[str] = None,
+    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+) -> Callable[P, R]:
     module_name = func.__name__
     is_async = inspect.iscoroutinefunction(func)
     span_name = name if name is not None else func.__name__
@@ -276,6 +282,14 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
+            # Set span type if provided
+            if as_type is not None:
+                if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
+                    raise ValueError(f"Invalid span type: {as_type}")
+                try:
+                    span.set_attribute("netra.span.type", as_type)
+                except Exception:
+                    pass
             # Register and activate span
             try:
                 SessionManager.register_span(span_name, span)
@@ -327,6 +341,14 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
 
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
+            # Set span type if provided
+            if as_type is not None:
+                if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
+                    raise ValueError(f"Invalid span type: {as_type}")
+                try:
+                    span.set_attribute("netra.span.type", as_type)
+                except Exception:
+                    pass
             # Register and activate span
             try:
                 SessionManager.register_span(span_name, span)
@@ -370,7 +392,12 @@ def _create_function_wrapper(func: Callable[P, R], entity_type: str, name: Optio
         return cast(Callable[P, R], sync_wrapper)
 
 
-def _wrap_class_methods(cls: C, entity_type: str, name: Optional[str] = None) -> C:
+def _wrap_class_methods(
+    cls: C,
+    entity_type: str,
+    name: Optional[str] = None,
+    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+) -> C:
     class_name = name if name is not None else cls.__name__
     for attr_name in cls.__dict__:
         attr = getattr(cls, attr_name)
@@ -378,7 +405,7 @@ def _wrap_class_methods(cls: C, entity_type: str, name: Optional[str] = None) ->
             continue
         if callable(attr) and inspect.isfunction(attr):
             method_span_name = f"{class_name}.{attr_name}"
-            wrapped_method = _create_function_wrapper(attr, entity_type, method_span_name)
+            wrapped_method = _create_function_wrapper(attr, entity_type, method_span_name, as_type=as_type)
             setattr(cls, attr_name, wrapped_method)
     return cls
 
@@ -402,9 +429,9 @@ def agent(
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "agent", name)
+            return _wrap_class_methods(cast(C, obj), "agent", name, as_type="agent")
         else:
-            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name)
+            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name, as_type="agent")
 
     if target is not None:
         return decorator(target)
@@ -416,10 +443,10 @@ def task(
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "task", name)
+            return _wrap_class_methods(cast(C, obj), "task", name, as_type="tool")
         else:
             # When obj is a function, it should be type Callable[P, R]
-            return _create_function_wrapper(cast(Callable[P, R], obj), "task", name)
+            return _create_function_wrapper(cast(Callable[P, R], obj), "task", name, as_type="tool")
 
     if target is not None:
         return decorator(target)
@@ -427,14 +454,17 @@ def task(
 
 
 def span(
-    target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
+    target: Union[Callable[P, R], C, None] = None,
+    *,
+    name: Optional[str] = None,
+    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "span", name)
+            return _wrap_class_methods(cast(C, obj), "span", name, as_type=as_type)
         else:
             # When obj is a function, it should be type Callable[P, R]
-            return _create_function_wrapper(cast(Callable[P, R], obj), "span", name)
+            return _create_function_wrapper(cast(Callable[P, R], obj), "span", name, as_type=as_type)
 
     if target is not None:
         return decorator(target)
