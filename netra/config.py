@@ -30,7 +30,7 @@ class Config:
     # Maximum length for any attribute value (strings and bytes). Processors should honor this.
     ATTRIBUTE_MAX_LEN = 2000
     # Maximum length specifically for conversation entry content (strings or JSON when serialized)
-    CONVERSATION_CONTENT_MAX_LEN = 1000
+    CONVERSATION_CONTENT_MAX_LEN = 2000
 
     def __init__(
         self,

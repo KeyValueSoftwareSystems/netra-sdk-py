@@ -287,7 +287,7 @@ def _create_function_wrapper(
                 if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
                     raise ValueError(f"Invalid span type: {as_type}")
                 try:
-                    span.set_attribute("netra.span.type", as_type)
+                    span.set_attribute("netra.span.type", as_type.upper())
                 except Exception:
                     pass
             # Register and activate span
@@ -346,7 +346,7 @@ def _create_function_wrapper(
                 if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
                     raise ValueError(f"Invalid span type: {as_type}")
                 try:
-                    span.set_attribute("netra.span.type", as_type)
+                    span.set_attribute("netra.span.type", as_type.upper())
                 except Exception:
                     pass
             # Register and activate span

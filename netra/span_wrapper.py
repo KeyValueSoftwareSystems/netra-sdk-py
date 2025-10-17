@@ -90,7 +90,7 @@ class SpanWrapper:
         if as_type is not None:
             if as_type not in ["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]:
                 raise ValueError(f"Invalid span type: {as_type}")
-            self.attributes["netra.span.type"] = as_type
+            self.attributes["netra.span.type"] = as_type.upper()
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
