@@ -275,20 +275,27 @@ class SessionManager:
 
         # Hard runtime validation of input types and values
         if not isinstance(conversation_type, ConversationType):
-            raise TypeError("conversation_type must be a ConversationType enum value (input, output, system)")
+            logger.error(
+                "add_conversation: conversation_type must be a ConversationType enum value (input, output, system)"
+            )
+            return
         normalized_type = conversation_type.value
 
         if not isinstance(role, str):
-            raise TypeError(f"role must be a string, got {type(role)}")
+            logger.error("add_conversation: role must be a string")
+            return
 
         if not isinstance(content, (str, dict)):
-            raise TypeError(f"content must be a string or dict, got {type(content)}")
+            logger.error("add_conversation: content must be a string or dict")
+            return
 
         if not role:
-            raise ValueError("role must be a non-empty string")
+            logger.error("add_conversation: role must be a non-empty string")
+            return
 
         if not content:
-            raise ValueError("content must not be empty")
+            logger.error("add_conversation: content must not be empty")
+            return
 
         try:
 
