@@ -183,11 +183,12 @@ class Netra:
             session_id: Session identifier
         """
         if not isinstance(session_id, str):
-            raise TypeError(f"session_id must be a string, got {type(session_id)}")
+            logger.error(f"set_session_id: session_id must be a string, got {type(session_id)}")
+            return
         if session_id:
             SessionManager.set_session_context("session_id", session_id)
         else:
-            logger.warning("Session ID must be provided for setting session_id.")
+            logger.warning("set_session_id: Session ID must be provided for setting session_id.")
 
     @classmethod
     def set_user_id(cls, user_id: str) -> None:
@@ -198,11 +199,12 @@ class Netra:
             user_id: User identifier
         """
         if not isinstance(user_id, str):
-            raise TypeError(f"user_id must be a string, got {type(user_id)}")
+            logger.error(f"set_user_id: user_id must be a string, got {type(user_id)}")
+            return
         if user_id:
             SessionManager.set_session_context("user_id", user_id)
         else:
-            logger.warning("User ID must be provided for setting user_id.")
+            logger.warning("set_user_id: User ID must be provided for setting user_id.")
 
     @classmethod
     def set_tenant_id(cls, tenant_id: str) -> None:
@@ -213,11 +215,12 @@ class Netra:
             user_account_id: User account identifier
         """
         if not isinstance(tenant_id, str):
-            raise TypeError(f"tenant_id must be a string, got {type(tenant_id)}")
+            logger.error(f"set_tenant_id: tenant_id must be a string, got {type(tenant_id)}")
+            return
         if tenant_id:
             SessionManager.set_session_context("tenant_id", tenant_id)
         else:
-            logger.warning("Tenant ID must be provided for setting tenant_id.")
+            logger.warning("set_tenant_id: Tenant ID must be provided for setting tenant_id.")
 
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:

@@ -98,7 +98,8 @@ class SpanWrapper:
         if isinstance(as_type, SpanType):
             self.attributes["netra.span.type"] = as_type.value
         else:
-            raise ValueError(f"Invalid span type: {as_type}")
+            logger.error("Invalid span type: %s", as_type)
+            return
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
