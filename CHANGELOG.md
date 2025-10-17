@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+
+## [0.1.46] - 2025-10-17
+
+- Fixed exception during add conversation
+- Added support for observation type in spans
+
 ## [0.1.45] - 2025-09-29
 
 - Added utility to locally block specific spans within a particular span scope.
