@@ -15,7 +15,6 @@ from typing import (
     Callable,
     Dict,
     Generator,
-    Literal,
     Optional,
     ParamSpec,
     Tuple,
@@ -34,6 +33,7 @@ from opentelemetry import trace
 
 from .config import Config
 from .session_manager import SessionManager
+from .span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
 
@@ -267,7 +267,7 @@ def _create_function_wrapper(
     func: Callable[P, R],
     entity_type: str,
     name: Optional[str] = None,
-    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+    as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> Callable[P, R]:
     module_name = func.__name__
     is_async = inspect.iscoroutinefunction(func)
@@ -283,13 +283,13 @@ def _create_function_wrapper(
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
             # Set span type if provided
-            if as_type is not None:
-                if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
-                    raise ValueError(f"Invalid span type: {as_type}")
-                try:
-                    span.set_attribute("netra.span.type", as_type.upper())
-                except Exception:
-                    pass
+
+            if not isinstance(as_type, SpanType):
+                raise ValueError(f"Invalid span type: {as_type}")
+            try:
+                span.set_attribute("netra.span.type", as_type.value)
+            except Exception:
+                pass
             # Register and activate span
             try:
                 SessionManager.register_span(span_name, span)
@@ -343,10 +343,10 @@ def _create_function_wrapper(
             span = tracer.start_span(span_name)
             # Set span type if provided
             if as_type is not None:
-                if as_type not in ("span", "generation", "tool", "agent", "trace", "retriever", "embedding"):
+                if not isinstance(as_type, SpanType):
                     raise ValueError(f"Invalid span type: {as_type}")
                 try:
-                    span.set_attribute("netra.span.type", as_type.upper())
+                    span.set_attribute("netra.span.type", as_type.value)
                 except Exception:
                     pass
             # Register and activate span
@@ -396,7 +396,7 @@ def _wrap_class_methods(
     cls: C,
     entity_type: str,
     name: Optional[str] = None,
-    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+    as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> C:
     class_name = name if name is not None else cls.__name__
     for attr_name in cls.__dict__:
@@ -429,9 +429,9 @@ def agent(
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "agent", name, as_type="agent")
+            return _wrap_class_methods(cast(C, obj), "agent", name)
         else:
-            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name, as_type="agent")
+            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name)
 
     if target is not None:
         return decorator(target)
@@ -443,10 +443,10 @@ def task(
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "task", name, as_type="tool")
+            return _wrap_class_methods(cast(C, obj), "task", name, as_type=SpanType.TOOL)
         else:
             # When obj is a function, it should be type Callable[P, R]
-            return _create_function_wrapper(cast(Callable[P, R], obj), "task", name, as_type="tool")
+            return _create_function_wrapper(cast(Callable[P, R], obj), "task", name, as_type=SpanType.TOOL)
 
     if target is not None:
         return decorator(target)
@@ -457,7 +457,7 @@ def span(
     target: Union[Callable[P, R], C, None] = None,
     *,
     name: Optional[str] = None,
-    as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+    as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):

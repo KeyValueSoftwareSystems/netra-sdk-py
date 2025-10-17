@@ -14,7 +14,7 @@ from .config import Config
 # Instrumentor functions
 from .instrumentation import init_instrumentations
 from .session_manager import ConversationType, SessionManager
-from .span_wrapper import ActionModel, SpanWrapper, UsageModel
+from .span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from .tracer import Tracer
 
 # Package-level logger. Attach NullHandler by default so library does not emit logs
@@ -263,7 +263,7 @@ class Netra:
         name: str,
         attributes: Optional[Dict[str, str]] = None,
         module_name: str = "combat_sdk",
-        as_type: Optional[Literal["span", "generation", "tool", "agent", "trace", "retriever", "embedding"]] = None,
+        as_type: Optional[SpanType] = SpanType.SPAN,
     ) -> SpanWrapper:
         """
         Start a new session.
@@ -271,4 +271,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType"]
