@@ -74,9 +74,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
                     truncated = self._truncate_value(value)
                     # Forward to original
                     original_set_attribute(key, truncated)
-                    # Special rule: if model key set, mark span as llm
-                    if key == "gen_ai.request.model":
-                        original_set_attribute(f"{Config.LIBRARY_NAME}.span.type", "llm")
                 except Exception:
                     # Best-effort; never break span
                     try:

@@ -2,6 +2,7 @@ import json
 import logging
 import time
 from datetime import datetime
+from enum import Enum
 from typing import Any, Dict, List, Literal, Optional
 
 from opentelemetry import baggage
@@ -49,6 +50,13 @@ class ATTRIBUTE:
     ACTION = "action"
 
 
+class SpanType(str, Enum):
+    SPAN = "SPAN"
+    GENERATION = "GENERATION"
+    TOOL = "TOOL"
+    EMBEDDING = "EMBEDDING"
+
+
 class SpanWrapper:
     """
     Context manager for tracking observability data for external API calls.
@@ -63,9 +71,16 @@ class SpanWrapper:
             span.set_usage(usage_data)
     """
 
-    def __init__(self, name: str, attributes: Optional[Dict[str, str]] = None, module_name: str = "combat_sdk"):
+    def __init__(
+        self,
+        name: str,
+        attributes: Optional[Dict[str, str]] = None,
+        module_name: str = "combat_sdk",
+        as_type: Optional[SpanType] = SpanType.SPAN,
+    ):
         self.name = name
         self.attributes = attributes or {}
+
         self.start_time: Optional[float] = None
         self.end_time: Optional[float] = None
         self.status = "pending"
@@ -79,6 +94,11 @@ class SpanWrapper:
         self._span_cm: Optional[Any] = None
         # Token for locally attached baggage (if any)
         self._local_block_token: Optional[object] = None
+
+        if isinstance(as_type, SpanType):
+            self.attributes["netra.span.type"] = as_type.value
+        else:
+            raise ValueError(f"Invalid span type: {as_type}")
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
