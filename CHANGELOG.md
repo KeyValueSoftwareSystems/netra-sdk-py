@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.47] - 2025-10-21
+
+- Added support for existing tracer provider usage
+
 ## [0.1.46] - 2025-10-17
 
 - Fixed exception during add conversation

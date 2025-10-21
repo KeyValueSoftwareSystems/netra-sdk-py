@@ -285,7 +285,8 @@ def _create_function_wrapper(
             # Set span type if provided
 
             if not isinstance(as_type, SpanType):
-                raise ValueError(f"Invalid span type: {as_type}")
+                logger.error("Invalid span type: %s", as_type)
+                return
             try:
                 span.set_attribute("netra.span.type", as_type.value)
             except Exception:
@@ -344,7 +345,8 @@ def _create_function_wrapper(
             # Set span type if provided
             if as_type is not None:
                 if not isinstance(as_type, SpanType):
-                    raise ValueError(f"Invalid span type: {as_type}")
+                    logger.error("Invalid span type: %s", as_type)
+                    return
                 try:
                     span.set_attribute("netra.span.type", as_type.value)
                 except Exception:

@@ -5,10 +5,12 @@ including exporter setup and span processor configuration.
 """
 
 import logging
+import threading
 from typing import Any, Dict
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk import trace as sdk_trace
 from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import (
@@ -21,6 +23,8 @@ from netra.config import Config
 from netra.exporters import FilteringSpanExporter
 
 logger = logging.getLogger(__name__)
+
+_provider_install_lock = threading.Lock()
 
 
 class Tracer:
@@ -55,57 +59,66 @@ class Tracer:
         resource = Resource(attributes=resource_attrs)
 
         # Build TracerProvider
-        provider = TracerProvider(resource=resource)
-
-        # Configure exporter based on configuration
-        if not self.cfg.otlp_endpoint:
-            logger.warning("OTLP endpoint not provided, falling back to console exporter")
-            exporter = ConsoleSpanExporter()
+        current_provider = trace.get_tracer_provider()
+        if isinstance(current_provider, sdk_trace.TracerProvider):
+            provider = current_provider
+            logger.info("Reusing existing TracerProvider. Possible loss of Resource attributes")
         else:
-            exporter = OTLPSpanExporter(
-                endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
-                headers=self.cfg.headers,
-            )
-        # Wrap exporter with filtering to support both global and local (baggage-based) rules
-        try:
-            patterns = getattr(self.cfg, "blocked_spans", None) or []
-            exporter = FilteringSpanExporter(exporter, patterns)
-            if patterns:
-                logger.info("Enabled FilteringSpanExporter with %d global pattern(s)", len(patterns))
+            provider = TracerProvider(resource=resource)
+            trace.set_tracer_provider(provider)
+            logger.info("Using Netra TracerProvider")
+
+        with _provider_install_lock:
+            if getattr(provider, "_netra_processors_installed", False):
+                logger.info("Netra processors already installed on provider; skipping setup")
+                return
+
+            if not self.cfg.otlp_endpoint:
+                logger.warning("OTLP endpoint not provided, falling back to console exporter")
+                exporter = ConsoleSpanExporter()
             else:
-                logger.info("Enabled FilteringSpanExporter with local-only rules")
-        except Exception as e:
-            logger.warning("Failed to enable FilteringSpanExporter: %s", e)
-        # Add span processors: first instrumentation wrapper, then session processor
-        from netra.processors import (
-            InstrumentationSpanProcessor,
-            LocalFilteringSpanProcessor,
-            ScrubbingSpanProcessor,
-            SessionSpanProcessor,
-        )
+                exporter = OTLPSpanExporter(
+                    endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
+                    headers=self.cfg.headers,
+                )
+            original_exporter = exporter
+            try:
+                patterns = getattr(self.cfg, "blocked_spans", None) or []
+                exporter = FilteringSpanExporter(exporter, patterns)
+                if patterns:
+                    logger.info("Enabled FilteringSpanExporter with %d global pattern(s)", len(patterns))
+                else:
+                    logger.info("Enabled FilteringSpanExporter with local-only rules")
+            except (ValueError, TypeError) as e:
+                logger.warning("Failed to enable FilteringSpanExporter: %s; using unwrapped exporter", e)
+                exporter = original_exporter
 
-        # Apply local filtering propagation first so later processors and spans see attributes
-        provider.add_span_processor(LocalFilteringSpanProcessor())
-        provider.add_span_processor(InstrumentationSpanProcessor())
-        provider.add_span_processor(SessionSpanProcessor())
+            from netra.processors import (
+                InstrumentationSpanProcessor,
+                LocalFilteringSpanProcessor,
+                ScrubbingSpanProcessor,
+                SessionSpanProcessor,
+            )
 
-        # Add scrubbing processor if enabled
-        if self.cfg.enable_scrubbing:
-            provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
+            provider.add_span_processor(LocalFilteringSpanProcessor())
+            provider.add_span_processor(InstrumentationSpanProcessor())
+            provider.add_span_processor(SessionSpanProcessor())
 
-        # Install appropriate span processor
-        if self.cfg.disable_batch:
-            provider.add_span_processor(SimpleSpanProcessor(exporter))
-        else:
-            provider.add_span_processor(BatchSpanProcessor(exporter))
+            if self.cfg.enable_scrubbing:
+                provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
 
-        # Set global tracer provider
-        trace.set_tracer_provider(provider)
-        logger.info(
-            "Netra TracerProvider initialized: endpoint=%s, disable_batch=%s",
-            self.cfg.otlp_endpoint,
-            self.cfg.disable_batch,
-        )
+            if self.cfg.disable_batch:
+                provider.add_span_processor(SimpleSpanProcessor(exporter))
+            else:
+                provider.add_span_processor(BatchSpanProcessor(exporter))
+
+            setattr(provider, "_netra_processors_installed", True)
+
+            logger.info(
+                "Netra initialized: endpoint=%s, disable_batch=%s",
+                self.cfg.otlp_endpoint,
+                self.cfg.disable_batch,
+            )
 
     def _format_endpoint(self, endpoint: str) -> str:
         """Format the OTLP endpoint URL to ensure it ends with '/v1/traces'.
