@@ -10,6 +10,7 @@ from opentelemetry.trace import SpanKind
 from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
 
 from .config import Config
+from .evaluation.api import Evaluation
 
 # Instrumentor functions
 from .instrumentation import init_instrumentations
@@ -106,6 +107,13 @@ class Netra:
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)
+
+            # Initialize evaluation client and expose as class attribute
+            try:
+                cls.evaluation = Evaluation(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize evaluation client: %s", e, exc_info=True)
+                cls.evaluation = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
