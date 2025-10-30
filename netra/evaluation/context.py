@@ -62,7 +62,7 @@ class RunEntryContext:
     def __exit__(
         self,
         exc_type: Optional[Type[BaseException]],
-        exc: Optional[BaseException],
+        exc: Optional[Exception],
         tb: Optional[TracebackType],
     ) -> bool:
         if exc_type is not None:
