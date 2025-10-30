@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Optional
 
 import httpx
 
@@ -45,7 +45,7 @@ class _EvaluationHttpClient:
             logger.error("netra.evaluation: Failed to initialize evaluation HTTP client: %s", exc)
             self._client = None
 
-    def get_dataset(self, dataset_id: str) -> List[Dict[str, Any]] | Any:
+    def get_dataset(self, dataset_id: str) -> Any:
         """Fetch dataset items for a dataset id.
 
         Returns an empty list on error and logs the error.
@@ -66,7 +66,7 @@ class _EvaluationHttpClient:
             logger.error("netra.evaluation: Failed to fetch dataset '%s': %s", dataset_id, exc)
         return []
 
-    def create_run(self, dataset_id: str, name: str) -> Dict[str, Any] | Any:
+    def create_run(self, dataset_id: str, name: str) -> Any:
         """Create a run for a dataset.
 
         Returns a backend JSON response on success or {"success": False} on error.
@@ -114,3 +114,20 @@ class _EvaluationHttpClient:
             logger.error(
                 "netra.evaluation: Failed to post status '%s' for run '%s' test '%s': %s", status, run_id, test_id, exc
             )
+
+    def post_run_status(self, run_id: str, status: str) -> None:
+        """Post final run status, e.g., {"status": "completed"}. Logs errors on failure."""
+        if not self._client:
+            logger.error(
+                "netra.evaluation: Evaluation client is not initialized; cannot post run status '%s' for run '%s'",
+                status,
+                run_id,
+            )
+            return
+        try:
+            url = f"/evaluations/run/{run_id}"
+            payload: Dict[str, Any] = {"status": status}
+            response = self._client.post(url, json=payload)
+            response.raise_for_status()
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to post run status '%s' for run '%s': %s", status, run_id, exc)

@@ -1,6 +1,9 @@
+import asyncio
+import inspect
 import logging
+import threading
 from datetime import datetime
-from typing import List, Optional
+from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar
 
 from netra.config import Config
 
@@ -9,6 +12,32 @@ from .context import RunEntryContext
 from .models import Dataset, DatasetItem, Run
 
 logger = logging.getLogger(__name__)
+
+T = TypeVar("T")
+
+
+def _run_async_safely(coro: Coroutine[Any, Any, T]) -> T:
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+    if loop and loop.is_running():
+        result: Dict[str, T] = {}
+        err: Dict[str, BaseException] = {}
+
+        def _target() -> None:
+            try:
+                result["value"] = asyncio.run(coro)
+            except BaseException as e:  # noqa: BLE001
+                err["e"] = e
+
+        t = threading.Thread(target=_target)
+        t.start()
+        t.join()
+        if "e" in err:
+            raise err["e"]
+        return result["value"]
+    return asyncio.run(coro)
 
 
 class Evaluation:
@@ -65,3 +94,85 @@ class Evaluation:
             )
         except Exception as exc:
             logger.error("netra.evaluation: Failed to POST agent_completed: %s", exc)
+
+    def run_test_suite(
+        self,
+        name: str,
+        data: Dataset,
+        task: Callable[[Any], Any],
+        max_concurrency: int = 50,
+    ) -> Dict[str, Any]:
+        return _run_async_safely(
+            self._run_test_suite_async(name=name, data=data, task=task, max_concurrency=max_concurrency)
+        )
+
+    async def run_test_suite_async(
+        self,
+        name: str,
+        data: Dataset,
+        task: Callable[[Any], Any],
+        max_concurrency: int = 50,
+    ) -> Dict[str, Any]:
+        return await self._run_test_suite_async(name=name, data=data, task=task, max_concurrency=max_concurrency)
+
+    async def _run_test_suite_async(
+        self,
+        name: str,
+        data: Dataset,
+        task: Callable[[Any], Any],
+        max_concurrency: int,
+    ) -> Dict[str, Any]:
+        run = self.create_run(data, name)
+        if run is None:
+            return {"success": False, "error": "failed_to_create_run"}
+
+        semaphore = asyncio.Semaphore(max(1, int(max_concurrency)))
+
+        async def _run_task(input_value: Any) -> Any:
+            result = task(input_value)
+            if inspect.isawaitable(result):
+                return await result
+            return result
+
+        async def _process_entry(entry: DatasetItem) -> Dict[str, Any]:
+            async with semaphore:
+                output: Any = None
+                status: str = "completed"
+                error: Optional[str] = None
+                with self.run_entry(run, entry) as ctx:
+                    try:
+                        output = await _run_task(entry.input)
+                        self.record(ctx)
+                    except Exception as exc:  # noqa: BLE001
+                        status = "failed"
+                        error = repr(exc)
+                        try:
+                            session_id = RunEntryContext._get_session_id_from_baggage()
+                            self._client.post_entry_status(
+                                run.id,
+                                entry.id,
+                                status="failed",
+                                trace_id=ctx.trace_id,
+                                session_id=session_id,
+                            )
+                        except Exception as post_exc:  # noqa: BLE001
+                            logger.debug(
+                                "netra.evaluation: Failed to POST explicit failed status: %s", post_exc, exc_info=True
+                            )
+                return {
+                    "id": entry.id,
+                    "input": entry.input,
+                    "output": output,
+                    "status": status,
+                    "error": error,
+                }
+
+        tasks = [asyncio.create_task(_process_entry(entry)) for entry in run.test_entries]
+        results = await asyncio.gather(*tasks)
+
+        try:
+            self._client.post_run_status(run.id, status="completed")
+        except Exception as exc:  # noqa: BLE001
+            logger.error("netra.evaluation: Failed to POST final run status: %s", exc)
+
+        return {"success": True, "run_id": run.id, "results": results}
