@@ -1,5 +1,6 @@
 import logging
-from typing import Any, Dict, Optional
+from types import TracebackType
+from typing import Dict, Optional, Type, cast
 
 from opentelemetry import baggage, trace
 
@@ -17,57 +18,76 @@ class RunEntryContext:
 
     def __init__(self, client: _EvaluationHttpClient, cfg: Config, run: Run, entry: DatasetItem) -> None:
         self._client = client
-        self._cfg = cfg
+        self._config = cfg
         self.run = run
         self.entry = entry
-        self._span_cm: Optional[SpanWrapper] = None
-        self._trace_id_hex: Optional[str] = None
+        self._span_wrapper: Optional[SpanWrapper] = None
+        self._trace_id: Optional[str] = None
 
     @staticmethod
-    def _trace_id_hex_from_span(span: trace.Span) -> str:
+    def _trace_id_from_span(span: trace.Span) -> str:
         ctx = span.get_span_context()
         return f"{ctx.trace_id:032x}"
 
     @staticmethod
-    def _get_session_id_from_baggage() -> Any:
+    def _get_session_id_from_baggage() -> Optional[str]:
         try:
-            return baggage.get_baggage("session_id")
+            value = baggage.get_baggage("session_id")
+            return value if isinstance(value, str) else None
         except Exception:
             return None
 
     def __enter__(self) -> "RunEntryContext":
-        attrs: Dict[str, str] = {
-            "netra.eval.dataset_id": self.run.dataset_id,
-            "netra.eval.run_id": self.run.id,
-            "netra.eval.test_id": self.entry.id,
+        prefix = f"{Config.LIBRARY_NAME}.eval"
+        attributes: Dict[str, str] = {
+            f"{prefix}.dataset_id": self.run.dataset_id,
+            f"{prefix}.run_id": self.run.id,
+            f"{prefix}.test_id": self.entry.id,
         }
-        self._span_cm = SpanWrapper("evaluation.entry", attributes=attrs, as_type=SpanType.SPAN)
-        self._span_cm.__enter__()
+        self._span_wrapper = SpanWrapper("evaluation.entry", attributes=attributes, as_type=SpanType.SPAN)
+        self._span_wrapper.__enter__()
 
-        if self._span_cm.span is not None:
-            self._trace_id_hex = self._trace_id_hex_from_span(self._span_cm.span)
+        if self._span_wrapper.span is not None:
+            self._trace_id = self._trace_id_from_span(self._span_wrapper.span)
         session_id = self._get_session_id_from_baggage()
 
         try:
             self._client.post_entry_status(
-                self.run.id, self.entry.id, status="agent_triggered", trace_id=self._trace_id_hex, session_id=session_id
+                self.run.id, self.entry.id, status="agent_triggered", trace_id=self._trace_id, session_id=session_id
             )
-        except Exception as e:
-            logger.debug("Failed to POST agent_triggered: %s", e, exc_info=True)
+        except Exception as exc:
+            logger.debug("netra.evaluation: Failed to POST agent_triggered: %s", exc, exc_info=True)
         return self
 
-    def __exit__(self, exc_type, exc, tb) -> Any:  # type:ignore[no-untyped-def]
+    def __exit__(
+        self,
+        exc_type: Optional[Type[BaseException]],
+        exc: Optional[BaseException],
+        tb: Optional[TracebackType],
+    ) -> bool:
+        if exc_type is not None:
+            try:
+                session_id = self._get_session_id_from_baggage()
+                self._client.post_entry_status(
+                    self.run.id,
+                    self.entry.id,
+                    status="failed",
+                    trace_id=self._trace_id,
+                    session_id=session_id,
+                )
+            except Exception as exc:
+                logger.debug("netra.evaluation: Failed to POST agent failure status: %s", exc, exc_info=True)
         try:
-            if self._span_cm is not None:
-                self._span_cm.__exit__(exc_type, exc, tb)
+            if self._span_wrapper is not None:
+                self._span_wrapper.__exit__(exc_type, cast(Optional[Exception], exc), tb)
         finally:
-            self._span_cm = None
-        return False
+            self._span_wrapper = None
+        return True if exc_type is not None else False
 
     @property
     def trace_id(self) -> Optional[str]:
-        return self._trace_id_hex
+        return self._trace_id
 
     @property
     def span(self) -> Optional[trace.Span]:
-        return self._span_cm.span if self._span_cm else None
+        return self._span_wrapper.span if self._span_wrapper else None
