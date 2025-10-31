@@ -44,7 +44,7 @@ class RunEntryContext:
             f"{prefix}.run_id": self.run.id,
             f"{prefix}.test_id": self.entry.id,
         }
-        self._span_wrapper = SpanWrapper("evaluation.entry", attributes=attributes, as_type=SpanType.SPAN)
+        self._span_wrapper = SpanWrapper(f"{self.run.name}", attributes=attributes, as_type=SpanType.SPAN)
         self._span_wrapper.__enter__()
 
         if self._span_wrapper.span is not None:

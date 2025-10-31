@@ -125,7 +125,7 @@ class _EvaluationHttpClient:
             )
             return
         try:
-            url = f"/evaluations/run/{run_id}"
+            url = f"/evaluations/run/{run_id}/status"
             payload: Dict[str, Any] = {"status": status}
             response = self._client.post(url, json=payload)
             response.raise_for_status()
