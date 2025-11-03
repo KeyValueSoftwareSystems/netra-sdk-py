@@ -8,7 +8,7 @@ from netra.config import Config
 
 from .client import _EvaluationHttpClient
 from .context import RunEntryContext
-from .models import Dataset, DatasetItem, Run
+from .models import Dataset, DatasetItem, EntryStatus, Run, RunStatus
 from .utils import get_session_id_from_baggage, run_async_safely
 
 logger = logging.getLogger(__name__)
@@ -64,7 +64,11 @@ class Evaluation:
         try:
             session_id = get_session_id_from_baggage()
             self._client.post_entry_status(
-                ctx.run.id, ctx.entry.id, status="agent_completed", trace_id=ctx.trace_id, session_id=session_id
+                ctx.run.id,
+                ctx.entry.id,
+                status=EntryStatus.AGENT_COMPLETED,
+                trace_id=ctx.trace_id,
+                session_id=session_id,
             )
         except Exception as exc:
             logger.error("netra.evaluation: Failed to POST agent_completed: %s", exc)
@@ -116,7 +120,7 @@ class Evaluation:
                             self._client.post_entry_status(
                                 run.id,
                                 entry.id,
-                                status="failed",
+                                status=EntryStatus.FAILED,
                                 trace_id=ctx.trace_id,
                                 session_id=session_id,
                             )
@@ -136,7 +140,7 @@ class Evaluation:
         results = await asyncio.gather(*tasks)
 
         try:
-            self._client.post_run_status(run.id, status="completed")
+            self._client.post_run_status(run.id, status=RunStatus.COMPLETED)
         except Exception as exc:  # noqa: BLE001
             logger.error("netra.evaluation: Failed to POST final run status: %s", exc)
 

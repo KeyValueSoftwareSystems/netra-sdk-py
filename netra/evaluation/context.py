@@ -8,7 +8,7 @@ from netra.config import Config
 from netra.span_wrapper import SpanType, SpanWrapper
 
 from .client import _EvaluationHttpClient
-from .models import DatasetItem, Run
+from .models import DatasetItem, EntryStatus, Run
 from .utils import get_session_id_from_baggage
 
 logger = logging.getLogger(__name__)
@@ -46,7 +46,11 @@ class RunEntryContext:
 
         try:
             self._client.post_entry_status(
-                self.run.id, self.entry.id, status="agent_triggered", trace_id=self._trace_id, session_id=session_id
+                self.run.id,
+                self.entry.id,
+                status=EntryStatus.AGENT_TRIGGERED,
+                trace_id=self._trace_id,
+                session_id=session_id,
             )
         except Exception as exc:
             logger.debug("netra.evaluation: Failed to POST agent_triggered: %s", exc, exc_info=True)
@@ -64,7 +68,7 @@ class RunEntryContext:
                 self._client.post_entry_status(
                     self.run.id,
                     self.entry.id,
-                    status="failed",
+                    status=EntryStatus.FAILED,
                     trace_id=self._trace_id,
                     session_id=session_id,
                 )

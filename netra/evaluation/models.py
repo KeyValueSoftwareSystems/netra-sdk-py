@@ -1,4 +1,5 @@
 from dataclasses import dataclass
+from enum import Enum
 from typing import Any, List, Optional
 
 
@@ -21,3 +22,13 @@ class Run:
     dataset_id: str
     name: Optional[str]
     test_entries: List[DatasetItem]
+
+
+class EntryStatus(Enum):
+    AGENT_TRIGGERED = "agent_triggered"
+    AGENT_COMPLETED = "agent_completed"
+    FAILED = "failed"
+
+
+class RunStatus(Enum):
+    COMPLETED = "completed"

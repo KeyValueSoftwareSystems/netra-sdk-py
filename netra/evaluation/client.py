@@ -6,6 +6,8 @@ import httpx
 
 from netra.config import Config
 
+from .models import EntryStatus, RunStatus
+
 logger = logging.getLogger(__name__)
 
 
@@ -90,13 +92,13 @@ class _EvaluationHttpClient:
         return {"success": False}
 
     def post_entry_status(
-        self, run_id: str, test_id: str, status: str, trace_id: Optional[str], session_id: Optional[str]
+        self, run_id: str, test_id: str, status: EntryStatus, trace_id: Optional[str], session_id: Optional[str]
     ) -> None:
         """Post per-entry status. Logs errors and returns None on failure."""
         if not self._client:
             logger.error(
                 "netra.evaluation: Evaluation client is not initialized; cannot post status '%s' for run '%s' test '%s'",
-                status,
+                status.value,
                 run_id,
                 test_id,
             )
@@ -104,7 +106,7 @@ class _EvaluationHttpClient:
         try:
             url = f"/evaluations/run/{run_id}/test/{test_id}"
             payload: Dict[str, Any] = {
-                "status": status,
+                "status": status.value,
                 "traceId": trace_id,
                 "sessionId": session_id if session_id else None,
             }
@@ -112,22 +114,26 @@ class _EvaluationHttpClient:
             response.raise_for_status()
         except Exception as exc:
             logger.error(
-                "netra.evaluation: Failed to post status '%s' for run '%s' test '%s': %s", status, run_id, test_id, exc
+                "netra.evaluation: Failed to post status '%s' for run '%s' test '%s': %s",
+                status.value,
+                run_id,
+                test_id,
+                exc,
             )
 
-    def post_run_status(self, run_id: str, status: str) -> None:
+    def post_run_status(self, run_id: str, status: RunStatus) -> None:
         """Post final run status, e.g., {"status": "completed"}. Logs errors on failure."""
         if not self._client:
             logger.error(
                 "netra.evaluation: Evaluation client is not initialized; cannot post run status '%s' for run '%s'",
-                status,
+                status.value,
                 run_id,
             )
             return
         try:
             url = f"/evaluations/run/{run_id}/status"
-            payload: Dict[str, Any] = {"status": status}
+            payload: Dict[str, Any] = {"status": status.value}
             response = self._client.post(url, json=payload)
             response.raise_for_status()
         except Exception as exc:
-            logger.error("netra.evaluation: Failed to post run status '%s' for run '%s': %s", status, run_id, exc)
+            logger.error("netra.evaluation: Failed to post run status '%s' for run '%s': %s", status.value, run_id, exc)
