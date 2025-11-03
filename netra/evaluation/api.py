@@ -1,43 +1,17 @@
 import asyncio
 import inspect
 import logging
-import threading
 from datetime import datetime
-from typing import Any, Callable, Coroutine, Dict, List, Optional, TypeVar
+from typing import Any, Callable, Dict, List, Optional
 
 from netra.config import Config
 
 from .client import _EvaluationHttpClient
 from .context import RunEntryContext
 from .models import Dataset, DatasetItem, Run
+from .utils import get_session_id_from_baggage, run_async_safely
 
 logger = logging.getLogger(__name__)
-
-T = TypeVar("T")
-
-
-def _run_async_safely(coro: Coroutine[Any, Any, T]) -> T:
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-    if loop and loop.is_running():
-        result: Dict[str, T] = {}
-        err: Dict[str, BaseException] = {}
-
-        def _target() -> None:
-            try:
-                result["value"] = asyncio.run(coro)
-            except BaseException as e:  # noqa: BLE001
-                err["e"] = e
-
-        t = threading.Thread(target=_target)
-        t.start()
-        t.join()
-        if "e" in err:
-            raise err["e"]
-        return result["value"]
-    return asyncio.run(coro)
 
 
 class Evaluation:
@@ -88,7 +62,7 @@ class Evaluation:
     def record(self, ctx: RunEntryContext) -> None:
         """Record completion status for a run entry (no result payload)."""
         try:
-            session_id = RunEntryContext._get_session_id_from_baggage()
+            session_id = get_session_id_from_baggage()
             self._client.post_entry_status(
                 ctx.run.id, ctx.entry.id, status="agent_completed", trace_id=ctx.trace_id, session_id=session_id
             )
@@ -102,18 +76,9 @@ class Evaluation:
         task: Callable[[Any], Any],
         max_concurrency: int = 50,
     ) -> Dict[str, Any]:
-        return _run_async_safely(
+        return run_async_safely(
             self._run_test_suite_async(name=name, data=data, task=task, max_concurrency=max_concurrency)
         )
-
-    async def run_test_suite_async(
-        self,
-        name: str,
-        data: Dataset,
-        task: Callable[[Any], Any],
-        max_concurrency: int = 50,
-    ) -> Dict[str, Any]:
-        return await self._run_test_suite_async(name=name, data=data, task=task, max_concurrency=max_concurrency)
 
     async def _run_test_suite_async(
         self,
@@ -147,7 +112,7 @@ class Evaluation:
                         status = "failed"
                         error = repr(exc)
                         try:
-                            session_id = RunEntryContext._get_session_id_from_baggage()
+                            session_id = get_session_id_from_baggage()
                             self._client.post_entry_status(
                                 run.id,
                                 entry.id,

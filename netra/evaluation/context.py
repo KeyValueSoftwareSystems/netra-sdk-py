@@ -2,13 +2,14 @@ import logging
 from types import TracebackType
 from typing import Dict, Optional, Type, cast
 
-from opentelemetry import baggage, trace
+from opentelemetry import trace
 
 from netra.config import Config
 from netra.span_wrapper import SpanType, SpanWrapper
 
 from .client import _EvaluationHttpClient
 from .models import DatasetItem, Run
+from .utils import get_session_id_from_baggage
 
 logger = logging.getLogger(__name__)
 
@@ -29,14 +30,6 @@ class RunEntryContext:
         ctx = span.get_span_context()
         return f"{ctx.trace_id:032x}"
 
-    @staticmethod
-    def _get_session_id_from_baggage() -> Optional[str]:
-        try:
-            value = baggage.get_baggage("session_id")
-            return value if isinstance(value, str) else None
-        except Exception:
-            return None
-
     def __enter__(self) -> "RunEntryContext":
         prefix = f"{Config.LIBRARY_NAME}.eval"
         attributes: Dict[str, str] = {
@@ -49,7 +42,7 @@ class RunEntryContext:
 
         if self._span_wrapper.span is not None:
             self._trace_id = self._trace_id_from_span(self._span_wrapper.span)
-        session_id = self._get_session_id_from_baggage()
+        session_id = get_session_id_from_baggage()
 
         try:
             self._client.post_entry_status(
@@ -67,7 +60,7 @@ class RunEntryContext:
     ) -> bool:
         if exc_type is not None:
             try:
-                session_id = self._get_session_id_from_baggage()
+                session_id = get_session_id_from_baggage()
                 self._client.post_entry_status(
                     self.run.id,
                     self.entry.id,
