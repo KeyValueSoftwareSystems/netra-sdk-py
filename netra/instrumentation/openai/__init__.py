@@ -15,10 +15,12 @@ from netra.instrumentation.openai.wrappers import (
     achat_wrapper,
     acompletion_wrapper,
     aembeddings_wrapper,
+    aresponses_stream_wrapper,
     aresponses_wrapper,
     chat_wrapper,
     completion_wrapper,
     embeddings_wrapper,
+    responses_stream_wrapper,
     responses_wrapper,
 )
 
@@ -95,6 +97,17 @@ class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
                 "AsyncResponses.create",
                 aresponses_wrapper(tracer),
             )
+            # Direct stream APIs
+            wrap_function_wrapper(
+                "openai.resources.responses",
+                "Responses.stream",
+                responses_stream_wrapper(tracer),
+            )
+            wrap_function_wrapper(
+                "openai.resources.responses",
+                "AsyncResponses.stream",
+                aresponses_stream_wrapper(tracer),
+            )
         except (AttributeError, ModuleNotFoundError):
             logger.debug("responses.create method not available in this OpenAI version")
 
@@ -132,6 +145,9 @@ class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             unwrap("openai.resources.responses", "Responses.create")
             unwrap("openai.resources.responses", "AsyncResponses.create")
+            # Stream APIs
+            unwrap("openai.resources.responses", "Responses.stream")
+            unwrap("openai.resources.responses", "AsyncResponses.stream")
         except (AttributeError, ModuleNotFoundError):
             pass
 

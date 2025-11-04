@@ -52,6 +52,44 @@ def model_as_dict(obj: Any) -> Dict[str, Any]:
         return {}
 
 
+def extract_output_text(response_dict: Dict[str, Any]) -> str:
+    """Best-effort extraction of output_text from OpenAI Responses object shape."""
+    # Direct property if present
+    direct = response_dict.get("output_text")
+    if isinstance(direct, str) and direct:
+        return direct
+
+    # Attempt to reconstruct from structured 'output' list
+    out = response_dict.get("output")
+    parts: list[str] = []
+    if isinstance(out, list):
+        for item in out:
+            if not isinstance(item, dict):
+                continue
+            content = item.get("content")
+            if isinstance(content, list):
+                for c in content:
+                    if not isinstance(c, dict):
+                        continue
+                    # c may have shape {"type": "output_text", "text": {"value": "..."}} or {"text": "..."}
+                    text = c.get("text")
+                    value = None
+                    if isinstance(text, dict):
+                        value = text.get("value")
+                    elif isinstance(text, str):
+                        value = text
+                    if isinstance(value, str) and value:
+                        parts.append(value)
+            # Some shapes may place text directly on the item
+            text = item.get("text")
+            if isinstance(text, dict) and isinstance(text.get("value"), str):
+                parts.append(text["value"])
+            elif isinstance(text, str):
+                parts.append(text)
+
+    return "".join(parts)
+
+
 def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
     """Set request attributes on span"""
     if not span.is_recording():
@@ -87,10 +125,14 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 
     # Response-specific attributes
     if operation_type == "response":
+        idx = 0
         if kwargs.get("instructions"):
-            span.set_attribute("gen_ai.instructions", kwargs["instructions"])
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.role", "system")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.content", kwargs["instructions"])
+            idx += 1
         if kwargs.get("input"):
-            span.set_attribute("gen_ai.input", kwargs["input"])
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.role", "user")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.content", kwargs["input"])
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -106,15 +148,21 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
 
     # Usage information
     usage = response_dict.get("usage", {})
-    if usage:
-        if usage.get("prompt_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
-        if usage.get("completion_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
-        if usage.get("cache_read_input_token"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_token"])
-        if usage.get("total_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
+    if isinstance(usage, dict) and usage:
+        # Support both classic and Responses API naming
+        prompt_tokens = usage.get("prompt_tokens", usage.get("input_tokens"))
+        completion_tokens = usage.get("completion_tokens", usage.get("output_tokens"))
+        cache_read_input = usage.get("cache_read_input_token", usage.get("cache_read_input_tokens"))
+        total_tokens = usage.get("total_tokens")
+
+        if prompt_tokens is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", prompt_tokens)
+        if completion_tokens is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", completion_tokens)
+        if cache_read_input is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", cache_read_input)
+        if total_tokens is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", total_tokens)
 
     # Response content
     choices = response_dict.get("choices", [])
@@ -127,8 +175,10 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
             span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
 
     # For responses.create
-    if response_dict.get("output_text"):
-        span.set_attribute("gen_ai.response.output_text", response_dict["output_text"])
+    output_text = extract_output_text(response_dict)
+    if output_text:
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output_text)
 
 
 def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -179,6 +229,56 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 except Exception as e:
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                     raise
+
+    return wrapper
+
+
+def responses_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Wrapper for responses.stream (OpenAI Responses streaming API)"""
+
+    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return wrapped(*args, **kwargs)
+
+        # Always treated as streaming
+        span = tracer.start_span(RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"})
+        set_request_attributes(span, kwargs, "response")
+
+        try:
+            start_time = time.time()
+            stream_obj = wrapped(*args, **kwargs)
+            return StreamingWrapper(span=span, response=stream_obj, start_time=start_time, request_kwargs=kwargs)
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            span.end()
+            raise
+
+    return wrapper
+
+
+def aresponses_stream_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """Async wrapper for responses.stream (OpenAI Responses streaming API)"""
+
+    async def wrapper(
+        wrapped: Callable[..., Awaitable[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> Any:
+        if should_suppress_instrumentation():
+            return await wrapped(*args, **kwargs)
+
+        # Always treated as streaming
+        span = tracer.start_span(RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"})
+        set_request_attributes(span, kwargs, "response")
+
+        try:
+            start_time = time.time()
+            stream_obj = await wrapped(*args, **kwargs)
+            return AsyncStreamingWrapper(span=span, response=stream_obj, start_time=start_time, request_kwargs=kwargs)
+        except Exception as e:
+            span.set_status(Status(StatusCode.ERROR, str(e)))
+            span.record_exception(e)
+            span.end()
+            raise
 
     return wrapper
 
@@ -418,27 +518,47 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
-        # responses.create is typically not streaming, use start_as_current_span
-        with tracer.start_as_current_span(
-            RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
-        ) as span:
+        is_streaming = kwargs.get("stream", False)
+
+        if is_streaming:
+            # Use start_span for streaming - returns span directly
+            span = tracer.start_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            )
+
             set_request_attributes(span, kwargs, "response")
 
             try:
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                end_time = time.time()
-
-                response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict)
-
-                span.set_attribute("llm.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
-
-                return response
+                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                span.end()
                 raise
+        else:
+            # Non-streaming
+            with tracer.start_as_current_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            ) as span:
+                set_request_attributes(span, kwargs, "response")
+
+                try:
+                    start_time = time.time()
+                    response = wrapped(*args, **kwargs)
+                    end_time = time.time()
+
+                    response_dict = model_as_dict(response)
+                    set_response_attributes(span, response_dict)
+
+                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    span.set_status(Status(StatusCode.OK))
+
+                    return response
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
 
     return wrapper
 
@@ -450,27 +570,47 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
-        # responses.create is typically not streaming, use start_as_current_span
-        with tracer.start_as_current_span(
-            RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
-        ) as span:
+        is_streaming = kwargs.get("stream", False)
+
+        if is_streaming:
+            # Use start_span for streaming - returns span directly
+            span = tracer.start_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            )
+
             set_request_attributes(span, kwargs, "response")
 
             try:
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                end_time = time.time()
-
-                response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict)
-
-                span.set_attribute("llm.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
-
-                return response
+                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                span.end()
                 raise
+        else:
+            # Non-streaming
+            with tracer.start_as_current_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            ) as span:
+                set_request_attributes(span, kwargs, "response")
+
+                try:
+                    start_time = time.time()
+                    response = await wrapped(*args, **kwargs)
+                    end_time = time.time()
+
+                    response_dict = model_as_dict(response)
+                    set_response_attributes(span, response_dict)
+
+                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    span.set_status(Status(StatusCode.OK))
+
+                    return response
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
 
     return wrapper
 
@@ -483,7 +623,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._span = span
         self._start_time = start_time
         self._request_kwargs = request_kwargs
-        self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._complete_response: Dict[str, Any] = {"choices": [], "model": "", "output_text": "", "usage": {}}
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -497,6 +637,21 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._finalize_span()
             raise
 
+    def __enter__(self):  # type: ignore[no-untyped-def]
+        # Support context manager pattern from SDK
+        if hasattr(self.__wrapped__, "__enter__"):
+            self.__wrapped__.__enter__()
+        return self
+
+    def __exit__(self, exc_type, exc, tb):  # type:ignore[no-untyped-def]
+        try:
+            if hasattr(self.__wrapped__, "__exit__"):
+                self.__wrapped__.__exit__(exc_type, exc, tb)
+        finally:
+            # Ensure span is finalized regardless of errors
+            self._finalize_span()
+        return False
+
     def _process_chunk(self, chunk: Any) -> None:
         """Process streaming chunk"""
         chunk_dict = model_as_dict(chunk)
@@ -504,6 +659,76 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
+
+        # Accumulate output_text when available (Responses API)
+        try:
+            text_piece = extract_output_text(chunk_dict)
+            if text_piece:
+                self._complete_response["output_text"] = self._complete_response.get("output_text", "") + text_piece
+        except Exception:
+            pass
+
+        # Merge usage if provided in streaming chunks
+        usage = chunk_dict.get("usage")
+        if isinstance(usage, dict):
+            # Last-write-wins merge for simplicity
+            stored = self._complete_response.get("usage")
+            if not isinstance(stored, dict):
+                stored = {}
+            stored.update({k: v for k, v in usage.items() if v is not None})
+            self._complete_response["usage"] = stored
+
+        # Handle nested response (Responses API 'response.completed' events)
+        resp = chunk_dict.get("response")
+        if isinstance(resp, dict):
+            if resp.get("model"):
+                self._complete_response["model"] = resp["model"]
+            nested_usage = resp.get("usage")
+            if isinstance(nested_usage, dict):
+                stored = self._complete_response.get("usage")
+                if not isinstance(stored, dict):
+                    stored = {}
+                stored.update({k: v for k, v in nested_usage.items() if v is not None})
+                self._complete_response["usage"] = stored
+            try:
+                text_piece = extract_output_text(resp)
+                if text_piece:
+                    self._complete_response["output_text"] = self._complete_response.get("output_text", "") + text_piece
+            except Exception:
+                pass
+
+        # Accumulate direct delta if present in streaming events
+        delta = chunk_dict.get("delta")
+        if isinstance(delta, str) and delta:
+            self._complete_response["output_text"] = self._complete_response.get("output_text", "") + delta
+
+        # Some SDKs nest payload under 'data'
+        data = chunk_dict.get("data")
+        if isinstance(data, dict):
+            # Merge nested response usage/model
+            dresp = data.get("response")
+            if isinstance(dresp, dict):
+                if dresp.get("model"):
+                    self._complete_response["model"] = dresp["model"]
+                dusage = dresp.get("usage")
+                if isinstance(dusage, dict):
+                    stored = self._complete_response.get("usage")
+                    if not isinstance(stored, dict):
+                        stored = {}
+                    stored.update({k: v for k, v in dusage.items() if v is not None})
+                    self._complete_response["usage"] = stored
+                try:
+                    text_piece = extract_output_text(dresp)
+                    if text_piece:
+                        self._complete_response["output_text"] = (
+                            self._complete_response.get("output_text", "") + text_piece
+                        )
+                except Exception:
+                    pass
+            # Also check for direct delta in data
+            ddelta = data.get("delta")
+            if isinstance(ddelta, str) and ddelta:
+                self._complete_response["output_text"] = self._complete_response.get("output_text", "") + ddelta
 
         # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
@@ -529,7 +754,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._span = span
         self._start_time = start_time
         self._request_kwargs = request_kwargs
-        self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._complete_response: Dict[str, Any] = {"choices": [], "model": "", "output_text": "", "usage": {}}
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
@@ -543,6 +768,19 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._finalize_span()
             raise
 
+    async def __aenter__(self):  # type:ignore[no-untyped-def]
+        if hasattr(self.__wrapped__, "__aenter__"):
+            await self.__wrapped__.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type, exc, tb):  # type:ignore[no-untyped-def]
+        try:
+            if hasattr(self.__wrapped__, "__aexit__"):
+                await self.__wrapped__.__aexit__(exc_type, exc, tb)
+        finally:
+            self._finalize_span()
+        return False
+
     def _process_chunk(self, chunk: Any) -> None:
         """Process streaming chunk"""
         chunk_dict = model_as_dict(chunk)
@@ -550,6 +788,47 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
+
+        # Accumulate output_text when available (Responses API)
+        try:
+            text_piece = extract_output_text(chunk_dict)
+            if text_piece:
+                self._complete_response["output_text"] = self._complete_response.get("output_text", "") + text_piece
+        except Exception:
+            pass
+
+        # Merge usage if provided in streaming chunks
+        usage = chunk_dict.get("usage")
+        if isinstance(usage, dict):
+            stored = self._complete_response.get("usage")
+            if not isinstance(stored, dict):
+                stored = {}
+            stored.update({k: v for k, v in usage.items() if v is not None})
+            self._complete_response["usage"] = stored
+
+        # Handle nested response (Responses API 'response.completed' events)
+        resp = chunk_dict.get("response")
+        if isinstance(resp, dict):
+            if resp.get("model"):
+                self._complete_response["model"] = resp["model"]
+            nested_usage = resp.get("usage")
+            if isinstance(nested_usage, dict):
+                stored = self._complete_response.get("usage")
+                if not isinstance(stored, dict):
+                    stored = {}
+                stored.update({k: v for k, v in nested_usage.items() if v is not None})
+                self._complete_response["usage"] = stored
+            try:
+                text_piece = extract_output_text(resp)
+                if text_piece:
+                    self._complete_response["output_text"] = self._complete_response.get("output_text", "") + text_piece
+            except Exception:
+                pass
+
+        # Accumulate direct delta if present in streaming events
+        delta = chunk_dict.get("delta")
+        if isinstance(delta, str) and delta:
+            self._complete_response["output_text"] = self._complete_response.get("output_text", "") + delta
 
         # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
