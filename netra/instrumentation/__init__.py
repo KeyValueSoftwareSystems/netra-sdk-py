@@ -49,6 +49,7 @@ def init_instrumentations(
             Instruments.GOOGLE_GENERATIVEAI,
             Instruments.MISTRAL,
             Instruments.OPENAI,
+            Instruments.GROQ,
         }
     )
 
@@ -62,6 +63,10 @@ def init_instrumentations(
 
     netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
+
+    # Initialize Groq instrumentation.
+    if CustomInstruments.GROQ in netra_custom_instruments:
+        init_groq_instrumentation()
     # Initialize Google GenAI instrumentation.
     if CustomInstruments.GOOGLE_GENERATIVEAI in netra_custom_instruments:
         init_google_genai_instrumentation()
@@ -272,6 +277,29 @@ def init_instrumentations(
     # Initialize urllib3 instrumentation.
     if CustomInstruments.URLLIB3 in netra_custom_instruments:
         init_urllib3_instrumentation()
+
+
+def init_groq_instrumentation() -> bool:
+    """Initialize Groq instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("groq"):
+            Telemetry().capture("instrumentation:groq:init")
+            from netra.instrumentation.groq import GroqInstrumentor
+
+            instrumentor = GroqInstrumentor(
+                exception_logger=lambda e: Telemetry().log_exception(e),
+            )
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Groq instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
 
 
 def init_google_genai_instrumentation() -> bool:
