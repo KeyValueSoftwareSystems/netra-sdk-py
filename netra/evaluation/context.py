@@ -9,7 +9,7 @@ from netra.span_wrapper import SpanType, SpanWrapper
 
 from .client import _EvaluationHttpClient
 from .models import DatasetItem, EntryStatus, Run
-from .utils import get_session_id_from_baggage
+from .utils import get_session_id_from_baggage, get_trace_id_from_span
 
 logger = logging.getLogger(__name__)
 
@@ -25,11 +25,6 @@ class RunEntryContext:
         self._span_wrapper: Optional[SpanWrapper] = None
         self._trace_id: Optional[str] = None
 
-    @staticmethod
-    def _trace_id_from_span(span: trace.Span) -> str:
-        ctx = span.get_span_context()
-        return f"{ctx.trace_id:032x}"
-
     def __enter__(self) -> "RunEntryContext":
         prefix = f"{Config.LIBRARY_NAME}.eval"
         attributes: Dict[str, str] = {
@@ -41,7 +36,7 @@ class RunEntryContext:
         self._span_wrapper.__enter__()
 
         if self._span_wrapper.span is not None:
-            self._trace_id = self._trace_id_from_span(self._span_wrapper.span)
+            self._trace_id = get_trace_id_from_span(self._span_wrapper.span)
         session_id = get_session_id_from_baggage()
 
         try:

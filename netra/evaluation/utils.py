@@ -2,7 +2,7 @@ import asyncio
 import threading
 from typing import Any, Coroutine, Dict, Optional, TypeVar
 
-from opentelemetry import baggage
+from opentelemetry import baggage, trace
 
 T = TypeVar("T")
 
@@ -37,3 +37,8 @@ def get_session_id_from_baggage() -> Optional[str]:
         return value if isinstance(value, str) else None
     except Exception:
         return None
+
+
+def get_trace_id_from_span(span: trace.Span) -> str:
+    ctx = span.get_span_context()
+    return f"{ctx.trace_id:032x}"

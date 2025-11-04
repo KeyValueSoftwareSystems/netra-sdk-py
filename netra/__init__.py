@@ -7,16 +7,15 @@ from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
-
-from .config import Config
-from .evaluation.api import Evaluation
+from netra.config import Config
+from netra.evaluation import Evaluation
 
 # Instrumentor functions
-from .instrumentation import init_instrumentations
-from .session_manager import ConversationType, SessionManager
-from .span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
-from .tracer import Tracer
+from netra.instrumentation import init_instrumentations
+from netra.instrumentation.instruments import NetraInstruments
+from netra.session_manager import ConversationType, SessionManager
+from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
+from netra.tracer import Tracer
 
 # Package-level logger. Attach NullHandler by default so library does not emit logs
 # unless explicitly enabled by the user via debug_mode.
