@@ -2,18 +2,16 @@ from dataclasses import asdict
 from enum import Enum
 from typing import Any, Optional, Union
 
+from groq.types.chat.chat_completion import ChatCompletion
 from opentelemetry._events import Event, EventLogger
+from opentelemetry.semconv._incubating.attributes import gen_ai_attributes as GenAIAttributes
+
 from netra.instrumentation.groq.event_models import ChoiceEvent, MessageEvent
 from netra.instrumentation.groq.utils import (
     dont_throw,
     should_emit_events,
     should_send_prompts,
 )
-from opentelemetry.semconv._incubating.attributes import (
-    gen_ai_attributes as GenAIAttributes,
-)
-
-from groq.types.chat.chat_completion import ChatCompletion
 
 
 class Roles(Enum):
@@ -37,9 +35,7 @@ EVENT_ATTRIBUTES = {
 def emit_message_events(kwargs: dict[str, Any], event_logger: Optional[EventLogger]) -> None:
     for message in kwargs.get("messages", []):
         emit_event(
-            MessageEvent(
-                content=message.get("content"), role=message.get("role", "unknown")
-            ),
+            MessageEvent(content=message.get("content"), role=message.get("role", "unknown")),
             event_logger=event_logger,
         )
 
@@ -75,9 +71,7 @@ def emit_streaming_response_events(
     )
 
 
-def emit_event(
-    event: Union[MessageEvent, ChoiceEvent], event_logger: Optional[EventLogger]
-) -> None:
+def emit_event(event: Union[MessageEvent, ChoiceEvent], event_logger: Optional[EventLogger]) -> None:
     """
     Emit an event to the OpenTelemetry SDK.
 
@@ -138,6 +132,4 @@ def _emit_choice_event(event: ChoiceEvent, event_logger: EventLogger) -> None:
             for tool_call in body["tool_calls"]:
                 tool_call["function"].pop("arguments", None)
 
-    event_logger.emit(
-        Event(name="gen_ai.choice", body=body, attributes=EVENT_ATTRIBUTES)
-    )
+    event_logger.emit(Event(name="gen_ai.choice", body=body, attributes=EVENT_ATTRIBUTES))

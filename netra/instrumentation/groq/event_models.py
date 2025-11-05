@@ -19,7 +19,7 @@ class CompletionMessage(TypedDict):
     """Represents a message in the AI model."""
 
     content: Any
-    role: str = "assistant" #type:ignore[misc]
+    role: str = "assistant"  # type:ignore[misc]
 
 
 @dataclass

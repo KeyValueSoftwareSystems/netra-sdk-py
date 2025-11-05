@@ -1,9 +1,9 @@
 import logging
 import os
 import traceback
-from importlib.metadata import version
 from functools import wraps
-from typing import Any, Callable, Dict, Optional, TypeVar, cast
+from importlib.metadata import version
+from typing import Any, Callable, Dict, TypeVar, cast
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.groq.config import Config
@@ -24,9 +24,9 @@ def set_span_attribute(span: Span, name: str, value: Any) -> None:
 
 
 def should_send_prompts() -> bool:
-    return (
-        os.getenv(TRACELOOP_TRACE_CONTENT) or "true"
-    ).lower() == "true" or bool(context_api.get_value("override_enable_content_tracing"))
+    return (os.getenv(TRACELOOP_TRACE_CONTENT) or "true").lower() == "true" or bool(
+        context_api.get_value("override_enable_content_tracing")
+    )
 
 
 R = TypeVar("R")
@@ -39,9 +39,9 @@ def dont_throw(func: Callable[..., R]) -> Callable[..., R]:
     logger = logging.getLogger(func.__module__)
 
     @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> R:  # type: ignore[override]
+    def wrapper(*args: Any, **kwargs: Any) -> R:  # type:ignore[unused-ignore]
         try:
-            return cast(R, func(*args, **kwargs))
+            return cast(R, func(*args, **kwargs))  # type:ignore[redundant-cast]
         except Exception as e:
             logger.debug(
                 "OpenLLMetry failed to trace in %s, error: %s",

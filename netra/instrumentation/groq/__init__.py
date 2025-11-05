@@ -1,14 +1,28 @@
 """OpenTelemetry Groq instrumentation"""
 
+import contextvars
 import logging
 import os
 import time
 from typing import Any, AsyncIterator, Callable, Collection, Dict, Iterator, Optional, Tuple, Union
 
-import contextvars
+from groq._streaming import AsyncStream, Stream
 from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry._events import EventLogger, get_event_logger
+from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
+from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY, unwrap
+from opentelemetry.metrics import Counter, Histogram, Meter, get_meter
+from opentelemetry.semconv_ai import (
+    SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY,
+    LLMRequestTypeValues,
+    Meters,
+    SpanAttributes,
+)
+from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer
+from opentelemetry.trace.status import Status, StatusCode
+from wrapt import wrap_function_wrapper
+
 from netra.instrumentation.groq.config import Config
 from netra.instrumentation.groq.event_emitter import (
     emit_choice_events,
@@ -29,20 +43,6 @@ from netra.instrumentation.groq.utils import (
     should_emit_events,
 )
 from netra.instrumentation.groq.version import __version__
-from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
-from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY, unwrap
-from opentelemetry.metrics import Counter, Histogram, Meter, get_meter
-from opentelemetry.semconv_ai import (
-    SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY,
-    LLMRequestTypeValues,
-    Meters,
-    SpanAttributes,
-)
-from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer
-from opentelemetry.trace.status import Status, StatusCode
-from wrapt import wrap_function_wrapper
-
-from groq._streaming import AsyncStream, Stream
 
 logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
 logger = logging.getLogger(__name__)
@@ -158,9 +158,7 @@ def _handle_streaming_response(
     if should_emit_events() and event_logger:
         emit_streaming_response_events(accumulated_content, finish_reason, event_logger)
     else:
-        set_streaming_response_attributes(
-            span, accumulated_content, finish_reason, usage
-        )
+        set_streaming_response_attributes(span, accumulated_content, finish_reason, usage)
 
 
 def _create_stream_processor(response: Stream, span: Span, event_logger: Optional[EventLogger]) -> Iterator[Any]:
@@ -177,15 +175,15 @@ def _create_stream_processor(response: Stream, span: Span, event_logger: Optiona
         if chunk_usage:
             usage = chunk_usage
         yield chunk
-    _handle_streaming_response(
-        span, accumulated_content, finish_reason, usage, event_logger
-    )
+    _handle_streaming_response(span, accumulated_content, finish_reason, usage, event_logger)
     if span.is_recording():
         span.set_status(Status(StatusCode.OK))
     span.end()
 
 
-async def _create_async_stream_processor(response: AsyncStream, span: Span, event_logger: Optional[EventLogger]) -> AsyncIterator[Any]:
+async def _create_async_stream_processor(
+    response: AsyncStream, span: Span, event_logger: Optional[EventLogger]
+) -> AsyncIterator[Any]:
     """Create an async generator that processes a stream while collecting telemetry."""
     accumulated_content = ""
     finish_reason = None
@@ -199,9 +197,7 @@ async def _create_async_stream_processor(response: AsyncStream, span: Span, even
         if chunk_usage:
             usage = chunk_usage
         yield chunk
-    _handle_streaming_response(
-        span, accumulated_content, finish_reason, usage, event_logger
-    )
+    _handle_streaming_response(span, accumulated_content, finish_reason, usage, event_logger)
     if span.is_recording():
         span.set_status(Status(StatusCode.OK))
     span.end()
@@ -215,7 +211,9 @@ def _handle_input(span: Span, kwargs: Dict[str, Any], event_logger: Optional[Eve
         set_input_attributes(span, kwargs)
 
 
-def _handle_response(span: Span, response: Any, token_histogram: Optional[Histogram], event_logger: Optional[EventLogger]) -> None:
+def _handle_response(
+    span: Span, response: Any, token_histogram: Optional[Histogram], event_logger: Optional[EventLogger]
+) -> None:
     set_model_response_attributes(span, response, token_histogram)
     if should_emit_events() and event_logger:
         emit_choice_events(response, event_logger)
@@ -511,9 +509,7 @@ class GroqInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         event_logger = None
         if not Config.use_legacy_attributes:
             event_logger_provider = kwargs.get("event_logger_provider")
-            event_logger = get_event_logger(
-                __name__, __version__, event_logger_provider=event_logger_provider
-            )
+            event_logger = get_event_logger(__name__, __version__, event_logger_provider=event_logger_provider)
 
         for wrapped_method in WRAPPED_METHODS:
             wrap_package = wrapped_method.get("package")

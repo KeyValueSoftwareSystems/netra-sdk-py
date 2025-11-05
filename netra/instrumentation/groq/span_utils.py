@@ -1,12 +1,7 @@
 import json
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, List, Optional
 
-from netra.instrumentation.groq.utils import (
-    dont_throw,
-    model_as_dict,
-    set_span_attribute,
-    should_send_prompts,
-)
+from opentelemetry.metrics import Histogram
 from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import (
     GEN_AI_RESPONSE_ID,
 )
@@ -14,7 +9,13 @@ from opentelemetry.semconv_ai import (
     SpanAttributes,
 )
 from opentelemetry.trace import Span
-from opentelemetry.metrics import Histogram
+
+from netra.instrumentation.groq.utils import (
+    dont_throw,
+    model_as_dict,
+    set_span_attribute,
+    should_send_prompts,
+)
 
 CONTENT_FILTER_KEY = "content_filter_results"
 
@@ -26,20 +27,16 @@ def set_input_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
 
     if should_send_prompts():
         if kwargs.get("prompt") is not None:
-            set_span_attribute(
-                span, f"{SpanAttributes.LLM_PROMPTS}.0.user", kwargs.get("prompt")
-            )
+            set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.user", kwargs.get("prompt"))
 
         elif kwargs.get("messages") is not None:
-            for i, message in enumerate(kwargs.get("messages")):
+            for i, message in enumerate(kwargs.get("messages")):  # type:ignore[arg-type]
                 set_span_attribute(
                     span,
                     f"{SpanAttributes.LLM_PROMPTS}.{i}.content",
                     _dump_content(message.get("content")),
                 )
-                set_span_attribute(
-                    span, f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message.get("role")
-                )
+                set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message.get("role"))
 
 
 @dont_throw
@@ -50,22 +47,12 @@ def set_model_input_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
     set_span_attribute(span, "gen_ai.groq.service.tier", kwargs.get("service_tier"))
 
     set_span_attribute(span, SpanAttributes.LLM_REQUEST_MODEL, kwargs.get("model"))
-    set_span_attribute(
-        span, SpanAttributes.LLM_REQUEST_MAX_TOKENS, kwargs.get("max_tokens_to_sample")
-    )
-    set_span_attribute(
-        span, SpanAttributes.LLM_REQUEST_TEMPERATURE, kwargs.get("temperature")
-    )
+    set_span_attribute(span, SpanAttributes.LLM_REQUEST_MAX_TOKENS, kwargs.get("max_tokens_to_sample"))
+    set_span_attribute(span, SpanAttributes.LLM_REQUEST_TEMPERATURE, kwargs.get("temperature"))
     set_span_attribute(span, SpanAttributes.LLM_REQUEST_TOP_P, kwargs.get("top_p"))
-    set_span_attribute(
-        span, SpanAttributes.LLM_FREQUENCY_PENALTY, kwargs.get("frequency_penalty")
-    )
-    set_span_attribute(
-        span, SpanAttributes.LLM_PRESENCE_PENALTY, kwargs.get("presence_penalty")
-    )
-    set_span_attribute(
-        span, SpanAttributes.LLM_IS_STREAMING, kwargs.get("stream") or False
-    )
+    set_span_attribute(span, SpanAttributes.LLM_FREQUENCY_PENALTY, kwargs.get("frequency_penalty"))
+    set_span_attribute(span, SpanAttributes.LLM_PRESENCE_PENALTY, kwargs.get("presence_penalty"))
+    set_span_attribute(span, SpanAttributes.LLM_IS_STREAMING, kwargs.get("stream") or False)
 
 
 def set_streaming_response_attributes(
@@ -92,21 +79,13 @@ def set_model_streaming_response_attributes(span: Span, usage: Any) -> None:
         if cached_tokens:
             set_span_attribute(span, "gen_ai.usage.cached_tokens", cached_tokens)
     if usage:
-        set_span_attribute(
-            span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.completion_tokens
-        )
-        set_span_attribute(
-            span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, usage.prompt_tokens
-        )
-        set_span_attribute(
-            span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.total_tokens
-        )
+        set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.completion_tokens)
+        set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, usage.prompt_tokens)
+        set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.total_tokens)
 
 
 @dont_throw
-def set_model_response_attributes(
-    span: Span, response: Any, token_histogram: Optional[Histogram]
-) -> None:
+def set_model_response_attributes(span: Span, response: Any, token_histogram: Optional[Histogram]) -> None:
     if not span.is_recording():
         return
     response = model_as_dict(response)
@@ -122,19 +101,11 @@ def set_model_response_attributes(
         if cached_tokens:
             set_span_attribute(span, "gen_ai.usage.cached_tokens", cached_tokens)
     if usage:
-        set_span_attribute(
-            span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.get("total_tokens")
-        )
-        set_span_attribute(
-            span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, completion_tokens
-        )
+        set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.get("total_tokens"))
+        set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, completion_tokens)
         set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, prompt_tokens)
 
-    if (
-        isinstance(prompt_tokens, int)
-        and prompt_tokens >= 0
-        and token_histogram is not None
-    ):
+    if isinstance(prompt_tokens, int) and prompt_tokens >= 0 and token_histogram is not None:
         token_histogram.record(
             prompt_tokens,
             attributes={
@@ -143,11 +114,7 @@ def set_model_response_attributes(
             },
         )
 
-    if (
-        isinstance(completion_tokens, int)
-        and completion_tokens >= 0
-        and token_histogram is not None
-    ):
+    if isinstance(completion_tokens, int) and completion_tokens >= 0 and token_histogram is not None:
         token_histogram.record(
             completion_tokens,
             attributes={
@@ -196,9 +163,7 @@ def _set_completions(span: Span, choices: Optional[List[Dict[str, Any]]]) -> Non
 
         function_call = message.get("function_call")
         if function_call:
-            set_span_attribute(
-                span, f"{prefix}.tool_calls.0.name", function_call.get("name")
-            )
+            set_span_attribute(span, f"{prefix}.tool_calls.0.name", function_call.get("name"))
             set_span_attribute(
                 span,
                 f"{prefix}.tool_calls.0.arguments",
