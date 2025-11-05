@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.48] - 2025-11-06
+
+- Added custom instrumentation for Groq framework
 
 ## [0.1.47] - 2025-10-21
 
