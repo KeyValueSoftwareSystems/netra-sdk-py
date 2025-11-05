@@ -104,25 +104,47 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     if response_dict.get("id"):
         span.set_attribute("gen_ai.response.id", response_dict["id"])
 
-    # Usage information
+    # Usage information (support both chat/completions and responses APIs)
     usage = response_dict.get("usage", {})
     if usage:
-        if usage.get("prompt_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
-        if usage.get("completion_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
-        if usage.get("cache_read_input_token"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_token"])
-        if usage.get("total_tokens"):
+        # Legacy keys (chat/completions)
+        prompt_tokens = usage.get("prompt_tokens")
+        completion_tokens = usage.get("completion_tokens")
+        prompt_tokens_details = usage.get("prompt_tokens_details", {})
+        # Newer keys (responses API)
+        input_tokens = usage.get("input_tokens")
+        output_tokens = usage.get("output_tokens")
+        input_tokens_details = usage.get("input_tokens_details", {})
+
+        # Normalize prompt/input tokens
+        normalized_prompt = prompt_tokens if prompt_tokens is not None else input_tokens
+        normalized_completion = completion_tokens if completion_tokens is not None else output_tokens
+        cache_read_input_tokens = (
+            prompt_tokens_details.get("cached_tokens") or input_tokens_details.get("cached_tokens") or 0
+        )
+
+        if normalized_prompt is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", normalized_prompt)
+        if normalized_completion is not None:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", normalized_completion)
+        if cache_read_input_tokens:
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", cache_read_input_tokens)
+        if usage.get("total_tokens") is not None:
             span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
+        if usage.get("output_tokens_details"):
+            span.set_attribute("gen_ai.usage.output_tokens_details", usage["output_tokens_details"])
 
     # Response content
     choices = response_dict.get("choices", [])
     for index, choice in enumerate(choices):
         if choice.get("message", {}).get("role"):
             span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
-        if choice.get("message", {}).get("content"):
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["message"]["content"])
+        # Prefer chat message content when present, else fallback to text completions
+        message_content = choice.get("message", {}).get("content")
+        if message_content:
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", message_content)
+        elif choice.get("text"):
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["text"])
         if choice.get("finish_reason"):
             span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
 
@@ -485,6 +507,19 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
 
+    def _is_chat(self) -> bool:
+        """Best-effort detection for chat vs completion request."""
+        # Presence of "messages" strongly indicates chat endpoints
+        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
+
+    def _ensure_choice(self, index: int) -> None:
+        """Ensure choices list has an entry at index."""
+        while len(self._complete_response["choices"]) <= index:
+            if self._is_chat():
+                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
+            else:
+                self._complete_response["choices"].append({"text": ""})
+
     def __iter__(self) -> Iterator[Any]:
         return self
 
@@ -504,6 +539,39 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
+
+        # Aggregate choices/content for chat and completion streams
+        choices = chunk_dict.get("choices") or []
+        if isinstance(choices, list):
+            for choice in choices:
+                try:
+                    idx = int(choice.get("index", 0))
+                except Exception:
+                    idx = 0
+                self._ensure_choice(idx)
+
+                # Chat streaming: content in choices[].delta.content
+                delta = choice.get("delta") or {}
+                content_piece = None
+                if isinstance(delta, dict) and delta.get("content"):
+                    content_piece = str(delta.get("content", ""))
+                    self._complete_response["choices"][idx].setdefault("message", {"role": "assistant", "content": ""})
+                    self._complete_response["choices"][idx]["message"]["content"] += content_piece
+
+                # Legacy/text completion streaming: content in choices[].text
+                if content_piece is None and choice.get("text"):
+                    text_piece = str(choice.get("text", ""))
+                    self._complete_response["choices"][idx]["text"] = (
+                        self._complete_response["choices"][idx].get("text", "") + text_piece
+                    )
+
+                # Finish reason when available
+                if choice.get("finish_reason"):
+                    self._complete_response["choices"][idx]["finish_reason"] = choice.get("finish_reason")
+
+        # Usage sometimes appears in the final chunk if include_usage=True
+        if chunk_dict.get("usage") and isinstance(chunk_dict["usage"], dict):
+            self._complete_response["usage"] = chunk_dict["usage"]
 
         # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
@@ -531,6 +599,18 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
 
+    def _is_chat(self) -> bool:
+        """Best-effort detection for chat vs completion request."""
+        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
+
+    def _ensure_choice(self, index: int) -> None:
+        """Ensure choices list has an entry at index."""
+        while len(self._complete_response["choices"]) <= index:
+            if self._is_chat():
+                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
+            else:
+                self._complete_response["choices"].append({"text": ""})
+
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
 
@@ -550,6 +630,39 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
+
+        # Aggregate choices/content for chat and completion streams
+        choices = chunk_dict.get("choices") or []
+        if isinstance(choices, list):
+            for choice in choices:
+                try:
+                    idx = int(choice.get("index", 0))
+                except Exception:
+                    idx = 0
+                self._ensure_choice(idx)
+
+                # Chat streaming: content in choices[].delta.content
+                delta = choice.get("delta") or {}
+                content_piece = None
+                if isinstance(delta, dict) and delta.get("content"):
+                    content_piece = str(delta.get("content", ""))
+                    self._complete_response["choices"][idx].setdefault("message", {"role": "assistant", "content": ""})
+                    self._complete_response["choices"][idx]["message"]["content"] += content_piece
+
+                # Legacy/text completion streaming: content in choices[].text
+                if content_piece is None and choice.get("text"):
+                    text_piece = str(choice.get("text", ""))
+                    self._complete_response["choices"][idx]["text"] = (
+                        self._complete_response["choices"][idx].get("text", "") + text_piece
+                    )
+
+                # Finish reason when available
+                if choice.get("finish_reason"):
+                    self._complete_response["choices"][idx]["finish_reason"] = choice.get("finish_reason")
+
+        # Usage sometimes appears in the final chunk if include_usage=True
+        if chunk_dict.get("usage") and isinstance(chunk_dict["usage"], dict):
+            self._complete_response["usage"] = chunk_dict["usage"]
 
         # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
