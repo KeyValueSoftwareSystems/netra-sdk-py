@@ -77,7 +77,7 @@ def set_model_streaming_response_attributes(span: Span, usage: Any) -> None:
     if additional_tokens:
         cached_tokens = additional_tokens.get("cached_tokens")
         if cached_tokens:
-            set_span_attribute(span, "gen_ai.usage.cached_tokens", cached_tokens)
+            set_span_attribute(span, "gen_ai.usage.cache_read_input_tokens", cached_tokens)
     if usage:
         set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.completion_tokens)
         set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, usage.prompt_tokens)
@@ -99,7 +99,7 @@ def set_model_response_attributes(span: Span, response: Any, token_histogram: Op
     if additional_tokens:
         cached_tokens = additional_tokens.get("cached_tokens")
         if cached_tokens:
-            set_span_attribute(span, "gen_ai.usage.cached_tokens", cached_tokens)
+            set_span_attribute(span, "gen_ai.usage.cache_read_input_tokens", cached_tokens)
     if usage:
         set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.get("total_tokens"))
         set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, completion_tokens)
