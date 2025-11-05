@@ -49,7 +49,7 @@ def init_instrumentations(
             Instruments.QDRANT,
             Instruments.GOOGLE_GENERATIVEAI,
             Instruments.MISTRAL,
-            # Instruments.OPENAI,
+            Instruments.OPENAI,
             Instruments.GROQ,
         }
     )
@@ -105,8 +105,8 @@ def init_instrumentations(
         init_litellm_instrumentation()
 
     # Initialize OpenAI instrumentation.
-    # if CustomInstruments.OPENAI in netra_custom_instruments:
-    #     init_openai_instrumentation()
+    if CustomInstruments.OPENAI in netra_custom_instruments:
+        init_openai_instrumentation()
 
     # Initialize Pydantic AI instrumentation.
     if CustomInstruments.PYDANTIC_AI in netra_custom_instruments:
