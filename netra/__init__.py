@@ -64,6 +64,7 @@ class Netra:
         # Acquire lock at the start of the method and hold it throughout
         # to prevent race conditions during initialization
         with cls._init_lock:
+
             # Check if already initialized while holding the lock
             if cls._initialized:
                 logger.warning("Netra.init() called more than once; ignoring subsequent calls.")

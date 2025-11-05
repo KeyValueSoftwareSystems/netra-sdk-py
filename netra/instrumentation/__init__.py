@@ -1,4 +1,5 @@
 import logging
+import os
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from typing import Any, Callable, Optional, Set
@@ -48,10 +49,11 @@ def init_instrumentations(
             Instruments.QDRANT,
             Instruments.GOOGLE_GENERATIVEAI,
             Instruments.MISTRAL,
-            Instruments.OPENAI,
+            # Instruments.OPENAI,
+            Instruments.GROQ,
         }
     )
-
+    os.environ["TRACELOOP_TELEMETRY"] = "false"
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         init_instrumentations(
             should_enrich_metrics=should_enrich_metrics,
@@ -62,6 +64,11 @@ def init_instrumentations(
 
     netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
+
+    # Initialize Groq instrumentation.
+    if CustomInstruments.GROQ in netra_custom_instruments:
+        init_groq_instrumentation()
+
     # Initialize Google GenAI instrumentation.
     if CustomInstruments.GOOGLE_GENERATIVEAI in netra_custom_instruments:
         init_google_genai_instrumentation()
@@ -98,8 +105,8 @@ def init_instrumentations(
         init_litellm_instrumentation()
 
     # Initialize OpenAI instrumentation.
-    if CustomInstruments.OPENAI in netra_custom_instruments:
-        init_openai_instrumentation()
+    # if CustomInstruments.OPENAI in netra_custom_instruments:
+    #     init_openai_instrumentation()
 
     # Initialize Pydantic AI instrumentation.
     if CustomInstruments.PYDANTIC_AI in netra_custom_instruments:
@@ -272,6 +279,24 @@ def init_instrumentations(
     # Initialize urllib3 instrumentation.
     if CustomInstruments.URLLIB3 in netra_custom_instruments:
         init_urllib3_instrumentation()
+
+
+def init_groq_instrumentation() -> bool:
+    """Initialize Groq instrumentation."""
+    try:
+        if is_package_installed("groq"):
+            Telemetry().capture("instrumentation:groq:init")
+            from netra.instrumentation.groq import GroqInstrumentor
+
+            instrumentor = GroqInstrumentor(
+                exception_logger=lambda e: Telemetry().log_exception(e),
+            )
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        Telemetry().log_exception(e)
+        return False
 
 
 def init_google_genai_instrumentation() -> bool:

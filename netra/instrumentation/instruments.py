@@ -38,6 +38,7 @@ class CustomInstruments(Enum):
     FALCON = "falcon"
     FLASK = "flask"
     GRPC = "grpc"
+    GROQ = "groq"
     JINJA2 = "jinja2"
     KAFKA_PYTHON = "kafka_python"
     LOGGING = "logging"
