@@ -56,7 +56,6 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     """Set request attributes on span"""
     if not span.is_recording():
         return
-
     # Set operation type
     span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
 
@@ -73,7 +72,7 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     if kwargs.get("stream") is not None:
         span.set_attribute("gen_ai.stream", kwargs["stream"])
 
-    # Chat-specific attributes
+    # Chat Completion API
     if operation_type == "chat" and kwargs.get("messages"):
         messages = kwargs["messages"]
         if isinstance(messages, list) and len(messages) > 0:
@@ -85,19 +84,35 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
                     span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
                     span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", "")))
 
-    # Response-specific attributes
+    # Response API attributes
     if operation_type == "response":
         if kwargs.get("instructions"):
-            span.set_attribute("gen_ai.instructions", kwargs["instructions"])
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "system")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", kwargs["instructions"])
         if kwargs.get("input"):
-            span.set_attribute("gen_ai.input", kwargs["input"])
+            has_instructions = kwargs.get("instructions") is not None
+            if isinstance(kwargs["input"], list) and len(kwargs["input"]) > 0:
+                start_index = 1 if has_instructions else 0
+                for index, message in enumerate(kwargs["input"]):
+                    idx = start_index + index
+                    if hasattr(message, "content"):
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.role", message.role)
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.content", message.content)
+                    elif isinstance(message, dict):
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{idx}.role", message.get("role", "user"))
+                        span.set_attribute(
+                            f"{SpanAttributes.LLM_PROMPTS}.{idx}.content", str(message.get("content", ""))
+                        )
+            elif isinstance(kwargs["input"], str):
+                target_index = 1 if has_instructions else 0
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{target_index}.role", "user")
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{target_index}.content", kwargs["input"])
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     """Set response attributes on span"""
     if not span.is_recording():
         return
-
     if response_dict.get("model"):
         span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
 
@@ -136,17 +151,28 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
 
     # Response content
     choices = response_dict.get("choices", [])
-    for index, choice in enumerate(choices):
-        if choice.get("message", {}).get("role"):
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
-        # Prefer chat message content when present, else fallback to text completions
-        message_content = choice.get("message", {}).get("content")
-        if message_content:
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", message_content)
-        elif choice.get("text"):
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["text"])
-        if choice.get("finish_reason"):
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
+    if choices:
+        for index, choice in enumerate(choices):
+            if choice.get("message", {}).get("role"):
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
+            # Prefer chat message content when present, else fallback to text completions
+            message_content = choice.get("message", {}).get("content")
+            if message_content:
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", message_content)
+            elif choice.get("text"):
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["text"])
+            if choice.get("finish_reason"):
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"])
+
+    if response_dict.get("output"):
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+        try:
+            span.set_attribute(
+                f"{SpanAttributes.LLM_COMPLETIONS}.0.content",
+                response_dict["output"][0]["content"][0]["text"],
+            )
+        except Exception:
+            pass
 
     # For responses.create
     if response_dict.get("output_text"):

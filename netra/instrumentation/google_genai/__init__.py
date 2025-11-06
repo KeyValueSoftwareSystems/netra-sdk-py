@@ -208,11 +208,22 @@ def _set_response_attributes(span: Any, response: Any, llm_model: str) -> None:
                 SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
                 usage.total_token_count,
             )
+        output_token_count = 0
         if hasattr(usage, "candidates_token_count"):
+            output_token_count = usage.candidates_token_count
+        if hasattr(usage, "thoughts_token_count"):
+            output_token_count += usage.thoughts_token_count
+        if output_token_count > 0:
             _set_span_attribute(
                 span,
                 SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
-                usage.candidates_token_count,
+                output_token_count,
+            )
+        if hasattr(usage, "cached_content_token_count"):
+            _set_span_attribute(
+                span,
+                SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS,
+                usage.cached_content_token_count,
             )
         if hasattr(usage, "prompt_token_count"):
             _set_span_attribute(
