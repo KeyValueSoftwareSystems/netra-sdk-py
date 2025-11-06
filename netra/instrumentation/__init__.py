@@ -280,6 +280,10 @@ def init_instrumentations(
     if CustomInstruments.URLLIB3 in netra_custom_instruments:
         init_urllib3_instrumentation()
 
+    #Initialize cerebras instrumentation.
+    if CustomInstruments.CEREBRAS in netra_custom_instruments:
+        init_cerebras_instrumentation()
+
 
 def init_groq_instrumentation() -> bool:
     """Initialize Groq instrumentation."""
@@ -1184,3 +1188,25 @@ def init_pydantic_ai_instrumentation() -> bool:
         logging.error(f"Error initializing pydantic-ai instrumentation: {e}")
         Telemetry().log_exception(e)
         return False
+    
+def init_cerebras_instrumentation() -> bool:
+    """Initialize Cerebras instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("cerebras_cloud_sdk"):
+            from netra.instrumentation.cerebras import CerebrasInstrumentor
+
+            instrumentor = CerebrasInstrumentor(
+                exception_logger=lambda e: Telemetry().log_exception(e),
+            )
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Cerebras instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
