@@ -65,6 +65,7 @@ class CustomInstruments(Enum):
     URLLIB = "urllib"
     URLLIB3 = "urllib3"
     WSGI = "wsgi"
+    CEREBRAS = "cerebras"
 
 
 class NetraInstruments(Enum):
