@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.50] - 2025-11-07
+
+- Added custom dataset and entries
+
 ## [0.1.49] - 2025-11-06
 
 - Fixed token count calculation for OpenAI response API
@@ -88,4 +92,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.49]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.50]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main

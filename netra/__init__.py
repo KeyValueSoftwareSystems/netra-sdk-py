@@ -7,15 +7,15 @@ from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
-from netra.instrumentation.instruments import InstrumentSet, NetraInstruments
-
-from .config import Config
+from netra.config import Config
+from netra.evaluation import Evaluation, EvaluationScore
 
 # Instrumentor functions
-from .instrumentation import init_instrumentations
-from .session_manager import ConversationType, SessionManager
-from .span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
-from .tracer import Tracer
+from netra.instrumentation import init_instrumentations
+from netra.instrumentation.instruments import NetraInstruments
+from netra.session_manager import ConversationType, SessionManager
+from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
+from netra.tracer import Tracer
 
 # Package-level logger. Attach NullHandler by default so library does not emit logs
 # unless explicitly enabled by the user via debug_mode.
@@ -86,6 +86,8 @@ class Netra:
 
             # Configure package logging based on debug mode
             pkg_logger = logging.getLogger("netra")
+            httpx_logger = logging.getLogger("httpx")
+            httpcore_logger = logging.getLogger("httpcore")
             # Prevent propagating to root to avoid duplicate logs
             pkg_logger.propagate = False
             # Clear existing handlers to avoid duplicates across repeated init attempts
@@ -99,13 +101,28 @@ class Netra:
                 )
                 handler.setFormatter(formatter)
                 pkg_logger.addHandler(handler)
+                httpx_logger.setLevel(logging.INFO)
+                httpcore_logger.setLevel(logging.INFO)
+                httpx_logger.propagate = True
+                httpcore_logger.propagate = True
             else:
                 # Silence SDK logs entirely unless debug is enabled
                 pkg_logger.setLevel(logging.CRITICAL)
                 pkg_logger.addHandler(logging.NullHandler())
+                # httpx_logger.setLevel(logging.CRITICAL)
+                # httpcore_logger.setLevel(logging.CRITICAL)
+                # httpx_logger.propagate = False
+                # httpcore_logger.propagate = False
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)
+
+            # Initialize evaluation client and expose as class attribute
+            try:
+                cls.evaluation = Evaluation(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize evaluation client: %s", e, exc_info=True)
+                cls.evaluation = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
@@ -275,4 +292,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore"]
