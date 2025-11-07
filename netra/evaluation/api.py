@@ -5,11 +5,10 @@ from datetime import datetime
 from typing import Any, Callable, Dict, List, Optional
 
 from netra.config import Config
-
-from .client import _EvaluationHttpClient
-from .context import RunEntryContext
-from .models import Dataset, DatasetItem, EntryStatus, Run, RunStatus
-from .utils import get_session_id_from_baggage, run_async_safely
+from netra.evaluation.client import _EvaluationHttpClient
+from netra.evaluation.context import RunEntryContext
+from netra.evaluation.models import Dataset, DatasetEntry, DatasetItem, EntryStatus, EvaluationScore, Run, RunStatus
+from netra.evaluation.utils import get_session_id_from_baggage, run_async_safely
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +20,46 @@ class Evaluation:
         """Initialize the evaluation client."""
         self._config = cfg
         self._client = _EvaluationHttpClient(cfg)
+
+    def create_dataset(
+        self, name: str, tags: Optional[List[str]] = None, policy_ids: Optional[List[str]] = None
+    ) -> Any:
+        """Create an empty dataset and return its id on success, else None."""
+        if not name:
+            logger.error("netra.evaluation: Failed to create dataset via API: name is required")
+            return None
+        resp = self._client.create_dataset(name=name, tags=tags, policy_ids=policy_ids)
+        dataset_id = resp.get("id")
+        if not dataset_id:
+            logger.error("netra.evaluation: Failed to create dataset")
+            return None
+        return dataset_id
+
+    def add_dataset_entry(
+        self,
+        dataset_id: str,
+        item: DatasetEntry,
+    ) -> Optional[str]:
+        """Add a single item to an existing dataset and return the new item id if available."""
+        try:
+            item_payload: Dict[str, Any] = {}
+            if item.input is None:
+                logger.warning("netra.evaluation: Skipping dataset item without required 'input': %s", item)
+                return None
+            item_payload["input"] = item.input
+            if item.expected_output is not None:
+                item_payload["expectedOutput"] = item.expected_output
+            if item.tags is not None:
+                item_payload["tags"] = list(item.tags)
+            if item.policy_ids is not None:
+                item_payload["policyIds"] = list(item.policy_ids)
+        except Exception as e:
+            logger.error("netra.evaluation: Failed to normalize dataset item for add: %s", e)
+            return None
+
+        resp = self._client.add_dataset_entry(dataset_id, item_payload)
+        item_id = resp.get("id")
+        return str(item_id) if item_id else None
 
     def get_dataset(self, dataset_id: str) -> Dataset:
         """Get a dataset by ID."""
@@ -39,6 +78,7 @@ class Evaluation:
                         id=item_id,
                         input=item_input,
                         dataset_id=item_dataset_id,
+                        expected_output=item.get("expectedOutput"),
                     )
                 )
             except Exception as exc:
@@ -59,8 +99,8 @@ class Evaluation:
         """Start a new run entry."""
         return RunEntryContext(self._client, self._config, run, entry)
 
-    def record(self, ctx: RunEntryContext) -> None:
-        """Record completion status for a run entry (no result payload)."""
+    def record(self, ctx: RunEntryContext, score: Optional[List[EvaluationScore]] = None) -> None:
+        """Record completion status for a run entry, optionally including score list."""
         try:
             session_id = get_session_id_from_baggage()
             self._client.post_entry_status(
@@ -69,6 +109,7 @@ class Evaluation:
                 status=EntryStatus.AGENT_COMPLETED,
                 trace_id=ctx.trace_id,
                 session_id=session_id,
+                score=score,
             )
         except Exception as exc:
             logger.error("netra.evaluation: Failed to POST agent_completed: %s", exc)
@@ -78,10 +119,13 @@ class Evaluation:
         name: str,
         data: Dataset,
         task: Callable[[Any], Any],
+        evaluators: Optional[List[Callable[..., Any]]] = None,
         max_concurrency: int = 50,
     ) -> Dict[str, Any]:
         return run_async_safely(
-            self._run_test_suite_async(name=name, data=data, task=task, max_concurrency=max_concurrency)
+            self._run_test_suite_async(
+                name=name, data=data, task=task, evaluators=evaluators, max_concurrency=max_concurrency
+            )
         )
 
     async def _run_test_suite_async(
@@ -89,6 +133,7 @@ class Evaluation:
         name: str,
         data: Dataset,
         task: Callable[[Any], Any],
+        evaluators: Optional[List[Callable[..., Any]]],
         max_concurrency: int,
     ) -> Dict[str, Any]:
         run = self.create_run(data, name)
@@ -111,7 +156,70 @@ class Evaluation:
                 with self.run_entry(run, entry) as ctx:
                     try:
                         output = await _run_task(entry.input)
-                        self.record(ctx)
+                        collected_scores: List[EvaluationScore] = []
+
+                        # 1) Scores from task output (back-compat)
+                        if isinstance(output, dict):
+                            scores_from_task = output.get("scores") or output.get("score")
+
+                            def _normalize_scores(obj: Any) -> List[EvaluationScore]:
+                                norm: List[EvaluationScore] = []
+                                if obj is None:
+                                    return norm
+                                if isinstance(obj, EvaluationScore):
+                                    norm.append(obj)
+                                elif isinstance(obj, list):
+                                    for it in obj:
+                                        if isinstance(it, EvaluationScore):
+                                            norm.append(it)
+                                        elif isinstance(it, dict):
+                                            mt = it.get("metric_type")
+                                            sc = it.get("score")
+                                            if mt is not None and sc is not None:
+                                                try:
+                                                    norm.append(EvaluationScore(metric_type=mt, score=float(sc)))
+                                                except Exception:
+                                                    pass
+                                elif isinstance(obj, dict):
+                                    mt = obj.get("metric_type")
+                                    sc = obj.get("score")
+                                    if mt is not None and sc is not None:
+                                        try:
+                                            norm.append(EvaluationScore(metric_type=mt, score=float(sc)))
+                                        except Exception:
+                                            pass
+                                return norm
+
+                            collected_scores.extend(_normalize_scores(scores_from_task))
+
+                        # 2) Scores from evaluators (sync/async)
+                        if evaluators:
+                            for evaluator in evaluators:
+                                try:
+                                    result = evaluator(
+                                        input=entry.input,
+                                        output=output,
+                                        expected_output=entry.expected_output,
+                                    )
+                                    if inspect.isawaitable(result):
+                                        result = await result
+
+                                    # Reuse normalizer
+                                    if "_normalize_scores" in locals():
+                                        collected_scores.extend(_normalize_scores(result))
+                                    else:
+                                        # Fallback minimal normalization
+                                        if isinstance(result, EvaluationScore):
+                                            collected_scores.append(result)
+                                        elif isinstance(result, list):
+                                            collected_scores.extend(
+                                                [r for r in result if isinstance(r, EvaluationScore)]
+                                            )
+                                except Exception as ev_exc:  # noqa: BLE001
+                                    logger.debug("netra.evaluation: evaluator error: %s", ev_exc, exc_info=True)
+
+                        # Record completion with any collected scores
+                        self.record(ctx, score=collected_scores if collected_scores else None)
                     except Exception as exc:  # noqa: BLE001
                         status = "failed"
                         error = repr(exc)

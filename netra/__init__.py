@@ -8,7 +8,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
 from netra.config import Config
-from netra.evaluation import Evaluation
+from netra.evaluation import Evaluation, EvaluationScore
 
 # Instrumentor functions
 from netra.instrumentation import init_instrumentations
@@ -86,6 +86,8 @@ class Netra:
 
             # Configure package logging based on debug mode
             pkg_logger = logging.getLogger("netra")
+            httpx_logger = logging.getLogger("httpx")
+            httpcore_logger = logging.getLogger("httpcore")
             # Prevent propagating to root to avoid duplicate logs
             pkg_logger.propagate = False
             # Clear existing handlers to avoid duplicates across repeated init attempts
@@ -99,10 +101,18 @@ class Netra:
                 )
                 handler.setFormatter(formatter)
                 pkg_logger.addHandler(handler)
+                httpx_logger.setLevel(logging.INFO)
+                httpcore_logger.setLevel(logging.INFO)
+                httpx_logger.propagate = True
+                httpcore_logger.propagate = True
             else:
                 # Silence SDK logs entirely unless debug is enabled
                 pkg_logger.setLevel(logging.CRITICAL)
                 pkg_logger.addHandler(logging.NullHandler())
+                # httpx_logger.setLevel(logging.CRITICAL)
+                # httpcore_logger.setLevel(logging.CRITICAL)
+                # httpx_logger.propagate = False
+                # httpcore_logger.propagate = False
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)
@@ -282,4 +292,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore"]

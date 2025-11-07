@@ -1,12 +1,11 @@
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
 from netra.config import Config
-
-from .models import EntryStatus, RunStatus
+from netra.evaluation.models import EntryStatus, EvaluationScore, RunStatus
 
 logger = logging.getLogger(__name__)
 
@@ -91,8 +90,58 @@ class _EvaluationHttpClient:
             return {"success": False}
         return {"success": False}
 
+    def create_dataset(
+        self, name: Optional[str], tags: Optional[List[str]] = None, policy_ids: Optional[List[str]] = None
+    ) -> Any:
+        """Create an empty dataset and return backend data (expects an id)."""
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create dataset")
+            return {"success": False}
+        try:
+            url = "/evaluations/dataset"
+            payload: Dict[str, Any] = {
+                "name": name,
+                "tags": tags if tags else [],
+                "policyIds": policy_ids if policy_ids else [],
+            }
+            response = self._client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                return data.get("data", {})
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to create dataset: %s", exc)
+            return {"success": False}
+        return {"success": False}
+
+    def add_dataset_entry(self, dataset_id: str, item_payload: Dict[str, Any]) -> Any:
+        """Add a single item to an existing dataset and return backend data (e.g., new item id)."""
+        if not self._client:
+            logger.error(
+                "netra.evaluation: Evaluation client is not initialized; cannot add item to dataset '%s'",
+                dataset_id,
+            )
+            return {"success": False}
+        try:
+            url = f"/evaluations/dataset/{dataset_id}/items"
+            response = self._client.post(url, json=item_payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                return data.get("data", {})
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to add item to dataset '%s': %s", dataset_id, exc)
+            return {"success": False}
+        return {"success": False}
+
     def post_entry_status(
-        self, run_id: str, test_id: str, status: EntryStatus, trace_id: Optional[str], session_id: Optional[str]
+        self,
+        run_id: str,
+        test_id: str,
+        status: EntryStatus,
+        trace_id: Optional[str],
+        session_id: Optional[str],
+        score: Optional[List[EvaluationScore]] = None,
     ) -> None:
         """Post per-entry status. Logs errors and returns None on failure."""
         if not self._client:
@@ -110,6 +159,23 @@ class _EvaluationHttpClient:
                 "traceId": trace_id,
                 "sessionId": session_id if session_id else None,
             }
+            # Include score objects when provided
+            if score is not None:
+                try:
+                    normalized_score: List[Dict[str, Any]] = []
+                    for item in score:
+                        if item is None:
+                            continue
+                        metric_type = item.metric_type
+                        metric_score = item.score
+                        if metric_type is not None and metric_score is not None:
+                            normalized_score.append({"metric": metric_type, "score": metric_score})
+                    if normalized_score:
+                        payload["metrics"] = normalized_score
+                    else:
+                        payload["metrics"] = []
+                except Exception as norm_exc:
+                    logger.debug("netra.evaluation: Failed to normalize score payload: %s", norm_exc, exc_info=True)
             response = self._client.post(url, json=payload)
             response.raise_for_status()
         except Exception as exc:
