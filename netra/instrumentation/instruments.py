@@ -7,6 +7,7 @@ from traceloop.sdk import Instruments
 class CustomInstruments(Enum):
     AIOHTTP = "aiohttp"
     COHEREAI = "cohere_ai"
+    DSPY = "dspy"
     HTTPX = "httpx"
     LITELLM = "litellm"
     MISTRALAI = "mistral_ai"
