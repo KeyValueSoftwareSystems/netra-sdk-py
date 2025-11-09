@@ -308,11 +308,9 @@ def init_google_genai_instrumentation() -> bool:
     try:
         if is_package_installed("google-genai"):
             Telemetry().capture("instrumentation:genai:init")
-            from netra.instrumentation.google_genai import GoogleGenAiInstrumentor
+            from netra.instrumentation.google_genai import NetraGoogleGenAiInstrumentor
 
-            instrumentor = GoogleGenAiInstrumentor(
-                exception_logger=lambda e: Telemetry().log_exception(e),
-            )
+            instrumentor = NetraGoogleGenAiInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True

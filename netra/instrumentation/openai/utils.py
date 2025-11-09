@@ -38,77 +38,72 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         logger.debug("Span is not recording")
         return
 
-    span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
+    span.set_attribute(SpanAttributes.LLM_REQUEST_TYPE, operation_type)
 
-    if kwargs.get("model"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MODEL}", kwargs.get("model"))
+    ATTRIBUTE_MAPPINGS = {
+        "model": SpanAttributes.LLM_REQUEST_MODEL,
+        "temperature": SpanAttributes.LLM_REQUEST_TEMPERATURE,
+        "max_tokens": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "max_completion_tokens": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "max_output_tokens": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "frequency_penalty": SpanAttributes.LLM_FREQUENCY_PENALTY,
+        "presence_penalty": SpanAttributes.LLM_PRESENCE_PENALTY,
+        "reasoning_effort": SpanAttributes.LLM_REQUEST_REASONING_EFFORT,
+        "stop": SpanAttributes.LLM_CHAT_STOP_SEQUENCES,
+        "stream": SpanAttributes.LLM_IS_STREAMING,
+        "top_p": SpanAttributes.LLM_REQUEST_TOP_P,
+        "dimensions": "gen_ai.request.dimensions",
+    }
 
-    if kwargs.get("temperature"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TEMPERATURE}", kwargs.get("temperature"))
+    for key, attribute in ATTRIBUTE_MAPPINGS.items():
+        if (value := kwargs.get(key)) is not None:
+            span.set_attribute(attribute, value)
 
-    if kwargs.get("max_tokens"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs.get("max_tokens"))
+    if (reasoning := kwargs.get("reasoning")) is not None:
+        span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning))
 
-    if kwargs.get("max_completion_tokens"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs.get("max_completion_tokens"))
+    if operation_type == "chat":
+        _set_chat_completion_input(span, kwargs.get("messages"))
+    elif operation_type == "response":
+        _set_chat_response_input(span, kwargs)
 
-    if kwargs.get("frequency_penalty"):
-        span.set_attribute(f"{SpanAttributes.LLM_FREQUENCY_PENALTY}", kwargs.get("frequency_penalty"))
 
-    if kwargs.get("presence_penalty"):
-        span.set_attribute(f"{SpanAttributes.LLM_PRESENCE_PENALTY}", kwargs.get("presence_penalty"))
+def _set_chat_completion_input(span: Span, messages: Any) -> None:
+    """Set completion API input attributes"""
+    if not isinstance(messages, list) or not messages:
+        return
 
-    if kwargs.get("reasoning_effort"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_REASONING_EFFORT}", kwargs.get("reasoning_effort"))
+    for index, message in enumerate(messages):
+        if isinstance(message, dict):
+            role = message.get("role", "user")
+            content = str(message.get("content", ""))
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", content)
 
-    if kwargs.get("stop"):
-        span.set_attribute(f"{SpanAttributes.LLM_CHAT_STOP_SEQUENCES}", kwargs.get("stop"))
 
-    if kwargs.get("stream"):
-        span.set_attribute(f"{SpanAttributes.LLM_IS_STREAMING}", kwargs.get("stream"))
+def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
+    """Set response API input attributes"""
+    message_index = 0
 
-    if kwargs.get("top_p"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TOP_P}", kwargs.get("top_p"))
+    # Handle instructions as system message
+    if instructions := kwargs.get("instructions"):
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "system")
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", instructions)
+        message_index += 1
 
-    if kwargs.get("max_output_tokens"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs.get("max_output_tokens"))
-
-    if kwargs.get("reasoning"):
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_REASONING_EFFORT}", json.dumps(kwargs.get("reasoning")))
-
-    if kwargs.get("dimensions"):
-        span.set_attribute(f"gen_ai.request.dimensions", kwargs.get("dimensions"))
-
-    # Message - Chat Completion API
-    if operation_type == "chat" and kwargs.get("messages"):
-        messages = kwargs["messages"]
-        if isinstance(messages, list) and len(messages) > 0:
-            for index, message in enumerate(messages):
+    # Handle input messages
+    if input_data := kwargs.get("input"):
+        if isinstance(input_data, str):
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "user")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", input_data)
+        elif isinstance(input_data, list) and input_data:
+            for message in input_data:
                 if isinstance(message, dict):
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", "")))
-
-    # Message - Response API
-    if operation_type == "response" or operation_type == "embedding":
-        message_index = 0
-        if kwargs.get("instructions"):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "system")
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", kwargs["instructions"])
-            message_index += 1
-        if kwargs.get("input"):
-            if isinstance(kwargs["input"], list) and len(kwargs["input"]) > 0:
-                for message in kwargs["input"]:
-                    if isinstance(message, dict):
-                        span.set_attribute(
-                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", message.get("role", "user")
-                        )
-                        span.set_attribute(
-                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", str(message.get("content", ""))
-                        )
-                        message_index += 1
-            elif isinstance(kwargs["input"], str):
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "user")
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", kwargs["input"])
+                    role = message.get("role", "user")
+                    content = str(message.get("content", ""))
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
+                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", content)
+                    message_index += 1
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -117,64 +112,59 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
         logger.debug("Span is not recording")
         return
 
-    if response_dict.get("model"):
-        span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
+    if model := response_dict.get("model"):
+        span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", model)
 
-    if response_dict.get("usage"):
-        usage = response_dict.get("usage")
-        if usage:
-            prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens") or 0
-            completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens") or 0
-            completion_tokens_details = (
-                usage.get("completion_tokens_details") or usage.get("output_tokens_details") or {}
-            )
-            reasoning_tokens = completion_tokens_details.get("reasoning_tokens", 0)
-            prompt_tokens_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details") or {}
-            cache_read_input_tokens = prompt_tokens_details.get("cached_tokens", 0)
-            total_tokens = usage.get("total_tokens", 0)
+    if usage := response_dict.get("usage"):
+        _set_usage_attributes(span, usage)
 
-        if prompt_tokens:
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", prompt_tokens)
+    _set_response_message_attributes(span, response_dict)
 
-        if completion_tokens:
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", completion_tokens)
 
-        if cache_read_input_tokens:
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", cache_read_input_tokens)
+def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
+    """Helper to set usage-related attributes"""
+    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
 
-        if total_tokens:
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", total_tokens)
+    if prompt_tokens:
+        span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", prompt_tokens)
 
-        if reasoning_tokens:
+    if completion_tokens:
+        span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", completion_tokens)
+
+    if prompt_tokens_details := (usage.get("prompt_tokens_details") or usage.get("input_tokens_details")):
+        if cache_tokens := prompt_tokens_details.get("cached_tokens"):
+            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", cache_tokens)
+
+    if completion_tokens_details := (usage.get("completion_tokens_details") or usage.get("output_tokens_details")):
+        if reasoning_tokens := completion_tokens_details.get("reasoning_tokens"):
             span.set_attribute(f"{SpanAttributes.LLM_USAGE_REASONING_TOKENS}", reasoning_tokens)
 
-    # Response API
+    if total_tokens := usage.get("total_tokens"):
+        span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", total_tokens)
+
+
+def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
+    """Helper to set response message attributes."""
     message_index = 0
-    if response_dict.get("output_text"):
+
+    if output_text := response_dict.get("output_text"):
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-        span.set_attribute(
-            f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", response_dict.get("output_text", "")
-        )
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", output_text)
         message_index += 1
 
-    if response_dict.get("output"):
-        output = response_dict.get("output", [])
+    if output := response_dict.get("output"):
         for element in output:
-            content = element.get("content", [])
-            if content:
+            if content := element.get("content"):
                 for chunk in content:
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", chunk.get("text", "")
-                    )
-                    message_index += 1
+                    if text := chunk.get("text"):
+                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", text)
+                        message_index += 1
 
-    # Chat Completion API
-    choices = response_dict.get("choices", [])
-    if choices:
+    if choices := response_dict.get("choices"):
         for choice in choices:
-            if choice.get("message"):
-                message = choice["message"]
+            if message := choice.get("message"):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
                 )
@@ -182,18 +172,16 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
                 )
                 message_index += 1
-
-            elif choice.get("delta"):
-                chunk = choice.get("delta")
+            elif delta := choice.get("delta"):
                 span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", chunk.get("role", "assistant")
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
                 )
                 span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", chunk.get("content", "")
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content", "")
                 )
                 message_index += 1
 
-            if choice.get("finish_reason"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", choice.get("finish_reason", "")
-                )
+            if finish_reason := choice.get("finish_reason"):
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
+
+    return message_index

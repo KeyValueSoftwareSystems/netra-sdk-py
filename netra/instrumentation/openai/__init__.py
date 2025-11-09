@@ -23,7 +23,7 @@ _instruments = ("openai >= 1.0.0",)
 
 class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """
-    OpenAI instrumentor for Netra SDK with enhanced support for:
+    Custom OpenAI instrumentor for Netra SDK:
     """
 
     def instrumentation_dependencies(self) -> Collection[str]:
