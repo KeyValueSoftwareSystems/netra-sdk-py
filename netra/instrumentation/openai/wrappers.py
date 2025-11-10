@@ -3,7 +3,8 @@ import time
 from collections.abc import Awaitable
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
-from opentelemetry.trace import Span, SpanKind, Tracer
+from opentelemetry import context as context_api
+from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
 
@@ -33,6 +34,7 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if is_streaming:
             span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
             try:
+                context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "chat")
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
@@ -43,6 +45,8 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
 
         else:
             with tracer.start_as_current_span(
@@ -79,6 +83,7 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         if is_streaming:
             span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
             try:
+                context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "chat")
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
@@ -89,6 +94,8 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
         else:
             with tracer.start_as_current_span(
                 CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
@@ -182,6 +189,7 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
             )
             try:
+                context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "response")
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
@@ -192,6 +200,8 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
         else:
             with tracer.start_as_current_span(
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
@@ -227,6 +237,7 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
             )
             try:
+                context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "response")
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
@@ -237,6 +248,8 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
         else:
             with tracer.start_as_current_span(
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}

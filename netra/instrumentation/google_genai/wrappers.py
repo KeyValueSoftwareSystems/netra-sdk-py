@@ -2,7 +2,8 @@ import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
-from opentelemetry.trace import Span, SpanKind, Tracer
+from opentelemetry import context as context_api
+from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.instrumentation.google_genai.utils import (
@@ -87,6 +88,7 @@ def content_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
             attributes={"gen_ai.system": "Gemini", "llm.request.type": "completion"},
         )
         try:
+            context = context_api.attach(set_span_in_context(span))
             set_request_attributes(span, args, kwargs)
             start_time = time.time()
             response = wrapped(*args, **kwargs)
@@ -97,6 +99,8 @@ def content_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
             span.record_exception(e)
             span.end()
             raise
+        finally:
+            context_api.detach(context)
 
     return wrapper
 
@@ -112,6 +116,7 @@ def acontent_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
             attributes={"gen_ai.system": "Gemini", "llm.request.type": "completion"},
         )
         try:
+            context = context_api.attach(set_span_in_context(span))
             set_request_attributes(span, args, kwargs)
             start_time = time.time()
             response = await wrapped(*args, **kwargs)
@@ -122,6 +127,8 @@ def acontent_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
             span.record_exception(e)
             span.end()
             raise
+        finally:
+            context_api.detach(context)
 
     return wrapper
 

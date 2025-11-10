@@ -1,96 +1,135 @@
 import logging
-import os
-import traceback
-from functools import wraps
-from importlib.metadata import version
-from typing import Any, Callable, Dict, TypeVar, cast
+from typing import Any, Dict
 
 from opentelemetry import context as context_api
-from opentelemetry.instrumentation.groq.config import Config
-from opentelemetry.semconv_ai import SpanAttributes
+from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
+from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, SpanAttributes
 from opentelemetry.trace import Span
 
-GEN_AI_SYSTEM = "gen_ai.system"
-GEN_AI_SYSTEM_GROQ = "groq"
-
-_PYDANTIC_VERSION = version("pydantic")
-
-TRACELOOP_TRACE_CONTENT = "TRACELOOP_TRACE_CONTENT"
+logger = logging.getLogger(__name__)
 
 
-def set_span_attribute(span: Span, name: str, value: Any) -> None:
-    if value is not None and value != "":
-        span.set_attribute(name, value)
-
-
-def should_send_prompts() -> bool:
-    return (os.getenv(TRACELOOP_TRACE_CONTENT) or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
+def should_suppress_instrumentation() -> bool:
+    """Check if instrumentation should be suppressed (OpenAI-style)."""
+    return bool(
+        context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY)
+        or context_api.get_value(SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY)
     )
 
 
-R = TypeVar("R")
+def model_as_dict(input_object: Any) -> Any:
+    """Convert SDK model object to a plain dict."""
+    if hasattr(input_object, "model_dump"):
+        return input_object.model_dump()
+    if hasattr(input_object, "to_dict"):
+        return input_object.to_dict()
+    if isinstance(input_object, dict):
+        return input_object
+    return {}
 
 
-def dont_throw(func: Callable[..., R]) -> Callable[..., R]:
-    """
-    A decorator that wraps the passed in function and logs exceptions instead of throwing them.
-    """
-    logger = logging.getLogger(func.__module__)
+def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
+    """Set request attributes for Groq chat completions."""
+    if not span.is_recording():
+        return
 
-    @wraps(func)
-    def wrapper(*args: Any, **kwargs: Any) -> R:  # type:ignore[unused-ignore]
-        try:
-            return cast(R, func(*args, **kwargs))  # type:ignore[redundant-cast]
-        except Exception as e:
-            logger.debug(
-                "OpenLLMetry failed to trace in %s, error: %s",
-                func.__name__,
-                traceback.format_exc(),
-            )
-            if Config.exception_logger:
-                Config.exception_logger(e)
-            return cast(R, None)
+    span.set_attribute(SpanAttributes.LLM_REQUEST_TYPE, operation_type)
 
-    return wrapper
-
-
-@dont_throw
-def shared_metrics_attributes(response: Any) -> Dict[str, Any]:
-    response_dict = model_as_dict(response)
-
-    common_attributes = Config.get_common_metrics_attributes()
-
-    return {
-        **common_attributes,
-        GEN_AI_SYSTEM: GEN_AI_SYSTEM_GROQ,
-        SpanAttributes.LLM_RESPONSE_MODEL: response_dict.get("model"),
+    ATTRIBUTE_MAPPINGS = {
+        "model": SpanAttributes.LLM_REQUEST_MODEL,
+        "temperature": SpanAttributes.LLM_REQUEST_TEMPERATURE,
+        "max_tokens": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "max_completion_tokens": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "max_tokens_to_sample": SpanAttributes.LLM_REQUEST_MAX_TOKENS,
+        "reasoning_effort": SpanAttributes.LLM_REQUEST_REASONING_EFFORT,
+        "frequency_penalty": SpanAttributes.LLM_FREQUENCY_PENALTY,
+        "presence_penalty": SpanAttributes.LLM_PRESENCE_PENALTY,
+        "stop": SpanAttributes.LLM_CHAT_STOP_SEQUENCES,
+        "stream": SpanAttributes.LLM_IS_STREAMING,
+        "top_p": SpanAttributes.LLM_REQUEST_TOP_P,
     }
 
+    for key, attribute in ATTRIBUTE_MAPPINGS.items():
+        if (value := kwargs.get(key)) is not None:
+            span.set_attribute(attribute, value)
 
-@dont_throw
-def error_metrics_attributes(exception: BaseException) -> Dict[str, Any]:
-    return {
-        GEN_AI_SYSTEM: GEN_AI_SYSTEM_GROQ,
-        "error.type": exception.__class__.__name__,
-    }
+    _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))
 
 
-def model_as_dict(model: Any) -> Any:
-    if _PYDANTIC_VERSION < "2.0.0":
-        return model.dict()
-    if hasattr(model, "model_dump"):
-        return model.model_dump()
-    elif hasattr(model, "parse"):
-        return model_as_dict(model.parse())
-    else:
-        return model
+def _set_chat_input(span: Span, messages: Any, prompt: Any) -> None:
+    if isinstance(messages, list) and messages:
+        for index, message in enumerate(messages):
+            if isinstance(message, dict):
+                role = message.get("role", "user")
+                content = message.get("content", "")
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(content))
+            elif hasattr(message, "role") and hasattr(message, "content"):
+                role = message.role
+                content = message.content
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(content))
+        return
+
+    if isinstance(prompt, str) and prompt:
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", prompt)
 
 
-def should_emit_events() -> bool:
-    """
-    Checks if the instrumentation isn't using the legacy attributes
-    and if the event logger is not None.
-    """
+def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
+    """Set response attributes for Groq chat completions."""
+    if not span.is_recording():
+        return
 
-    return not Config.use_legacy_attributes
+    if model := response_dict.get("model"):
+        span.set_attribute(SpanAttributes.LLM_RESPONSE_MODEL, model)
+
+    if usage := response_dict.get("usage"):
+        _set_usage_attributes(span, usage)
+
+    _set_response_message_attributes(span, response_dict)
+
+
+def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
+    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
+
+    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+
+    if prompt_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, prompt_tokens)
+    if completion_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, completion_tokens)
+
+    if prompt_details := (usage.get("prompt_tokens_details") or usage.get("input_tokens_details")):
+        if cached := prompt_details.get("cached_tokens"):
+            span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS, cached)
+
+    if total := usage.get("total_tokens"):
+        span.set_attribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total)
+
+
+def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
+    message_index = 0
+
+    # Completion API-like
+    if choices := response_dict.get("choices"):
+        for choice in choices:
+            if message := choice.get("message"):
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
+                )
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
+                )
+                message_index += 1
+            elif delta := choice.get("delta"):
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
+                )
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content", "")
+                )
+                message_index += 1
+
+            if finish_reason := choice.get("finish_reason"):
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
