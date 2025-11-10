@@ -464,7 +464,8 @@ def init_dspy_instrumentation() -> bool:
         bool: True if initialization was successful, False otherwise.
     """
     try:
-        if is_package_installed("dspy-ai"):
+        # Support both "dspy-ai" (older versions) and "dspy" (v3.0+)
+        if is_package_installed("dspy-ai") or is_package_installed("dspy"):
             from netra.instrumentation.dspy import NetraDSPyInstrumentor
 
             instrumentor = NetraDSPyInstrumentor()
