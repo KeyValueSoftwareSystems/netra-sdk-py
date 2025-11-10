@@ -27,7 +27,7 @@ logger = logging.getLogger(__name__)
 
 _instruments = ("cerebras-cloud-sdk >= 1.0.0",)
 
-# CORRECTED: The actual module structure in Cerebras SDK
+# The actual module structure in Cerebras SDK
 WRAPPED_METHODS = [
     {
         "package": "cerebras.cloud.sdk.resources.chat.completions",
@@ -157,14 +157,46 @@ def _set_span_completion_response(span: Span, response: Any) -> None:
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.completion_tokens)
             if hasattr(usage, "total_tokens"):
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.total_tokens)
+            if hasattr(usage, "prompt_tokens_details"):
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details and hasattr(details, "cached_tokens"):
+                    _set_span_attribute(span, "cerebras.cached_tokens", details.cached_tokens)
         elif isinstance(usage, dict):
             _set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, usage.get("prompt_tokens"))
             _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.get("completion_tokens"))
             _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.get("total_tokens"))
 
+            prompt_details = usage.get("prompt_tokens_details", {})
+            if isinstance(prompt_details, dict):
+                cached = prompt_details.get("cached_tokens")
+                if cached is not None:
+                    _set_span_attribute(span, "cerebras.cached_tokens", cached)
+
 
 @dont_throw
 def _set_response_attributes(span: Span, llm_request_type: LLMRequestTypeValues, response: Any) -> None:
+        # Always capture usage attributes, even if prompt sending is disabled
+    try:
+        if hasattr(response, "usage"):
+            usage = response.usage
+            if hasattr(usage, "prompt_tokens"):
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_PROMPT_TOKENS, usage.prompt_tokens)
+            if hasattr(usage, "completion_tokens"):
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage.completion_tokens)
+            if hasattr(usage, "total_tokens"):
+                _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage.total_tokens)
+
+            #  Always record cached_tokens if present (even when should_send_prompts=False)
+            if hasattr(usage, "prompt_tokens_details"):
+                details = getattr(usage, "prompt_tokens_details", None)
+                if details and hasattr(details, "cached_tokens"):
+                    _set_span_attribute(span, "cerebras.cached_tokens", details.cached_tokens)
+                elif isinstance(details, dict) and "cached_tokens" in details:
+                    _set_span_attribute(span, "cerebras.cached_tokens", details["cached_tokens"])
+                    
+    except Exception as e:
+        logger.warning(f"Failed to extract usage or cached tokens: {e}")
+
     if should_send_prompts():
         if llm_request_type == LLMRequestTypeValues.CHAT:
             _set_span_chat_completion_response(span, response)
@@ -240,6 +272,11 @@ def _handle_streaming_response(
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage_info.completion_tokens)
             if hasattr(usage_info, "total_tokens"):
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage_info.total_tokens)
+
+            if hasattr(usage_info, "prompt_tokens_details"):
+                details = getattr(usage_info, "prompt_tokens_details", None)
+                if details and hasattr(details, "cached_tokens"):
+                    _set_span_attribute(span, "cerebras.cached_tokens", details.cached_tokens)
 
         span.set_status(Status(StatusCode.OK))
     except Exception as e:
@@ -317,6 +354,11 @@ async def _handle_async_streaming_response(
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, usage_info.completion_tokens)
             if hasattr(usage_info, "total_tokens"):
                 _set_span_attribute(span, SpanAttributes.LLM_USAGE_TOTAL_TOKENS, usage_info.total_tokens)
+
+            if hasattr(usage_info, "prompt_tokens_details"):
+                details = getattr(usage_info, "prompt_tokens_details", None)
+                if details and hasattr(details, "cached_tokens"):
+                    _set_span_attribute(span, "cerebras.cached_tokens", details.cached_tokens)
 
         span.set_status(Status(StatusCode.OK))
     except Exception as e:
