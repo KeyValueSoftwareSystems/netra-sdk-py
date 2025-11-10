@@ -22,13 +22,13 @@ def init_instrumentations(
     traceloop_block_instruments = set()
     netra_custom_instruments = set()
     netra_custom_block_instruments = set()
-    if instruments is not None:
+    if instruments:
         for instrument in instruments:
             if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
                 netra_custom_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_instruments.add(getattr(Instruments, instrument.name))
-    if block_instruments is not None:
+    if block_instruments:
         for instrument in block_instruments:
             if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
                 netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
@@ -36,12 +36,22 @@ def init_instrumentations(
                 traceloop_block_instruments.add(getattr(Instruments, instrument.name))
 
     # If no instruments in traceloop are provided for instrumentation
-    if instruments is not None and not traceloop_instruments and not traceloop_block_instruments:
+    if instruments and not traceloop_instruments and not traceloop_block_instruments:
         traceloop_block_instruments = set(Instruments)
 
     # If no custom instruments in netra are provided for instrumentation
-    if instruments is not None and not netra_custom_instruments and not netra_custom_block_instruments:
+    if instruments and not netra_custom_instruments and not netra_custom_block_instruments:
         netra_custom_block_instruments = set(CustomInstruments)
+
+    # If no instruments are provided for instrumentation, instrument all instruments
+    if not instruments and not block_instruments:
+        traceloop_instruments = set(Instruments)
+        netra_custom_instruments = set(CustomInstruments)
+
+    netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
+    traceloop_instruments = traceloop_instruments - traceloop_block_instruments
+    if not traceloop_instruments:
+        traceloop_instruments = None  # type:ignore[assignment]
 
     traceloop_block_instruments.update(
         {
@@ -53,6 +63,7 @@ def init_instrumentations(
             Instruments.GROQ,
         }
     )
+
     os.environ["TRACELOOP_TELEMETRY"] = "false"
     with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
         init_instrumentations(
