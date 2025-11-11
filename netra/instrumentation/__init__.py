@@ -108,6 +108,10 @@ def init_instrumentations(
     if CustomInstruments.COHEREAI in netra_custom_instruments:
         init_cohere_instrumentation()
 
+    # Initialize DSPy instrumentation.
+    if CustomInstruments.DSPY in netra_custom_instruments:
+        init_dspy_instrumentation()
+
     if CustomInstruments.MISTRALAI in netra_custom_instruments:
         init_mistral_instrumentor()
 
@@ -449,6 +453,27 @@ def init_cohere_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Cohere instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_dspy_instrumentation() -> bool:
+    """Initialize DSPy instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        # Support both "dspy-ai" (older versions) and "dspy" (v3.0+)
+        if is_package_installed("dspy-ai") or is_package_installed("dspy"):
+            from netra.instrumentation.dspy import NetraDSPyInstrumentor
+
+            instrumentor = NetraDSPyInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing DSPy instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 

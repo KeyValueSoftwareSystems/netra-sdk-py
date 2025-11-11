@@ -63,8 +63,8 @@ class Config:
         if isinstance(headers, str):
             self.headers = parse_env_headers(headers)
 
-        if self.otlp_endpoint in ["https://api.dev.getcombat.ai", "https://api.eu.getnetra.ai"] and not self.api_key:
-            print("Error: Missing Netra API key, go to https://app.dev.getcombat.ai/api-key to create one")
+        if not self.api_key:
+            print("Error: Missing Netra API key, go to netra dashboard to create one")
             print("Set the NETRA_API_KEY environment variable to the key")
             return
 
