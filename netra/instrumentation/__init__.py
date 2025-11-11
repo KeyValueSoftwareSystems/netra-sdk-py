@@ -108,10 +108,6 @@ def init_instrumentations(
     if CustomInstruments.COHEREAI in netra_custom_instruments:
         init_cohere_instrumentation()
 
-    # Initialize DSPy instrumentation.
-    if CustomInstruments.DSPY in netra_custom_instruments:
-        init_dspy_instrumentation()
-
     if CustomInstruments.MISTRALAI in netra_custom_instruments:
         init_mistral_instrumentor()
 
