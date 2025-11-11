@@ -13,9 +13,6 @@ from netra.instrumentation.dspy.wrappers import (
     LMAsyncCallWrapper,
     LMCallWrapper,
     ModuleAsyncCallWrapper,
-    ModuleForwardSyncWrapper,
-    ModuleForwardWrapper,
-    PredictForwardWrapper,
     RetrieverForwardWrapper,
     ToolAsyncCallWrapper,
     ToolCallWrapper,
@@ -127,47 +124,7 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
             logger.debug("Instrumented dspy.Module.acall")
         except (AttributeError, ModuleNotFoundError) as e:
             logger.debug(f"Module.acall not available: {e}")
-            
 
-        # Instrument Predict.forward and all subclasses
-        # try:
-        #     from dspy import Predict
-
-        #     wrap_object(
-        #         module="dspy",
-        #         name="Predict.forward",
-        #         factory=CopyableFunctionWrapper,
-        #         args=(PredictForwardWrapper(tracer),),
-        #     )
-        #     logger.debug("Instrumented dspy.Predict.forward")
-
-        #     # Instrument all Predict subclasses (ChainOfThought, ReAct, etc.)
-        #     predict_subclasses = Predict.__subclasses__()
-        #     for predict_subclass in predict_subclasses:
-        #         try:
-        #             wrap_object(
-        #                 module="dspy",
-        #                 name=f"{predict_subclass.__name__}.forward",
-        #                 factory=CopyableFunctionWrapper,
-        #                 args=(PredictForwardWrapper(tracer),),
-        #             )
-        #             logger.debug(f"Instrumented dspy.{predict_subclass.__name__}.forward")
-        #         except (AttributeError, ModuleNotFoundError) as e:
-        #             logger.debug(f"{predict_subclass.__name__}.forward not available: {e}")
-        # except (AttributeError, ModuleNotFoundError, ImportError) as e:
-        #     logger.debug(f"Predict class not available: {e}")
-
-        # # Instrument Module.__call__ for user-defined modules
-        # try:
-        #     wrap_object(
-        #         module="dspy",
-        #         name="Module.__call__",
-        #         factory=CopyableFunctionWrapper,
-        #         args=(ModuleForwardWrapper(tracer),),
-        #     )
-        #     logger.debug("Instrumented dspy.Module.__call__")
-        # except (AttributeError, ModuleNotFoundError) as e:
-        #     logger.debug(f"Module.__call__ not available: {e}")
 
         # Instrument Module.acall for async user-defined modules
         try:
@@ -181,17 +138,6 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
         except (AttributeError, ModuleNotFoundError) as e:
             logger.debug(f"Module.acall not available: {e}")
 
-        # Instrument Module.forward for direct forward() calls
-        # try:
-        #     wrap_object(
-        #         module="dspy",
-        #         name="Module.forward",
-        #         factory=CopyableFunctionWrapper,
-        #         args=(ModuleForwardSyncWrapper(tracer),),
-        #     )
-        #     logger.debug("Instrumented dspy.Module.forward")
-        # except (AttributeError, ModuleNotFoundError) as e:
-        #     logger.debug(f"Module.forward not available: {e}")
 
         # Instrument Tool.__call__ for synchronous tool execution
         try:
