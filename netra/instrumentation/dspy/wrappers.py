@@ -133,7 +133,8 @@ class LMCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in LMCallWrapper: {e}", exc_info=True)
+                return None
 
 
 class LMAsyncCallWrapper:
@@ -227,7 +228,8 @@ class LMAsyncCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in LMAsyncCallWrapper: {e}", exc_info=True)
+                return None
 
 
 class PredictForwardWrapper:
@@ -302,7 +304,8 @@ class PredictForwardWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in PredictForwardWrapper: {e}", exc_info=True)
+                return None
 
 
 class ModuleForwardWrapper:
@@ -358,7 +361,8 @@ class ModuleForwardWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in ModuleForwardWrapper: {e}", exc_info=True)
+                return None
 
 
 class ModuleAsyncCallWrapper:
@@ -415,7 +419,8 @@ class ModuleAsyncCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in ModuleAsyncCallWrapper: {e}", exc_info=True)
+                return None
 
 
 class RetrieverForwardWrapper:
@@ -471,7 +476,8 @@ class RetrieverForwardWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in RetrieverForwardWrapper: {e}", exc_info=True)
+                return None
 
 
 class EmbedderCallWrapper:
@@ -536,7 +542,8 @@ class EmbedderCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in EmbedderCallWrapper: {e}", exc_info=True)
+                return None
 
 
 class ModuleForwardSyncWrapper:
@@ -588,7 +595,8 @@ class ModuleForwardSyncWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in ModuleForwardSyncWrapper: {e}", exc_info=True)
+                return None
 
 
 class ToolCallWrapper:
@@ -638,7 +646,8 @@ class ToolCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in ToolCallWrapper: {e}", exc_info=True)
+                return None
 
 
 class ToolAsyncCallWrapper:
@@ -686,4 +695,5 @@ class ToolAsyncCallWrapper:
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-                raise
+                logger.error(f"Exception in ToolAsyncCallWrapper: {e}", exc_info=True)
+                return None
