@@ -6,7 +6,8 @@ proper span handling following OpenTelemetry semantic conventions.
 """
 
 import logging
-from typing import Any, Callable, Dict, Mapping, Tuple
+from contextvars import ContextVar
+from typing import Any, Callable, Dict, Mapping, Set, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
@@ -35,6 +36,10 @@ from netra.instrumentation.dspy.utils import (
 )
 
 logger = logging.getLogger(__name__)
+
+# Context variable to track which module instances are currently being instrumented
+# This prevents duplicate spans from DSPy's internal decorator chains
+_instrumenting_modules: ContextVar[Set[int]] = ContextVar('_instrumenting_modules', default=set())
 
 
 def should_suppress_instrumentation() -> bool:
@@ -325,44 +330,62 @@ class ModuleForwardWrapper:
     ) -> Any:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
+        
+        # Re-entry detection: Skip if we're already instrumenting this instance
+        # This prevents duplicate spans from DSPy's internal decorator chains
+        instance_id = id(instance)
+        instrumenting = _instrumenting_modules.get()
+        
+        if instance_id in instrumenting:
+            # Already instrumenting this instance, skip to avoid duplicate span
+            return wrapped(*args, **kwargs)
 
         span_name = f"{instance.__class__.__name__}.forward"
         arguments = bind_arguments(wrapped, *args, **kwargs)
 
-        with self._tracer.start_as_current_span(
-            span_name,
-            kind=SpanKind.INTERNAL,
-            attributes={
-                "dspy.span_kind": SPAN_KIND_CHAIN,
-                "dspy.operation": "module",
-            },
-        ) as span:
-            try:
-                # Set input
-                forward_method = getattr(instance.__class__, "forward", None)
-                if forward_method:
-                    input_value = get_input_value_from_method(forward_method, *args, **kwargs)
-                else:
-                    input_value = safe_json_dumps(arguments)
-                
-                span.set_attribute("gen_ai.request.input", input_value)
-                span.set_attribute("gen_ai.request.input.mime_type", "application/json")
-                
-                # Call the wrapped method
-                result = wrapped(*args, **kwargs)
-                
-                # Set output
-                span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(result)))
-                span.set_attribute("gen_ai.response.output.mime_type", "application/json")
-                
-                span.set_status(Status(StatusCode.OK))
-                return result
-                
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                logger.error(f"Exception in ModuleForwardWrapper: {e}", exc_info=True)
-                return None
+        # Mark this instance as being instrumented
+        new_instrumenting = instrumenting.copy()
+        new_instrumenting.add(instance_id)
+        token = _instrumenting_modules.set(new_instrumenting)
+        
+        try:
+            with self._tracer.start_as_current_span(
+                span_name,
+                kind=SpanKind.INTERNAL,
+                attributes={
+                    "dspy.span_kind": SPAN_KIND_CHAIN,
+                    "dspy.operation": "module",
+                },
+            ) as span:
+                try:
+                    # Set input
+                    forward_method = getattr(instance.__class__, "forward", None)
+                    if forward_method:
+                        input_value = get_input_value_from_method(forward_method, *args, **kwargs)
+                    else:
+                        input_value = safe_json_dumps(arguments)
+                    
+                    span.set_attribute("gen_ai.request.input", input_value)
+                    span.set_attribute("gen_ai.request.input.mime_type", "application/json")
+                    
+                    # Call the wrapped method
+                    result = wrapped(*args, **kwargs)
+                    
+                    # Set output
+                    span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(result)))
+                    span.set_attribute("gen_ai.response.output.mime_type", "application/json")
+                    
+                    span.set_status(Status(StatusCode.OK))
+                    return result
+                    
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                    logger.error(f"Exception in ModuleForwardWrapper: {e}", exc_info=True)
+                    return None
+        finally:
+            # Clean up: remove this instance from the tracking set
+            _instrumenting_modules.reset(token)
 
 
 class ModuleAsyncCallWrapper:
@@ -382,45 +405,63 @@ class ModuleAsyncCallWrapper:
     ) -> Any:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
+        
+        # Re-entry detection: Skip if we're already instrumenting this instance
+        # This prevents duplicate spans from DSPy's internal decorator chains
+        instance_id = id(instance)
+        instrumenting = _instrumenting_modules.get()
+        
+        if instance_id in instrumenting:
+            # Already instrumenting this instance, skip to avoid duplicate span
+            return await wrapped(*args, **kwargs)
 
         span_name = f"{instance.__class__.__name__}.acall"
         arguments = bind_arguments(wrapped, *args, **kwargs)
 
-        with self._tracer.start_as_current_span(
-            span_name,
-            kind=SpanKind.INTERNAL,
-            attributes={
-                "dspy.span_kind": SPAN_KIND_CHAIN,
-                "dspy.operation": "module_async",
-            },
-        ) as span:
-            try:
-                # Set input
-                # Try to get the forward method signature for input extraction
-                forward_method = getattr(instance.__class__, "forward", None)
-                if forward_method:
-                    input_value = get_input_value_from_method(forward_method, *args, **kwargs)
-                else:
-                    input_value = safe_json_dumps(arguments)
-                
-                span.set_attribute("gen_ai.request.input", input_value)
-                span.set_attribute("gen_ai.request.input.mime_type", "application/json")
-                
-                # Call the wrapped method
-                result = await wrapped(*args, **kwargs)
-                
-                # Set output
-                span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(result)))
-                span.set_attribute("gen_ai.response.output.mime_type", "application/json")
-                
-                span.set_status(Status(StatusCode.OK))
-                return result
-                
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                logger.error(f"Exception in ModuleAsyncCallWrapper: {e}", exc_info=True)
-                return None
+        # Mark this instance as being instrumented
+        new_instrumenting = instrumenting.copy()
+        new_instrumenting.add(instance_id)
+        token = _instrumenting_modules.set(new_instrumenting)
+        
+        try:
+            with self._tracer.start_as_current_span(
+                span_name,
+                kind=SpanKind.INTERNAL,
+                attributes={
+                    "dspy.span_kind": SPAN_KIND_CHAIN,
+                    "dspy.operation": "module_async",
+                },
+            ) as span:
+                try:
+                    # Set input
+                    # Try to get the forward method signature for input extraction
+                    forward_method = getattr(instance.__class__, "forward", None)
+                    if forward_method:
+                        input_value = get_input_value_from_method(forward_method, *args, **kwargs)
+                    else:
+                        input_value = safe_json_dumps(arguments)
+                    
+                    span.set_attribute("gen_ai.request.input", input_value)
+                    span.set_attribute("gen_ai.request.input.mime_type", "application/json")
+                    
+                    # Call the wrapped method
+                    result = await wrapped(*args, **kwargs)
+                    
+                    # Set output
+                    span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(result)))
+                    span.set_attribute("gen_ai.response.output.mime_type", "application/json")
+                    
+                    span.set_status(Status(StatusCode.OK))
+                    return result
+                    
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                    logger.error(f"Exception in ModuleAsyncCallWrapper: {e}", exc_info=True)
+                    return None
+        finally:
+            # Clean up: remove this instance from the tracking set
+            _instrumenting_modules.reset(token)
 
 
 class RetrieverForwardWrapper:
@@ -556,47 +597,65 @@ class ModuleForwardSyncWrapper:
         """Intercepts Module.forward() calls."""
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
+        
+        # Re-entry detection: Skip if we're already instrumenting this instance
+        # This prevents duplicate spans from DSPy's internal decorator chains
+        instance_id = id(instance)
+        instrumenting = _instrumenting_modules.get()
+        
+        if instance_id in instrumenting:
+            # Already instrumenting this instance, skip to avoid duplicate span
+            return wrapped(*args, **kwargs)
 
         # Get the module class name (e.g., "UpperModule", "ReAct", "ChainOfThought")
         module_class_name = instance.__class__.__name__
         operation_name = f"{module_class_name}.forward"
 
-        with self._tracer.start_as_current_span(
-            operation_name,
-            kind=SpanKind.INTERNAL,
-            attributes={
-                "dspy.span_kind": SPAN_KIND_CHAIN,
-                "dspy.operation": "forward",
-                "dspy.module_type": module_class_name,
-            },
-        ) as span:
-            try:
-                # Call the actual forward method with suppression to avoid duplicate spans
-                from opentelemetry.context import attach, detach, set_value
-                token = attach(set_value(_SUPPRESS_INSTRUMENTATION_KEY, True))
+        # Mark this instance as being instrumented
+        new_instrumenting = instrumenting.copy()
+        new_instrumenting.add(instance_id)
+        token_ctx = _instrumenting_modules.set(new_instrumenting)
+        
+        try:
+            with self._tracer.start_as_current_span(
+                operation_name,
+                kind=SpanKind.INTERNAL,
+                attributes={
+                    "dspy.span_kind": SPAN_KIND_CHAIN,
+                    "dspy.operation": "forward",
+                    "dspy.module_type": module_class_name,
+                },
+            ) as span:
                 try:
-                    response = wrapped(*args, **kwargs)
-                finally:
-                    detach(token)
-                
-                # Extract input arguments
-                if args or kwargs:
-                    span.set_attribute("gen_ai.request.input", safe_json_dumps(convert_to_dict({"args": args, "kwargs": kwargs})))
-                    span.set_attribute("gen_ai.request.input.mime_type", "application/json")
-                
-                # Extract output
-                if response is not None:
-                    span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(response)))
-                    span.set_attribute("gen_ai.response.output.mime_type", "application/json")
-                
-                span.set_status(Status(StatusCode.OK))
-                return response
-                
-            except Exception as e:
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                logger.error(f"Exception in ModuleForwardSyncWrapper: {e}", exc_info=True)
-                return None
+                    # Call the actual forward method with suppression to avoid duplicate spans
+                    from opentelemetry.context import attach, detach, set_value
+                    token = attach(set_value(_SUPPRESS_INSTRUMENTATION_KEY, True))
+                    try:
+                        response = wrapped(*args, **kwargs)
+                    finally:
+                        detach(token)
+                    
+                    # Extract input arguments
+                    if args or kwargs:
+                        span.set_attribute("gen_ai.request.input", safe_json_dumps(convert_to_dict({"args": args, "kwargs": kwargs})))
+                        span.set_attribute("gen_ai.request.input.mime_type", "application/json")
+                    
+                    # Extract output
+                    if response is not None:
+                        span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(response)))
+                        span.set_attribute("gen_ai.response.output.mime_type", "application/json")
+                    
+                    span.set_status(Status(StatusCode.OK))
+                    return response
+                    
+                except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    span.record_exception(e)
+                    logger.error(f"Exception in ModuleForwardSyncWrapper: {e}", exc_info=True)
+                    return None
+        finally:
+            # Clean up: remove this instance from the tracking set
+            _instrumenting_modules.reset(token_ctx)
 
 
 class ToolCallWrapper:
