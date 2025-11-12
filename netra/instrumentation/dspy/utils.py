@@ -36,7 +36,7 @@ class DSPyJSONEncoder(json.JSONEncoder):
                     return getattr(o, "_store", {})
             except ImportError:
                 pass
-            
+
             # Fallback for other objects
             if hasattr(o, "dict") and callable(o.dict):
                 return o.dict()
@@ -60,7 +60,7 @@ def safe_json_dumps(obj: Any, **kwargs: Any) -> str:
 def flatten_attributes(mapping: Mapping[str, Any]) -> Iterator[Tuple[str, AttributeValue]]:
     """
     Flatten nested dictionaries and lists into dot-notation attribute key-value pairs.
-    
+
     Example:
         {"a": {"b": 1}, "c": [{"d": 2}]} -> [("a.b", 1), ("c.0.d", 2)]
     """
@@ -139,13 +139,12 @@ def get_llm_invocation_parameters(lm: Any, call_kwargs: Mapping[str, Any]) -> Di
     lm_kwargs = getattr(lm, "kwargs", {})
     if not isinstance(lm_kwargs, dict):
         lm_kwargs = {}
-    
+
     # Filter out internal parameters
     filtered_call_kwargs = {
-        k: v for k, v in call_kwargs.items() 
-        if k not in ["self", "kwargs", "wrapped", "instance", "args"]
+        k: v for k, v in call_kwargs.items() if k not in ["self", "kwargs", "wrapped", "instance", "args"]
     }
-    
+
     # Merge with call-level kwargs taking precedence
     return {**lm_kwargs, **filtered_call_kwargs}
 
@@ -212,7 +211,7 @@ def extract_usage_info(response: Any) -> Iterator[Tuple[str, Any]]:
                 prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
                 completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
                 total_tokens = usage.get("total_tokens")
-                
+
                 if prompt_tokens is not None:
                     yield f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", prompt_tokens
                 if completion_tokens is not None:
@@ -229,9 +228,7 @@ def get_predict_span_name(instance: Any) -> str:
     Example: "Predict(UserDefinedSignature).forward"
     """
     class_name = instance.__class__.__name__
-    if (signature := getattr(instance, "signature", None)) and (
-        signature_name := get_signature_name(signature)
-    ):
+    if (signature := getattr(instance, "signature", None)) and (signature_name := get_signature_name(signature)):
         return f"{class_name}({signature_name}).forward"
     return f"{class_name}.forward"
 
@@ -254,23 +251,23 @@ def get_input_value_from_method(method: Callable[..., Any], *args: Any, **kwargs
         method_signature = signature(method)
         first_parameter_name = next(iter(method_signature.parameters), None)
         signature_contains_self = first_parameter_name in ["self"]
-        
+
         bound_arguments = method_signature.bind(
-            *(
-                [None] if signature_contains_self else []
-            ),
+            *([None] if signature_contains_self else []),
             *args,
             **kwargs,
         )
-        
-        return safe_json_dumps({
-            **{
-                argument_name: argument_value
-                for argument_name, argument_value in bound_arguments.arguments.items()
-                if argument_name not in ["self", "kwargs"]
-            },
-            **bound_arguments.arguments.get("kwargs", {}),
-        })
+
+        return safe_json_dumps(
+            {
+                **{
+                    argument_name: argument_value
+                    for argument_name, argument_value in bound_arguments.arguments.items()
+                    if argument_name not in ["self", "kwargs"]
+                },
+                **bound_arguments.arguments.get("kwargs", {}),
+            }
+        )
     except Exception:
         # Fallback to simple serialization
         return safe_json_dumps({"args": args, "kwargs": kwargs})
@@ -294,6 +291,5 @@ def prediction_to_output_dict(prediction: Any, signature: Any) -> Dict[str, Any]
             output = convert_to_dict(prediction)
     except Exception:
         output = {"result": str(prediction)}
-    
-    return output
 
+    return output
