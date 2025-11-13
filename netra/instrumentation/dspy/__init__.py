@@ -27,26 +27,22 @@ class CopyableBoundFunctionWrapper(BoundFunctionWrapper):  # type: ignore
     """
     A bound function wrapper that can be copied and deep-copied.
     This allows DSPy classes to be copied when they use lm.copy().
-    
+
     Reference: https://github.com/GrahamDumpleton/wrapt/issues/86#issuecomment-426161271
     """
 
     def __copy__(self) -> "CopyableBoundFunctionWrapper":
-        return CopyableBoundFunctionWrapper(
-            copy(self.__wrapped__), self._self_instance, self._self_wrapper
-        )
+        return CopyableBoundFunctionWrapper(copy(self.__wrapped__), self._self_instance, self._self_wrapper)
 
     def __deepcopy__(self, memo: Dict[Any, Any]) -> "CopyableBoundFunctionWrapper":
-        return CopyableBoundFunctionWrapper(
-            deepcopy(self.__wrapped__, memo), self._self_instance, self._self_wrapper
-        )
+        return CopyableBoundFunctionWrapper(deepcopy(self.__wrapped__, memo), self._self_instance, self._self_wrapper)
 
 
 class CopyableFunctionWrapper(FunctionWrapper):  # type: ignore
     """
     A function wrapper that can be copied and deep-copied.
     This is essential for DSPy's lm.copy() functionality.
-    
+
     Reference: https://wrapt.readthedocs.io/en/master/wrappers.html#custom-function-wrappers
     """
 
@@ -56,9 +52,7 @@ class CopyableFunctionWrapper(FunctionWrapper):  # type: ignore
         return CopyableFunctionWrapper(copy(self.__wrapped__), self._self_wrapper)
 
     def __deepcopy__(self, memo: Dict[Any, Any]) -> "CopyableFunctionWrapper":
-        return CopyableFunctionWrapper(
-            deepcopy(self.__wrapped__, memo), self._self_wrapper
-        )
+        return CopyableFunctionWrapper(deepcopy(self.__wrapped__, memo), self._self_wrapper)
 
 
 class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
@@ -76,7 +70,7 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
     - Embedder.__call__ (embedding operations)
     - OpenTelemetry semantic conventions for Generative AI
     - Integration with Netra tracing and monitoring
-    
+
     This implementation uses copyable wrappers to support DSPy's lm.copy() functionality.
     """
 
@@ -111,7 +105,6 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
             logger.debug("Instrumented dspy.clients.base_lm.BaseLM.acall")
         except (AttributeError, ModuleNotFoundError) as e:
             logger.debug(f"BaseLM.acall not available: {e}")
-        
 
         # Instrument Module.acall for async user-defined modules
         try:
@@ -125,7 +118,6 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
         except (AttributeError, ModuleNotFoundError) as e:
             logger.debug(f"Module.acall not available: {e}")
 
-
         # Instrument Module.acall for async user-defined modules
         try:
             wrap_object(
@@ -137,11 +129,11 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
             logger.debug("Instrumented dspy.Module.acall")
         except (AttributeError, ModuleNotFoundError) as e:
             logger.debug(f"Module.acall not available: {e}")
-
 
         # Instrument Tool.__call__ for synchronous tool execution
         try:
             from dspy.adapters.types.tool import Tool
+
             wrap_object(
                 module="dspy.adapters.types.tool",
                 name="Tool.__call__",
@@ -157,6 +149,7 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
         # Instrument Tool.acall for asynchronous tool execution
         try:
             from dspy.adapters.types.tool import Tool
+
             wrap_object(
                 module="dspy.adapters.types.tool",
                 name="Tool.acall",
@@ -207,7 +200,7 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
 
     def _uninstrument(self, **kwargs):  # type: ignore[no-untyped-def]
         """Uninstrument DSPy components"""
-        
+
         # Uninstrument LM methods
         try:
             unwrap("dspy", "LM.__call__")
@@ -224,7 +217,7 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
             from dspy import Predict
 
             unwrap("dspy", "Predict.forward")
-            
+
             predict_subclasses = Predict.__subclasses__()
             for predict_subclass in predict_subclasses:
                 try:
