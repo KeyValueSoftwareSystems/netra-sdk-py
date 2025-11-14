@@ -27,10 +27,8 @@ class Config:
     SDK_NAME = "netra"
     LIBRARY_NAME = "netra"
     LIBRARY_VERSION = __version__
-    # Maximum length for any attribute value (strings and bytes). Processors should honor this.
-    ATTRIBUTE_MAX_LEN = os.getenv("NETRA_ATTRIBUTE_MAX_LEN", 50000)
-    # Maximum length specifically for conversation entry content (strings or JSON when serialized)
-    CONVERSATION_CONTENT_MAX_LEN = os.getenv("NETRA_CONVERSATION_CONTENT_MAX_LEN", 50000)
+    ATTRIBUTE_MAX_LEN = int(os.getenv("NETRA_ATTRIBUTE_MAX_LEN", 50000))
+    CONVERSATION_MAX_LEN = int(os.getenv("NETRA_CONVERSATION_CONTENT_MAX_LEN", 50000))
 
     def __init__(
         self,

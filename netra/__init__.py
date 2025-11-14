@@ -1,7 +1,7 @@
 import atexit
 import logging
 import threading
-from typing import Any, Dict, List, Literal, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from opentelemetry import context as context_api
 from opentelemetry import trace
@@ -13,14 +13,12 @@ from netra.evaluation import Evaluation, EvaluationScore
 # Instrumentor functions
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
+from netra.logging_utils import configure_package_logging
 from netra.session_manager import ConversationType, SessionManager
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 
-# Package-level logger. Attach NullHandler by default so library does not emit logs
-# unless explicitly enabled by the user via debug_mode.
 logger = logging.getLogger(__name__)
-logger.addHandler(logging.NullHandler())
 
 
 class Netra:
@@ -84,35 +82,8 @@ class Netra:
                 blocked_spans=blocked_spans,
             )
 
-            # Configure package logging based on debug mode
-            pkg_logger = logging.getLogger("netra")
-            httpx_logger = logging.getLogger("httpx")
-            httpcore_logger = logging.getLogger("httpcore")
-            # Prevent propagating to root to avoid duplicate logs
-            pkg_logger.propagate = False
-            # Clear existing handlers to avoid duplicates across repeated init attempts
-            pkg_logger.handlers.clear()
-            if cfg.debug_mode:
-                pkg_logger.setLevel(logging.DEBUG)
-                handler = logging.StreamHandler()
-                formatter = logging.Formatter(
-                    fmt="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
-                    datefmt="%Y-%m-%d %H:%M:%S",
-                )
-                handler.setFormatter(formatter)
-                pkg_logger.addHandler(handler)
-                httpx_logger.setLevel(logging.INFO)
-                httpcore_logger.setLevel(logging.INFO)
-                httpx_logger.propagate = True
-                httpcore_logger.propagate = True
-            else:
-                # Silence SDK logs entirely unless debug is enabled
-                pkg_logger.setLevel(logging.CRITICAL)
-                pkg_logger.addHandler(logging.NullHandler())
-                # httpx_logger.setLevel(logging.CRITICAL)
-                # httpcore_logger.setLevel(logging.CRITICAL)
-                # httpx_logger.propagate = False
-                # httpcore_logger.propagate = False
+            # Configure logging based on debug mode
+            configure_package_logging(debug_mode=cfg.debug_mode)
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)

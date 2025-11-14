@@ -329,7 +329,7 @@ class SessionManager:
                     existing = []
 
             # Enforce per-entry content length limit without breaking the entire conversation structure
-            max_len = Config.CONVERSATION_CONTENT_MAX_LEN
+            max_len = Config.CONVERSATION_MAX_LEN
             processed_content = process_content_for_max_len(content, max_len)
 
             # Create a conversation entry
