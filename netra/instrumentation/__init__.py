@@ -115,6 +115,9 @@ def init_instrumentations(
     if CustomInstruments.LITELLM in netra_custom_instruments:
         init_litellm_instrumentation()
 
+    if CustomInstruments.DSPY in netra_custom_instruments:
+        init_dspy_instrumentation()
+
     # Initialize OpenAI instrumentation.
     if CustomInstruments.OPENAI in netra_custom_instruments:
         init_openai_instrumentation()
@@ -1215,6 +1218,15 @@ def init_pydantic_ai_instrumentation() -> bool:
             instrumentor = NetraPydanticAIInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
+
+        elif is_package_installed("pydantic-ai-slim"):
+            from netra.instrumentation.pydantic_ai_slim import NetraPydanticAISlimInstrumentor
+
+            instrumentor = NetraPydanticAISlimInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        else:
+            return False
         return True
     except Exception as e:
         logging.error(f"Error initializing pydantic-ai instrumentation: {e}")
