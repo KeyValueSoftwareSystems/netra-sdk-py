@@ -26,11 +26,12 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     def _detect_raw_instrumentation_name(self, span: trace.Span) -> Optional[str]:
         """Detect the raw instrumentation name for the span."""
-        scope = getattr(span, "instrumentation_info", None)
+
+        scope = getattr(span, "instrumentation_scope", None)
+
         if scope is not None:
             name = getattr(scope, "name", None)
             if isinstance(name, str) and name:
-                # Only truncate when coming from known namespaces
                 if name.startswith("opentelemetry.instrumentation.") or name.startswith("netra.instrumentation."):
                     try:
                         base = name.rsplit(".", 1)[-1].strip()
@@ -38,7 +39,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
                             return base
                     except Exception:
                         pass
-                # Otherwise, return as-is
                 return name
         return None
 
@@ -50,10 +50,8 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             if isinstance(value, (bytes, bytearray)):
                 return value[: Config.ATTRIBUTE_MAX_LEN]
             if isinstance(value, list):
-                # Shallow truncate strings inside lists
                 return [self._truncate_value(v) if isinstance(v, (str, bytes, bytearray)) else v for v in value]
             if isinstance(value, dict):
-                # Shallow truncate strings inside dicts
                 return {
                     k: self._truncate_value(v) if isinstance(v, (str, bytes, bytearray)) else v
                     for k, v in value.items()

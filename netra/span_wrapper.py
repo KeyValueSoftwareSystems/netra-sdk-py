@@ -14,8 +14,6 @@ from pydantic import BaseModel
 from netra.config import Config
 from netra.session_manager import SessionManager
 
-# Configure logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Baggage key for local-only blocked spans patterns
