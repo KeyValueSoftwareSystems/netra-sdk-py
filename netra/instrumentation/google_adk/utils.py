@@ -104,29 +104,6 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
             if "model" in response_dict:
                 attributes[SpanAttributes.LLM_RESPONSE_MODEL] = response_dict["model"]
 
-            if "usage_metadata" in response_dict:
-                usage = response_dict["usage_metadata"]
-                if "prompt_token_count" in usage:
-                    attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = usage["prompt_token_count"]
-                if "candidates_token_count" in usage:
-                    attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = usage["candidates_token_count"]
-                if "total_token_count" in usage:
-                    attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = usage["total_token_count"]
-
-                if "prompt_tokens_details" in usage:
-                    for detail in usage["prompt_tokens_details"]:
-                        if "modality" in detail and "token_count" in detail:
-                            attributes[f"gen_ai.usage.prompt_tokens.{detail['modality'].lower()}"] = detail[
-                                "token_count"
-                            ]
-
-                if "candidates_tokens_details" in usage:
-                    for detail in usage["candidates_tokens_details"]:
-                        if "modality" in detail and "token_count" in detail:
-                            attributes[f"gen_ai.usage.completion_tokens.{detail['modality'].lower()}"] = detail[
-                                "token_count"
-                            ]
-
             if "content" in response_dict and "parts" in response_dict["content"]:
                 parts = response_dict["content"]["parts"]
                 attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] = "assistant"

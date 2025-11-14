@@ -1,6 +1,5 @@
 import json
 import logging
-import sys
 from typing import Any, AsyncIterator, Callable, Dict, Tuple, cast
 
 import wrapt
@@ -67,7 +66,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
     def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         async def new_function() -> AsyncIterator[Any]:
             agent_name = instance.name if hasattr(instance, "name") else "unknown"
-            span_name = f"adk.agent.{agent_name}"
+            span_name = f"ADK.Agent.{agent_name}"
 
             with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
@@ -87,122 +86,6 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
     return cast(Callable[..., Any], wrapper)
 
 
-# --- Patching helpers and public patch/unpatch API ---
-_wrapped_methods: list[tuple[Any, str]] = []
-
-
-def _patch(
-    module_name: str,
-    object_name: str,
-    method_name: str,
-    wrapper_function: Callable[[Tracer], Callable[..., Any]],
-    tracer: Tracer,
-) -> None:
-    try:
-        module = __import__(module_name, fromlist=[object_name])
-        obj = getattr(module, object_name)
-        wrapt.wrap_function_wrapper(obj, method_name, wrapper_function(tracer))
-        _wrapped_methods.append((obj, method_name))
-        logger.debug(f"Wrapped {module_name}.{object_name}.{method_name}")
-    except Exception as e:
-        logger.warning(f"Failed to wrap {module_name}.{object_name}.{method_name}: {e}")
-
-
-def _patch_module_function(
-    module_name: str,
-    function_name: str,
-    wrapper_function: Callable[[Tracer], Callable[..., Any]],
-    tracer: Tracer,
-) -> None:
-    try:
-        module = __import__(module_name, fromlist=[function_name])
-        wrapt.wrap_function_wrapper(module, function_name, wrapper_function(tracer))
-        _wrapped_methods.append((module, function_name))
-        logger.debug(f"Wrapped {module_name}.{function_name}")
-    except Exception as e:
-        logger.warning(f"Failed to wrap {module_name}.{function_name}: {e}")
-
-
-def patch_adk(tracer: Tracer) -> None:
-    logger.debug("Applying Google ADK patches")
-
-    noop_tracer = NoOpTracer()
-    try:
-        import google.adk.telemetry as adk_telemetry
-
-        adk_telemetry.tracer = noop_tracer
-        logger.debug("Replaced ADK tracer with NoOpTracer")
-    except Exception as e:
-        logger.warning(f"Failed replacing ADK tracer: {e}")
-
-    for module_name in [
-        "google.adk.runners",
-        "google.adk.agents.base_agent",
-        "google.adk.flows.llm_flows.base_llm_flow",
-        "google.adk.flows.llm_flows.functions",
-    ]:
-        if module_name in sys.modules:
-            try:
-                module = sys.modules[module_name]
-                if hasattr(module, "tracer"):
-                    setattr(module, "tracer", noop_tracer)
-                    logger.debug(f"Replaced tracer in {module_name}")
-            except Exception as e:
-                logger.warning(f"Failed replacing tracer in {module_name}: {e}")
-
-    _patch("google.adk.agents.base_agent", "BaseAgent", "run_async", base_agent_run_async_wrapper, tracer)
-
-    _patch_module_function("google.adk.telemetry", "trace_tool_call", adk_trace_tool_call_wrapper, tracer)
-    _patch_module_function("google.adk.telemetry", "trace_tool_response", adk_trace_tool_response_wrapper, tracer)
-    _patch_module_function("google.adk.telemetry", "trace_call_llm", adk_trace_call_llm_wrapper, tracer)
-    _patch_module_function("google.adk.telemetry", "trace_send_data", adk_trace_send_data_wrapper, tracer)
-
-    _patch(
-        "google.adk.flows.llm_flows.base_llm_flow",
-        "BaseLlmFlow",
-        "_call_llm_async",
-        base_llm_flow_call_llm_async_wrapper,
-        tracer,
-    )
-
-    _patch(
-        "google.adk.flows.llm_flows.base_llm_flow",
-        "BaseLlmFlow",
-        "_finalize_model_response_event",
-        finalize_model_response_event_wrapper,
-        tracer,
-    )
-
-    _patch_module_function("google.adk.flows.llm_flows.functions", "__call_tool_async", call_tool_async_wrapper, tracer)
-
-    logger.info("Google ADK patching complete")
-
-
-def unpatch_adk() -> None:
-    logger.debug("Removing Google ADK patches")
-
-    try:
-        import google.adk.telemetry as adk_telemetry
-        from opentelemetry import trace
-
-        adk_telemetry.tracer = trace.get_tracer("gcp.vertex.agent")
-        logger.debug("Restored ADK tracer")
-    except Exception as e:
-        logger.warning(f"Failed restoring ADK tracer: {e}")
-
-    for obj, method_name in _wrapped_methods:
-        try:
-            if hasattr(getattr(obj, method_name), "__wrapped__"):
-                original = getattr(obj, method_name).__wrapped__
-                setattr(obj, method_name, original)
-                logger.debug(f"Unwrapped {obj}.{method_name}")
-        except Exception as e:
-            logger.warning(f"Failed unwrapping {obj}.{method_name}: {e}")
-
-    _wrapped_methods.clear()
-    logger.info("Google ADK unpatching complete")
-
-
 def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
     def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         async def new_function() -> AsyncIterator[Any]:
@@ -214,7 +97,7 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if hasattr(llm_request, "model"):
                     model_name = llm_request.model
 
-            span_name = f"adk.llm.{model_name}"
+            span_name = f"ADK.LLM.{model_name}"
 
             with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
@@ -246,7 +129,7 @@ def finalize_model_response_event_wrapper(tracer: Tracer) -> Callable[..., Any]:
         current_span = opentelemetry_api_trace.get_current_span()
         if current_span.is_recording() and llm_request and llm_response:
             span_name = getattr(current_span, "name", "")
-            if "adk.llm" in span_name:
+            if "ADK.LLM" in span_name:
                 llm_request_dict = _build_llm_request_for_trace(llm_request)
                 llm_response_json = llm_response.model_dump_json(exclude_none=True)
                 llm_attrs = _extract_llm_attributes(llm_request_dict, llm_response_json)
@@ -381,7 +264,7 @@ def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
             tool_context = args[2] if len(args) > 2 else kwargs.get("tool_context")
 
             tool_name = getattr(tool, "name", "unknown_tool")
-            span_name = f"adk.tool.{tool_name}"
+            span_name = f"ADK.Tool.{tool_name}"
 
             with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
