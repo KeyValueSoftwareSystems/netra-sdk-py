@@ -1,11 +1,9 @@
-"""
-Utility functions for DSPy instrumentation.
-"""
-
 import json
 from inspect import signature
 from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
 
+from opentelemetry import context as context_api
+from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.util.types import AttributeValue
 
@@ -14,6 +12,11 @@ SPAN_KIND_LLM = "llm"
 SPAN_KIND_CHAIN = "chain"
 SPAN_KIND_RETRIEVER = "retriever"
 SPAN_KIND_EMBEDDING = "embedding"
+
+
+def should_suppress_instrumentation() -> bool:
+    """Check if instrumentation should be suppressed"""
+    return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
 class DSPyJSONEncoder(json.JSONEncoder):
@@ -229,8 +232,8 @@ def get_predict_span_name(instance: Any) -> str:
     """
     class_name = instance.__class__.__name__
     if (signature := getattr(instance, "signature", None)) and (signature_name := get_signature_name(signature)):
-        return f"{class_name}({signature_name}).forward"
-    return f"{class_name}.forward"
+        return f"DSPy.{class_name}({signature_name}).forward"
+    return f"DSPy.{class_name}.forward"
 
 
 def get_signature_name(signature: Any) -> Optional[str]:
