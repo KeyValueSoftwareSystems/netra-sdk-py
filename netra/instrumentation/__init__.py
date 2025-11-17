@@ -122,6 +122,10 @@ def init_instrumentations(
     if CustomInstruments.OPENAI in netra_custom_instruments:
         init_openai_instrumentation()
 
+    # Initialize ADK instrumentation.
+    if CustomInstruments.ADK in netra_custom_instruments:
+        init_adk_instrumentation()
+
     # Initialize Pydantic AI instrumentation.
     if CustomInstruments.PYDANTIC_AI in netra_custom_instruments:
         init_pydantic_ai_instrumentation()
@@ -311,6 +315,27 @@ def init_groq_instrumentation() -> bool:
                 instrumentor.instrument()
         return True
     except Exception as e:
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_adk_instrumentation() -> bool:
+    """Initialize ADK instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("google-adk"):
+            Telemetry().capture("instrumentation:adk:init")
+            from netra.instrumentation.google_adk import NetraGoogleADKInstrumentor
+
+            instrumentor = NetraGoogleADKInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing ADK instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 

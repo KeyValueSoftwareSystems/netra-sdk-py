@@ -1,19 +1,13 @@
-"""
-DSPy API wrappers for Netra SDK instrumentation.
-
-This module contains wrapper functions for DSPy components with
-proper span handling following OpenTelemetry semantic conventions.
-"""
-
 import logging
 from contextvars import ContextVar
+from copy import copy, deepcopy
 from typing import Any, Callable, Mapping, Set, Tuple
 
-from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import SpanKind, Tracer
 from opentelemetry.trace.status import Status, StatusCode
+from wrapt import BoundFunctionWrapper, FunctionWrapper
 
 from netra.instrumentation.dspy.utils import (
     SPAN_KIND_CHAIN,
@@ -32,18 +26,51 @@ from netra.instrumentation.dspy.utils import (
     get_predict_span_name,
     prediction_to_output_dict,
     safe_json_dumps,
+    should_suppress_instrumentation,
 )
 
 logger = logging.getLogger(__name__)
 
+
+class CopyableBoundFunctionWrapper(BoundFunctionWrapper):  # type: ignore
+    """
+    A bound function wrapper that can be copied and deep-copied.
+    This allows DSPy classes to be copied when they use lm.copy().
+
+    Reference: https://github.com/GrahamDumpleton/wrapt/issues/86#issuecomment-426161271
+    """
+
+    def __copy__(self) -> "CopyableBoundFunctionWrapper":
+        return CopyableBoundFunctionWrapper(copy(self.__wrapped__), self._self_instance, self._self_wrapper)
+
+    def __deepcopy__(self, memo: dict[int, Any] | None) -> "CopyableBoundFunctionWrapper":
+        return CopyableBoundFunctionWrapper(
+            deepcopy(self.__wrapped__, memo),
+            self._self_instance,
+            self._self_wrapper,
+        )
+
+
+class CopyableFunctionWrapper(FunctionWrapper):  # type: ignore
+    """
+    A function wrapper that can be copied and deep-copied.
+    This is essential for DSPy's lm.copy() functionality.
+
+    Reference: https://wrapt.readthedocs.io/en/master/wrappers.html#custom-function-wrappers
+    """
+
+    __bound_function_wrapper__ = CopyableBoundFunctionWrapper
+
+    def __copy__(self) -> "CopyableFunctionWrapper":
+        return CopyableFunctionWrapper(copy(self.__wrapped__), self._self_wrapper)
+
+    def __deepcopy__(self, memo: dict[int, Any] | None) -> "CopyableFunctionWrapper":
+        return CopyableFunctionWrapper(deepcopy(self.__wrapped__, memo), self._self_wrapper)
+
+
 # Context variable to track which module instances are currently being instrumented
 # This prevents duplicate spans from DSPy's internal decorator chains
 _instrumenting_modules: ContextVar[Set[int]] = ContextVar("_instrumenting_modules", default=set())
-
-
-def should_suppress_instrumentation() -> bool:
-    """Check if instrumentation should be suppressed"""
-    return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
 class LMCallWrapper:
@@ -65,7 +92,7 @@ class LMCallWrapper:
             return wrapped(*args, **kwargs)
 
         arguments = bind_arguments(wrapped, *args, **kwargs)
-        span_name = f"{instance.__class__.__name__}.__call__"
+        span_name = f"DSPy.{instance.__class__.__name__}.__call__"
 
         # Build span attributes
         span_attributes = dict(
@@ -159,7 +186,7 @@ class LMAsyncCallWrapper:
             return await wrapped(*args, **kwargs)
 
         arguments = bind_arguments(wrapped, *args, **kwargs)
-        span_name = f"{instance.__class__.__name__}.acall"
+        span_name = f"DSPy.{instance.__class__.__name__}.acall"
 
         # Build span attributes
         span_attributes = dict(
@@ -335,7 +362,7 @@ class ModuleForwardWrapper:
             # Already instrumenting this instance, skip to avoid duplicate span
             return wrapped(*args, **kwargs)
 
-        span_name = f"{instance.__class__.__name__}.forward"
+        span_name = f"DSPy.{instance.__class__.__name__}.forward"
         arguments = bind_arguments(wrapped, *args, **kwargs)
 
         # Mark this instance as being instrumented
@@ -410,7 +437,7 @@ class ModuleAsyncCallWrapper:
             # Already instrumenting this instance, skip to avoid duplicate span
             return await wrapped(*args, **kwargs)
 
-        span_name = f"{instance.__class__.__name__}.acall"
+        span_name = f"DSPy.{instance.__class__.__name__}.acall"
         arguments = bind_arguments(wrapped, *args, **kwargs)
 
         # Mark this instance as being instrumented
@@ -477,7 +504,7 @@ class RetrieverForwardWrapper:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
-        span_name = f"{instance.__class__.__name__}.forward"
+        span_name = f"DSPy.{instance.__class__.__name__}.forward"
         bind_arguments(wrapped, *args, **kwargs)
 
         with self._tracer.start_as_current_span(
@@ -536,7 +563,7 @@ class EmbedderCallWrapper:
 
         arguments = bind_arguments(wrapped, *args, **kwargs)
         input_texts = arguments.get("texts") or (args[0] if args else [])
-        span_name = f"{instance.__class__.__name__}.__call__"
+        span_name = f"DSPy.{instance.__class__.__name__}.__call__"
 
         with self._tracer.start_as_current_span(
             span_name,
@@ -606,7 +633,7 @@ class ModuleForwardSyncWrapper:
 
         # Get the module class name (e.g., "UpperModule", "ReAct", "ChainOfThought")
         module_class_name = instance.__class__.__name__
-        operation_name = f"{module_class_name}.forward"
+        operation_name = f"DSPy.{module_class_name}.forward"
 
         # Mark this instance as being instrumented
         new_instrumenting = instrumenting.copy()
@@ -673,7 +700,7 @@ class ToolCallWrapper:
 
         tool_name = getattr(instance, "name", "unknown_tool")
         print(f"🔍 DEBUG: Tool.{tool_name} called with kwargs={kwargs}")
-        operation_name = f"Tool.{tool_name}"
+        operation_name = f"DSPy.Tool.{tool_name}"
 
         tool_desc = getattr(instance, "desc", None) or ""
 
@@ -725,7 +752,7 @@ class ToolAsyncCallWrapper:
             return await wrapped(*args, **kwargs)
 
         tool_name = getattr(instance, "name", "unknown_tool")
-        operation_name = f"Tool.{tool_name}"
+        operation_name = f"DSPy.Tool.{tool_name}"
         tool_desc = getattr(instance, "desc", None) or ""
 
         with self._tracer.start_as_current_span(

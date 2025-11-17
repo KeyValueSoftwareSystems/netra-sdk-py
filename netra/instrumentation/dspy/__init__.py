@@ -1,14 +1,14 @@
 import logging
-from copy import copy, deepcopy
-from typing import Any, Collection, Dict
+from typing import Any, Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.trace import get_tracer
-from wrapt import BoundFunctionWrapper, FunctionWrapper, wrap_object
+from wrapt import wrap_function_wrapper, wrap_object
 
 from netra.instrumentation.dspy.version import __version__
 from netra.instrumentation.dspy.wrappers import (
+    CopyableFunctionWrapper,
     EmbedderCallWrapper,
     LMAsyncCallWrapper,
     LMCallWrapper,
@@ -20,69 +20,24 @@ from netra.instrumentation.dspy.wrappers import (
 
 logger = logging.getLogger(__name__)
 
-_instruments = ("dspy >= 2.0.0",)  # Changed from "dspy-ai" to "dspy" for v3.0+ support
+_instruments = ("dspy >= 2.0.0",)
 
 
-class CopyableBoundFunctionWrapper(BoundFunctionWrapper):  # type: ignore
-    """
-    A bound function wrapper that can be copied and deep-copied.
-    This allows DSPy classes to be copied when they use lm.copy().
-
-    Reference: https://github.com/GrahamDumpleton/wrapt/issues/86#issuecomment-426161271
-    """
-
-    def __copy__(self) -> "CopyableBoundFunctionWrapper":
-        return CopyableBoundFunctionWrapper(copy(self.__wrapped__), self._self_instance, self._self_wrapper)
-
-    def __deepcopy__(self, memo: Dict[Any, Any]) -> "CopyableBoundFunctionWrapper":
-        return CopyableBoundFunctionWrapper(deepcopy(self.__wrapped__, memo), self._self_instance, self._self_wrapper)
-
-
-class CopyableFunctionWrapper(FunctionWrapper):  # type: ignore
-    """
-    A function wrapper that can be copied and deep-copied.
-    This is essential for DSPy's lm.copy() functionality.
-
-    Reference: https://wrapt.readthedocs.io/en/master/wrappers.html#custom-function-wrappers
-    """
-
-    __bound_function_wrapper__ = CopyableBoundFunctionWrapper
-
-    def __copy__(self) -> "CopyableFunctionWrapper":
-        return CopyableFunctionWrapper(copy(self.__wrapped__), self._self_wrapper)
-
-    def __deepcopy__(self, memo: Dict[Any, Any]) -> "CopyableFunctionWrapper":
-        return CopyableFunctionWrapper(deepcopy(self.__wrapped__, memo), self._self_wrapper)
-
-
-class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
-    """
-    Custom DSPy instrumentor for Netra SDK with comprehensive support for:
-    - LM.__call__ method (primary sync interface)
-    - LM.acall method (async interface)
-    - Predict.forward and subclasses (CHoT, ReAct, etc.)
-    - Module.__call__ (user-defined modules)
-    - Module.acall (async user-defined modules)
-    - Module.forward (direct forward calls)
-    - Tool.__call__ (synchronous tool execution)
-    - Tool.acall (asynchronous tool execution)
-    - Retrieve.forward (retrieval operations)
-    - Embedder.__call__ (embedding operations)
-    - OpenTelemetry semantic conventions for Generative AI
-    - Integration with Netra tracing and monitoring
-
-    This implementation uses copyable wrappers to support DSPy's lm.copy() functionality.
-    """
+class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore[misc]
+    """Custom DSPy instrumentor for Netra SDK"""
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
 
-    def _instrument(self, **kwargs):  # type: ignore[no-untyped-def]
+    def _instrument(self, **kwargs) -> Any:  # type: ignore[no-untyped-def]
         """Instrument DSPy components"""
-        tracer_provider = kwargs.get("tracer_provider")
-        tracer = get_tracer(__name__, __version__, tracer_provider)
+        try:
+            tracer_provider = kwargs.get("tracer_provider")
+            tracer = get_tracer(__name__, __version__, tracer_provider)
+        except Exception as e:
+            logger.error(f"Failed to initialize tracer: {e}")
+            return
 
-        # Instrument LM.__call__ method (primary sync interface)
         try:
             wrap_object(
                 module="dspy",
@@ -90,11 +45,9 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
                 factory=CopyableFunctionWrapper,
                 args=(LMCallWrapper(tracer),),
             )
-            logger.debug("Instrumented dspy.LM.__call__")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"LM.__call__ not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument LM.__call__: {e}", exc_info=True)
 
-        # Instrument LM.acall method (async interface)
         try:
             wrap_object(
                 module="dspy.clients.base_lm",
@@ -102,11 +55,9 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
                 factory=CopyableFunctionWrapper,
                 args=(LMAsyncCallWrapper(tracer),),
             )
-            logger.debug("Instrumented dspy.clients.base_lm.BaseLM.acall")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"BaseLM.acall not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument BaseLM.acall: {e}", exc_info=True)
 
-        # Instrument Module.acall for async user-defined modules
         try:
             wrap_object(
                 module="dspy",
@@ -114,168 +65,106 @@ class NetraDSPyInstrumentor(BaseInstrumentor):  # type: ignore
                 factory=CopyableFunctionWrapper,
                 args=(ModuleAsyncCallWrapper(tracer),),
             )
-            logger.debug("Instrumented dspy.Module.acall")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"Module.acall not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument Module.acall: {e}", exc_info=True)
 
-        # Instrument Module.acall for async user-defined modules
         try:
-            wrap_object(
-                module="dspy",
-                name="Module.acall",
-                factory=CopyableFunctionWrapper,
-                args=(ModuleAsyncCallWrapper(tracer),),
+            wrap_function_wrapper(
+                "dspy.adapters.types.tool",
+                "Tool.__call__",
+                ToolCallWrapper(tracer),
             )
-            logger.debug("Instrumented dspy.Module.acall")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"Module.acall not available: {e}")
-
-        # Instrument Tool.__call__ for synchronous tool execution
-        try:
-            from dspy.adapters.types.tool import Tool
-
-            wrap_object(
-                module="dspy.adapters.types.tool",
-                name="Tool.__call__",
-                factory=CopyableFunctionWrapper,
-                args=(ToolCallWrapper(tracer),),
-            )
-            logger.debug("Instrumented dspy.adapters.types.tool.Tool.__call__")
-        except (AttributeError, ModuleNotFoundError, ImportError) as e:
-            logger.warning(f"Tool.__call__ not available: {e}")
         except Exception as e:
             logger.error(f"Failed to instrument Tool.__call__: {e}", exc_info=True)
 
-        # Instrument Tool.acall for asynchronous tool execution
         try:
-            from dspy.adapters.types.tool import Tool
-
-            wrap_object(
-                module="dspy.adapters.types.tool",
-                name="Tool.acall",
-                factory=CopyableFunctionWrapper,
-                args=(ToolAsyncCallWrapper(tracer),),
+            wrap_function_wrapper(
+                "dspy.adapters.types.tool",
+                "Tool.acall",
+                ToolAsyncCallWrapper(tracer),
             )
-            logger.debug("Instrumented dspy.adapters.types.tool.Tool.acall")
-        except (AttributeError, ModuleNotFoundError, ImportError) as e:
-            logger.warning(f"Tool.acall not available: {e}")
         except Exception as e:
             logger.error(f"Failed to instrument Tool.acall: {e}", exc_info=True)
 
-        # Instrument Retrieve.forward for retrieval operations
         try:
-            wrap_object(
-                module="dspy",
-                name="Retrieve.forward",
-                factory=CopyableFunctionWrapper,
-                args=(RetrieverForwardWrapper(tracer),),
+            wrap_function_wrapper(
+                "dspy",
+                "Retrieve.forward",
+                RetrieverForwardWrapper(tracer),
             )
-            logger.debug("Instrumented dspy.Retrieve.forward")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"Retrieve.forward not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument Retrieve.forward: {e}", exc_info=True)
 
-        # Instrument Embedder.__call__ for embedding operations
         try:
-            wrap_object(
-                module="dspy",
-                name="Embedder.__call__",
-                factory=CopyableFunctionWrapper,
-                args=(EmbedderCallWrapper(tracer),),
+            wrap_function_wrapper(
+                "dspy",
+                "Embedder.__call__",
+                EmbedderCallWrapper(tracer),
             )
-            logger.debug("Instrumented dspy.Embedder.__call__")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"Embedder.__call__ not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument Embedder.__call__: {e}", exc_info=True)
 
-        # Instrument retriever models (ColBERTv2, etc.)
         try:
-            wrap_object(
-                module="dspy",
-                name="ColBERTv2.__call__",
-                factory=CopyableFunctionWrapper,
-                args=(RetrieverForwardWrapper(tracer),),
+            wrap_function_wrapper(
+                "dspy",
+                "ColBERTv2.__call__",
+                RetrieverForwardWrapper(tracer),
             )
-            logger.debug("Instrumented dspy.ColBERTv2.__call__")
-        except (AttributeError, ModuleNotFoundError) as e:
-            logger.debug(f"ColBERTv2.__call__ not available: {e}")
+        except Exception as e:
+            logger.error(f"Failed to instrument ColBERTv2.__call__: {e}", exc_info=True)
 
-    def _uninstrument(self, **kwargs):  # type: ignore[no-untyped-def]
+    def _uninstrument(self, **kwargs) -> Any:  # type: ignore[no-untyped-def]
         """Uninstrument DSPy components"""
-
-        # Uninstrument LM methods
         try:
             unwrap("dspy", "LM.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
             unwrap("dspy.clients.base_lm", "BaseLM.acall")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument LM.__call__: {e}", exc_info=True)
 
-        # Uninstrument Predict and subclasses
         try:
-            from dspy import Predict
+            try:
+                from dspy import Predict
 
-            unwrap("dspy", "Predict.forward")
+                unwrap("dspy", "Predict.forward")
+                predict_subclasses = Predict.__subclasses__()
+                for predict_subclass in predict_subclasses:
+                    try:
+                        unwrap("dspy", f"{predict_subclass.__name__}.forward")
+                    except Exception as e:
+                        logger.error(
+                            f"Failed to uninstrument Predict subclass forward method: {e}",
+                            exc_info=True,
+                        )
+            except ImportError:
+                # If dspy is not installed or Predict is unavailable, skip Predict-specific uninstrumentation
+                pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument Predict and subclasses: {e}", exc_info=True)
 
-            predict_subclasses = Predict.__subclasses__()
-            for predict_subclass in predict_subclasses:
-                try:
-                    unwrap("dspy", f"{predict_subclass.__name__}.forward")
-                except (AttributeError, ModuleNotFoundError):
-                    pass
-        except (AttributeError, ModuleNotFoundError, ImportError):
-            pass
-
-        # Uninstrument Module
         try:
             unwrap("dspy", "Module.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
             unwrap("dspy", "Module.acall")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
             unwrap("dspy", "Module.forward")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument Module methods: {e}", exc_info=True)
 
-        # Uninstrument Tool
         try:
             unwrap("dspy.adapters.types.tool", "Tool.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
             unwrap("dspy.adapters.types.tool", "Tool.acall")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument Tool methods: {e}", exc_info=True)
 
-        # Uninstrument Retrieve
         try:
             unwrap("dspy", "Retrieve.forward")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument Retrieve.forward: {e}", exc_info=True)
 
-        # Uninstrument Embedder
         try:
             unwrap("dspy", "Embedder.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        except Exception as e:
+            logger.error(f"Failed to uninstrument Embedder.__call__: {e}", exc_info=True)
 
-        # Uninstrument retriever models
         try:
             unwrap("dspy", "ColBERTv2.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-
-def should_suppress_instrumentation() -> bool:
-    """Check if instrumentation should be suppressed"""
-    from opentelemetry import context as context_api
-    from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
-
-    return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
+        except Exception as e:
+            logger.error(f"Failed to uninstrument ColBERTv2.__call__: {e}", exc_info=True)
