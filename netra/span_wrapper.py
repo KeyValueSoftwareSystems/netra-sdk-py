@@ -53,6 +53,7 @@ class SpanType(str, Enum):
     GENERATION = "GENERATION"
     TOOL = "TOOL"
     EMBEDDING = "EMBEDDING"
+    AGENT = "AGENT"
 
 
 class SpanWrapper:
