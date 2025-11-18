@@ -152,7 +152,7 @@ def adk_trace_tool_call_wrapper(tracer: Tracer) -> Callable[..., Any]:
         current_span = opentelemetry_api_trace.get_current_span()
         if current_span.is_recording() and tool_args is not None:
             current_span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
-            current_span.set_attribute("gcp.vertex.agent.tool_call_args", json.dumps(tool_args))
+            current_span.set_attribute("gcp.vertex.agent.tool_call_args", str(tool_args))
         return result
 
     return cast(Callable[..., Any], wrapper)
@@ -276,7 +276,7 @@ def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     span.set_attribute("gen_ai.tool.description", getattr(tool, "description"))
                 if tool is not None and hasattr(tool, "is_long_running"):
                     span.set_attribute("gen_ai.tool.is_long_running", getattr(tool, "is_long_running"))
-                span.set_attribute("gen_ai.tool.parameters", json.dumps(tool_args))
+                span.set_attribute("gen_ai.tool.parameters", str(tool_args))
 
                 if tool_context and hasattr(tool_context, "function_call_id"):
                     span.set_attribute("tool.call_id", tool_context.function_call_id)
