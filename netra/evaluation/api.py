@@ -33,6 +33,7 @@ class Evaluation:
         if not dataset_id:
             logger.error("netra.evaluation: Failed to create dataset")
             return None
+        logger.info("netra.evaluation: Created dataset '%s'", name)
         return dataset_id
 
     def add_dataset_entry(
@@ -59,6 +60,7 @@ class Evaluation:
 
         resp = self._client.add_dataset_entry(dataset_id, item_payload)
         item_id = resp.get("id")
+        logger.info("netra.evaluation: Added dataset item '%s' to dataset", item_id)
         return str(item_id) if item_id else None
 
     def get_dataset(self, dataset_id: str) -> Dataset:
@@ -83,6 +85,7 @@ class Evaluation:
                 )
             except Exception as exc:
                 logger.error("netra.evaluation: Failed to parse dataset item: %s", exc)
+        logger.info("netra.evaluation: Fetched dataset '%s' successfully", dataset_id)
         return Dataset(dataset_id=dataset_id, items=items)
 
     def create_run(self, dataset: Dataset, name: Optional[str] = None) -> Optional[Run]:
@@ -93,6 +96,7 @@ class Evaluation:
         if not run_id:
             logger.error("netra.evaluation: Failed to create run for dataset '%s'", dataset.dataset_id)
             return None
+        logger.info("netra.evaluation: Created run '%s'", run_name)
         return Run(id=str(run_id), dataset_id=dataset.dataset_id, name=run_name, test_entries=list(dataset.items))
 
     def run_entry(self, run: Run, entry: DatasetItem) -> RunEntryContext:
@@ -111,6 +115,7 @@ class Evaluation:
                 session_id=session_id,
                 score=score,
             )
+            logger.info("netra.evaluation: Run entry '%s' for agent completed successfully", ctx.run.id)
         except Exception as exc:
             logger.error("netra.evaluation: Failed to POST agent_completed: %s", exc)
 
@@ -249,6 +254,7 @@ class Evaluation:
 
         try:
             self._client.post_run_status(run.id, status=RunStatus.COMPLETED)
+            logger.info("netra.evaluation: Test suite completed successfully")
         except Exception as exc:  # noqa: BLE001
             logger.error("netra.evaluation: Failed to POST final run status: %s", exc)
 

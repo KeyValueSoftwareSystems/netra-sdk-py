@@ -431,9 +431,9 @@ def agent(
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "agent", name)
+            return _wrap_class_methods(cast(C, obj), "agent", name, as_type=SpanType.AGENT)
         else:
-            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name)
+            return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name, as_type=SpanType.AGENT)
 
     if target is not None:
         return decorator(target)
