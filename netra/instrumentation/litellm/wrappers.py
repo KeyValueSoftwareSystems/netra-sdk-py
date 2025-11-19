@@ -4,170 +4,28 @@ from collections.abc import Awaitable
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
 from opentelemetry import context as context_api
-from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
-from opentelemetry.semconv_ai import (
-    SpanAttributes,
-)
-from opentelemetry.trace import Span, SpanKind, Tracer
+from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
+
+from netra.instrumentation.litellm.utils import (
+    model_as_dict,
+    set_request_attributes,
+    set_response_attributes,
+    should_suppress_instrumentation,
+)
 
 logger = logging.getLogger(__name__)
 
 COMPLETION_SPAN_NAME = "litellm.completion"
 EMBEDDING_SPAN_NAME = "litellm.embedding"
 IMAGE_GENERATION_SPAN_NAME = "litellm.image_generation"
-
-
-def should_suppress_instrumentation() -> bool:
-    """Check if instrumentation should be suppressed"""
-    return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
+RESPONSE_SPAN_NAME = "litellm.responses"
 
 
 def is_streaming_response(response: Any) -> bool:
     """Check if response is a streaming response"""
     return hasattr(response, "__iter__") and not isinstance(response, (str, bytes, dict))
-
-
-def model_as_dict(obj: Any) -> Dict[str, Any]:
-    """Convert LiteLLM model object to dictionary"""
-    if hasattr(obj, "model_dump"):
-        result = obj.model_dump()
-        return result if isinstance(result, dict) else {}
-    elif hasattr(obj, "to_dict"):
-        result = obj.to_dict()
-        return result if isinstance(result, dict) else {}
-    elif isinstance(obj, dict):
-        return obj
-    else:
-        return {}
-
-
-def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
-    """Set request attributes on span"""
-    if not span.is_recording():
-        return
-    try:
-        # Set operation type
-        span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TYPE}", operation_type)
-        span.set_attribute(f"{SpanAttributes.LLM_SYSTEM}", "LiteLLM")
-
-        # Common attributes
-        if kwargs.get("model"):
-            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MODEL}", kwargs["model"])
-
-        if kwargs.get("temperature") is not None:
-            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_TEMPERATURE}", kwargs["temperature"])
-
-        if kwargs.get("max_tokens") is not None:
-            span.set_attribute(f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs["max_tokens"])
-
-        if kwargs.get("stream") is not None:
-            span.set_attribute("gen_ai.stream", kwargs["stream"])
-
-        # Chat completion specific attributes
-        if operation_type == "chat" and kwargs.get("messages"):
-            messages = kwargs["messages"]
-            if isinstance(messages, list) and len(messages) > 0:
-                for index, message in enumerate(messages):
-                    if isinstance(message, dict):
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user"))
-                        span.set_attribute(
-                            f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(message.get("content", ""))
-                        )
-
-        # Embedding specific attributes
-        if operation_type == "embedding" and kwargs.get("input"):
-            input_data = kwargs["input"]
-            if isinstance(input_data, str):
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
-            elif isinstance(input_data, list):
-                for index, text in enumerate(input_data):
-                    if isinstance(text, str):
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", text)
-
-        # Image generation specific attributes
-        if operation_type == "image_generation":
-            if kwargs.get("prompt"):
-                span.set_attribute("gen_ai.prompt", kwargs["prompt"])
-            if kwargs.get("n"):
-                span.set_attribute("gen_ai.request.n", kwargs["n"])
-            if kwargs.get("size"):
-                span.set_attribute("gen_ai.request.size", kwargs["size"])
-            if kwargs.get("quality"):
-                span.set_attribute("gen_ai.request.quality", kwargs["quality"])
-            if kwargs.get("style"):
-                span.set_attribute("gen_ai.request.style", kwargs["style"])
-    except Exception as e:
-        logger.error(f"Failed to set attributes for LiteLLM span: {e}")
-
-
-def set_response_attributes(span: Span, response_dict: Dict[str, Any], operation_type: str) -> None:
-    """Set response attributes on span"""
-    if not span.is_recording():
-        return
-    try:
-        if response_dict.get("model"):
-            span.set_attribute(f"{SpanAttributes.LLM_RESPONSE_MODEL}", response_dict["model"])
-
-        if response_dict.get("id"):
-            span.set_attribute("gen_ai.response.id", response_dict["id"])
-
-        # Usage information
-        usage = response_dict.get("usage", {})
-        if usage:
-            if usage.get("prompt_tokens"):
-                span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", usage["prompt_tokens"])
-            if usage.get("completion_tokens"):
-                span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", usage["completion_tokens"])
-            if usage.get("cache_read_input_tokens"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", usage["cache_read_input_tokens"]
-                )
-            if usage.get("cache_creation_input_tokens"):
-                span.set_attribute("gen_ai.usage.cache_creation_input_tokens", usage["cache_creation_input_tokens"])
-            if usage.get("total_tokens"):
-                span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", usage["total_tokens"])
-
-        # Chat completion response content
-        if operation_type == "chat":
-            choices = response_dict.get("choices", [])
-            for index, choice in enumerate(choices):
-                if choice.get("message", {}).get("role"):
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", choice["message"]["role"])
-                if choice.get("message", {}).get("content"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", choice["message"]["content"]
-                    )
-                if choice.get("finish_reason"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", choice["finish_reason"]
-                    )
-
-        # Embedding response content
-        elif operation_type == "embedding":
-            data = response_dict.get("data", [])
-            for index, embedding_data in enumerate(data):
-                if embedding_data.get("index") is not None:
-                    span.set_attribute(f"gen_ai.response.embeddings.{index}.index", embedding_data["index"])
-                if embedding_data.get("embedding"):
-                    # Don't log the actual embedding vector, just its dimensions
-                    embedding_vector = embedding_data["embedding"]
-                    if isinstance(embedding_vector, list):
-                        span.set_attribute(f"gen_ai.response.embeddings.{index}.dimensions", len(embedding_vector))
-
-        # Image generation response content
-        elif operation_type == "image_generation":
-            data = response_dict.get("data", [])
-            for index, image_data in enumerate(data):
-                if image_data.get("url"):
-                    span.set_attribute(f"gen_ai.response.images.{index}.url", image_data["url"])
-                if image_data.get("b64_json"):
-                    span.set_attribute(f"gen_ai.response.images.{index}.has_b64_json", True)
-                if image_data.get("revised_prompt"):
-                    span.set_attribute(f"gen_ai.response.images.{index}.revised_prompt", image_data["revised_prompt"])
-    except Exception as e:
-        logger.error(f"Failed to set attributes for LiteLLM span: {e}")
 
 
 def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -180,45 +38,39 @@ def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
             logger.debug("LiteLLM instrumentation suppressed")
             return wrapped(*args, **kwargs)
 
-        # Check if streaming
         is_streaming = kwargs.get("stream", False)
 
         if is_streaming:
-            # Use start_span for streaming - returns span directly
             span = tracer.start_span(
                 COMPLETION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             )
-
-            set_request_attributes(span, kwargs, "chat")
-
+            context = context_api.attach(set_span_in_context(span))
             try:
+                set_request_attributes(span, kwargs, "chat")
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
-
                 return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
+
         else:
-            # Use start_as_current_span for non-streaming - returns context manager
             with tracer.start_as_current_span(
                 COMPLETION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             ) as span:
-                set_request_attributes(span, kwargs, "chat")
-
                 try:
+                    set_request_attributes(span, kwargs, "chat")
                     start_time = time.time()
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
-
                     response_dict = model_as_dict(response)
-                    set_response_attributes(span, response_dict, "chat")
-
+                    set_response_attributes(span, response_dict)
                     span.set_attribute("llm.response.duration", end_time - start_time)
                     span.set_status(Status(StatusCode.OK))
-
                     return response
                 except Exception as e:
                     span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -236,47 +88,136 @@ def acompletion_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
-        # Check if streaming
         is_streaming = kwargs.get("stream", False)
 
         if is_streaming:
-            # Use start_span for streaming - returns span directly
             span = tracer.start_span(
                 COMPLETION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             )
-
-            set_request_attributes(span, kwargs, "chat")
-
+            context = context_api.attach(set_span_in_context(span))
             try:
+                set_request_attributes(span, kwargs, "chat")
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-
                 return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
                 span.end()
                 raise
+            finally:
+                context_api.detach(context)
         else:
-            # Use start_as_current_span for non-streaming - returns context manager
             with tracer.start_as_current_span(
                 COMPLETION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             ) as span:
                 set_request_attributes(span, kwargs, "chat")
-
                 try:
                     start_time = time.time()
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
-
                     response_dict = model_as_dict(response)
-                    set_response_attributes(span, response_dict, "chat")
-
+                    set_response_attributes(span, response_dict)
                     span.set_attribute("llm.response.duration", end_time - start_time)
                     span.set_status(Status(StatusCode.OK))
-
                     return response
                 except Exception as e:
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
+
+    return wrapper
+
+
+def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Wrapper for responses.create (new OpenAI API)"""
+
+    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return wrapped(*args, **kwargs)
+
+        is_streaming = kwargs.get("stream", False)
+        if is_streaming:
+            span = tracer.start_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            )
+            try:
+                context = context_api.attach(set_span_in_context(span))
+                set_request_attributes(span, kwargs, "response")
+                start_time = time.time()
+                response = wrapped(*args, **kwargs)
+                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+            except Exception as e:
+                logger.error("netra.instrumentation.openai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                span.end()
+                raise
+            finally:
+                context_api.detach(context)
+        else:
+            with tracer.start_as_current_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            ) as span:
+                try:
+                    set_request_attributes(span, kwargs, "response")
+                    start_time = time.time()
+                    response = wrapped(*args, **kwargs)
+                    end_time = time.time()
+                    response_dict = model_as_dict(response)
+                    set_response_attributes(span, response_dict)
+                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    span.set_status(Status(StatusCode.OK))
+                    return response
+                except Exception as e:
+                    logger.error("netra.instrumentation.openai: %s", e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
+
+    return wrapper
+
+
+def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """Async wrapper for responses.create (new OpenAI API)"""
+
+    async def wrapper(wrapped: Callable[..., Awaitable[Any]], instance: Any, args: Any, kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return await wrapped(*args, **kwargs)
+
+        is_streaming = kwargs.get("stream", False)
+        if is_streaming:
+            span = tracer.start_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            )
+            try:
+                context = context_api.attach(set_span_in_context(span))
+                set_request_attributes(span, kwargs, "response")
+                start_time = time.time()
+                response = await wrapped(*args, **kwargs)
+                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+            except Exception as e:
+                logger.error("netra.instrumentation.openai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                span.end()
+                raise
+            finally:
+                context_api.detach(context)
+        else:
+            with tracer.start_as_current_span(
+                RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
+            ) as span:
+                try:
+                    set_request_attributes(span, kwargs, "response")
+                    start_time = time.time()
+                    response = await wrapped(*args, **kwargs)
+                    end_time = time.time()
+                    response_dict = model_as_dict(response)
+                    set_response_attributes(span, response_dict)
+                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    span.set_status(Status(StatusCode.OK))
+                    return response
+                except Exception as e:
+                    logger.error("netra.instrumentation.openai: %s", e)
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                     raise
 
@@ -290,23 +231,18 @@ def embedding_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
-        # Embeddings are never streaming, always use start_as_current_span
         with tracer.start_as_current_span(
             EMBEDDING_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "embedding"}
         ) as span:
             set_request_attributes(span, kwargs, "embedding")
-
             try:
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
                 end_time = time.time()
-
                 response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict, "embedding")
-
+                set_response_attributes(span, response_dict)
                 span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
-
                 return response
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -324,23 +260,18 @@ def aembedding_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
-        # Embeddings are never streaming, always use start_as_current_span
         with tracer.start_as_current_span(
             EMBEDDING_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "embedding"}
         ) as span:
             set_request_attributes(span, kwargs, "embedding")
-
             try:
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
                 end_time = time.time()
-
                 response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict, "embedding")
-
+                set_response_attributes(span, response_dict)
                 span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
-
                 return response
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -356,23 +287,18 @@ def image_generation_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
-        # Image generation is never streaming, always use start_as_current_span
         with tracer.start_as_current_span(
             IMAGE_GENERATION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "image_generation"}
         ) as span:
             set_request_attributes(span, kwargs, "image_generation")
-
             try:
                 start_time = time.time()
                 response = wrapped(*args, **kwargs)
                 end_time = time.time()
-
                 response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict, "image_generation")
-
+                set_response_attributes(span, response_dict)
                 span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
-
                 return response
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -390,23 +316,18 @@ def aimage_generation_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
-        # Image generation is never streaming, always use start_as_current_span
         with tracer.start_as_current_span(
             IMAGE_GENERATION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "image_generation"}
         ) as span:
             set_request_attributes(span, kwargs, "image_generation")
-
             try:
                 start_time = time.time()
                 response = await wrapped(*args, **kwargs)
                 end_time = time.time()
-
                 response_dict = model_as_dict(response)
-                set_response_attributes(span, response_dict, "image_generation")
-
+                set_response_attributes(span, response_dict)
                 span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
-
                 return response
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -424,7 +345,18 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
-        self._content_parts: list[str] = []
+
+    def _is_chat(self) -> bool:
+        """Determine if the request is a chat request."""
+        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
+
+    def _ensure_choice(self, index: int) -> None:
+        """Ensure choices list has an entry at index."""
+        while len(self._complete_response["choices"]) <= index:
+            if self._is_chat():
+                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
+            else:
+                self._complete_response["choices"].append({"text": ""})
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -442,50 +374,54 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         """Process streaming chunk"""
         chunk_dict = model_as_dict(chunk)
 
-        # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
 
-        # Accumulate usage information from chunks
-        if chunk_dict.get("usage"):
+        choices = chunk_dict.get("choices") or []
+
+        # Completion API
+        if isinstance(choices, list):
+            for choice in choices:
+                index = int(choice.get("index", 0))
+                self._ensure_choice(index)
+                delta = choice.get("delta") or {}
+                content_piece = None
+                if isinstance(delta, dict) and delta.get("content"):
+                    content_piece = str(delta.get("content", ""))
+                    self._complete_response["choices"][index].setdefault(
+                        "message", {"role": "assistant", "content": ""}
+                    )
+                    self._complete_response["choices"][index]["message"]["content"] += content_piece
+
+                if choice.get("finish_reason"):
+                    self._complete_response["choices"][index]["finish_reason"] = choice.get("finish_reason")
+
+        if chunk_dict.get("usage") and isinstance(chunk_dict["usage"], dict):
             self._complete_response["usage"] = chunk_dict["usage"]
 
-        # Collect content from delta
-        choices = chunk_dict.get("choices", [])
-        for choice in choices:
-            delta = choice.get("delta", {})
-            if delta.get("content"):
-                self._content_parts.append(delta["content"])
+        # Response API
+        if chunk_dict.get("response"):
+            response = chunk_dict.get("response", {})
+            if response.get("status") == "completed":
+                response_output = response.get("output", {})
+                for output in response_output:
+                    content = output.get("content")
+                    for index, chunk in enumerate(content):
+                        assistant_text = chunk.get("text", "")
+                        self._complete_response["choices"] = [
+                            {"message": {"role": "assistant", "content": assistant_text}}
+                        ]
 
-            # Collect finish_reason from choices
-            if choice.get("finish_reason"):
-                if "choices" not in self._complete_response:
-                    self._complete_response["choices"] = []
-                # Ensure we have enough choice entries
-                while len(self._complete_response["choices"]) <= len(choices) - 1:
-                    self._complete_response["choices"].append(
-                        {"message": {"role": "assistant", "content": ""}, "finish_reason": None}
-                    )
+                usage = response.get("usage", {})
+                self._complete_response["usage"] = usage
 
-                choice_index = choice.get("index", 0)
-                if choice_index < len(self._complete_response["choices"]):
-                    self._complete_response["choices"][choice_index]["finish_reason"] = choice["finish_reason"]
-
-        # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
         end_time = time.time()
         duration = end_time - self._start_time
-
-        # Set accumulated content
-        if self._content_parts:
-            full_content = "".join(self._content_parts)
-            self._span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", full_content)
-            self._span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-
-        set_response_attributes(self._span, self._complete_response, "chat")
+        set_response_attributes(self._span, self._complete_response)
         self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
@@ -502,7 +438,18 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
-        self._content_parts: list[str] = []
+
+    def _is_chat(self) -> bool:
+        """Determine if the request is a chat request."""
+        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
+
+    def _ensure_choice(self, index: int) -> None:
+        """Ensure choices list has an entry at index."""
+        while len(self._complete_response["choices"]) <= index:
+            if self._is_chat():
+                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
+            else:
+                self._complete_response["choices"].append({"text": ""})
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
@@ -520,50 +467,54 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         """Process streaming chunk"""
         chunk_dict = model_as_dict(chunk)
 
-        # Accumulate response data
         if chunk_dict.get("model"):
             self._complete_response["model"] = chunk_dict["model"]
 
-        # Accumulate usage information from chunks
-        if chunk_dict.get("usage"):
+        choices = chunk_dict.get("choices") or []
+
+        # Completion API
+        if isinstance(choices, list):
+            for choice in choices:
+                index = int(choice.get("index", 0))
+                self._ensure_choice(index)
+                delta = choice.get("delta") or {}
+                content_piece = None
+                if isinstance(delta, dict) and delta.get("content"):
+                    content_piece = str(delta.get("content", ""))
+                    self._complete_response["choices"][index].setdefault(
+                        "message", {"role": "assistant", "content": ""}
+                    )
+                    self._complete_response["choices"][index]["message"]["content"] += content_piece
+
+                if choice.get("finish_reason"):
+                    self._complete_response["choices"][index]["finish_reason"] = choice.get("finish_reason")
+
+        if chunk_dict.get("usage") and isinstance(chunk_dict["usage"], dict):
             self._complete_response["usage"] = chunk_dict["usage"]
 
-        # Collect content from delta
-        choices = chunk_dict.get("choices", [])
-        for choice in choices:
-            delta = choice.get("delta", {})
-            if delta.get("content"):
-                self._content_parts.append(delta["content"])
+        # Response API
+        if chunk_dict.get("response"):
+            response = chunk_dict.get("response", {})
+            if response.get("status") == "completed":
+                response_output = response.get("output", {})
+                for output in response_output:
+                    content = output.get("content")
+                    for index, chunk in enumerate(content):
+                        assistant_text = chunk.get("text", "")
+                        self._complete_response["choices"] = [
+                            {"message": {"role": "assistant", "content": assistant_text}}
+                        ]
 
-            # Collect finish_reason from choices
-            if choice.get("finish_reason"):
-                if "choices" not in self._complete_response:
-                    self._complete_response["choices"] = []
-                # Ensure we have enough choice entries
-                while len(self._complete_response["choices"]) <= len(choices) - 1:
-                    self._complete_response["choices"].append(
-                        {"message": {"role": "assistant", "content": ""}, "finish_reason": None}
-                    )
+                usage = response.get("usage", {})
+                self._complete_response["usage"] = usage
 
-                choice_index = choice.get("index", 0)
-                if choice_index < len(self._complete_response["choices"]):
-                    self._complete_response["choices"][choice_index]["finish_reason"] = choice["finish_reason"]
-
-        # Add chunk event
         self._span.add_event("llm.content.completion.chunk")
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
         end_time = time.time()
         duration = end_time - self._start_time
-
-        # Set accumulated content
-        if self._content_parts:
-            full_content = "".join(self._content_parts)
-            self._span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", full_content)
-            self._span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-
-        set_response_attributes(self._span, self._complete_response, "chat")
+        set_response_attributes(self._span, self._complete_response)
         self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
