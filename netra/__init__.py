@@ -17,6 +17,7 @@ from netra.logging_utils import configure_package_logging
 from netra.session_manager import ConversationType, SessionManager
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
+from netra.usage import Usage
 
 logger = logging.getLogger(__name__)
 
@@ -94,6 +95,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize evaluation client: %s", e, exc_info=True)
                 cls.evaluation = None  # type:ignore[attr-defined]
+
+            # Initialize usage client and expose as class attribute
+            try:
+                cls.usage = Usage(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize usage client: %s", e, exc_info=True)
+                cls.usage = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             #    Pass trace_content flag to instrumentors that can capture prompts/completions
