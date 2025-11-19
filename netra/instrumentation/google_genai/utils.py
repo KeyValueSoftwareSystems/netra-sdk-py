@@ -35,9 +35,9 @@ def set_request_attributes(span: Any, args: Tuple[Any, ...], kwargs: Dict[str, A
             ("frequency_penalty", SpanAttributes.LLM_FREQUENCY_PENALTY),
         ]
 
-    for attr_name, span_attr in config_mappings:
-        if (value := getattr(config, attr_name, None)) is not None:
-            span.set_attribute(span_attr, value)
+        for attr_name, span_attr in config_mappings:
+            if (value := getattr(config, attr_name, None)) is not None:
+                span.set_attribute(span_attr, value)
 
     if contents := kwargs.get("contents"):
         if isinstance(contents, str):
