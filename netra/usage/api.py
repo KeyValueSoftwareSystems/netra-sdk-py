@@ -22,7 +22,6 @@ class Usage:
         result = self._client.get_session_usage(session_id)
         session_id = result.get("session_id", "")
         if not session_id:
-            logger.error("netra.usage: Failed to fetch session usage")
             return None
         token_count = result.get("tokenCount", 0)
         request_count = result.get("requests", 0)
@@ -35,7 +34,6 @@ class Usage:
         result = self._client.get_tenant_usage(tenant_id)
         tenant_id = result.get("tenant_id", "")
         if not tenant_id:
-            logger.error("netra.usage: Failed to fetch tenant usage")
             return None
         token_count = int(result.get("tokenCount", 0))
         request_count = int(result.get("requests", 0))
