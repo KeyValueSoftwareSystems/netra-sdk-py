@@ -17,14 +17,29 @@ class Evaluation:
     """Public entry-point exposed as Netra.evaluation"""
 
     def __init__(self, cfg: Config) -> None:
-        """Initialize the evaluation client."""
+        """
+        Initialize the evaluation client.
+
+        Args:
+            cfg: The configuration object.
+        """
         self._config = cfg
         self._client = _EvaluationHttpClient(cfg)
 
     def create_dataset(
         self, name: str, tags: Optional[List[str]] = None, policy_ids: Optional[List[str]] = None
     ) -> Any:
-        """Create an empty dataset and return its id on success, else None."""
+        """
+        Create an empty dataset and return its id on success, else None.
+
+        Args:
+            name: The name of the dataset.
+            tags: Optional list of tags to associate with the dataset.
+            policy_ids: Optional list of policy IDs to associate with the dataset.
+
+        Returns:
+            The id of the created dataset, or None if creation fails.
+        """
         if not name:
             logger.error("netra.evaluation: Failed to create dataset via API: name is required")
             return None
@@ -41,7 +56,16 @@ class Evaluation:
         dataset_id: str,
         item: DatasetEntry,
     ) -> Optional[str]:
-        """Add a single item to an existing dataset and return the new item id if available."""
+        """
+        Add a single item to an existing dataset and return the new item id if available.
+
+        Args:
+            dataset_id: The id of the dataset to which the item will be added.
+            item: The dataset item to add.
+
+        Returns:
+            The id of the added dataset item, or None if addition fails.
+        """
         try:
             item_payload: Dict[str, Any] = {}
             if item.input is None:
@@ -64,7 +88,15 @@ class Evaluation:
         return str(item_id) if item_id else None
 
     def get_dataset(self, dataset_id: str) -> Dataset:
-        """Get a dataset by ID."""
+        """
+        Get a dataset by ID.
+
+        Args:
+            dataset_id: The id of the dataset to retrieve.
+
+        Returns:
+            The dataset with the specified id, or None if retrieval fails.
+        """
         response = self._client.get_dataset(dataset_id)
         items: List[DatasetItem] = []
         for item in response:
@@ -89,7 +121,16 @@ class Evaluation:
         return Dataset(dataset_id=dataset_id, items=items)
 
     def create_run(self, dataset: Dataset, name: Optional[str] = None) -> Optional[Run]:
-        """Create a new run for the evaluation."""
+        """
+        Create a new run for the evaluation.
+
+        Args:
+            dataset: The dataset to which the run will be associated.
+            name: Optional name for the run.
+
+        Returns:
+            The created run, or None if creation fails.
+        """
         run_name = name or f"run-{datetime.now().isoformat()}"
         response = self._client.create_run(dataset_id=dataset.dataset_id, name=run_name)
         run_id = response.get("id")
@@ -100,11 +141,26 @@ class Evaluation:
         return Run(id=str(run_id), dataset_id=dataset.dataset_id, name=run_name, test_entries=list(dataset.items))
 
     def run_entry(self, run: Run, entry: DatasetItem) -> RunEntryContext:
-        """Start a new run entry."""
+        """
+        Start a new run entry.
+
+        Args:
+            run: The run to which the entry will be associated.
+            entry: The dataset item to be run.
+
+        Returns:
+            The run entry context.
+        """
         return RunEntryContext(self._client, self._config, run, entry)
 
     def record(self, ctx: RunEntryContext, score: Optional[List[EvaluationScore]] = None) -> None:
-        """Record completion status for a run entry, optionally including score list."""
+        """
+        Record completion status for a run entry, optionally including score list.
+
+        Args:
+            ctx: The run entry context.
+            score: Optional list of scores to record.
+        """
         try:
             session_id = get_session_id_from_baggage()
             self._client.post_entry_status(
@@ -127,6 +183,19 @@ class Evaluation:
         evaluators: Optional[List[Callable[..., Any]]] = None,
         max_concurrency: int = 50,
     ) -> Dict[str, Any]:
+        """
+        Run a test suite for the given dataset.
+
+        Args:
+            name: The name of the test suite.
+            data: The dataset to be used for the test suite.
+            task: The task to be executed for each dataset item.
+            evaluators: Optional list of evaluators to be used for the test suite.
+            max_concurrency: The maximum number of concurrent tasks.
+
+        Returns:
+            A dictionary containing the results of the test suite.
+        """
         return run_async_safely(
             self._run_test_suite_async(
                 name=name, data=data, task=task, evaluators=evaluators, max_concurrency=max_concurrency
@@ -141,6 +210,19 @@ class Evaluation:
         evaluators: Optional[List[Callable[..., Any]]],
         max_concurrency: int,
     ) -> Dict[str, Any]:
+        """
+        Run a test suite for the given dataset.
+
+        Args:
+            name: The name of the test suite.
+            data: The dataset to be used for the test suite.
+            task: The task to be executed for each dataset item.
+            evaluators: Optional list of evaluators to be used for the test suite.
+            max_concurrency: The maximum number of concurrent tasks.
+
+        Returns:
+            A dictionary containing the results of the test suite.
+        """
         run = self.create_run(data, name)
         if run is None:
             return {"success": False, "error": "failed_to_create_run"}
