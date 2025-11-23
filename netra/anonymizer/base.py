@@ -1,10 +1,3 @@
-"""
-Base anonymizer class for PII data anonymization.
-
-This module provides the base anonymizer class that contains the core anonymization
-logic that can be extended by specific anonymizer implementations.
-"""
-
 import hashlib
 from collections import OrderedDict
 from dataclasses import dataclass

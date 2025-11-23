@@ -10,7 +10,15 @@ logger = logging.getLogger(__name__)
 
 
 class _UsageHttpClient:
+    """Internal HTTP client for usage APIs."""
+
     def __init__(self, config: Config) -> None:
+        """
+        Initialize the usage HTTP client.
+
+        Args:
+            config: Configuration object with usage settings
+        """
         self._client: Optional[httpx.Client] = None
         endpoint = (config.otlp_endpoint or "").strip()
         if not endpoint:
@@ -43,6 +51,15 @@ class _UsageHttpClient:
             self._client = None
 
     def get_session_usage(self, session_id: str) -> Any:
+        """
+        Get session usage data.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            Any: Session usage data
+        """
         if not self._client:
             logger.error(
                 "netra.usage: Usage client is not initialized; cannot fetch session usage '%s'",
@@ -63,6 +80,15 @@ class _UsageHttpClient:
             return {}
 
     def get_tenant_usage(self, tenant_id: str) -> Any:
+        """
+        Get tenant usage data.
+
+        Args:
+            tenant_id: Tenant identifier
+
+        Returns:
+            Any: Tenant usage data
+        """
         if not self._client:
             logger.error(
                 "netra.usage: Usage client is not initialized; cannot fetch tenant usage '%s'",

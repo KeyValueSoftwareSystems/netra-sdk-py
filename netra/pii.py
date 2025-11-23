@@ -527,6 +527,16 @@ class RegexPIIDetector(PIIDetector):
         patterns: Optional[Dict[str, Pattern[str]]] = None,
         action_type: Literal["BLOCK", "FLAG", "MASK"] = "MASK",
     ) -> None:
+        """
+        Initialize the regex-based PII detector.
+
+        Args:
+            patterns: Optional dictionary of regex patterns to detect PII.
+            action_type: Action to take when PII is detected. Options are:
+                - "BLOCK": Raise PIIBlockedException when PII is detected
+                - "FLAG": Detect PII but don't block or mask
+                - "MASK": Replace PII with mask tokens (default)
+        """
         if action_type is None:
             env_action = os.getenv("NETRA_ACTION_TYPE", "MASK")
             # Ensure action_type is one of the valid literal values
@@ -828,66 +838,3 @@ def get_default_detector(
     return PresidioPIIDetector(
         action_type=action_type, entities=entities, hash_function=hash_function, nlp_configuration=nlp_configuration
     )
-
-
-# ---------------------------------------------------------------------------- #
-#                                EXAMPLE USAGE                                  #
-# ---------------------------------------------------------------------------- #
-# from netra.pii import RegexPIIDetector, get_default_detector
-# from netra.exceptions.pii import PIIBlockedException
-#
-# # Create a regex-based detector that blocks on any PII found:
-# regex_detector = RegexPIIDetector(action_type="BLOCK")
-# try:
-#     result = regex_detector.detect("My email is sooraj@example.com")
-#     # If block_on_pii=True and PII is found, code won't reach here
-#     print(f"PII detected: {result.has_pii}, Entities: {result.entity_counts}")
-# except PIIBlockedException as e:
-#     # Access structured information about the PII detection
-#     print(f"Blocked: {e.blocked}, Entities found: {e.entity_counts}")
-#     print(f"Masked version: {e.masked_text}")
-#
-# # Or get the default (Presidio-based) detector:
-# default_detector = get_default_detector(action_type="FLAG")
-# pii_info = default_detector.detect("Call me at 123-456-7890")
-# print(f"Found PII types: {list(pii_info.entity_counts.keys())}")
-#
-# # Using custom hash function with get_default_detector:
-# import hashlib
-# def custom_hash(text: str) -> str:
-#     return hashlib.sha256(text.encode()).hexdigest()[:8]
-#
-# detector_with_custom_hash = get_default_detector(
-#     action_type="MASK",
-#     hash_function=custom_hash
-# )
-# result = detector_with_custom_hash.detect("My email is john@example.com")
-# print(f"Masked text: {result.masked_text}")
-# print(f"Entity mappings: {result.entities}")
-#
-# # Using PresidioPIIDetector directly with custom hash function:
-# from combat.pii import PresidioPIIDetector
-#
-# def md5_hash(text: str) -> str:
-#     return hashlib.md5(text.encode()).hexdigest()[:10]
-#
-# presidio_detector = PresidioPIIDetector(
-#     hash_function=md5_hash,
-#     anonymizer_cache_size=500,
-#     action_type="MASK",
-#     score_threshold=0.8
-# )
-# result = presidio_detector.detect("Contact me at john.doe@company.com or 555-123-4567")
-# print(f"Masked: {result.masked_text}")
-# print(f"Entities: {result.entities}")
-#
-# # You can also manually raise the exception if needed
-# if pii_info.has_pii:
-#     raise PIIBlockedException(
-#         message="Custom blocking message",
-#         has_pii=pii_info.has_pii,
-#         entity_counts=pii_info.entity_counts,
-#         masked_text=pii_info.masked_text,
-#         is_blocked=True
-#         original_text=pii_info.original_text,
-#     )

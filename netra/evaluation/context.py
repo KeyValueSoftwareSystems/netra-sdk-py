@@ -18,6 +18,15 @@ class RunEntryContext:
     """Context around a single test entry that starts a parent evaluation span and posts agent_triggered."""
 
     def __init__(self, client: _EvaluationHttpClient, cfg: Config, run: Run, entry: DatasetItem) -> None:
+        """
+        Initialize the run entry context.
+
+        Args:
+            client: The evaluation HTTP client.
+            cfg: The configuration object.
+            run: The run object.
+            entry: The dataset item object.
+        """
         self._client = client
         self._config = cfg
         self.run = run
@@ -26,6 +35,12 @@ class RunEntryContext:
         self._trace_id: Optional[str] = None
 
     def __enter__(self) -> "RunEntryContext":
+        """
+        Enter the run entry context.
+
+        Returns:
+            The run entry context.
+        """
         prefix = f"{Config.LIBRARY_NAME}.eval"
         attributes: Dict[str, str] = {
             f"{prefix}.dataset_id": self.run.dataset_id,
@@ -57,6 +72,17 @@ class RunEntryContext:
         exc: Optional[Exception],
         tb: Optional[TracebackType],
     ) -> bool:
+        """
+        Exit the run entry context.
+
+        Args:
+            exc_type: The type of exception that was raised.
+            exc: The exception that was raised.
+            tb: The traceback of the exception.
+
+        Returns:
+            True if the exit was successful, False otherwise.
+        """
         if exc_type is not None:
             try:
                 session_id = get_session_id_from_baggage()
@@ -78,8 +104,20 @@ class RunEntryContext:
 
     @property
     def trace_id(self) -> Optional[str]:
+        """
+        Get the trace id.
+
+        Returns:
+            The trace id.
+        """
         return self._trace_id
 
     @property
     def span(self) -> Optional[trace.Span]:
+        """
+        Get the span.
+
+        Returns:
+            The span.
+        """
         return self._span_wrapper.span if self._span_wrapper else None

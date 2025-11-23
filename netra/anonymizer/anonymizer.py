@@ -1,11 +1,3 @@
-"""
-Custom anonymizer for PII data that provides consistent hashing of entities.
-
-This module provides a custom anonymizer that can be used to replace PII entities
-with consistent hash values, allowing for tracking the same entities across multiple
-texts while maintaining privacy.
-"""
-
 from typing import Callable, List, Optional
 
 try:

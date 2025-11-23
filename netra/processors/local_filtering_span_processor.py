@@ -30,6 +30,13 @@ class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
+        """
+        Start span and wrap set_attribute.
+
+        Args:
+            span: The span to start.
+            parent_context: The parent context of the span.
+        """
         try:
             # Use provided parent_context if available, otherwise fall back to current context
             ctx_to_read = parent_context if parent_context is not None else otel_context.get_current()
@@ -69,6 +76,12 @@ class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     # No-ops required by interface
     def on_end(self, span: trace.Span) -> None:  # noqa: D401
+        """
+        End span.
+
+        Args:
+            span: The span to end.
+        """
         # Cleanup registry entry to avoid leaks
         try:
             ctx = getattr(span, "context", None)
@@ -80,17 +93,30 @@ class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
         return
 
     def shutdown(self) -> None:  # noqa: D401
+        """
+        Shutdown the processor.
+        """
         return
 
     def force_flush(self, timeout_millis: int = 30000) -> None:  # noqa: D401
+        """
+        Force flush the processor.
+
+        Args:
+            timeout_millis: The timeout in milliseconds.
+        """
         return
 
 
 def _decode_patterns(raw: str) -> Optional[List[str]]:
-    """Decode patterns stored in baggage.
+    """
+    Decode patterns stored in baggage.
 
-    We store JSON-encoded list[str] in baggage (must be a string). This safely handles complex
-    characters and is robust to commas in patterns.
+    Args:
+        raw: The raw baggage string.
+
+    Returns:
+        The decoded patterns.
     """
     try:
         parsed = json.loads(raw)
@@ -102,7 +128,16 @@ def _decode_patterns(raw: str) -> Optional[List[str]]:
 
 
 def _matches_any_pattern(name: str, patterns: Sequence[str]) -> bool:
-    """Return True if name matches any pattern (exact, prefix*, *suffix)."""
+    """
+    Return True if name matches any pattern (exact, prefix*, *suffix).
+
+    Args:
+        name: The name to match.
+        patterns: The patterns to match.
+
+    Returns:
+        True if name matches any pattern, False otherwise.
+    """
     try:
         for p in patterns:
             if not p:
@@ -124,17 +159,11 @@ def _matches_any_pattern(name: str, patterns: Sequence[str]) -> bool:
 
 @contextmanager
 def block_spans_local(patterns: Sequence[str]):  # type: ignore[no-untyped-def]
-    """Context manager to locally block spans by name patterns.
+    """
+    Context manager to locally block spans by name patterns.
 
-    Usage:
-        with block_spans_local(["openai.*", "*.internal"]):
-            # Spans created in this context will inherit these local rules
-            ...
-
-    Patterns follow the same rules as global blocking in the exporter:
-      - Exact match: "Foo"
-      - Prefix: "CloudSpanner.*"
-      - Suffix: "*.Query"
+    Args:
+        patterns: The patterns to block.
     """
     # Normalize incoming sequence to a compact list of non-empty strings
     normalized: List[str] = [p for p in patterns if isinstance(p, str) and p]

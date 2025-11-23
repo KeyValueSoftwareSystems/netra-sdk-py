@@ -1,9 +1,3 @@
-"""Netra decorator utilities.
-
-This module provides decorators for common patterns in Netra SDK.
-Decorators can be applied to both functions and classes.
-"""
-
 import functools
 import inspect
 import json
@@ -45,7 +39,15 @@ C = TypeVar("C", bound=type)
 
 
 def _serialize_value(value: Any) -> str:
-    """Safely serialize a value to string for span attributes."""
+    """
+    Safely serialize a value to string for span attributes.
+
+    Args:
+        value: The value to serialize.
+
+    Returns:
+        The serialized value as a string.
+    """
     try:
         if isinstance(value, (str, int, float, bool, type(None))):
             return str(value)
@@ -60,7 +62,16 @@ def _serialize_value(value: Any) -> str:
 def _add_span_attributes(
     span: trace.Span, func: Callable[..., Any], args: Tuple[Any, ...], kwargs: Dict[str, Any], entity_type: str
 ) -> None:
-    """Helper function to add span attributes from function parameters."""
+    """
+    Helper function to add span attributes from function parameters.
+
+    Args:
+        span: The OpenTelemetry span to add attributes to.
+        func: The function to get parameters from.
+        args: The arguments to the function.
+        kwargs: The keyword arguments to the function.
+        entity_type: The entity type.
+    """
     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.type", entity_type)
 
     try:
@@ -85,7 +96,13 @@ def _add_span_attributes(
 
 
 def _add_output_attributes(span: trace.Span, result: Any) -> None:
-    """Helper function to add output attributes to span."""
+    """
+    Helper function to add output attributes to span.
+
+    Args:
+        span: The OpenTelemetry span to add attributes to.
+        result: The result to serialize and add as an attribute.
+    """
     try:
         serialized_output = _serialize_value(result)
         span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output", serialized_output)
@@ -94,7 +111,15 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
 
 
 def _is_streaming_response(obj: Any) -> bool:
-    """Return True if obj is a Starlette StreamingResponse instance."""
+    """
+    Return True if obj is a Starlette StreamingResponse instance.
+
+    Args:
+        obj: The object to check.
+
+    Returns:
+        True if obj is a StreamingResponse instance, False otherwise.
+    """
     if StreamingResponse is None:
         return False
     try:
@@ -104,10 +129,28 @@ def _is_streaming_response(obj: Any) -> bool:
 
 
 def _is_async_generator(obj: Any) -> bool:
+    """
+    Return True if obj is an async generator.
+
+    Args:
+        obj: The object to check.
+
+    Returns:
+        True if obj is an async generator, False otherwise.
+    """
     return inspect.isasyncgen(obj)
 
 
 def _is_sync_generator(obj: Any) -> bool:
+    """
+    Return True if obj is a sync generator.
+
+    Args:
+        obj: The object to check.
+
+    Returns:
+        True if obj is a sync generator, False otherwise.
+    """
     return inspect.isgenerator(obj)
 
 
@@ -117,7 +160,18 @@ def _wrap_async_generator_with_span(
     span_name: str,
     entity_type: str,
 ) -> AsyncGenerator[Any, None]:
-    """Wrap an async generator so the span remains current for the full iteration and ends afterwards."""
+    """
+    Wrap an async generator so the span remains current for the full iteration and ends afterwards.
+
+    Args:
+        span: The OpenTelemetry span to use.
+        agen: The async generator to wrap.
+        span_name: The name of the span.
+        entity_type: The entity type.
+
+    Returns:
+        The wrapped async generator.
+    """
 
     async def _wrapped() -> AsyncGenerator[Any, None]:
         # Activate span for the entire iteration
@@ -156,7 +210,18 @@ def _wrap_sync_generator_with_span(
     span_name: str,
     entity_type: str,
 ) -> Generator[Any, None, None]:
-    """Wrap a sync generator so the span remains current for the full iteration and ends afterwards."""
+    """
+    Wrap a sync generator so the span remains current for the full iteration and ends afterwards.
+
+    Args:
+        span: The OpenTelemetry span to use.
+        gen: The sync generator to wrap.
+        span_name: The name of the span.
+        entity_type: The entity type.
+
+    Returns:
+        The wrapped sync generator.
+    """
 
     def _wrapped() -> Generator[Any, None, None]:
         with trace.use_span(span, end_on_exit=False):
@@ -192,7 +257,18 @@ def _wrap_streaming_response_with_span(
     span_name: str,
     entity_type: str,
 ) -> Any:
-    """Wrap StreamingResponse.body_iterator with a generator that keeps span current and ends it afterwards."""
+    """
+    Wrap StreamingResponse.body_iterator with a generator that keeps span current and ends it afterwards.
+
+    Args:
+        span: The OpenTelemetry span to use.
+        resp: The StreamingResponse to wrap.
+        span_name: The name of the span.
+        entity_type: The entity type.
+
+    Returns:
+        The wrapped StreamingResponse.
+    """
     try:
         body_iter = getattr(resp, "body_iterator", None)
         if body_iter is None:
@@ -269,6 +345,18 @@ def _create_function_wrapper(
     name: Optional[str] = None,
     as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> Callable[P, R]:
+    """
+    Create a function wrapper that creates a span and adds attributes to it.
+
+    Args:
+        func: The function to wrap.
+        entity_type: The entity type.
+        name: Optional custom name for the span.
+        as_type: The type of span (SPAN, AGENT, TOOL, etc.).
+
+    Returns:
+        The wrapped function.
+    """
     module_name = func.__name__
     is_async = inspect.iscoroutinefunction(func)
     span_name = name if name is not None else func.__name__
@@ -400,6 +488,18 @@ def _wrap_class_methods(
     name: Optional[str] = None,
     as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> C:
+    """
+    Wrap all callable methods of a class with a span.
+
+    Args:
+        cls: The class to wrap.
+        entity_type: The entity type.
+        name: Optional custom name for the span.
+        as_type: The type of span (SPAN, AGENT, TOOL, etc.).
+
+    Returns:
+        The wrapped class.
+    """
     class_name = name if name is not None else cls.__name__
     for attr_name in cls.__dict__:
         attr = getattr(cls, attr_name)
@@ -415,6 +515,17 @@ def _wrap_class_methods(
 def workflow(
     target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
+    """
+    Workflow decorator to wrap a function or class with a span.
+
+    Args:
+        target: The function or class to wrap.
+        name: Optional custom name for the span.
+
+    Returns:
+        The wrapped function or class.
+    """
+
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
             return _wrap_class_methods(cast(C, obj), "workflow", name)
@@ -429,6 +540,17 @@ def workflow(
 def agent(
     target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
+    """
+    Agent decorator to wrap a function or class with a span.
+
+    Args:
+        target: The function or class to wrap.
+        name: Optional custom name for the span.
+
+    Returns:
+        The wrapped function or class.
+    """
+
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
             return _wrap_class_methods(cast(C, obj), "agent", name, as_type=SpanType.AGENT)
@@ -443,6 +565,17 @@ def agent(
 def task(
     target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
+    """
+    Task decorator to wrap a function or class with a span.
+
+    Args:
+        target: The function or class to wrap.
+        name: Optional custom name for the span.
+
+    Returns:
+        The wrapped function or class.
+    """
+
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
             return _wrap_class_methods(cast(C, obj), "task", name, as_type=SpanType.TOOL)
@@ -461,6 +594,18 @@ def span(
     name: Optional[str] = None,
     as_type: Optional[SpanType] = SpanType.SPAN,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
+    """
+    Span decorator to wrap a function or class with a span.
+
+    Args:
+        target: The function or class to wrap.
+        name: Optional custom name for the span.
+        as_type: The type of span (SPAN, AGENT, TOOL, etc.).
+
+    Returns:
+        The wrapped function or class.
+    """
+
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
             return _wrap_class_methods(cast(C, obj), "span", name, as_type=as_type)

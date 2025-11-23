@@ -27,6 +27,13 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
     """
 
     def __init__(self, exporter: SpanExporter, patterns: Sequence[str]) -> None:
+        """
+        Initialize the filtering span exporter.
+
+        Args:
+            exporter: The span exporter to use.
+            patterns: List of patterns to block.
+        """
         self._exporter = exporter
         # Normalize once for efficient checks
         exact: List[str] = []
@@ -46,6 +53,15 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         self._suffixes = suffixes
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
+        """
+        Export spans to the exporter.
+
+        Args:
+            spans: List of spans to export.
+
+        Returns:
+            SpanExportResult.SUCCESS if the export was successful.
+        """
         filtered: List[ReadableSpan] = []
         blocked_parent_map: Dict[Any, Any] = {}
         for span in spans:
@@ -96,6 +112,15 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         return self._exporter.export(filtered)
 
     def _is_blocked(self, name: str) -> bool:
+        """
+        Check if a span name is blocked.
+
+        Args:
+            name: The span name to check.
+
+        Returns:
+            True if the span name is blocked, False otherwise.
+        """
         if name in self._exact:
             return True
         for pref in self._prefixes:
@@ -107,7 +132,15 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         return False
 
     def _get_local_patterns(self, span: ReadableSpan) -> List[str]:
-        """Fetch local-block patterns from span attributes set by LocalFilteringSpanProcessor."""
+        """
+        Fetch local-block patterns from span attributes set by LocalFilteringSpanProcessor.
+
+        Args:
+            span: The span to fetch local-block patterns from.
+
+        Returns:
+            List of local-block patterns.
+        """
         try:
             attrs = getattr(span, "attributes", None)
             if not attrs:
@@ -128,6 +161,16 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         return []
 
     def _matches_any_pattern(self, name: str, patterns: Sequence[str]) -> bool:
+        """
+        Check if a span name matches any of the given patterns.
+
+        Args:
+            name: The span name to check.
+            patterns: List of patterns to check against.
+
+        Returns:
+            True if the span name matches any of the given patterns, False otherwise.
+        """
         for p in patterns:
             if not p:
                 continue
@@ -143,6 +186,15 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         return False
 
     def _has_local_block_flag(self, span: ReadableSpan) -> bool:
+        """
+        Check if a span has a local-block flag.
+
+        Args:
+            span: The span to check.
+
+        Returns:
+            True if the span has a local-block flag, False otherwise.
+        """
         try:
             attrs = getattr(span, "attributes", None)
             if not attrs:
@@ -163,6 +215,13 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         spans: Sequence[ReadableSpan],
         blocked_parent_map: Dict[Any, Any],
     ) -> None:
+        """
+        Reparent blocked children of a span.
+
+        Args:
+            spans: List of spans to reparent.
+            blocked_parent_map: Dictionary mapping span IDs to their blocked parent spans.
+        """
         if not blocked_parent_map:
             return
 
@@ -187,6 +246,13 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
                 self._set_span_parent(span, updated_parent)
 
     def _set_span_parent(self, span: ReadableSpan, parent: Any) -> None:
+        """
+        Set the parent of a span.
+
+        Args:
+            span: The span to set the parent of.
+            parent: The parent to set.
+        """
         if hasattr(span, "_parent"):
             try:
                 span._parent = parent
@@ -199,12 +265,24 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             logger.debug("Failed to reparent span %s", getattr(span, "name", "<unknown>"), exc_info=True)
 
     def shutdown(self) -> None:
+        """
+        Shutdown the exporter.
+        """
         try:
             self._exporter.shutdown()
         except Exception:
             pass
 
     def force_flush(self, timeout_millis: int = 30000) -> Any:
+        """
+        Force flush the exporter.
+
+        Args:
+            timeout_millis: The timeout in milliseconds.
+
+        Returns:
+            The result of the force flush operation.
+        """
         try:
             return self._exporter.force_flush(timeout_millis)
         except Exception:

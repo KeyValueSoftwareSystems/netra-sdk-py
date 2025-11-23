@@ -1,9 +1,3 @@
-"""Netra OpenTelemetry tracer configuration module.
-
-This module handles the initialization and configuration of OpenTelemetry tracing,
-including exporter setup and span processor configuration.
-"""
-
 import logging
 import threading
 from typing import Any, Dict
@@ -30,7 +24,7 @@ _provider_install_lock = threading.Lock()
 class Tracer:
     """
     Configures Netra's OpenTelemetry tracer with OTLP exporter (or Console exporter as fallback)
-    and appropriate span processor.
+    and appropriate span processors.
     """
 
     def __init__(self, cfg: Config) -> None:

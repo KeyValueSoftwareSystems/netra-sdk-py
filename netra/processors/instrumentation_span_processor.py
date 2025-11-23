@@ -22,10 +22,19 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """
 
     def __init__(self) -> None:
+        """Initialize the instrumentation span processor."""
         super().__init__()
 
     def _detect_raw_instrumentation_name(self, span: trace.Span) -> Optional[str]:
-        """Detect the raw instrumentation name for the span."""
+        """
+        Detect the raw instrumentation name for the span.
+
+        Args:
+            span: The span to detect the raw instrumentation name for.
+
+        Returns:
+            The raw instrumentation name for the span.
+        """
 
         scope = getattr(span, "instrumentation_scope", None)
 
@@ -43,7 +52,15 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         return None
 
     def _truncate_value(self, value: Any) -> Any:
-        """Truncate string values to max 1000 chars (also inside simple lists/dicts of strings)."""
+        """
+        Truncate string values to max chars (also inside simple lists/dicts of strings).
+
+        Args:
+            value: The value to truncate.
+
+        Returns:
+            The truncated value.
+        """
         try:
             if isinstance(value, str):
                 return value if len(value) <= Config.ATTRIBUTE_MAX_LEN else value[: Config.ATTRIBUTE_MAX_LEN]
@@ -61,7 +78,13 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         return value
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
-        """Start span and wrap set_attribute."""
+        """
+        Start span and wrap set_attribute.
+
+        Args:
+            span: The span to start.
+            parent_context: The parent context of the span.
+        """
         try:
             # Wrap set_attribute first so subsequent sets are also processed
             original_set_attribute: Callable[[str, Any], None] = span.set_attribute
@@ -87,13 +110,29 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             if name in ALLOWED_INSTRUMENTATION_NAMES:
                 span.set_attribute(f"{Config.LIBRARY_NAME}.instrumentation.name", name)
         except Exception:
-            pass
+            logger.exception("Error setting instrumentation name")
+            return
 
     def on_end(self, span: trace.Span) -> None:
-        """End span."""
+        """
+        End span.
+
+        Args:
+            span: The span to end.
+        """
+        return
 
     def force_flush(self, timeout_millis: int = 30000) -> None:
-        """Force flush span."""
+        """
+        Force flush span.
+
+        Args:
+            timeout_millis: The timeout in milliseconds.
+        """
+        return
 
     def shutdown(self) -> None:
-        pass
+        """
+        Shutdown the processor.
+        """
+        return
