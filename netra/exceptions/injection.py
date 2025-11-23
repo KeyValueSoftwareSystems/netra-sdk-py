@@ -23,6 +23,16 @@ class InjectionException(Exception):
         is_blocked: bool = True,
         violation_actions: Optional[Dict[str, List[str]]] = None,
     ) -> None:
+        """
+        Initialize the injection exception.
+
+        Args:
+            message: The message to display.
+            has_violation: Whether a violation was detected.
+            violations: List of violations detected.
+            is_blocked: Whether the input was blocked.
+            violation_actions: Dictionary mapping action types to lists of violations.
+        """
         # Always pass the message to the base Exception constructor
         super().__init__(message)
 

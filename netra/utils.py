@@ -11,7 +11,9 @@ from typing import Any
 def truncate_string(value: str, max_len: int) -> str:
     """Truncate a string to max_len characters.
 
-    If value is not a string, it is returned unchanged.
+    Args:
+        value: The string to truncate
+        max_len: The maximum length of the string
     """
     try:
         if not isinstance(value, str):
@@ -24,13 +26,9 @@ def truncate_string(value: str, max_len: int) -> str:
 def truncate_and_repair_json(content: Any, max_len: int) -> Any:
     """Truncate a dict/list by JSON-serializing and hard-cutting, then attempt repair.
 
-    The function will:
-    - json.dumps(content, default=str)
-    - hard-cut the string to max_len
-    - try to repair using `json-repair` (optional dependency)
-    - parse back with json.loads
-
-    On failure, returns a minimal safe container with a preview of the truncated text.
+    Args:
+        content: The content to truncate
+        max_len: The maximum length of the content
     """
     try:
         import json
@@ -68,8 +66,9 @@ def truncate_and_repair_json(content: Any, max_len: int) -> Any:
 def process_content_for_max_len(content: Any, max_len: int) -> Any:
     """Ensure the content fits within max_len when serialized.
 
-    - If content is a string: truncate to max_len.
-    - If content is a dict or list: attempt truncate+repair to keep it valid JSON.
+    Args:
+        content: The content to process
+        max_len: The maximum length of the content
     """
     try:
         if isinstance(content, str):

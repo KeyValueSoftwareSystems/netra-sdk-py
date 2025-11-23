@@ -8,6 +8,15 @@ T = TypeVar("T")
 
 
 def run_async_safely(coro: Coroutine[Any, Any, T]) -> T:
+    """
+    Run the given coroutine asynchronously and return the result.
+
+    Args:
+        coro: The coroutine to run.
+
+    Returns:
+        The result of the coroutine.
+    """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
@@ -32,6 +41,12 @@ def run_async_safely(coro: Coroutine[Any, Any, T]) -> T:
 
 
 def get_session_id_from_baggage() -> Optional[str]:
+    """
+    Get the session id from the baggage.
+
+    Returns:
+        The session id.
+    """
     try:
         value = baggage.get_baggage("session_id")
         return value if isinstance(value, str) else None
@@ -40,5 +55,14 @@ def get_session_id_from_baggage() -> Optional[str]:
 
 
 def get_trace_id_from_span(span: trace.Span) -> str:
+    """
+    Get the trace id from the span.
+
+    Args:
+        span: The span to get the trace id from.
+
+    Returns:
+        The trace id.
+    """
     ctx = span.get_span_context()
     return f"{ctx.trace_id:032x}"

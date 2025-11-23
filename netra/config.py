@@ -10,19 +10,6 @@ from netra.version import __version__
 class Config:
     """
     Holds configuration options for the tracer.
-
-    Attributes:
-        app_name: Logical name for this service
-        otlp_endpoint: URL for OTLP collector
-        api_key: API key for the collector (sent as Bearer token)
-        headers: Additional headers (W3C Correlation-Context format)
-        disable_batch: Whether to disable batch span processor
-        trace_content: Whether to capture prompt/completion content
-        debug_mode: Whether to enable SDK logging (default: False)
-        enable_root_span: Whether to create a process root span (default: False)
-        resource_attributes: Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
-        enable_scrubbing: Whether to enable pydantic logfire scrubbing (default: False)
-        blocked_spans: List of span names (prefix/suffix patterns) to block from export
     """
 
     # SDK Constants
@@ -45,6 +32,20 @@ class Config:
         enable_scrubbing: Optional[bool] = None,
         blocked_spans: Optional[List[str]] = None,
     ):
+        """
+        Initialize the configuration.
+
+        Args:
+            app_name: Logical name for this service
+            headers: Additional headers (W3C Correlation-Context format)
+            disable_batch: Whether to disable batch span processor
+            trace_content: Whether to capture prompt/completion content
+            debug_mode: Whether to enable SDK logging (default: False)
+            enable_root_span: Whether to create a process root span (default: False)
+            resource_attributes: Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
+            enable_scrubbing: Whether to enable pydantic logfire scrubbing (default: False)
+            blocked_spans: List of span names (prefix/suffix patterns) to block from export
+        """
         self.app_name = self._get_app_name(app_name)
         self.otlp_endpoint = self._get_otlp_endpoint()
         self.api_key = os.getenv("NETRA_API_KEY")

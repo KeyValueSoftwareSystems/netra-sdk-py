@@ -12,10 +12,25 @@ class Usage:
     """Public entry-point exposed as Netra.usage"""
 
     def __init__(self, cfg: Config) -> None:
+        """
+        Initialize the usage client.
+
+        Args:
+            cfg: Configuration object with usage settings
+        """
         self._config = cfg
         self._client = _UsageHttpClient(cfg)
 
     def get_session_usage(self, session_id: str) -> SessionUsageData | Any:
+        """
+        Get session usage data.
+
+        Args:
+            session_id: Session identifier
+
+        Returns:
+            SessionUsageData: Session usage data
+        """
         if not session_id:
             logger.error("netra.usage: session_id is required to fetch session usage")
             return None
@@ -28,6 +43,15 @@ class Usage:
         return SessionUsageData(session_id=session_id, token_count=token_count, request_count=request_count)
 
     def get_tenant_usage(self, tenant_id: str) -> TenantUsageData | Any:
+        """
+        Get tenant usage data.
+
+        Args:
+            tenant_id: Tenant identifier
+
+        Returns:
+            TenantUsageData: Tenant usage data
+        """
         if not tenant_id:
             logger.error("netra.usage: tenant_id is required to fetch tenant usage")
             return None

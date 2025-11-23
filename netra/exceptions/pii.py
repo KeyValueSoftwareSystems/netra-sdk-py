@@ -33,6 +33,19 @@ class PIIBlockedException(Exception):
         original_text: Optional[Union[str, List[Dict[str, str]], List[str], List[Any]]] = None,
         hashed_entities: Optional[Dict[str, str]] = None,
     ) -> None:
+        """
+        Initialize the PII exception.
+
+        Args:
+            message: The message to display.
+            has_pii: Whether PII was detected in the provided text.
+            pii_entities: Mapping from PII label to number of occurrences.
+            masked_text: Input text after masking PII spans.
+            pii_actions: Dictionary mapping action types to lists of PII entities.
+            is_blocked: Whether the input was blocked.
+            original_text: The original text used to call the detect() method.
+            hashed_entities: Dictionary mapping hashed entity values to their original values.
+        """
         # Always pass the message to the base Exception constructor
         super().__init__(message)
 

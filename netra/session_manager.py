@@ -1,8 +1,3 @@
-"""
-Session management for PromptOps SDK.
-Handles automatic session and user ID management for applications.
-"""
-
 import logging
 from datetime import datetime
 from enum import Enum
@@ -66,6 +61,10 @@ class SessionManager:
     def register_span(cls, name: str, span: trace.Span) -> None:
         """
         Register a span under a given name. Supports nested spans with the same name via a stack.
+
+        Args:
+            name: The name of the span to register
+            span: The span to register
         """
         try:
             stack = cls._spans_by_name.get(name)
@@ -82,6 +81,10 @@ class SessionManager:
     def unregister_span(cls, name: str, span: trace.Span) -> None:
         """
         Unregister a span for a given name. Safe if not present.
+
+        Args:
+            name: The name of the span to unregister
+            span: The span to unregister
         """
         try:
             stack = cls._spans_by_name.get(name)
@@ -106,6 +109,12 @@ class SessionManager:
     def get_span_by_name(cls, name: str) -> Optional[trace.Span]:
         """
         Get the most recently registered span with the given name.
+
+        Args:
+            name: The name of the span to get
+
+        Returns:
+            The most recently registered span with the given name, or None if not found
         """
         stack = cls._spans_by_name.get(name)
         if stack:
@@ -211,14 +220,6 @@ class SessionManager:
         """
         Set session context attributes in OpenTelemetry baggage.
 
-        Behavior:
-        - Adds values to baggage on the current context.
-        - To avoid context token mismatch errors, this method only attaches the
-          modified context when it is safe (no active recording span), unless
-          forced via attach_globally=True.
-        - When not attaching (e.g., inside an active span), it annotates the
-          current span with equivalent attributes for visibility.
-
         Args:
             session_key: Key to set in baggage (session_id, user_id, tenant_id, or custom_attributes)
             value: Value to set for the key
@@ -266,11 +267,10 @@ class SessionManager:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
 
-        Stored attribute format:
-        conversation: [
-          { "type": "input/output/system", "field_name": "sample_name", "value": "sample_value" },
-          ...
-        ]
+        Args:
+            conversation_type: Type of conversation (input, output, system)
+            role: Role of the participant (e.g., 'user', 'assistant', 'system')
+            content: Content of the conversation entry
         """
 
         # Hard runtime validation of input types and values
@@ -360,9 +360,9 @@ class SessionManager:
         """
         Set an attribute strictly on the currently active OpenTelemetry span.
 
-        - Does not fall back to any root span.
-        - Does not mutate global baggage/context.
-        - If no active recording span is present, logs a warning and returns.
+        Args:
+            attr_key: Key for the attribute to set
+            attr_value: Value for the attribute to set
         """
         try:
             span = trace.get_current_span()

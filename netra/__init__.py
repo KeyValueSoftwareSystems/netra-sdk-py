@@ -8,9 +8,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
 from netra.config import Config
-from netra.evaluation import Evaluation, EvaluationScore
-
-# Instrumentor functions
+from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
 from netra.logging_utils import configure_package_logging
@@ -19,13 +17,19 @@ from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
 
+__all__ = [
+    "Netra",
+    "UsageModel",
+    "ActionModel",
+]
+
 logger = logging.getLogger(__name__)
 
 
 class Netra:
     """
-    Main SDK class. Call SDK.init(...) at the start of your application
-    to configure OpenTelemetry and enable all built-in LLM + VectorDB instrumentations.
+    Main SDK class. Call Netra.init(...) at the start of your application
+    to configure OpenTelemetry and enable all instrumentations.
     """
 
     _initialized = False
@@ -36,7 +40,8 @@ class Netra:
 
     @classmethod
     def is_initialized(cls) -> bool:
-        """Thread-safe check if Netra has been initialized.
+        """
+        Thread-safe check if Netra has been initialized.
 
         Returns:
             bool: True if Netra has been initialized, False otherwise
@@ -60,11 +65,27 @@ class Netra:
         instruments: Optional[Set[NetraInstruments]] = None,
         block_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
-        # Acquire lock at the start of the method and hold it throughout
-        # to prevent race conditions during initialization
-        with cls._init_lock:
+        """
+        Thread-safe initialization of Netra.
 
-            # Check if already initialized while holding the lock
+        Args:
+            app_name: Name of the application
+            headers: Headers to be sent to the server
+            disable_batch: Whether to disable batch processing
+            trace_content: Whether to trace content
+            debug_mode: Whether to enable debug mode
+            enable_root_span: Whether to enable root span
+            resource_attributes: Resource attributes to be sent to the server
+            environment: Environment to be sent to the server
+            enable_scrubbing: Whether to enable scrubbing
+            blocked_spans: List of spans to be blocked
+            instruments: Set of instruments to be enabled
+            block_instruments: Set of instruments to be blocked
+
+        Returns:
+            None
+        """
+        with cls._init_lock:
             if cls._initialized:
                 logger.warning("Netra.init() called more than once; ignoring subsequent calls.")
                 return
@@ -104,8 +125,6 @@ class Netra:
                 cls.usage = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
-            #    Pass trace_content flag to instrumentors that can capture prompts/completions
-
             init_instrumentations(
                 should_enrich_metrics=True,
                 base64_image_uploader=None,
@@ -174,7 +193,7 @@ class Netra:
     @classmethod
     def set_session_id(cls, session_id: str) -> None:
         """
-        Set session_id context attributes in the current OpenTelemetry context.
+        Set session_id context attributes for all spans.
 
         Args:
             session_id: Session identifier
@@ -190,7 +209,7 @@ class Netra:
     @classmethod
     def set_user_id(cls, user_id: str) -> None:
         """
-        Set user_id context attributes in the current OpenTelemetry context.
+        Set user_id context attributes for all spans.
 
         Args:
             user_id: User identifier
@@ -206,10 +225,10 @@ class Netra:
     @classmethod
     def set_tenant_id(cls, tenant_id: str) -> None:
         """
-        Set user_account_id context attributes in the current OpenTelemetry context.
+        Set tenant_id context attributes for all spans.
 
         Args:
-            user_account_id: User account identifier
+            tenant_id: Tenant identifier
         """
         if not isinstance(tenant_id, str):
             logger.error(f"set_tenant_id: tenant_id must be a string, got {type(tenant_id)}")
@@ -222,7 +241,7 @@ class Netra:
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
         """
-        Set a custom attribute on the currently active OpenTelemetry span only.
+        Set a custom attribute on the current active span.
 
         Args:
             key: Custom attribute key
@@ -237,7 +256,7 @@ class Netra:
     @classmethod
     def set_custom_event(cls, event_name: str, attributes: Any) -> None:
         """
-        Set custom event in the current OpenTelemetry context.
+        Set custom event in the current active span.
 
         Args:
             event_name: Name of the custom event
@@ -251,9 +270,12 @@ class Netra:
     @classmethod
     def add_conversation(cls, conversation_type: ConversationType, role: str, content: Any) -> None:
         """
-        Append a conversation entry and set span attribute 'conversation' as an array.
-        If a conversation array already exists for the current active span, this appends
-        to it; otherwise, it initializes a new array.
+        Append a conversation entry to the current active span.
+
+        Args:
+            conversation_type: Type of the conversation
+            role: Role of the conversation
+            content: Content of the conversation
         """
         SessionManager.add_conversation(conversation_type=conversation_type, role=role, content=content)
 
@@ -266,9 +288,15 @@ class Netra:
         as_type: Optional[SpanType] = SpanType.SPAN,
     ) -> SpanWrapper:
         """
-        Start a new session.
+        Start a new span.
+
+        Args:
+            name: Name of the span
+            attributes: Attributes of the span
+            module_name: Name of the module
+            as_type: Type of the span (SPAN, TOOL, GENERATION, EMBEDDING, AGENT)
+
+        Returns:
+            SpanWrapper: SpanWrapper object
         """
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
-
-
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore"]
