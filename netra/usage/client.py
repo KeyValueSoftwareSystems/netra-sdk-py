@@ -13,7 +13,12 @@ class _UsageHttpClient:
     """Internal HTTP client for usage APIs."""
 
     def __init__(self, config: Config) -> None:
-        """Initialize the usage HTTP client."""
+        """
+        Initialize the usage HTTP client.
+
+        Args:
+            config: Configuration object with usage settings
+        """
         self._client: Optional[httpx.Client] = None
         endpoint = (config.otlp_endpoint or "").strip()
         if not endpoint:

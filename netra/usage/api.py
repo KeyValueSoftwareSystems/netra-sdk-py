@@ -12,7 +12,12 @@ class Usage:
     """Public entry-point exposed as Netra.usage"""
 
     def __init__(self, cfg: Config) -> None:
-        """Initialize the usage client."""
+        """
+        Initialize the usage client.
+
+        Args:
+            cfg: Configuration object with usage settings
+        """
         self._config = cfg
         self._client = _UsageHttpClient(cfg)
 
