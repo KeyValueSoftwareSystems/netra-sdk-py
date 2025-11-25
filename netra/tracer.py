@@ -14,7 +14,7 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from netra.config import Config
-from netra.exporters import FilteringSpanExporter
+from netra.exporters import FilteringSpanExporter, TrialAwareOTLPExporter
 
 logger = logging.getLogger(__name__)
 
@@ -71,10 +71,12 @@ class Tracer:
                 logger.warning("OTLP endpoint not provided, falling back to console exporter")
                 exporter = ConsoleSpanExporter()
             else:
-                exporter = OTLPSpanExporter(
+                otlp_exporter = OTLPSpanExporter(
                     endpoint=self._format_endpoint(self.cfg.otlp_endpoint),
                     headers=self.cfg.headers,
                 )
+                # Wrap with TrialAwareOTLPExporter to intercept response
+                exporter = TrialAwareOTLPExporter(otlp_exporter)
             original_exporter = exporter
             try:
                 patterns = getattr(self.cfg, "blocked_spans", None) or []
