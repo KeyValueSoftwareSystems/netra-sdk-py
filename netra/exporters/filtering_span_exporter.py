@@ -7,6 +7,7 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
+from netra.exporters.trial_status_manager import is_trial_blocked, is_trace_id_blocked, add_blocked_trace_id
 from netra.processors.local_filtering_span_processor import (
     BLOCKED_LOCAL_PARENT_MAP,
 )
@@ -62,9 +63,25 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         Returns:
             SpanExportResult.SUCCESS if the export was successful.
         """
+        if is_trial_blocked():
+            logger.debug("Trial/quota exhausted: blocking %d span(s) from export", len(spans))
+            # Track trace IDs from spans being blocked during blocking period
+            for span in spans:
+                trace_id = self._get_trace_id(span)
+                if trace_id:
+                    add_blocked_trace_id(trace_id)
+            return SpanExportResult.SUCCESS
+        
         filtered: List[ReadableSpan] = []
         blocked_parent_map: Dict[Any, Any] = {}
         for span in spans:
+            trace_id = self._get_trace_id(span)
+            
+            # Check if this span belongs to a trace ID that was blocked
+            if trace_id and is_trace_id_blocked(trace_id):
+                logger.debug("Filtering span from previously blocked trace ID: %s", trace_id)
+                continue
+            
             name = getattr(span, "name", None)
             if name is None:
                 filtered.append(span)
@@ -130,6 +147,33 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             if name.endswith(suf):
                 return True
         return False
+
+    def _get_trace_id(self, span: ReadableSpan) -> str:
+        """Extract trace ID from span.
+        
+        Args:
+            span: The span to extract trace ID from
+            
+        Returns:
+            Trace ID as hex string, or empty string if not found
+        """
+        try:
+            context = getattr(span, "context", None)
+            if context is None:
+                return ""
+            
+            trace_id = getattr(context, "trace_id", None)
+            if trace_id is None:
+                return ""
+            
+            # trace_id is typically an integer, convert to hex string
+            if isinstance(trace_id, int):
+                return format(trace_id, '032x')
+            else:
+                return str(trace_id)
+        except Exception as e:
+            logger.debug("Error extracting trace ID from span: %s", e)
+            return ""
 
     def _get_local_patterns(self, span: ReadableSpan) -> List[str]:
         """
