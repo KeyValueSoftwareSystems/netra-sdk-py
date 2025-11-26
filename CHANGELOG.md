@@ -20,6 +20,10 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Extended usage tracking utility to support cost tracking
 
+## [0.1.56] - 2025-11-26
+
+- Extended usage tracking utility to support cost tracking
+
 ## [0.1.55] - 2025-11-20
 
 - Added utility to get session and tenant based usage
