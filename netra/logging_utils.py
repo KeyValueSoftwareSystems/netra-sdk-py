@@ -9,7 +9,12 @@ _LOG_FORMATTER = logging.Formatter(
 
 
 def configure_package_logging(debug_mode: bool) -> None:
-    """Configure logging for the netra package and related dependencies."""
+    """
+    Configure logging for the netra package and related dependencies.
+
+    Args:
+        debug_mode: Whether to enable debug logging.
+    """
 
     pkg_logger = logging.getLogger("netra")
     httpx_logger = logging.getLogger("httpx")

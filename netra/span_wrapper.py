@@ -59,15 +59,6 @@ class SpanType(str, Enum):
 class SpanWrapper:
     """
     Context manager for tracking observability data for external API calls.
-
-    Usage:
-        with combat.start_span("video_gen_task") as span:
-            span.set_prompt("A cat playing piano").set_image_height("1024")
-
-            # External API call
-            result = external_api.generate_video(...)
-
-            span.set_usage(usage_data)
     """
 
     def __init__(
@@ -77,6 +68,15 @@ class SpanWrapper:
         module_name: str = "combat_sdk",
         as_type: Optional[SpanType] = SpanType.SPAN,
     ):
+        """
+        Initialize the span wrapper.
+
+        Args:
+            name: Name of the span
+            attributes: Attributes to set on the span
+            module_name: Name of the module
+            as_type: Type of span
+        """
         self.name = name
         self.attributes = attributes or {}
 
@@ -195,7 +195,13 @@ class SpanWrapper:
         return False
 
     def set_attribute(self, key: str, value: str) -> "SpanWrapper":
-        """Set a single attribute and return self for method chaining."""
+        """
+        Set a single attribute and return self for method chaining.
+
+        Args:
+            key: The key of the attribute
+            value: The value of the attribute
+        """
         self.attributes[key] = value
         # Also set on the span if it exists
         if self.span:
@@ -203,35 +209,70 @@ class SpanWrapper:
         return self
 
     def set_prompt(self, prompt: str) -> "SpanWrapper":
-        """Set the input prompt."""
+        """
+        Set the input prompt.
+
+        Args:
+            prompt: The input prompt
+        """
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.PROMPT}", prompt)
 
     def set_negative_prompt(self, negative_prompt: str) -> "SpanWrapper":
-        """Set the negative prompt."""
+        """
+        Set the negative prompt.
+
+        Args:
+            negative_prompt: The negative prompt
+        """
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.NEGATIVE_PROMPT}", negative_prompt)
 
     def set_usage(self, usage: List[UsageModel]) -> "SpanWrapper":
-        """Set the usage data as a JSON string."""
+        """
+        Set the usage data as a JSON string.
+
+        Args:
+            usage: The usage data
+        """
         usage_dict = [u.model_dump() for u in usage]
         usage_json = json.dumps(usage_dict)
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}", usage_json)
 
     def set_action(self, action: List[ActionModel]) -> "SpanWrapper":
-        """Set the action data as a JSON string."""
+        """
+        Set the action data as a JSON string.
+
+        Args:
+            action: The action data
+        """
         action_dict = [a.model_dump() for a in action]
         action_json = json.dumps(action_dict)
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ACTION}", action_json)
 
     def set_model(self, model: str) -> "SpanWrapper":
-        """Set the model used."""
+        """
+        Set the model used.
+
+        Args:
+            model: The model used
+        """
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.MODEL}", model)
 
     def set_llm_system(self, system: str) -> "SpanWrapper":
-        """Set the LLM system used."""
+        """
+        Set the LLM system used.
+
+        Args:
+            system: The LLM system used
+        """
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.LLM_SYSTEM}", system)
 
     def set_error(self, error_message: str) -> "SpanWrapper":
-        """Manually set an error message."""
+        """
+        Manually set an error message.
+
+        Args:
+            error_message: The error message
+        """
         self.status = "error"
         self.error_message = error_message
         if self.span:
@@ -239,18 +280,34 @@ class SpanWrapper:
         return self.set_attribute(f"{Config.LIBRARY_NAME}.{ATTRIBUTE.ERROR_MESSAGE}", error_message)
 
     def set_success(self) -> "SpanWrapper":
-        """Manually mark the span wrapper as successful."""
+        """
+        Manually mark the span wrapper as successful.
+
+        Returns:
+            The span wrapper
+        """
         self.status = "success"
         if self.span:
             self.span.set_status(Status(StatusCode.OK))
         return self
 
     def add_event(self, name: str, attributes: Optional[Dict[str, str]] = None) -> "SpanWrapper":
-        """Add an event to the span."""
+        """
+        Add an event to the span.
+
+        Args:
+            name: The name of the event
+            attributes: The attributes of the event
+        """
         if self.span:
             self.span.add_event(name, attributes or {})
         return self
 
     def get_current_span(self) -> Optional[trace.Span]:
-        """Get the current OpenTelemetry span."""
+        """
+        Get the current OpenTelemetry span.
+
+        Returns:
+            The current OpenTelemetry span
+        """
         return self.span

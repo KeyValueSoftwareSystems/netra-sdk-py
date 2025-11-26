@@ -12,10 +12,11 @@ logger = logging.getLogger(__name__)
 
 class _EvaluationHttpClient:
     def __init__(self, config: Config) -> None:
-        """Initialize HTTP client for evaluation endpoints.
+        """
+        Initialize HTTP client for evaluation endpoints.
 
-        If NETRA_OTLP_ENDPOINT is not provided, the client will be disabled but
-        methods will log errors and return safe defaults instead of raising.
+        Args:
+            config: The configuration object.
         """
         self._client: Optional[httpx.Client] = None
         endpoint = (config.otlp_endpoint or "").strip()
@@ -47,9 +48,14 @@ class _EvaluationHttpClient:
             self._client = None
 
     def get_dataset(self, dataset_id: str) -> Any:
-        """Fetch dataset items for a dataset id.
+        """
+        Fetch dataset items for a dataset id.
 
-        Returns an empty list on error and logs the error.
+        Args:
+            dataset_id: The id of the dataset to fetch.
+
+        Returns:
+            A list of dataset items.
         """
         if not self._client:
             logger.error(
@@ -68,9 +74,15 @@ class _EvaluationHttpClient:
         return []
 
     def create_run(self, dataset_id: str, name: str) -> Any:
-        """Create a run for a dataset.
+        """
+        Create a run for a dataset.
 
-        Returns a backend JSON response on success or {"success": False} on error.
+        Args:
+            dataset_id: The id of the dataset to create a run for.
+            name: The name of the run.
+
+        Returns:
+            A backend JSON response on success or {"success": False} on error.
         """
         if not self._client:
             logger.error(
@@ -93,7 +105,17 @@ class _EvaluationHttpClient:
     def create_dataset(
         self, name: Optional[str], tags: Optional[List[str]] = None, policy_ids: Optional[List[str]] = None
     ) -> Any:
-        """Create an empty dataset and return backend data (expects an id)."""
+        """
+        Create an empty dataset and return backend data (expects an id).
+
+        Args:
+            name: The name of the dataset.
+            tags: Optional list of tags to associate with the dataset.
+            policy_ids: Optional list of policy IDs to associate with the dataset.
+
+        Returns:
+            A backend JSON response on success or {"success": False} on error.
+        """
         if not self._client:
             logger.error("netra.evaluation: Evaluation client is not initialized; cannot create dataset")
             return {"success": False}
@@ -115,7 +137,16 @@ class _EvaluationHttpClient:
         return {"success": False}
 
     def add_dataset_entry(self, dataset_id: str, item_payload: Dict[str, Any]) -> Any:
-        """Add a single item to an existing dataset and return backend data (e.g., new item id)."""
+        """
+        Add a single item to an existing dataset and return backend data (e.g., new item id).
+
+        Args:
+            dataset_id: The id of the dataset to which the item will be added.
+            item_payload: The dataset item to add.
+
+        Returns:
+            A backend JSON response on success or {"success": False} on error.
+        """
         if not self._client:
             logger.error(
                 "netra.evaluation: Evaluation client is not initialized; cannot add item to dataset '%s'",
@@ -143,7 +174,17 @@ class _EvaluationHttpClient:
         session_id: Optional[str],
         score: Optional[List[EvaluationScore]] = None,
     ) -> None:
-        """Post per-entry status. Logs errors and returns None on failure."""
+        """
+        Post per-entry status. Logs errors and returns None on failure.
+
+        Args:
+            run_id: The id of the run to which the entry belongs.
+            test_id: The id of the test to which the entry belongs.
+            status: The status of the entry.
+            trace_id: The trace id of the entry.
+            session_id: The session id of the entry.
+            score: Optional list of scores to record.
+        """
         if not self._client:
             logger.error(
                 "netra.evaluation: Evaluation client is not initialized; cannot post status '%s' for run '%s' test '%s'",
@@ -188,7 +229,13 @@ class _EvaluationHttpClient:
             )
 
     def post_run_status(self, run_id: str, status: RunStatus) -> None:
-        """Post final run status, e.g., {"status": "completed"}. Logs errors on failure."""
+        """
+        Post final run status, e.g., {"status": "completed"}. Logs errors on failure.
+
+        Args:
+            run_id: The id of the run to which the status will be posted.
+            status: The status of the run.
+        """
         if not self._client:
             logger.error(
                 "netra.evaluation: Evaluation client is not initialized; cannot post run status '%s' for run '%s'",

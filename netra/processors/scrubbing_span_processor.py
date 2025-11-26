@@ -57,10 +57,22 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         self.scrub_replacement = "[SCRUBBED]"
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
-        """Process span when it starts - no scrubbing needed here."""
+        """
+        Start span and wrap set_attribute.
+
+        Args:
+            span: The span to start.
+            parent_context: The parent context of the span.
+        """
+        return
 
     def on_end(self, span: trace.Span) -> None:
-        """Scrub sensitive data from span attributes when span ends."""
+        """
+        Scrub sensitive data from span attributes when span ends.
+
+        Args:
+            span: The span to end.
+        """
         try:
             # Get span attributes
             if hasattr(span, "_attributes") and span._attributes:
@@ -74,6 +86,7 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
         except Exception as e:
             logger.exception(f"Error scrubbing span attributes: {e}")
+            return
 
     def _scrub_key_value(self, key: str, value: Any) -> tuple[str, Any]:
         """Scrub sensitive data from a key-value pair.
@@ -173,6 +186,8 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     def force_flush(self, timeout_millis: int = 30000) -> None:
         """Force flush - no-op for scrubbing processor."""
+        return
 
     def shutdown(self) -> None:
         """Shutdown - no-op for scrubbing processor."""
+        return

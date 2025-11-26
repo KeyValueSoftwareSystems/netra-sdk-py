@@ -16,7 +16,13 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """OpenTelemetry span processor that automatically adds session attributes to spans."""
 
     def on_start(self, span: trace.Span, parent_context: Optional[otel_context.Context] = None) -> None:
-        """Add session attributes to span when it starts and store current span."""
+        """
+        Add session attributes to span when it starts and store current span.
+
+        Args:
+            span: The span to start.
+            parent_context: The parent context of the span.
+        """
         try:
             # Store the current span in SessionManager
             SessionManager.set_current_span(span)
@@ -52,10 +58,25 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
             logger.exception(f"Error setting span attributes: {e}")
 
     def on_end(self, span: trace.Span) -> None:
-        pass
+        """
+        End span.
+
+        Args:
+            span: The span to end.
+        """
+        return
 
     def force_flush(self, timeout_millis: int = 30000) -> None:
-        pass
+        """
+        Force flush span.
+
+        Args:
+            timeout_millis: The timeout in milliseconds.
+        """
+        return
 
     def shutdown(self) -> None:
-        pass
+        """
+        Shutdown the processor.
+        """
+        return
