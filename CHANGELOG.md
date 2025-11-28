@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+
+## [0.1.57] - 2025-11-28
+
+- Added support for trace list, and span list in usage tracking utility
+
 ## [0.1.56] - 2025-11-26
 
 - Extended usage tracking utility to support cost tracking
@@ -121,4 +126,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.55]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.57]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
