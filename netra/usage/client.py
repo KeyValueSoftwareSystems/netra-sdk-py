@@ -142,6 +142,22 @@ class UsageHttpClient:
         sort_field: str | None = None,
         sort_order: str | None = None,
     ) -> Any:
+        """
+        List all traces.
+
+        Args:
+            start_time: Start time for the traces (in ISO 8601 UTC format)
+            end_time: End time for the traces (in ISO 8601 UTC format)
+            search: Search query for the traces
+            limit: Maximum number of traces to return
+            cursor: Cursor for pagination
+            direction: Direction of pagination
+            sort_field: Field to sort by
+            sort_order: Order to sort by
+
+        Returns:
+            Any: Traces data
+        """
         if not self._client:
             logger.error("netra.usage: Usage client is not initialized; cannot list traces")
             return {}
@@ -187,6 +203,19 @@ class UsageHttpClient:
         limit: int | None = None,
         search: str | None = None,
     ) -> Any:
+        """
+        List all spans for a given trace.
+
+        Args:
+            trace_id: Trace identifier
+            cursor: Cursor for pagination
+            direction: Direction of pagination
+            limit: Maximum number of spans to return
+            search: Search query for the spans
+
+        Returns:
+            Any: Spans data
+        """
         if not self._client:
             logger.error("netra.usage: Usage client is not initialized; cannot list spans for trace '%s'", trace_id)
             return {}

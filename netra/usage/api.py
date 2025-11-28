@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Iterator, Optional
+from typing import Any, Iterator, Literal, Optional
 
 from netra.config import Config
 from netra.usage.client import UsageHttpClient
@@ -107,9 +107,9 @@ class Usage:
         search: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
-        direction: Optional[str] = None,
+        direction: Optional[Literal["up", "down"]] = "down",
         sort_field: Optional[str] = None,
-        sort_order: Optional[str] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
     ) -> TracesPage | Any:
         """
         List all traces.
@@ -117,7 +117,7 @@ class Usage:
         Args:
             start_time: Start time for the traces (in ISO 8601 UTC format)
             end_time: End time for the traces (in ISO 8601 UTC format)
-            search: Search query for the traces
+            search: Search with trace_id, session_id, user_id, or tenant_id for the traces
             limit: Maximum number of traces to return
             cursor: Cursor for pagination
             direction: Direction of pagination
@@ -162,7 +162,7 @@ class Usage:
         self,
         trace_id: str,
         cursor: Optional[str] = None,
-        direction: Optional[str] = None,
+        direction: Optional[Literal["up", "down"]] = "down",
         limit: Optional[int] = None,
         search: Optional[str] = None,
     ) -> SpansPage | Any:
@@ -174,7 +174,7 @@ class Usage:
             cursor: Cursor for pagination
             direction: Direction of pagination
             limit: Maximum number of spans to return
-            search: Search query for the spans
+            search: Search with span name or span kind name for the spans
 
         Returns:
             SpansPage: Spans page
@@ -214,9 +214,9 @@ class Usage:
         search: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
-        direction: Optional[str] = None,
+        direction: Optional[Literal["up", "down"]] = "down",
         sort_field: Optional[str] = None,
-        sort_order: Optional[str] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
     ) -> Iterator[TraceSummary]:
         """
         Iterate over traces using cursor-based pagination.
@@ -227,7 +227,7 @@ class Usage:
         Args:
             start_time: Start time for the traces (in ISO 8601 UTC format)
             end_time: End time for the traces (in ISO 8601 UTC format)
-            search: Search query for the traces
+            search: Search with trace_id, session_id, user_id, or tenant_id for the traces
             limit: Maximum number of traces to return
             cursor: Cursor for pagination
             direction: Direction of pagination
@@ -271,7 +271,7 @@ class Usage:
         self,
         trace_id: str,
         cursor: Optional[str] = None,
-        direction: Optional[str] = None,
+        direction: Optional[Literal["up", "down"]] = "down",
         limit: Optional[int] = None,
         search: Optional[str] = None,
     ) -> Iterator[TraceSpan]:
@@ -286,7 +286,7 @@ class Usage:
             cursor: Cursor for pagination
             direction: Direction of pagination
             limit: Maximum number of spans to return
-            search: Search query for the spans
+            search: Search with span name or span kind name for the spans
 
         Returns:
             Iterator[TraceSpan]: Iterator over TraceSpan items
