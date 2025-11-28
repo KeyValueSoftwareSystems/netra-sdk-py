@@ -104,7 +104,10 @@ class Usage:
         self,
         start_time: str,
         end_time: str,
-        search: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         direction: Optional[Literal["up", "down"]] = "down",
@@ -117,7 +120,10 @@ class Usage:
         Args:
             start_time: Start time for the traces (in ISO 8601 UTC format)
             end_time: End time for the traces (in ISO 8601 UTC format)
-            search: Search with trace_id, session_id, user_id, or tenant_id for the traces
+            trace_id: Search based on trace_id, if provided
+            session_id: Search based on session_id, if provided
+            user_id: Search based on user_id, if provided
+            tenant_id: Search based on tenant_id, if provided
             limit: Maximum number of traces to return
             cursor: Cursor for pagination
             direction: Direction of pagination
@@ -134,7 +140,10 @@ class Usage:
         result = self._client.list_traces(
             start_time=start_time,
             end_time=end_time,
-            search=search,
+            trace_id=trace_id,
+            session_id=session_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
             limit=limit,
             cursor=cursor,
             direction=direction,
@@ -164,7 +173,7 @@ class Usage:
         cursor: Optional[str] = None,
         direction: Optional[Literal["up", "down"]] = "down",
         limit: Optional[int] = None,
-        search: Optional[str] = None,
+        span_name: Optional[str] = None,
     ) -> SpansPage | Any:
         """
         List all spans for a given trace.
@@ -174,7 +183,7 @@ class Usage:
             cursor: Cursor for pagination
             direction: Direction of pagination
             limit: Maximum number of spans to return
-            search: Search with span name or span kind name for the spans
+            span_name: Search with span name or span kind name for the spans
 
         Returns:
             SpansPage: Spans page
@@ -188,7 +197,7 @@ class Usage:
             cursor=cursor,
             direction=direction,
             limit=limit,
-            search=search,
+            span_name=span_name,
         )
 
         if not isinstance(result, dict):
@@ -211,7 +220,10 @@ class Usage:
         self,
         start_time: str,
         end_time: str,
-        search: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
         limit: Optional[int] = None,
         cursor: Optional[str] = None,
         direction: Optional[Literal["up", "down"]] = "down",
@@ -227,7 +239,10 @@ class Usage:
         Args:
             start_time: Start time for the traces (in ISO 8601 UTC format)
             end_time: End time for the traces (in ISO 8601 UTC format)
-            search: Search with trace_id, session_id, user_id, or tenant_id for the traces
+            trace_id: Search based on trace_id, if provided
+            session_id: Search based on session_id, if provided
+            user_id: Search based on user_id, if provided
+            tenant_id: Search based on tenant_id, if provided
             limit: Maximum number of traces to return
             cursor: Cursor for pagination
             direction: Direction of pagination
@@ -246,7 +261,10 @@ class Usage:
             page = self.list_traces(
                 start_time=start_time,
                 end_time=end_time,
-                search=search,
+                trace_id=trace_id,
+                session_id=session_id,
+                user_id=user_id,
+                tenant_id=tenant_id,
                 limit=limit,
                 cursor=current_cursor,
                 direction=direction,
@@ -273,7 +291,7 @@ class Usage:
         cursor: Optional[str] = None,
         direction: Optional[Literal["up", "down"]] = "down",
         limit: Optional[int] = None,
-        search: Optional[str] = None,
+        span_name: Optional[str] = None,
     ) -> Iterator[TraceSpan]:
         """
         Iterate over spans for a given trace using cursor-based pagination.
@@ -286,7 +304,7 @@ class Usage:
             cursor: Cursor for pagination
             direction: Direction of pagination
             limit: Maximum number of spans to return
-            search: Search with span name or span kind name for the spans
+            span_name: Search with span name or span kind name for the spans
 
         Returns:
             Iterator[TraceSpan]: Iterator over TraceSpan items
@@ -303,7 +321,7 @@ class Usage:
                 cursor=current_cursor,
                 direction=direction,
                 limit=limit,
-                search=search,
+                span_name=span_name,
             )
 
             if not isinstance(page, SpansPage):
