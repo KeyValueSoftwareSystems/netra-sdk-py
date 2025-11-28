@@ -16,10 +16,6 @@ from netra.session_manager import ConversationType, SessionManager
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
-from netra.exporters import (
-    is_trial_blocked,
-    set_trial_blocked,
-)
 
 __all__ = [
     "Netra",
@@ -304,17 +300,6 @@ class Netra:
             SpanWrapper: SpanWrapper object
         """
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
-
-    @classmethod
-    def is_trial_blocked(cls) -> bool:
-        """Check if the backend has indicated that the trial/quota has been exhausted."""
-
-        return is_trial_blocked()
-
-    @classmethod
-    def set_trial_blocked(cls, blocked: bool) -> None:
-        """Set the trial blocked status"""
-        set_trial_blocked(blocked)
 
 
 __all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore"]
