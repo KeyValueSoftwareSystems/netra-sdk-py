@@ -7,16 +7,17 @@ from opentelemetry.sdk.trace.export import (
     SpanExportResult,
 )
 
-from netra.exporters.trial_status_manager import set_trial_blocked
+from netra.exporters.utils import set_trial_blocked
 
 logger = logging.getLogger(__name__)
 
+
 class ResponseInterceptor:
     """Wraps requests.Session to intercept and monitor HTTP responses."""
-    
+
     def __init__(self, session: Any, callback: Callable[[Any], None]) -> None:
         """Initialize the interceptor.
-        
+
         Args:
             session: The requests.Session to wrap
             callback: Callable invoked with each response
@@ -24,10 +25,10 @@ class ResponseInterceptor:
         self._session = session
         self._callback = callback
         self._original_request = session.request
-        
+
         # Replace the request method with our wrapped version
         session.request = self._wrapped_request
-    
+
     def _wrapped_request(self, *args: Any, **kwargs: Any) -> Any:
         """Wrapper around session.request that intercepts responses."""
         try:
@@ -41,9 +42,8 @@ class ResponseInterceptor:
             raise
 
 
-class TrialAwareOTLPExporter(SpanExporter): 
-    """Wrapper around OTLPSpanExporter that detects trial/quota blocks from backend.
-    """
+class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
+    """Wrapper around OTLPSpanExporter that detects trial/quota blocks from backend."""
 
     def __init__(self, wrapped_exporter: SpanExporter) -> None:
         """Initialize with the exporter to wrap.
@@ -57,17 +57,14 @@ class TrialAwareOTLPExporter(SpanExporter):
 
     def _setup_response_interception(self) -> None:
         """Setup interception of HTTP responses from the OTLP exporter.
-        
+
         This wraps the internal requests.Session to monitor responses.
         """
         try:
             # Access the internal requests.Session from OTLPSpanExporter
             if hasattr(self._exporter, "_session") and self._exporter._session is not None:
                 session = self._exporter._session
-                self._interceptor = ResponseInterceptor(
-                    session,
-                    self._on_http_response
-                )
+                self._interceptor = ResponseInterceptor(session, self._on_http_response)
                 logger.debug("Successfully setup HTTP response interception")
             else:
                 logger.debug("Could not find _session on OTLPSpanExporter")
@@ -76,7 +73,7 @@ class TrialAwareOTLPExporter(SpanExporter):
 
     def _on_http_response(self, response: Any) -> None:
         """Callback invoked when HTTP response is received.
-        
+
         Args:
             response: The requests.Response object
         """
@@ -84,7 +81,7 @@ class TrialAwareOTLPExporter(SpanExporter):
             # Log the response for debugging
             status_code = getattr(response, "status_code", None)
             logger.debug("HTTP response received: status=%s, url=%s", status_code, getattr(response, "url", "unknown"))
-            
+
             self._check_response_for_trial_blocking(response)
         except Exception as e:
             logger.debug("Error processing response in callback: %s", e)
@@ -111,7 +108,7 @@ class TrialAwareOTLPExporter(SpanExporter):
         Args:
             response: The HTTP response object (requests.Response)
         """
-        try: 
+        try:
             logger.info(f"Checking response headers for trial blocking indicators {response.json()}")
             try:
                 body = response.json()

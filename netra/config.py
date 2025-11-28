@@ -18,6 +18,7 @@ class Config:
     LIBRARY_VERSION = __version__
     ATTRIBUTE_MAX_LEN = int(os.getenv("NETRA_ATTRIBUTE_MAX_LEN", 50000))
     CONVERSATION_MAX_LEN = int(os.getenv("NETRA_CONVERSATION_CONTENT_MAX_LEN", 50000))
+    TRIAL_BLOCK_DURATION_SECONDS = int(os.getenv("TRIAL_BLOCK_DURATION_SECONDS", 15 * 60))
 
     def __init__(
         self,
