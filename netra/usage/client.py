@@ -135,7 +135,10 @@ class UsageHttpClient:
         self,
         start_time: str | None = None,
         end_time: str | None = None,
-        search: str | None = None,
+        trace_id: str | None = None,
+        session_id: str | None = None,
+        user_id: str | None = None,
+        tenant_id: str | None = None,
         limit: int | None = None,
         cursor: str | None = None,
         direction: str | None = None,
@@ -148,7 +151,10 @@ class UsageHttpClient:
         Args:
             start_time: Start time for the traces (in ISO 8601 UTC format)
             end_time: End time for the traces (in ISO 8601 UTC format)
-            search: Search query for the traces
+            trace_id: Search based on trace_id, if provided
+            session_id: Search based on session_id, if provided
+            user_id: Search based on user_id, if provided
+            tenant_id: Search based on tenant_id, if provided
             limit: Maximum number of traces to return
             cursor: Cursor for pagination
             direction: Direction of pagination
@@ -169,8 +175,20 @@ class UsageHttpClient:
                 payload["startTime"] = start_time
             if end_time is not None:
                 payload["endTime"] = end_time
-            if search is not None:
-                payload["search"] = search
+
+            filters = []
+            filter_mapping = {
+                "trace_id": trace_id,
+                "session_id": session_id,
+                "user_id": user_id,
+                "tenant_id": tenant_id,
+            }
+
+            for field, value in filter_mapping.items():
+                if value is not None:
+                    filters.append({"field": field, "operator": "equals", "type": "string", "value": value})
+
+            payload["filters"] = filters
 
             pagination: Dict[str, Any] = {}
             if limit is not None:
@@ -201,7 +219,7 @@ class UsageHttpClient:
         cursor: str | None = None,
         direction: str | None = None,
         limit: int | None = None,
-        search: str | None = None,
+        span_name: str | None = None,
     ) -> Any:
         """
         List all spans for a given trace.
@@ -211,7 +229,7 @@ class UsageHttpClient:
             cursor: Cursor for pagination
             direction: Direction of pagination
             limit: Maximum number of spans to return
-            search: Search query for the spans
+            span_name: Search query for the spans
 
         Returns:
             Any: Spans data
@@ -229,8 +247,8 @@ class UsageHttpClient:
                 params["direction"] = direction
             if limit is not None:
                 params["limit"] = limit
-            if search is not None:
-                params["search"] = search
+            if span_name is not None:
+                params["spanName"] = span_name
 
             response = self._client.get(url, params=params or None)
             response.raise_for_status()
