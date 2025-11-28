@@ -3,13 +3,15 @@ import threading
 import time
 from typing import Optional, Set
 
+from opentelemetry.sdk.trace import ReadableSpan
+
+from netra.config import Config
+
 logger = logging.getLogger(__name__)
 
 _trial_status_lock = threading.Lock()
 _trial_blocked_at: Optional[float] = None
 _blocked_trace_ids: Set[str] = set()
-
-TRIAL_BLOCK_DURATION_SECONDS = 15 * 60 
 
 
 def set_trial_blocked(blocked: bool) -> None:
@@ -30,15 +32,12 @@ def set_trial_blocked(blocked: bool) -> None:
                 _trial_blocked_at = time.time()
                 logger.warning(
                     "Trial/quota exhausted: blocking span export for %d seconds (15 minutes)",
-                    TRIAL_BLOCK_DURATION_SECONDS
+                    Config.TRIAL_BLOCK_DURATION_SECONDS,
                 )
             else:
                 elapsed = time.time() - _trial_blocked_at
-                remaining = TRIAL_BLOCK_DURATION_SECONDS - elapsed
-                logger.debug(
-                    "Trial already blocked: %d seconds remaining",
-                    max(0, int(remaining))
-                )
+                remaining = Config.TRIAL_BLOCK_DURATION_SECONDS - elapsed
+                logger.debug("Trial already blocked: %d seconds remaining", max(0, int(remaining)))
         else:
             if _trial_blocked_at is not None:
                 logger.info("Trial blocking manually reset")
@@ -55,18 +54,18 @@ def is_trial_blocked() -> bool:
         True if currently within the 15-minute blocking period, False otherwise
     """
     global _trial_blocked_at
-    
+
     with _trial_status_lock:
         if _trial_blocked_at is None:
             return False
-        
+
         # Check if 15 minutes have passed since blocking started
         elapsed = time.time() - _trial_blocked_at
-        if elapsed >= TRIAL_BLOCK_DURATION_SECONDS:
+        if elapsed >= Config.TRIAL_BLOCK_DURATION_SECONDS:
             _trial_blocked_at = None
             logger.info("Trial blocking period (15 minutes) expired, resuming exports")
             return False
-        
+
         return True
 
 
@@ -96,3 +95,31 @@ def is_trace_id_blocked(trace_id: str) -> bool:
     """
     with _trial_status_lock:
         return trace_id in _blocked_trace_ids
+
+
+def get_trace_id(span: ReadableSpan) -> str:
+    """Extract trace ID from span.
+
+    Args:
+        span: The span to extract trace ID from
+
+    Returns:
+        Trace ID as hex string, or empty string if not found
+    """
+    try:
+        context = getattr(span, "context", None)
+        if context is None:
+            return ""
+
+        trace_id = getattr(context, "trace_id", None)
+        if trace_id is None:
+            return ""
+
+        # trace_id is typically an integer, convert to hex string
+        if isinstance(trace_id, int):
+            return format(trace_id, "032x")
+        else:
+            return str(trace_id)
+    except Exception as e:
+        logger.debug("Error extracting trace ID from span: %s", e)
+        return ""
