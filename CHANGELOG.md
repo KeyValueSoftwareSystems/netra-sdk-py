@@ -6,6 +6,10 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 
 
+## [0.1.58] - 2025-11-28
+
+- Added support for explicit filter params in usage utilities
+
 ## [0.1.57] - 2025-11-28
 
 - Added support for trace list, and span list in usage tracking utility
