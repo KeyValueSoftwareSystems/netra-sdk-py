@@ -148,33 +148,6 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
                 return True
         return False
 
-    def _get_trace_id(self, span: ReadableSpan) -> str:
-        """Extract trace ID from span.
-        
-        Args:
-            span: The span to extract trace ID from
-            
-        Returns:
-            Trace ID as hex string, or empty string if not found
-        """
-        try:
-            context = getattr(span, "context", None)
-            if context is None:
-                return ""
-            
-            trace_id = getattr(context, "trace_id", None)
-            if trace_id is None:
-                return ""
-            
-            # trace_id is typically an integer, convert to hex string
-            if isinstance(trace_id, int):
-                return format(trace_id, '032x')
-            else:
-                return str(trace_id)
-        except Exception as e:
-            logger.debug("Error extracting trace ID from span: %s", e)
-            return ""
-
     def _get_local_patterns(self, span: ReadableSpan) -> List[str]:
         """
         Fetch local-block patterns from span attributes set by LocalFilteringSpanProcessor.
