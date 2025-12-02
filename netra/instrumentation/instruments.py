@@ -68,6 +68,7 @@ class CustomInstruments(Enum):
     URLLIB3 = "urllib3"
     WSGI = "wsgi"
     CEREBRAS = "cerebras"
+    DEEPGRAM = "deepgram"
 
 
 class NetraInstruments(Enum):
@@ -118,6 +119,7 @@ class InstrumentSet(Enum):
     COHEREAI = "cohere_ai"
     CONFLUENT_KAFKA = "confluent_kafka"
     CREW = "crew"
+    DEEPGRAM = "deepgram"
     DBAPI = "dbapi"
     DJANGO = "django"
     ELASTICSEARCH = "elasticsearch"

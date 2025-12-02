@@ -122,6 +122,9 @@ def init_instrumentations(
     if CustomInstruments.OPENAI in netra_custom_instruments:
         init_openai_instrumentation()
 
+    if CustomInstruments.DEEPGRAM in netra_custom_instruments:
+        init_deepgram_instrumentation()
+
     # Initialize ADK instrumentation.
     if CustomInstruments.ADK in netra_custom_instruments:
         init_adk_instrumentation()
@@ -315,6 +318,21 @@ def init_groq_instrumentation() -> bool:
                 instrumentor.instrument()
         return True
     except Exception as e:
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_deepgram_instrumentation() -> bool:
+    try:
+        if is_package_installed("deepgram-sdk"):
+            from netra.instrumentation.deepgram import NetraDeepgramInstrumentor
+
+            instrumentor = NetraDeepgramInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Deepgram instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 
