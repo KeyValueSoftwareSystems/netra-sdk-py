@@ -114,9 +114,10 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
                 body = response.json()
             except Exception:
                 body = None
-            blocked = body.get("data", {}).get("x-netra-trial-blocked", False)
+            error_code = body.get("error", {}).get("code")
+            blocked = True if error_code == "QUOTA_EXCEEDED" else False
             if blocked:
-                logger.warning("Backend indicated trial/quota block via x-netra-trial-blocked field in body: %s", body)
+                logger.warning("Quota Exceeded: %s", error_code)
                 set_trial_blocked(True)
                 return
         except Exception as e:
