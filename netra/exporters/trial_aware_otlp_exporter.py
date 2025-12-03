@@ -114,12 +114,13 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
                 body = response.json()
             except Exception:
                 body = None
-            error_code = body.get("error", {}).get("code")
-            blocked = True if error_code == "QUOTA_EXCEEDED" else False
-            if blocked:
-                logger.warning("Quota Exceeded: %s", error_code)
-                set_trial_blocked(True)
-                return
+            if (error := body.get("error")) and (inner := error.get("error")):
+                error_code = inner.get("code")
+                blocked = True if error_code == "QUOTA_EXCEEDED" else False
+                if blocked:
+                    logger.warning("Quota Exceeded: %s", error_code)
+                    set_trial_blocked(True)
+                    return
         except Exception as e:
             logger.debug("Error checking response for trial blocking: %s", e)
 
