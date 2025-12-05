@@ -132,5 +132,32 @@ class NetraElevenlabsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             unwrap("elevenlabs.text_to_speech.client", "TextToSpeechClient.convert")
             unwrap("elevenlabs.text_to_speech.client", "TextToSpeechClient.convert_with_timestamps")
+            unwrap("elevenlabs.text_to_speech.client", "TextToSpeechClient.stream")
+            unwrap("elevenlabs.text_to_speech.client", "TextToSpeechClient.stream_with_timestamps")
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument Elevenlabs create speech utility")
+
+        try:
+            unwrap("elevenlabs.speech_to_text.client", "SpeechToTextClient.convert")
         except (AttributeError, ModuleNotFoundError):
             logger.error("Failed to uninstrument Elevenlabs transcribe utility")
+
+        try:
+            unwrap("elevenlabs.text_to_dialogue.client", "TextToDialogueClient.convert")
+            unwrap("elevenlabs.text_to_dialogue.client", "TextToDialogueClient.convert_with_timestamps")
+            unwrap("elevenlabs.text_to_dialogue.client", "TextToDialogueClient.stream")
+            unwrap("elevenlabs.text_to_dialogue.client", "TextToDialogueClient.stream_with_timestamps")
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument Elevenlabs create dialogue utility")
+
+        try:
+            unwrap("elevenlabs.speech_to_speech.client", "SpeechToSpeechClient.convert")
+            unwrap("elevenlabs.speech_to_speech.client", "SpeechToSpeechClient.stream")
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument Elevenlabs voice changer utility")
+
+        try:
+            unwrap("elevenlabs.text_to_sound_effects.client", "TextToSoundEffectsClient.convert")
+
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument Elevenlabs create sound effect utility")
