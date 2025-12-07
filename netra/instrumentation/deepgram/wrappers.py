@@ -174,18 +174,18 @@ class AsyncContextManagerProxy:
         return result
 
 
-def _wrap_transcribe(
+def wrap_sync(
     tracer: Tracer,
     span_name: str,
-    source_type: str,
+    source_type: str | None = None,
 ) -> Callable[..., Any]:
     """
-    Wrap the transcribe_url method with OpenTelemetry instrumentation.
+    Wrap a sync method with OpenTelemetry instrumentation.
 
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
         span_name: The name of the span to create.
-        source_type: The type of the source (e.g. "url" or "file").
+        source_type: Optional type of the source (e.g. "url" or "file").
     """
 
     def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
@@ -211,18 +211,18 @@ def _wrap_transcribe(
     return wrapper
 
 
-def _wrap_transcribe_async(
+def wrap_async(
     tracer: Tracer,
     span_name: str,
-    source_type: str,
+    source_type: str | None = None,
 ) -> Callable[..., Any]:
     """
-    Wrap the async transcribe methods with OpenTelemetry instrumentation.
+    Wrap an async method with OpenTelemetry instrumentation.
 
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
         span_name: The name of the span to create.
-        source_type: The type of the source (e.g. "url" or "file").
+        source_type: Optional type of the source (e.g. "url" or "file").
     """
 
     async def async_wrapper(
@@ -250,71 +250,7 @@ def _wrap_transcribe_async(
     return async_wrapper
 
 
-def analyze_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the analyze method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        if should_suppress_instrumentation():
-            return wrapped(*args, **kwargs)
-
-        with tracer.start_as_current_span(ANALYZE_SPAN_NAME, kind=SpanKind.CLIENT) as span:
-            try:
-                set_request_attributes(span, kwargs)
-                start_time = time.time()
-                response = wrapped(*args, **kwargs)
-                end_time = time.time()
-                set_response_attributes(span, response)
-                span.set_attribute("deepgram.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
-                return response
-            except Exception as e:
-                logger.error("netra.instrumentation.deepgram: %s", e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                raise
-
-    return wrapper
-
-
-def async_analyze_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the async analyze method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-
-    async def async_wrapper(
-        wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
-    ) -> Any:
-        if should_suppress_instrumentation():
-            return await wrapped(*args, **kwargs)
-
-        with tracer.start_as_current_span(ANALYZE_SPAN_NAME, kind=SpanKind.CLIENT) as span:
-            try:
-                set_request_attributes(span, kwargs)
-                start_time = time.time()
-                response = await wrapped(*args, **kwargs)
-                end_time = time.time()
-                set_response_attributes(span, response)
-                span.set_attribute("deepgram.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
-                return response
-            except Exception as e:
-                logger.error("netra.instrumentation.deepgram: %s", e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                raise
-
-    return async_wrapper
-
-
-def _wrap_connect(tracer: Tracer, span_name: str) -> Callable[..., Any]:
+def wrap_connect(tracer: Tracer, span_name: str) -> Callable[..., Any]:
     """
     Wrap the connect method with OpenTelemetry instrumentation.
 
@@ -343,7 +279,7 @@ def _wrap_connect(tracer: Tracer, span_name: str) -> Callable[..., Any]:
     return wrapper
 
 
-def _wrap_connect_async(tracer: Tracer, span_name: str) -> Callable[..., Any]:
+def wrap_connect_async(tracer: Tracer, span_name: str) -> Callable[..., Any]:
     """
     Wrap async connect methods that return async context managers.
 
@@ -373,38 +309,7 @@ def _wrap_connect_async(tracer: Tracer, span_name: str) -> Callable[..., Any]:
     return wrapper
 
 
-def generate_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the generate method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        if should_suppress_instrumentation():
-            return wrapped(*args, **kwargs)
-
-        with tracer.start_as_current_span(GENERATE_SPAN_NAME, kind=SpanKind.CLIENT) as span:
-            try:
-                set_request_attributes(span, kwargs)
-                start_time = time.time()
-                response = wrapped(*args, **kwargs)
-                end_time = time.time()
-                set_response_attributes(span, response)
-                span.set_attribute("deepgram.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
-                return response
-            except Exception as e:
-                logger.error("netra.instrumentation.deepgram: %s", e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                raise
-
-    return wrapper
-
-
-def async_generate_wrapper(tracer: Tracer) -> Callable[..., Any]:
+def wrap_async_generator(tracer: Tracer) -> Callable[..., Any]:
     """
     Wrap the async generate method with OpenTelemetry instrumentation.
 
@@ -453,123 +358,3 @@ def async_generate_wrapper(tracer: Tracer) -> Callable[..., Any]:
             span.end()
 
     return async_wrapper
-
-
-def transcribe_url_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the transcribe_url method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_transcribe(tracer, TRANSCRIBE_URL_SPAN_NAME, "url")
-
-
-def transcribe_file_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the transcribe_file method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_transcribe(tracer, TRANSCRIBE_FILE_SPAN_NAME, "file")
-
-
-def async_transcribe_url_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the async transcribe_url method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_transcribe_async(tracer, TRANSCRIBE_URL_SPAN_NAME, "url")
-
-
-def async_transcribe_file_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the async transcribe_file method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_transcribe_async(tracer, TRANSCRIBE_FILE_SPAN_NAME, "file")
-
-
-def listen_v1_connect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the listen v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect(tracer, LISTEN_V1_CONNECT_SPAN_NAME)
-
-
-def listen_v2_connect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the listen v2 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect(tracer, LISTEN_V2_CONNECT_SPAN_NAME)
-
-
-def speak_v1_connect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the speak v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect(tracer, SPEAK_V1_CONNECT_SPAN_NAME)
-
-
-def agent_v1_connect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the agent v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect(tracer, AGENT_V1_CONNECT_SPAN_NAME)
-
-
-def listen_v1_aconnect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the listen v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect_async(tracer, LISTEN_V1_CONNECT_SPAN_NAME)
-
-
-def listen_v2_aconnect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the listen v2 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect_async(tracer, LISTEN_V2_CONNECT_SPAN_NAME)
-
-
-def speak_v1_aconnect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the speak v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect_async(tracer, SPEAK_V1_CONNECT_SPAN_NAME)
-
-
-def agent_v1_aconnect_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """
-    Wrap the agent v1 connect method with OpenTelemetry instrumentation.
-
-    Args:
-        tracer: The OpenTelemetry tracer to use for instrumentation.
-    """
-    return _wrap_connect_async(tracer, AGENT_V1_CONNECT_SPAN_NAME)
