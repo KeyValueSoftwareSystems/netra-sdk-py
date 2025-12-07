@@ -77,7 +77,13 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], source_type: Opti
 
 
 def _set_websocket_results_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV1ResultsEvent WebSocket message."""
+    """
+    Handle ListenV1ResultsEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.results")
 
     if duration := getattr(message, "duration", None):
@@ -94,16 +100,15 @@ def _set_websocket_results_event_attributes(span: Span, message: Any) -> None:
     # Extract transcript from channel.alternatives
     if channel := getattr(message, "channel", None):
         if alternatives := getattr(channel, "alternatives", None):
-            if alternatives:
-                first_alt = alternatives[0] if isinstance(alternatives, list) else next(iter(alternatives), None)
-                if first_alt:
-                    if transcript := getattr(first_alt, "transcript", None):
-                        span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-                        span.set_attribute("gen_ai.completion.0.content", transcript)
-                    if confidence := getattr(first_alt, "confidence", None):
-                        span.set_attribute("deepgram.websocket.results.confidence", confidence)
-                    if languages := getattr(first_alt, "languages", None):
-                        span.set_attribute("deepgram.websocket.results.languages", languages)
+            first_alt = alternatives[0] if isinstance(alternatives, list) else next(iter(alternatives), None)
+            if first_alt:
+                if transcript := getattr(first_alt, "transcript", None):
+                    span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
+                    span.set_attribute("gen_ai.completion.0.content", transcript)
+                if confidence := getattr(first_alt, "confidence", None):
+                    span.set_attribute("deepgram.websocket.results.confidence", confidence)
+                if languages := getattr(first_alt, "languages", None):
+                    span.set_attribute("deepgram.websocket.results.languages", languages)
 
     # Extract model info from metadata
     if metadata := getattr(message, "metadata", None):
@@ -121,7 +126,13 @@ def _set_websocket_results_event_attributes(span: Span, message: Any) -> None:
 
 
 def _set_websocket_metadata_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV1MetadataEvent WebSocket message."""
+    """
+    Handle ListenV1MetadataEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.metadata")
 
     if request_id := getattr(message, "request_id", None):
@@ -135,7 +146,13 @@ def _set_websocket_metadata_event_attributes(span: Span, message: Any) -> None:
 
 
 def _set_websocket_utterance_end_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV1UtteranceEndEvent WebSocket message."""
+    """
+    Handle ListenV1UtteranceEndEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.utterance_end")
 
     if channel := getattr(message, "channel", None):
@@ -145,7 +162,13 @@ def _set_websocket_utterance_end_event_attributes(span: Span, message: Any) -> N
 
 
 def _set_websocket_speech_started_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV1SpeechStartedEvent WebSocket message."""
+    """
+    Handle ListenV1SpeechStartedEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.speech_started")
 
     if channel := getattr(message, "channel", None):
@@ -155,7 +178,13 @@ def _set_websocket_speech_started_event_attributes(span: Span, message: Any) -> 
 
 
 def _set_websocket_v2_connected_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV2ConnectedEvent WebSocket message."""
+    """
+    Handle ListenV2ConnectedEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.v2.connected")
 
     if request_id := getattr(message, "request_id", None):
@@ -165,7 +194,13 @@ def _set_websocket_v2_connected_event_attributes(span: Span, message: Any) -> No
 
 
 def _set_websocket_v2_turn_info_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV2TurnInfoEvent WebSocket message."""
+    """
+    Handle ListenV2TurnInfoEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.v2.turn_info")
 
     if request_id := getattr(message, "request_id", None):
@@ -188,7 +223,13 @@ def _set_websocket_v2_turn_info_event_attributes(span: Span, message: Any) -> No
 
 
 def _set_websocket_v2_fatal_error_event_attributes(span: Span, message: Any) -> None:
-    """Handle ListenV2FatalErrorEvent WebSocket message."""
+    """
+    Handle ListenV2FatalErrorEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
     span.add_event("deepgram.v2.fatal_error")
 
     if sequence_id := getattr(message, "sequence_id", None):
@@ -199,8 +240,138 @@ def _set_websocket_v2_fatal_error_event_attributes(span: Span, message: Any) -> 
         span.set_attribute("deepgram.websocket.v2.error.description", str(description))
 
 
+def _set_agent_v1_welcome_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1WelcomeMessage WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.welcome")
+
+    if request_id := getattr(message, "request_id", None):
+        span.set_attribute("gen_ai.response.request_id", str(request_id))
+
+
+def _set_agent_v1_history_message_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1HistoryMessage WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.history")
+
+    if role := getattr(message, "role", None):
+        span.set_attribute("deepgram.agent.history.role", str(role))
+    if content := getattr(message, "content", None):
+        span.set_attribute("deepgram.agent.history.content", str(content))
+
+
+def _set_agent_v1_conversation_text_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1ConversationTextEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.conversation_text")
+
+    if role := getattr(message, "role", None):
+        span.set_attribute("deepgram.agent.conversation.role", str(role))
+    if content := getattr(message, "content", None):
+        span.set_attribute("deepgram.agent.conversation.content", str(content))
+
+
+def _set_agent_v1_agent_thinking_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1AgentThinkingEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.thinking")
+
+    if content := getattr(message, "content", None):
+        span.set_attribute("deepgram.agent.thinking.content", str(content))
+
+
+def _set_agent_v1_agent_started_speaking_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1AgentStartedSpeakingEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.started_speaking")
+
+    if total_latency := getattr(message, "total_latency", None):
+        span.set_attribute("deepgram.agent.latency.total", total_latency)
+    if tts_latency := getattr(message, "tts_latency", None):
+        span.set_attribute("deepgram.agent.latency.tts", tts_latency)
+    if ttt_latency := getattr(message, "ttt_latency", None):
+        span.set_attribute("deepgram.agent.latency.ttt", ttt_latency)
+
+
+def _set_agent_v1_injection_refused_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1InjectionRefusedEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.injection_refused")
+
+    if msg := getattr(message, "message", None):
+        span.set_attribute("deepgram.agent.injection_refused.message", str(msg))
+
+
+def _set_agent_v1_error_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1ErrorEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.error")
+
+    if description := getattr(message, "description", None):
+        span.set_attribute("deepgram.agent.error.description", str(description))
+    if code := getattr(message, "code", None):
+        span.set_attribute("deepgram.agent.error.code", str(code))
+
+
+def _set_agent_v1_warning_attributes(span: Span, message: Any) -> None:
+    """
+    Handle AgentV1WarningEvent WebSocket message.
+
+    Args:
+        span: The span to set the attributes on.
+        message: The message to extract the attributes from.
+    """
+    span.add_event("deepgram.agent.warning")
+
+    if description := getattr(message, "description", None):
+        span.set_attribute("deepgram.agent.warning.description", str(description))
+    if code := getattr(message, "code", None):
+        span.set_attribute("deepgram.agent.warning.code", str(code))
+
+
 def _set_http_response_attributes(span: Span, response: Any) -> None:
-    """Handle HTTP API response attributes (transcribe_url, transcribe_file, analyze, generate)."""
+    """
+    Handle HTTP API response attributes (transcribe_url, transcribe_file, analyze, generate).
+
+    Args:
+        span: The span to set the attributes on.
+        response: The response to extract the attributes from.
+    """
     if results := getattr(response, "results", None):
         if channels := getattr(results, "channels", None):
             first_channel = next(iter(channels))
@@ -311,12 +482,6 @@ def set_response_attributes(span: Span, response: Any) -> None:
     """
     Set the response attributes for the span.
 
-    Handles both HTTP API responses and WebSocket message types:
-    - HTTP: transcribe_url, transcribe_file, analyze, generate responses
-    - WebSocket V1: ListenV1ResultsEvent, ListenV1MetadataEvent,
-                    ListenV1UtteranceEndEvent, ListenV1SpeechStartedEvent
-    - WebSocket V2: ListenV2ConnectedEvent, ListenV2TurnInfoEvent, ListenV2FatalErrorEvent
-
     Args:
         span: The span to set the attributes on.
         response: The response to extract the attributes from.
@@ -336,6 +501,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
             _set_websocket_utterance_end_event_attributes(span, response)
         elif msg_type == "SpeechStarted":
             _set_websocket_speech_started_event_attributes(span, response)
+
         # ListenV2 WebSocket message types
         elif msg_type == "Connected":
             _set_websocket_v2_connected_event_attributes(span, response)
@@ -343,6 +509,24 @@ def set_response_attributes(span: Span, response: Any) -> None:
             _set_websocket_v2_turn_info_event_attributes(span, response)
         elif msg_type == "FatalError":
             _set_websocket_v2_fatal_error_event_attributes(span, response)
+
+        # AgentV1 WebSocket message types
+        elif msg_type == "Welcome":
+            _set_agent_v1_welcome_attributes(span, response)
+        elif msg_type == "History":
+            _set_agent_v1_history_message_attributes(span, response)
+        elif msg_type == "ConversationText":
+            _set_agent_v1_conversation_text_attributes(span, response)
+        elif msg_type == "AgentThinking":
+            _set_agent_v1_agent_thinking_attributes(span, response)
+        elif msg_type == "AgentStartedSpeaking":
+            _set_agent_v1_agent_started_speaking_attributes(span, response)
+        elif msg_type == "InjectionRefused":
+            _set_agent_v1_injection_refused_attributes(span, response)
+        elif msg_type == "Error":
+            _set_agent_v1_error_attributes(span, response)
+        elif msg_type == "Warning":
+            _set_agent_v1_warning_attributes(span, response)
         else:
             _set_http_response_attributes(span, response)
 

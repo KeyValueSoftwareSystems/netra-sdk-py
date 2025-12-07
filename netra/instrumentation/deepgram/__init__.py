@@ -11,6 +11,10 @@ from netra.instrumentation.deepgram.wrappers import (
     agent_v1_aconnect_wrapper,
     agent_v1_connect_wrapper,
     analyze_wrapper,
+    async_analyze_wrapper,
+    async_generate_wrapper,
+    async_transcribe_file_wrapper,
+    async_transcribe_url_wrapper,
     generate_wrapper,
     listen_v1_aconnect_wrapper,
     listen_v1_connect_wrapper,
@@ -49,6 +53,7 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to initialize Deepgram tracer: {e}")
             return
 
+        # Sync MediaClient
         try:
             wrap_function_wrapper(
                 "deepgram.listen.v1.media.client",
@@ -63,6 +68,22 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Failed to instrument Deepgram transcribe utility: {e}")
 
+        # Async MediaClient
+        try:
+            wrap_function_wrapper(
+                "deepgram.listen.v1.media.client",
+                "AsyncMediaClient.transcribe_url",
+                async_transcribe_url_wrapper(tracer),
+            )
+            wrap_function_wrapper(
+                "deepgram.listen.v1.media.client",
+                "AsyncMediaClient.transcribe_file",
+                async_transcribe_file_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error(f"Failed to instrument Deepgram async transcribe utility: {e}")
+
+        # Sync TextClient
         try:
             wrap_function_wrapper(
                 "deepgram.read.v1.text.client",
@@ -72,6 +93,17 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Failed to instrument Deepgram analyze utility: {e}")
 
+        # Async TextClient
+        try:
+            wrap_function_wrapper(
+                "deepgram.read.v1.text.client",
+                "AsyncTextClient.analyze",
+                async_analyze_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error(f"Failed to instrument Deepgram async analyze utility: {e}")
+
+        # Sync AudioClient
         try:
             wrap_function_wrapper(
                 "deepgram.speak.v1.audio.client",
@@ -81,6 +113,17 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Failed to instrument Deepgram generate utility: {e}")
 
+        # Async AudioClient
+        try:
+            wrap_function_wrapper(
+                "deepgram.speak.v1.audio.client",
+                "AsyncAudioClient.generate",
+                async_generate_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error(f"Failed to instrument Deepgram async generate utility: {e}")
+
+        # Websocket Listen v1
         try:
             wrap_function_wrapper(
                 "deepgram.listen.v1.client",
@@ -145,10 +188,17 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         Uninstrument the Deepgram client methods.
         """
         try:
+            # Sync clients
             unwrap("deepgram.listen.v1.media.client", "MediaClient.transcribe_url")
             unwrap("deepgram.listen.v1.media.client", "MediaClient.transcribe_file")
             unwrap("deepgram.read.v1.text.client", "TextClient.analyze")
             unwrap("deepgram.speak.v1.audio.client", "AudioClient.generate")
+            # Async clients
+            unwrap("deepgram.listen.v1.media.async_client", "AsyncMediaClient.transcribe_url")
+            unwrap("deepgram.listen.v1.media.async_client", "AsyncMediaClient.transcribe_file")
+            unwrap("deepgram.read.v1.text.async_client", "AsyncTextClient.analyze")
+            unwrap("deepgram.speak.v1.audio.async_client", "AsyncAudioClient.generate")
+            # WebSocket clients
             unwrap("deepgram.listen.v1.client", "V1Client.connect")
             unwrap("deepgram.listen.v1.client", "AsyncV1Client.connect")
             unwrap("deepgram.listen.v2.client", "V2Client.connect")
@@ -158,4 +208,4 @@ class NetraDeepgramInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             unwrap("deepgram.agent.v1.client", "V1Client.connect")
             unwrap("deepgram.agent.v1.client", "AsyncV1Client.connect")
         except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument Deepgram transcribe utility")
+            logger.error("Failed to uninstrument Deepgram utility")
