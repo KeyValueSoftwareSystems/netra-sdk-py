@@ -70,6 +70,7 @@ class CustomInstruments(Enum):
     CEREBRAS = "cerebras"
     DEEPGRAM = "deepgram"
     CARTESIA = "cartesia"
+    ELEVENLABS = "elevenlabs"
 
 
 class NetraInstruments(Enum):
