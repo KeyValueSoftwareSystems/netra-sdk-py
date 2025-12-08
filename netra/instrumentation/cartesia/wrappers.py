@@ -2,7 +2,8 @@ import logging
 import time
 from typing import Any, Callable, Dict, Iterator, Literal, Tuple
 
-from opentelemetry.trace import SpanKind, Tracer
+from opentelemetry import context as context_api
+from opentelemetry.trace import SpanKind, Tracer, set_span_in_context
 from wrapt import ObjectProxy
 
 from netra.instrumentation.cartesia.utils import (
@@ -196,6 +197,7 @@ def _wrap_tts_ws(tracer: Tracer, span_name: str) -> Callable[..., Any]:
         span = tracer.start_span(span_name, kind=SpanKind.CLIENT)
         start_time = time.time()
         try:
+            context = context_api.attach(set_span_in_context(span))
             set_request_attributes(span, kwargs)
             ws = wrapped(*args, **kwargs)
             return TtsWebSocketProxy(ws, span, start_time)
@@ -203,6 +205,8 @@ def _wrap_tts_ws(tracer: Tracer, span_name: str) -> Callable[..., Any]:
             logger.error("netra.instrumentation.cartesia.tts.websocket: %s", e)
             span.end()
             raise
+        finally:
+            context_api.detach(context)
 
     return wrapper
 
@@ -217,6 +221,7 @@ def _wrap_stt_ws(tracer: Tracer, span_name: str) -> Callable[..., Any]:
         span = tracer.start_span(span_name, kind=SpanKind.CLIENT)
         start_time = time.time()
         try:
+            context = context_api.attach(set_span_in_context(span))
             set_request_attributes(span, kwargs)
             ws = wrapped(*args, **kwargs)
             return SttWebsocketProxy(ws, span, start_time)
@@ -224,6 +229,8 @@ def _wrap_stt_ws(tracer: Tracer, span_name: str) -> Callable[..., Any]:
             logger.error("netra.instrumentation.cartesia.stt.websocket: %s", e)
             span.end()
             raise
+        finally:
+            context_api.detach(context)
 
     return wrapper
 
