@@ -46,31 +46,27 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if model_id := kwargs.get("model_id"):
         span.set_attribute("gen_ai.request.model", model_id)
 
-    REQUEST_PARAMS = [
-        "text",
-        "voice_id" "previous_text",
-        "next_text",
-    ]
+    if text := kwargs.get("text"):
+        character_count = len(text)
+        span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
+        span.set_attribute("gen_ai.prompt.0.role", "Input")
+        span.set_attribute("gen_ai.prompt.0.content", str(text))
 
-    for param in REQUEST_PARAMS:
-        value = kwargs.get(param)
-        if text := kwargs.get("text"):
-            character_count = len(text)
-            span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-            span.set_attribute("gen_ai.prompt.0.role", "Input")
-            span.set_attribute("gen_ai.prompt.0.content", str(text))
-            continue
-        if value:
-            span.set_attribute(f"gen_ai.request.{param}", value)
+    if voice_id := kwargs.get("voice_id"):
+        span.set_attribute("gen_ai.request.voice_id", voice_id)
+
+    if previous_text := kwargs.get("previous_text"):
+        span.set_attribute("gen_ai.request.previous_text", previous_text)
+
+    if next_text := kwargs.get("next_text"):
+        span.set_attribute("gen_ai.request.next_text", next_text)
 
     if cloud_storage_url := kwargs.get("cloud_storage_url"):
-        logger.info(f"csu {cloud_storage_url}")
         span.set_attribute("gen_ai.request.file_type", cloud_storage_url)
     else:
         span.set_attribute("gen_ai.request.file_type", "file")
 
     if webhook := kwargs.get("webhook"):
-        logger.info(f"Webhook is set to {webhook}")
         span.set_attribute("gen_ai.request.webhook_id", kwargs.get("webhook_id"))
 
     if use_multi_channels := kwargs.get("use_multi_channel"):
@@ -102,15 +98,11 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     prompt = ""
     if inputs := kwargs.get("inputs"):
         for line in inputs:
-            logger.info(f"line : {line["text"]}")
             character_count += len(line["text"])
             prompt += str(line["text"]) + "\n"
-        logger.info(f"prompt: {prompt}")
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
         span.set_attribute("gen_ai.prompt.0.content", str(prompt))
         span.set_attribute("gen_ai.prompt.0.role", "Input")
-
-    logger.info(f"Span after setting request attributes: {span}")
 
 
 def set_response_attributes(span: Span, response: Any) -> None:
@@ -124,7 +116,6 @@ def set_response_attributes(span: Span, response: Any) -> None:
     if not span.is_recording():
         return
 
-    logger.info(f"Response : {response}")
     try:
         if hasattr(response, "__dict__"):
             span.set_attribute("gen_ai.response.type", "object")
