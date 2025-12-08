@@ -309,6 +309,10 @@ def init_instrumentations(
     if CustomInstruments.CARTESIA in netra_custom_instruments:
         init_cartesia_instrumentation()
 
+    # Initialize elevenlabs instrumentation.
+    if CustomInstruments.ELEVENLABS in netra_custom_instruments:
+        init_elevenlabs_instrumentation()
+
 
 def init_groq_instrumentation() -> bool:
     """Initialize Groq instrumentation."""
@@ -1317,5 +1321,25 @@ def init_cartesia_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Cartesia instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_elevenlabs_instrumentation() -> bool:
+    """Initialize Elevenlabs instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("elevenlabs"):
+            from netra.instrumentation.elevenlabs import NetraElevenlabsInstrumentor
+
+            instrumentor = NetraElevenlabsInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Elevenlabs instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
