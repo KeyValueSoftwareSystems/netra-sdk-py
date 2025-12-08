@@ -112,12 +112,14 @@ class TtsWebSocketProxy:
 
     def send(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
         try:
+            set_request_attributes(self._span, kwargs)
             for chunk in self._ws.send(*args, **kwargs):
-                self._span.add_event("tts.audio_chunk", {"size": len(chunk.audio)})
                 yield chunk
+
         except Exception as e:
             self._end_span(e)
             raise
+
         self._end_span()
 
     def close(self) -> None:
