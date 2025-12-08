@@ -305,6 +305,10 @@ def init_instrumentations(
     if CustomInstruments.CEREBRAS in netra_custom_instruments:
         init_cerebras_instrumentation()
 
+    # Initialize cerebras instrumentation.
+    if CustomInstruments.CARTESIA in netra_custom_instruments:
+        init_cartesia_instrumentation()
+
     # Initialize elevenlabs instrumentation.
     if CustomInstruments.ELEVENLABS in netra_custom_instruments:
         init_elevenlabs_instrumentation()
@@ -1297,6 +1301,26 @@ def init_cerebras_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Cerebras instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_cartesia_instrumentation() -> bool:
+    """Initialize Cartesia instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("cartesia"):
+            from netra.instrumentation.cartesia import NetraCartesiaInstrumentor
+
+            instrumentor = NetraCartesiaInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Cartesia instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 
