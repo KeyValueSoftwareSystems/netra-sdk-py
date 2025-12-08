@@ -69,6 +69,7 @@ class CustomInstruments(Enum):
     WSGI = "wsgi"
     CEREBRAS = "cerebras"
     DEEPGRAM = "deepgram"
+    CARTESIA = "cartesia"
 
 
 class NetraInstruments(Enum):
