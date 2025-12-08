@@ -49,14 +49,6 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if language := kwargs.get("language"):
         span.set_attribute("gen_ai.request.language", language)
 
-    if language := kwargs.get("language"):
-        span.set_attribute("gen_ai.request.language", language)
-
-    if voice := kwargs.get("voice"):
-        span.set_attribute("gen_ai.request.voice_id", voice["id"])
-    elif voice := kwargs.get("voice_id"):
-        span.set_attribute("gen_ai.request.voice_id", voice["id"])
-
 
 def set_response_attributes(span: Span, response: Any) -> None:
     """Set the response attributes for both dict & object response formats."""
