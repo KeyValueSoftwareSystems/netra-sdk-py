@@ -125,9 +125,6 @@ def set_response_attributes(span: Span, response: Any) -> None:
                 span.set_attribute("gen_ai.prompt.0.role", "Output")
                 span.set_attribute("gen_ai.usage.prompt.character_count", len(response.text))
 
-            if hasattr(response, "words") and response.words:
-                span.set_attribute("gen_ai.response.duration", response.words[-1].end)
-
             if hasattr(response, "transcription_id") and response.transcription_id:
                 span.set_attribute("gen_ai.response.transcription_id", response.transcription_id)
 
@@ -156,7 +153,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
                     duration_seconds = last_segment.end_time_seconds
 
             if duration_seconds is not None:
-                span.set_attribute("gen_ai.audio.duration", duration_seconds)
+                span.set_attribute("gen_ai.audio.duration", (duration_seconds) / 60)
             return
 
     except Exception as e:

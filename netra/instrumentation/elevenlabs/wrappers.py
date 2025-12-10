@@ -239,7 +239,7 @@ class ElevenLabsStreamingWrapper:
             self._buffer["voice_segments"].extend(chunk.voice_segments)
 
         if hasattr(chunk, "alignment") and getattr(chunk.alignment, "character_end_times_seconds", None):
-            self._buffer["duration"] = chunk.alignment.character_end_times_seconds[-1]
+            self._buffer["duration"] = (chunk.alignment.character_end_times_seconds[-1]) / 60
 
         self._buffer["chunks"].append(chunk)
 
