@@ -140,7 +140,7 @@ def _set_websocket_metadata_event_attributes(span: Span, message: Any) -> None:
     if created := getattr(message, "created", None):
         span.set_attribute("deepgram.websocket.metadata.created", str(created))
     if duration := getattr(message, "duration", None):
-        span.set_attribute("gen_ai.audio.duration", duration)
+        span.set_attribute("gen_ai.audio.duration", duration / 60)
     if channels := getattr(message, "channels", None):
         span.set_attribute("gen_ai.response.channels", int(channels))
 
@@ -411,7 +411,7 @@ def _set_http_response_attributes(span: Span, response: Any) -> None:
             span.set_attribute("gen_ai.response.request_id", str(request_id))
 
         if duration := getattr(metadata, "duration", None):
-            span.set_attribute("gen_ai.audio.duration", str(duration))
+            span.set_attribute("gen_ai.audio.duration", duration / 60)
 
         if channel_count := getattr(metadata, "channels", None):
             span.set_attribute("gen_ai.response.channels", channel_count)
