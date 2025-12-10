@@ -56,8 +56,6 @@ def set_response_attributes(span: Span, response: Any) -> None:
     if not span.is_recording():
         return
 
-    logger.info(f"Response : {response}")
-
     try:
         if isinstance(response, dict):
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))

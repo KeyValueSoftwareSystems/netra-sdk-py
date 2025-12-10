@@ -160,7 +160,6 @@ class SttWebsocketProxy(ObjectProxy):  # type: ignore[misc]
         transcripts: list[str] = []
         try:
             for result in self.__wrapped__.receive():
-                print(f"Result: {result}")
                 set_response_attributes(self._span, result)
                 try:
                     if result.get("type") == "transcript":
