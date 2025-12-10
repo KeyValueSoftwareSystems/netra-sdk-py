@@ -21,8 +21,8 @@ CREATE_SPEECH_STREAM_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_speech_strea
 CREATE_TRANSCRIPT_SPAN_NAME = "elevenlabs.create_transcript"
 CREATE_DIALOGUE_SPAN_NAME = "elevenlabs.create_dialogue"
 CREATE_DIALOGUE_STREAM_SPAN_NAME = "elevenlabs.create_dialogue_stream"
-CREATE_DIALOGUE_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_dialogue_with_timestamps_span_name"
-CREATE_DIALOGUE_STREAM_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_dialogue_stream_with_timestamps_span_name"
+CREATE_DIALOGUE_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_dialogue_with_timestamps"
+CREATE_DIALOGUE_STREAM_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_dialogue_stream_with_timestamps"
 CREATE_MUSIC_SPAN_NAME = "elevenlabs.create_music"
 CREATE_MUSIC_WITH_STREAM_SPAN_NAME = "elevenlabs.create_music_stream"
 VOICE_CHANGER_SPAN_NAME = "elevenlabs.voice_changer"
@@ -239,7 +239,7 @@ class ElevenLabsStreamingWrapper:
             self._buffer["voice_segments"].extend(chunk.voice_segments)
 
         if hasattr(chunk, "alignment") and getattr(chunk.alignment, "character_end_times_seconds", None):
-            self._buffer["duration"] = chunk.alignment.character_end_times_seconds[-1]
+            self._buffer["duration"] = (chunk.alignment.character_end_times_seconds[-1]) / 60
 
         self._buffer["chunks"].append(chunk)
 
