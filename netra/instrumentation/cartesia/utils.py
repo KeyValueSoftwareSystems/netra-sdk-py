@@ -61,7 +61,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))
             span.set_attribute("gen_ai.prompt.1.role", "Output")
             if "duration" in response:
-                span.set_attribute("gen_ai.audio.duration", response["duration"])
+                span.set_attribute("gen_ai.audio.duration", response["duration"] / 60)
 
             return
 
@@ -69,7 +69,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
             span.set_attribute("gen_ai.response.type", "object")
 
             if hasattr(response, "duration") and response.duration:
-                span.set_attribute("gen_ai.audio.duration", response.duration)
+                span.set_attribute("gen_ai.audio.duration", (response.duration) / 60)
 
             if hasattr(response, "text") and response.text:
                 span.set_attribute("gen_ai.response.text", response.text)
