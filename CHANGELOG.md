@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.59] - 2025-12-09
+## [0.1.59] - 2025-12-15
 
 - Added support for Cartesia, ElevenLabs and Deepgram voice agent instrumentations
 
