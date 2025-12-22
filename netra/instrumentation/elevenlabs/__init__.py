@@ -24,13 +24,22 @@ from netra.instrumentation.elevenlabs.wrappers import (
 
 logger = logging.getLogger(__name__)
 
-_instruments = ("elevenlabs >= 2.25.0",)
+_instruments = ("elevenlabs >= 2.15.0",)
 
 
 class NetraElevenlabsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """
     Custom Elevenlabs instrumentor for Netra SDK
     """
+
+    @staticmethod
+    def has_method(module: str, cls: str, method: str) -> bool:
+        try:
+            mod = __import__(module, fromlist=[cls])
+            klass = getattr(mod, cls)
+            return hasattr(klass, method)
+        except Exception:
+            return False
 
     def instrumentation_dependencies(self) -> Collection[str]:
         """
@@ -86,21 +95,42 @@ class NetraElevenlabsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             wrap_function_wrapper(
                 "elevenlabs.text_to_dialogue.client", "TextToDialogueClient.convert", create_dialogue_wrapper(tracer)
             )
-            wrap_function_wrapper(
+
+            if self.has_method(
                 "elevenlabs.text_to_dialogue.client",
-                "TextToDialogueClient.convert_with_timestamps",
-                create_dialogue_with_timestamps_wrapper(tracer),
-            )
+                "TextToDialogueClient",
+                "convert_with_timestamps",
+            ):
+                wrap_function_wrapper(
+                    "elevenlabs.text_to_dialogue.client",
+                    "TextToDialogueClient.convert_with_timestamps",
+                    create_dialogue_with_timestamps_wrapper(tracer),
+                )
+            else:
+                logger.warning(
+                    f"Elevenlabs TextToDialogueClient.convert_with_timestamps method not found, skipping instrumentation."
+                )
+
             wrap_function_wrapper(
                 "elevenlabs.text_to_dialogue.client",
                 "TextToDialogueClient.stream",
                 create_dialogue_stream_wrapper(tracer),
             )
-            wrap_function_wrapper(
+
+            if self.has_method(
                 "elevenlabs.text_to_dialogue.client",
-                "TextToDialogueClient.stream_with_timestamps",
-                create_dialogue_stream_with_timestamps_wrapper(tracer),
-            )
+                "TextToDialogueClient",
+                "stream_with_timestamps",
+            ):
+                wrap_function_wrapper(
+                    "elevenlabs.text_to_dialogue.client",
+                    "TextToDialogueClient.stream_with_timestamps",
+                    create_dialogue_stream_with_timestamps_wrapper(tracer),
+                )
+            else:
+                logger.warning(
+                    f"Elevenlabs TextToDialogueClient.stream_with_timestamps method not found, skipping instrumentation."
+                )
         except Exception as e:
             logger.error(f"Failed to instrument Elevenlabs create dialogue utility, {e}")
 

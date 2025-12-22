@@ -168,7 +168,6 @@ class SttWebsocketProxy(ObjectProxy):  # type: ignore[misc]
                     elif result.get("type") == "done":
                         full_text = "".join(transcripts)
                         self._span.set_attribute("gen_ai.prompt.1.content", full_text)
-                        yield result
                 except Exception as e:
                     logger.debug("Failed to set Cartesia STT response attributes from result: %s", e)
                 yield result
