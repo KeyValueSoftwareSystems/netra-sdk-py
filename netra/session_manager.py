@@ -262,8 +262,8 @@ class SessionManager:
         except Exception as e:
             logger.exception(f"Failed to add custom event: {name} - {e}")
 
-    @staticmethod
-    def add_conversation(conversation_type: ConversationType, role: str, content: Any) -> None:
+    @classmethod
+    def add_conversation(cls, conversation_type: ConversationType, role: str, content: Any) -> None:
         """
         Append a conversation entry and set span attribute 'conversation' as an array.
 
@@ -299,11 +299,28 @@ class SessionManager:
 
         try:
 
-            # Get active recording span
+            # Get active recording span - first try OTel context, then fallback to SessionManager
             span = trace.get_current_span()
             if not (span and getattr(span, "is_recording", lambda: False)()):
-                logger.warning("No active span to add conversation attribute.")
-                return
+                # Fallback: use the most recent active span from SessionManager
+                if not cls._active_spans:
+                    logger.warning("No active span to add conversation attribute.")
+                    return
+
+                # Find the most recent *recording* span (the last item can be a finished span)
+                recording_span: Optional[trace.Span] = None
+                for span in reversed(cls._active_spans):
+                    try:
+                        if span and getattr(span, "is_recording", lambda: False)():
+                            recording_span = span
+                            break
+                    except Exception:
+                        continue
+
+                if recording_span is None:
+                    logger.warning("No active span to add conversation attribute.")
+                    return
+                span = recording_span
 
             # Load existing conversation (JSON string -> list)
             existing: List[Dict[str, Any]] = []
