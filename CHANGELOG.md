@@ -4,6 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+
+## [0.1.60] - 2025-12-22
+
+- Fixed conversation attribute handling to use OTel context first, then fallback to SessionManager spans
+- Added backward compatability and bug fixes in ElevenLabs instrumentation
+- Added utility for subscription based trace blocking
+
 ## [0.1.59] - 2025-12-15
 
 - Added support for Cartesia, ElevenLabs and Deepgram voice agent instrumentations
@@ -136,4 +143,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.59]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.60]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
