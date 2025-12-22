@@ -78,10 +78,6 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
             response: The requests.Response object
         """
         try:
-            # Log the response for debugging
-            status_code = getattr(response, "status_code", None)
-            logger.debug("HTTP response received: status=%s, url=%s", status_code, getattr(response, "url", "unknown"))
-
             self._check_response_for_trial_blocking(response)
         except Exception as e:
             logger.debug("Error processing response in callback: %s", e)
@@ -109,7 +105,6 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
             response: The HTTP response object (requests.Response)
         """
         try:
-            logger.info(f"Checking response headers for trial blocking indicators {response.json()}")
             try:
                 body = response.json()
             except Exception:

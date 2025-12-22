@@ -64,7 +64,7 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             SpanExportResult.SUCCESS if the export was successful.
         """
         if is_trial_blocked():
-            logger.debug("Trial/quota exhausted: blocking %d span(s) from export", len(spans))
+            logger.debug("Trial/quota exhausted: blocking spans from export")
             # Track trace IDs from spans being blocked during blocking period
             for span in spans:
                 trace_id = get_trace_id(span)
@@ -79,7 +79,6 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
 
             # Check if this span belongs to a trace ID that was blocked
             if trace_id and is_trace_id_blocked(trace_id):
-                logger.debug("Filtering span from previously blocked trace ID: %s", trace_id)
                 continue
 
             name = getattr(span, "name", None)
