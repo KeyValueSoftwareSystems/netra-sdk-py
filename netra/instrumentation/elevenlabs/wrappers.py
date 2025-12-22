@@ -48,7 +48,12 @@ def _wrap_speech(tracer: Tracer, span_name: str, request_type: str) -> Callable[
                 end_time = time.time()
                 set_response_attributes(span, response)
                 span.set_attribute("elevenlabs.response.duration", end_time - start_time)
-                span.set_status(Status(StatusCode.OK))
+                status_code = getattr(response, "status_code", None)
+                if status_code and status_code != 200:
+                    error_message = getattr(response, "body", "Unknown error")
+                    raise Exception(f"ElevenLabs API Error: {error_message}")
+                else:
+                    span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
                 logger.error("netra.instrumentation.elevenlabs: %s", e)
@@ -67,24 +72,32 @@ def stream_dialogue_wrapper(tracer: Tracer, span_name: str, request_type: str) -
         span = tracer.start_span(
             span_name,
             kind=SpanKind.CLIENT,
-            attributes={"gen_ai.system": "ElevenLabs", "gen_ai.request.type": request_type},
+            attributes={
+                "gen_ai.system": "ElevenLabs",
+                "gen_ai.request.type": request_type,
+            },
         )
 
+        context = context_api.attach(set_span_in_context(span))
+        start_time = time.time()
+
         try:
-            context = context_api.attach(set_span_in_context(span))
             set_request_attributes(span, kwargs)
-            start_time = time.time()
             response = wrapped(*args, **kwargs)  # generator
-            return ElevenLabsStreamingWrapper(span=span, response=response, start_time=start_time)
+            return ElevenLabsStreamingWrapper(
+                span=span,
+                response=response,
+                start_time=start_time,
+                context=context,
+            )
 
         except Exception as e:
             logger.error("netra.instrumentation.elevenlabs: %s", e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)
             span.end()
-            raise
-        finally:
             context_api.detach(context)
+            raise
 
     return wrapper
 
@@ -116,7 +129,7 @@ def create_speech_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
     """
-    return _wrap_speech(tracer, CREATE_SPEECH_STREAM_SPAN_NAME, "speech")
+    return stream_dialogue_wrapper(tracer, CREATE_SPEECH_STREAM_SPAN_NAME, "speech")
 
 
 def create_speech_stream_with_timestamp_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -126,7 +139,7 @@ def create_speech_stream_with_timestamp_wrapper(tracer: Tracer) -> Callable[...,
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
     """
-    return _wrap_speech(tracer, CREATE_SPEECH_STREAM_WITH_TIMESTAMPS_SPAN_NAME, "speech")
+    return stream_dialogue_wrapper(tracer, CREATE_SPEECH_STREAM_WITH_TIMESTAMPS_SPAN_NAME, "speech")
 
 
 def create_transcript_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -166,7 +179,7 @@ def create_dialogue_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
     """
-    return _wrap_speech(tracer, CREATE_DIALOGUE_STREAM_SPAN_NAME, "dialogue")
+    return stream_dialogue_wrapper(tracer, CREATE_DIALOGUE_STREAM_SPAN_NAME, "dialogue")
 
 
 def create_dialogue_stream_with_timestamps_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -196,7 +209,7 @@ def voice_changer_stream_wrapper(tracer: Tracer) -> Callable[..., Any]:
     Args:
         tracer: The OpenTelemetry tracer to use for instrumentation.
     """
-    return _wrap_speech(tracer, VOICE_CHANGER_STREAM_SPAN_NAME, "voice_changer")
+    return stream_dialogue_wrapper(tracer, VOICE_CHANGER_STREAM_SPAN_NAME, "voice_changer")
 
 
 def create_sound_effect_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -210,12 +223,24 @@ def create_sound_effect_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 class ElevenLabsStreamingWrapper:
-    def __init__(self, span: Span, response: Iterator[Any], start_time: float) -> None:
-        self._span: Span = span
-        self._start_time: float = start_time
-        self._response: Iterator[Any] = response
+    def __init__(
+        self,
+        span: Span,
+        response: Iterator[Any],
+        start_time: float,
+        context: Any,
+    ) -> None:
+        self._span = span
+        self._response = response
+        self._start_time = start_time
+        self._context = context
 
-        self._buffer: Dict[str, Any] = {"chunks": [], "duration": 0.0, "alignment": [], "voice_segments": []}
+        self._buffer: Dict[str, Any] = {
+            "chunks": [],
+            "duration": 0.0,
+            "alignment": [],
+            "voice_segments": [],
+        }
 
     def __iter__(self) -> "ElevenLabsStreamingWrapper":
         return self
@@ -227,6 +252,14 @@ class ElevenLabsStreamingWrapper:
             return chunk
         except StopIteration:
             self._finalize_span()
+            context_api.detach(self._context)
+            raise
+
+        except Exception as e:
+            self._span.set_status(Status(StatusCode.ERROR, str(e)))
+            self._span.record_exception(e)
+            self._span.end()
+            context_api.detach(self._context)
             raise
 
     def _process_chunk(self, chunk: Any) -> None:
