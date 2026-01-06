@@ -1,16 +1,22 @@
+import asyncio
 import logging
 import os
+import time
 from typing import Any, Dict, List, Optional
 
 import httpx
 
 from netra.config import Config
-from netra.evaluation.models import EntryStatus, EvaluationScore, RunStatus
+from netra.evaluation.models import DatasetItem
 
 logger = logging.getLogger(__name__)
 
 
-class _EvaluationHttpClient:
+class EvaluationHttpClient:
+    """
+    Internal HTTP client for Evaluation APIs.
+    """
+
     def __init__(self, config: Config) -> None:
         """
         Initialize HTTP client for evaluation endpoints.
@@ -18,34 +24,153 @@ class _EvaluationHttpClient:
         Args:
             config: The configuration object.
         """
-        self._client: Optional[httpx.Client] = None
+        self._client: Optional[httpx.Client] = self._create_client(config)
+
+    def _create_client(self, config: Config) -> Optional[httpx.Client]:
+        """
+        Create an HTTP client for evaluation endpoints.
+
+        Args:
+            config: The configuration object.
+
+        Returns:
+            An HTTP client for evaluation endpoints, or None if creation fails.
+        """
         endpoint = (config.otlp_endpoint or "").strip()
         if not endpoint:
             logger.error("netra.evaluation: NETRA_OTLP_ENDPOINT is required for evaluation APIs")
-            return
+            return None
 
+        base_url = self._resolve_base_url(endpoint)
+        headers = self._build_headers(config)
+        timeout = self._get_timeout()
+
+        try:
+            return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to initialize evaluation HTTP client: %s", exc)
+            return None
+
+    def _resolve_base_url(self, endpoint: str) -> str:
+        """
+        Resolve base URL from endpoint.
+
+        Args:
+            endpoint: The endpoint to resolve.
+
+        Returns:
+            The resolved base URL.
+        """
         base_url = endpoint.rstrip("/")
-        # Normalize base if user pointed to OTLP endpoints
         if base_url.endswith("/telemetry"):
             base_url = base_url[: -len("/telemetry")]
+        return base_url
 
-        headers = dict(config.headers or {})
+    def _build_headers(self, config: Config) -> Dict[str, str]:
+        """
+        Build Headers for Evaluation Client
+
+        Args:
+            config: The configuration object.
+
+        Returns:
+            The headers for evaluation client.
+        """
+        headers: Dict[str, str] = dict(config.headers or {})
         api_key = config.api_key
         if api_key:
             headers["x-api-key"] = api_key
+        return headers
+
+    def _get_timeout(self) -> float:
+        """
+        Get timeout for evaluation client.
+
+        Returns:
+            The timeout for evaluation client.
+        """
         timeout_env = os.getenv("NETRA_EVALUATION_TIMEOUT")
+        if not timeout_env:
+            return 10.0
         try:
-            timeout = float(timeout_env) if timeout_env else 10.0
+            return float(timeout_env)
         except ValueError:
             logger.warning(
-                "netra.evaluation: Invalid NETRA_EVALUATION_TIMEOUT value '%s', using default 10.0", timeout_env
+                "netra.evaluation: Invalid NETRA_EVALUATION_TIMEOUT value '%s', using default 10.0",
+                timeout_env,
             )
-            timeout = 10.0
+            return 10.0
+
+    def create_dataset(self, name: Optional[str], tags: Optional[List[str]] = None) -> Any:
+        """
+        Create an empty dataset
+
+        Args:
+            name: The name of the dataset.
+            tags: Optional list of tags to associate with the dataset.
+
+        Returns:
+            A backend JSON response containing dataset info (id, name, tags, etc.) on success,
+            or None if creation fails.
+        """
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create dataset")
+            return None
         try:
-            self._client = httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to initialize evaluation HTTP client: %s", exc)
-            self._client = None
+            url = "/evaluations/dataset"
+            payload: Dict[str, Any] = {
+                "name": name,
+                "tags": tags if tags else [],
+            }
+            response = self._client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Dataset created successfully")
+                return data.get("data", {})
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to create dataset: %s", response_json.get("error").get("message", "")
+            )
+            return None
+
+    def add_dataset_item(self, dataset_id: str, item: DatasetItem) -> Any:
+        """
+        Add a single item to an existing dataset and return backend data (e.g., new item id).
+
+        Args:
+            dataset_id: The id of the dataset to which the item will be added.
+            item_payload: The dataset item to add.
+
+        Returns:
+            A backend JSON response on success or {"success": False} on error.
+        """
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot add item to dataset")
+            return {"success": False}
+        try:
+            url = f"/evaluations/dataset/{dataset_id}/items"
+            item_payload: Dict[str, Any] = {
+                "input": item.input if item.input else None,
+                "expectedOutput": item.expected_output if item.expected_output else None,
+                "tags": item.tags if item.tags else None,
+                "metadata": item.metadata if item.metadata else None,
+            }
+            response = self._client.post(url, json=item_payload)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Dataset item added successfully")
+                return data.get("data", {})
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to add item to dataset '%s': %s",
+                dataset_id,
+                response_json.get("error").get("message", ""),
+            )
+            return None
 
     def get_dataset(self, dataset_id: str) -> Any:
         """
@@ -58,195 +183,228 @@ class _EvaluationHttpClient:
             A list of dataset items.
         """
         if not self._client:
-            logger.error(
-                "netra.evaluation: Evaluation client is not initialized; cannot fetch dataset '%s'", dataset_id
-            )
-            return []
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch dataset")
+            return {"success": False}
         try:
             url = f"/evaluations/dataset/{dataset_id}"
             response = self._client.get(url)
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Dataset fetched successfully")
                 return data.get("data", [])
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to fetch dataset '%s': %s", dataset_id, exc)
-        return []
-
-    def create_run(self, dataset_id: str, name: str) -> Any:
-        """
-        Create a run for a dataset.
-
-        Args:
-            dataset_id: The id of the dataset to create a run for.
-            name: The name of the run.
-
-        Returns:
-            A backend JSON response on success or {"success": False} on error.
-        """
-        if not self._client:
+        except Exception:
+            response_json = response.json()
             logger.error(
-                "netra.evaluation: Evaluation client is not initialized; cannot create run for dataset '%s'", dataset_id
+                "netra.evaluation: Failed to fetch dataset '%s': %s",
+                dataset_id,
+                response_json.get("error").get("message", ""),
             )
-            return {"success": False}
-        try:
-            url = f"/evaluations/run/dataset/{dataset_id}"
-            payload = {"name": name}
-            response = self._client.post(url, json=payload)
-            response.raise_for_status()
-            data = response.json()
-            if isinstance(data, dict) and "data" in data:
-                return data.get("data", {})
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to create run for dataset '%s': %s", dataset_id, exc)
-            return {"success": False}
-        return {"success": False}
+            return None
 
-    def create_dataset(
-        self, name: Optional[str], tags: Optional[List[str]] = None, policy_ids: Optional[List[str]] = None
+    def create_run(
+        self,
+        name: str,
+        dataset_id: Optional[str] = None,
+        evaluators_config: Optional[List[Dict[str, Any]]] = None,
     ) -> Any:
         """
-        Create an empty dataset and return backend data (expects an id).
+        Create a new run based on the provided name, dataset_id, and evaluators_config.
 
         Args:
-            name: The name of the dataset.
-            tags: Optional list of tags to associate with the dataset.
-            policy_ids: Optional list of policy IDs to associate with the dataset.
+            name: The name of the run.
+            dataset_id: The id of the dataset to which the run will be associated.
+            evaluators_config: Optional list of evaluators to be used for the run.
 
         Returns:
-            A backend JSON response on success or {"success": False} on error.
+            A backend JSON response containing run_id
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create dataset")
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create run")
             return {"success": False}
         try:
-            url = "/evaluations/dataset"
+            url = f"/evaluations/test_run"
             payload: Dict[str, Any] = {
                 "name": name,
-                "tags": tags if tags else [],
-                "policyIds": policy_ids if policy_ids else [],
+                "datasetId": dataset_id if dataset_id else None,
+                "localEvaluators": evaluators_config if evaluators_config else [],
             }
             response = self._client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Run created successfully")
                 return data.get("data", {})
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to create dataset: %s", exc)
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to create run '%s': %s", name, response_json.get("error").get("message", "")
+            )
             return {"success": False}
-        return {"success": False}
 
-    def add_dataset_entry(self, dataset_id: str, item_payload: Dict[str, Any]) -> Any:
+    def post_run_item(self, run_id: str, payload: Dict[str, Any]) -> Any:
         """
-        Add a single item to an existing dataset and return backend data (e.g., new item id).
+        Submit a new run item to the backend.
 
         Args:
-            dataset_id: The id of the dataset to which the item will be added.
-            item_payload: The dataset item to add.
+            run_id: The id of the run to which the item will be added.
+            payload: The run item to add.
 
         Returns:
             A backend JSON response on success or {"success": False} on error.
         """
         if not self._client:
-            logger.error(
-                "netra.evaluation: Evaluation client is not initialized; cannot add item to dataset '%s'",
-                dataset_id,
-            )
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot post run item")
             return {"success": False}
         try:
-            url = f"/evaluations/dataset/{dataset_id}/items"
-            response = self._client.post(url, json=item_payload)
+            url = f"/evaluations/run/{run_id}/item"
+            response = self._client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Run item posted successfully")
                 return data.get("data", {})
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to add item to dataset '%s': %s", dataset_id, exc)
+            return data
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to post run item for run '%s': %s",
+                run_id,
+                response_json.get("error").get("message", ""),
+            )
             return {"success": False}
-        return {"success": False}
 
-    def post_entry_status(
-        self,
-        run_id: str,
-        test_id: str,
-        status: EntryStatus,
-        trace_id: Optional[str],
-        session_id: Optional[str],
-        score: Optional[List[EvaluationScore]] = None,
-    ) -> None:
+    def submit_local_evaluations(
+        self, run_id: str, test_run_item_id: str, evaluator_results: List[Dict[str, Any]]
+    ) -> Any:
         """
-        Post per-entry status. Logs errors and returns None on failure.
+        Submit local evaluations result
 
         Args:
-            run_id: The id of the run to which the entry belongs.
-            test_id: The id of the test to which the entry belongs.
-            status: The status of the entry.
-            trace_id: The trace id of the entry.
-            session_id: The session id of the entry.
-            score: Optional list of scores to record.
+            run_id: The id of the run to which the item will be added.
+            test_run_item_id: The id of the test run item.
+            evaluator_results: The evaluator results to submit.
+
+        Returns:
+            A backend JSON response containing confirmation of the submission.
         """
         if not self._client:
-            logger.error(
-                "netra.evaluation: Evaluation client is not initialized; cannot post status '%s' for run '%s' test '%s'",
-                status.value,
-                run_id,
-                test_id,
-            )
-            return
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot submit local evaluations")
+            return {"success": False}
         try:
-            url = f"/evaluations/run/{run_id}/test/{test_id}"
-            payload: Dict[str, Any] = {
-                "status": status.value,
-                "traceId": trace_id,
-                "sessionId": session_id if session_id else None,
-            }
-            # Include score objects when provided
-            if score is not None:
-                try:
-                    normalized_score: List[Dict[str, Any]] = []
-                    for item in score:
-                        if item is None:
-                            continue
-                        metric_type = item.metric_type
-                        metric_score = item.score
-                        if metric_type is not None and metric_score is not None:
-                            normalized_score.append({"metric": metric_type, "score": metric_score})
-                    if normalized_score:
-                        payload["metrics"] = normalized_score
-                    else:
-                        payload["metrics"] = []
-                except Exception as norm_exc:
-                    logger.debug("netra.evaluation: Failed to normalize score payload: %s", norm_exc, exc_info=True)
+            url = f"/evaluations/run/{run_id}/item/{test_run_item_id}/local-evaluations"
+            payload: Dict[str, Any] = {"evaluatorResults": evaluator_results}
             response = self._client.post(url, json=payload)
             response.raise_for_status()
-        except Exception as exc:
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Local evaluations submitted successfully")
+                return data.get("data", {})
+            return data
+        except Exception:
+            response_json = response.json()
             logger.error(
-                "netra.evaluation: Failed to post status '%s' for run '%s' test '%s': %s",
-                status.value,
+                "netra.evaluation: Failed to submit local evaluations for run '%s', item '%s': %s",
                 run_id,
-                test_id,
-                exc,
+                test_run_item_id,
+                response_json.get("error").get("message", ""),
             )
+            return {"success": False}
 
-    def post_run_status(self, run_id: str, status: RunStatus) -> None:
+    def post_run_status(self, run_id: str, status: str) -> Any:
         """
-        Post final run status, e.g., {"status": "completed"}. Logs errors on failure.
+        Submit the run status
 
         Args:
-            run_id: The id of the run to which the status will be posted.
-            status: The status of the run.
+             run_id: The id of the run to which the item will be added.
+             status: The status of the run.
+
+         Returns:
+             A backend JSON response containing confirmation of the submission.
         """
         if not self._client:
-            logger.error(
-                "netra.evaluation: Evaluation client is not initialized; cannot post run status '%s' for run '%s'",
-                status.value,
-                run_id,
-            )
-            return
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot post run status")
+            return {"success": False}
         try:
             url = f"/evaluations/run/{run_id}/status"
-            payload: Dict[str, Any] = {"status": status.value}
+            payload: Dict[str, Any] = {"status": status}
             response = self._client.post(url, json=payload)
             response.raise_for_status()
-        except Exception as exc:
-            logger.error("netra.evaluation: Failed to post run status '%s' for run '%s': %s", status.value, run_id, exc)
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Run status posted successfully")
+                return data.get("data", {})
+            return data
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to post run status for run '%s': %s",
+                run_id,
+                response_json.get("error").get("message", ""),
+            )
+            return {"success": False}
+
+    def get_span_by_id(self, span_id: str) -> Any:
+        """
+        Check if a span exists in the backend.
+
+        Args:
+            span_id: The span ID to check.
+
+        Returns:
+            The span data if found, None otherwise.
+        """
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot get span")
+            return None
+        try:
+            url = f"/spans/{span_id}"
+            response = self._client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict):
+                logger.info("netra.evaluation: Span fetched successfully")
+                return data.get("data", data)
+            return data
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to get span '%s': %s", span_id, response_json.get("error").get("message", "")
+            )
+            return None
+
+    async def wait_for_span_ingestion(
+        self,
+        span_id: str,
+        timeout_seconds: float = 60.0,
+        poll_interval_seconds: float = 1.0,
+        initial_delay_seconds: float = 0.5,
+    ) -> bool:
+        """
+        Wait until a span is available in the backend.
+
+        Polls the GET /spans/:id endpoint to verify span availability
+        before running evaluators.
+
+        Args:
+            span_id: The span ID to poll for.
+            timeout_seconds: Maximum time to wait for span ingestion.
+            poll_interval_seconds: Time between polling attempts.
+            initial_delay_seconds: Initial delay before first poll attempt.
+
+        Returns:
+            True if span was found within timeout, False otherwise.
+        """
+        if not span_id:
+            return False
+
+        await asyncio.sleep(initial_delay_seconds)
+
+        deadline = time.time() + timeout_seconds
+        while time.time() < deadline:
+            span_data = await asyncio.to_thread(self.get_span_by_id, span_id)
+            if span_data is not None:
+                return True
+            await asyncio.sleep(poll_interval_seconds)
+
+        return False
