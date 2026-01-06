@@ -200,7 +200,6 @@ def build_item_payload(
         Dict[str, Any]: The payload dict.
     """
     payload: Dict[str, Any] = {
-        "status": status,
         "traceId": ctx.trace_id,
         "sessionId": ctx.session_id,
     }
