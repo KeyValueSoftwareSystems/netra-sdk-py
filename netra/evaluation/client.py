@@ -358,19 +358,14 @@ class EvaluationHttpClient:
             logger.error("netra.evaluation: Evaluation client is not initialized; cannot get span")
             return None
         try:
-            url = f"/spans/{span_id}"
+            url = f"sdk/traces/spans/{span_id}"
             response = self._client.get(url)
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict):
-                logger.info("netra.evaluation: Span fetched successfully")
                 return data.get("data", data)
             return data
         except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.evaluation: Failed to get span '%s': %s", span_id, response_json.get("error").get("message", "")
-            )
             return None
 
     async def wait_for_span_ingestion(

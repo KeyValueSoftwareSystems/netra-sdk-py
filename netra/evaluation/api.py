@@ -327,7 +327,6 @@ class Evaluation:
                 ctx.span_id = format_span_id(span_context.span_id)
             ctx.session_id = get_session_id_from_baggage()
 
-            ctx.test_run_item_id = self._post_triggered_status(run_id, ctx)
             ctx.task_output, ctx.status = await execute_task(task, ctx.item_input)
             self._post_completed_status(run_id, ctx)
 
@@ -390,7 +389,7 @@ class Evaluation:
             ctx: The item context.
             evaluators: List of evaluators.
         """
-        # await self._client.wait_for_span_ingestion(ctx.span_id)
+        await self._client.wait_for_span_ingestion(ctx.span_id)
 
         evaluator_results: List[Dict[str, Any]] = []
         for evaluator in evaluators:
