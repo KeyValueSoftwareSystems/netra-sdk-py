@@ -6,7 +6,7 @@ from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
 
-from netra.evaluation.models import DatasetRecord, EvaluatorConfig, ItemContext
+from netra.evaluation.models import DatasetRecord, EvaluatorConfig, EvaluatorContext, ItemContext
 
 logger = logging.getLogger(__name__)
 
@@ -105,9 +105,9 @@ def extract_evaluator_config(evaluator: Any) -> Optional[EvaluatorConfig]:
     Returns:
         Optional[EvaluatorConfig]: The evaluator configuration if found, None otherwise.
     """
-    if not hasattr(evaluator, "get") or not callable(getattr(evaluator, "get")):
+    if not hasattr(evaluator, "config"):
         return None
-    config = evaluator.get()
+    config = evaluator.config
     if not isinstance(config, EvaluatorConfig):
         return None
     return config
@@ -159,14 +159,15 @@ async def run_single_evaluator(
     expected_name = None
     config = extract_evaluator_config(evaluator)
     if config:
-        expected_name = config.get("name")
+        expected_name = config.name
 
-    result = evaluator.evaluate(
+    context = EvaluatorContext(
         input=item_input,
         task_output=task_output,
         expected_output=expected_output,
         metadata=metadata,
     )
+    result = evaluator.evaluate(context)
     if asyncio.iscoroutine(result):
         result = await result
 

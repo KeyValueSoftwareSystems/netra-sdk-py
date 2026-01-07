@@ -328,7 +328,7 @@ class Evaluation:
             ctx.session_id = get_session_id_from_baggage()
 
             ctx.task_output, ctx.status = await execute_task(task, ctx.item_input)
-            self._post_completed_status(run_id, ctx)
+            ctx.test_run_item_id = self._post_completed_status(run_id, ctx)
 
             if evaluators and ctx.status == "completed":
                 eval_task = asyncio.create_task(self._run_evaluators_for_item(run_id, ctx, evaluators))
@@ -364,7 +364,7 @@ class Evaluation:
                 return str(item_id)
         return f"local-{ctx.index}"
 
-    def _post_completed_status(self, run_id: str, ctx: ItemContext) -> None:
+    def _post_completed_status(self, run_id: str, ctx: ItemContext) -> Any:
         """
         Post completed/failed status with task output.
 
@@ -373,7 +373,8 @@ class Evaluation:
             ctx: The item context.
         """
         payload = build_item_payload(ctx, status=ctx.status, include_output=True)
-        self._client.post_run_item(run_id, payload)
+        run_item_id = self._client.post_run_item(run_id, payload)
+        return run_item_id
 
     async def _run_evaluators_for_item(
         self,
