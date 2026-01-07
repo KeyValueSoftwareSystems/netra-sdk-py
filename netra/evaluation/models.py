@@ -72,6 +72,13 @@ class EvaluatorConfig(BaseModel):  # type:ignore[misc]
     }
 
 
+class EvaluatorContext(BaseModel):  # type:ignore[misc]
+    input: Any
+    task_output: Any
+    expected_output: Any = None
+    metadata: Optional[Dict[str, Any]] = None
+
+
 class EvaluatorOutput(BaseModel):  # type:ignore[misc]
     evaluator_name: str
     result: Any

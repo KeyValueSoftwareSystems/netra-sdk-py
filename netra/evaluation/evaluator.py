@@ -6,66 +6,61 @@ should inherit from when implementing local evaluators for run_test_suite().
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Dict, Optional
 
-from netra.evaluation.models import EvaluatorConfig, EvaluatorOutput
+from netra.evaluation.models import EvaluatorConfig, EvaluatorContext, EvaluatorOutput
 
 
 class BaseEvaluator(ABC):
     """
     Abstract base class for all evaluators.
 
-    Subclasses must implement:
-        - get(): Returns evaluator configuration (name, label, scoreType).
-        - evaluate(): Runs the evaluation logic and returns a result.
+    Subclasses must:
+        - Implement evaluate(): Runs the evaluation logic and returns a result.
+
+    The configuration is passed when instantiating the evaluator.
 
     Example:
         class MyEvaluator(BaseEvaluator):
-            def get(self) -> EvaluatorConfig:
-                return EvaluatorConfig(
-                    name="my_evaluator",
-                    label="My Custom Evaluator",
-                    score_type=ScoreType.BOOLEAN,
-                )
-
-            def evaluate(
-                self,
-                input: Any,
-                task_output: Any,
-                expected_output: Any,
-                metadata: Optional[Dict[str, Any]] = None,
-            ) -> EvaluatorResult:
-                is_correct = task_output == expected_output
-                return EvaluatorResult(
-                    evaluatorName="my_evaluator",
+            def evaluate(self, context: EvaluatorContext) -> EvaluatorOutput:
+                is_correct = context.task_output == context.expected_output
+                return EvaluatorOutput(
+                    evaluator_name=self.config.name,
                     result=is_correct,
-                    isPassed=is_correct,
+                    is_passed=is_correct,
                     reason="Output matches expected" if is_correct else "Mismatch",
                 )
+
+        # Usage:
+        result = Netra.evaluation.run_test_suite(
+            name="Copywriting Assistant v1",
+            data=dataset,
+            task=get_copywriting_agent_response,
+            evaluators=[
+                MyEvaluator(
+                    EvaluatorConfig(
+                        name="my_evaluator",
+                        label="My Custom Evaluator",
+                        score_type=ScoreType.BOOLEAN,
+                    )
+                )
+            ]
+        )
     """
 
-    @abstractmethod
-    def get(self) -> EvaluatorConfig:
+    def __init__(self, config: EvaluatorConfig) -> None:
         """
-        Return the evaluator configuration.
+        Initialize the evaluator with its configuration.
 
-        The returned dictionary must contain:
-            - name (str): Unique identifier for the evaluator.
-            - label (str): Human-readable display name.
-            - scoreType (str): One of "boolean", "numeric", "percentage".
-
-        Returns:
-            Dict[str, Any]: Evaluator configuration dictionary.
+        Args:
+            config: EvaluatorConfig containing:
+                - name (str): Unique identifier for the evaluator.
+                - label (str): Human-readable display name.
+                - score_type (ScoreType): One of BOOLEAN, NUMERICAL, CATEGORICAL.
         """
+        self.config = config
 
     @abstractmethod
-    def evaluate(
-        self,
-        input: Any,
-        task_output: Any,
-        expected_output: Any,
-        metadata: Optional[Dict[str, Any]] = None,
-    ) -> EvaluatorOutput:
+    def evaluate(self, context: EvaluatorContext) -> EvaluatorOutput:
         """
         Run the evaluation logic.
 
@@ -73,14 +68,15 @@ class BaseEvaluator(ABC):
         await the coroutine automatically.
 
         Args:
-            input: The original input passed to the task function.
-            task_output: The output returned by the task function.
-            expected_output: The expected output from the dataset item.
-            metadata: Optional metadata from the dataset item.
+            context: EvaluatorContext containing:
+                - input: The original input passed to the task function.
+                - task_output: The output returned by the task function.
+                - expected_output: The expected output from the dataset item.
+                - metadata: Optional metadata from the dataset item.
 
         Returns:
             EvaluatorOutput: The evaluation result containing:
-                - evaluator_name (str): Must match the name from get().
+                - evaluator_name (str): Must match the name from config.
                 - result (Any): The evaluation score/value.
                 - is_passed (bool): Whether the evaluation passed.
                 - reason (Optional[str]): Explanation for the result.
