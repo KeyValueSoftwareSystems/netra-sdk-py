@@ -263,7 +263,8 @@ class EvaluationHttpClient:
             data = response.json()
             if isinstance(data, dict) and "data" in data:
                 logger.info("netra.evaluation: Run item posted successfully")
-                run_item_id = data.get("data", {}).get("itemId")
+                run_item = data.get("data", {}).get("item")
+                run_item_id = run_item.get("id")
                 return run_item_id
             return data
         except Exception:
