@@ -171,17 +171,17 @@ async def run_single_evaluator(
     if asyncio.iscoroutine(result):
         result = await result
 
-    if hasattr(result, "model_dump"):
-        result_dict = result.model_dump()
-    elif isinstance(result, dict):
-        result_dict = result
-    else:
+    result_payload = {
+        "evaluatorName": result.evaluator_name,
+        "result": result.result,
+        "isPassed": result.is_passed,
+        "reason": result.reason,
+    }
+
+    if expected_name and result_payload.get("evaluatorName") != expected_name:
         return None
 
-    if expected_name and result_dict.get("evaluator_name") != expected_name:
-        return None
-
-    return result_dict  # type: ignore[no-any-return]
+    return result_payload
 
 
 def build_item_payload(
