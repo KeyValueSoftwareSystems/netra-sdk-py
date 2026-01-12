@@ -117,3 +117,9 @@ class RunContext:
     poller: Optional[Any] = None
     results: List[Dict[str, Any]] = field(default_factory=list)
     bg_eval_tasks: List[asyncio.Task[None]] = field(default_factory=list)
+
+
+class LocalDataset(BaseModel):  # type:ignore[misc]
+    """Local dataset class for running test suite locally."""
+
+    items: List[DatasetItem]

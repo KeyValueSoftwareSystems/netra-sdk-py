@@ -232,6 +232,7 @@ class Evaluation:
             return None
 
         items = list(data.items)
+        total_items = len(items)
         dataset_id = extract_dataset_id(items)
         evaluators_config = build_evaluators_config(evaluators)
 
@@ -243,16 +244,18 @@ class Evaluation:
         if not run_id:
             logger.error("netra.evaluation: Failed to create run")
             return None
-        logger.info("netra.evaluation: Run created with id: %s", run_id)
+        logger.info("netra.evaluation: Initiated test run")
 
         semaphore = asyncio.Semaphore(max(1, max_concurrency))
         results: List[Dict[str, Any]] = []
         bg_eval_tasks: List[asyncio.Task[None]] = []
+        completed_items = 0
+        completed_lock = asyncio.Lock()
 
         async def process_item(idx: int, item: Any) -> None:
             async with semaphore:
                 ctx = self._create_item_context(idx, item)
-                await self._execute_item_pipeline(
+                item_result = await self._execute_item_pipeline(
                     run_id=run_id,
                     run_name=name,
                     ctx=ctx,
@@ -261,6 +264,16 @@ class Evaluation:
                     results=results,
                     bg_eval_tasks=bg_eval_tasks,
                 )
+
+                nonlocal completed_items
+                async with completed_lock:
+                    completed_items += 1
+                    logger.info(
+                        "netra.evaluation: %d/%d items processed (status=%s)",
+                        completed_items,
+                        total_items,
+                        item_result.get("status"),
+                    )
 
         await asyncio.gather(*[process_item(i, item) for i, item in enumerate(items)])
 
@@ -304,7 +317,7 @@ class Evaluation:
         evaluators: Optional[List[Any]],
         results: List[Dict[str, Any]],
         bg_eval_tasks: List[asyncio.Task[None]],
-    ) -> None:
+    ) -> Dict[str, Any]:
         """
         Execute the full pipeline for a single item.
 
@@ -317,7 +330,7 @@ class Evaluation:
             results: List to append results to.
             bg_eval_tasks: List to append background evaluation tasks to.
         """
-        span_name = f"evaluation.{run_name}.{ctx.index}"
+        span_name = f"TestRun.{run_name}"
 
         with SpanWrapper(span_name, module_name="netra.evaluation") as span:
             otel_span = span.get_current_span()
@@ -343,6 +356,10 @@ class Evaluation:
                     "testRunItemId": ctx.test_run_item_id,
                 }
             )
+
+            return {
+                "status": ctx.status,
+            }
 
     def _post_triggered_status(self, run_id: str, ctx: ItemContext) -> str:
         """
