@@ -213,6 +213,10 @@ def build_item_payload(
         if ctx.metadata:
             payload["metadata"] = ctx.metadata
 
+    if ctx.status == "failed":
+        payload["status"] = "failed"
+        return payload
+
     if include_output:
         payload["taskOutput"] = ctx.task_output
 
