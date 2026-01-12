@@ -233,7 +233,6 @@ class EvaluationHttpClient:
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
-                logger.info("netra.evaluation: Run created successfully")
                 return data.get("data", {})
         except Exception:
             response_json = response.json()
@@ -262,7 +261,6 @@ class EvaluationHttpClient:
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
-                logger.info("netra.evaluation: Run item posted successfully")
                 run_item = data.get("data", {}).get("item")
                 run_item_id = run_item.get("id")
                 return run_item_id
@@ -300,7 +298,6 @@ class EvaluationHttpClient:
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
-                logger.info("netra.evaluation: Local evaluations submitted successfully")
                 return data.get("data", {})
             return data
         except Exception:
@@ -334,7 +331,7 @@ class EvaluationHttpClient:
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
-                logger.info("netra.evaluation: Run status posted successfully")
+                logger.info("netra.evaluation: Completed test run successfully")
                 return data.get("data", {})
             return data
         except Exception:
