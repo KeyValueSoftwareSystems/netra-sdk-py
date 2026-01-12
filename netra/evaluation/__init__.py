@@ -1,6 +1,13 @@
 from netra.evaluation.api import Evaluation
 from netra.evaluation.evaluator import BaseEvaluator
-from netra.evaluation.models import DatasetItem, EvaluatorConfig, EvaluatorContext, EvaluatorOutput, ScoreType
+from netra.evaluation.models import (
+    DatasetItem,
+    EvaluatorConfig,
+    EvaluatorContext,
+    EvaluatorOutput,
+    LocalDataset,
+    ScoreType,
+)
 
 __all__ = [
     "Evaluation",
@@ -10,4 +17,5 @@ __all__ = [
     "EvaluatorOutput",
     "EvaluatorConfig",
     "ScoreType",
+    "LocalDataset",
 ]
