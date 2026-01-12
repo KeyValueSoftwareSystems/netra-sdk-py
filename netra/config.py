@@ -61,7 +61,7 @@ class Config:
         self.enable_root_span = self._get_bool_config(enable_root_span, "NETRA_ENABLE_ROOT_SPAN", default=False)
         self.enable_scrubbing = self._get_bool_config(enable_scrubbing, "NETRA_ENABLE_SCRUBBING", default=False)
 
-        self.environment = environment or os.getenv("NETRA_ENV", "local")
+        self.environment = environment or os.getenv("NETRA_ENV", "default")
         self.resource_attributes = self._get_resource_attributes(resource_attributes)
         self.blocked_spans = blocked_spans
 
