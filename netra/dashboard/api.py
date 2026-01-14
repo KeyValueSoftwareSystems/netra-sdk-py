@@ -4,10 +4,10 @@ from netra.config import Config
 from netra.dashboard.client import DashboardHttpClient
 from netra.dashboard.models import (
     ChartType,
-    DashboardDimension,
-    DashboardFilterConfig,
-    DashboardMetrics,
-    DashboardScope,
+    Dimension,
+    FilterConfig,
+    Metrics,
+    Scope,
 )
 
 
@@ -26,11 +26,11 @@ class Dashboard:
 
     def query_data(
         self,
-        scope: DashboardScope,
+        scope: Scope,
         chart_type: ChartType,
-        metrics: DashboardMetrics,
-        filter: DashboardFilterConfig,
-        dimension: Optional[DashboardDimension] = None,
+        metrics: Metrics,
+        filter: FilterConfig,
+        dimension: Optional[Dimension] = None,
     ) -> Any:
         """
         Execute a dynamic query for dashboards to retrieve metrics and time-series data.
@@ -46,16 +46,16 @@ class Dashboard:
             Dict containing timeRange and data, or None on error.
         """
 
-        if not isinstance(scope, DashboardScope):
-            raise TypeError(f"scope must be a DashboardScope, got {type(scope).__name__}")
+        if not isinstance(scope, Scope):
+            raise TypeError(f"scope must be a Scope, got {type(scope).__name__}")
         if not isinstance(chart_type, ChartType):
             raise TypeError(f"chart_type must be a ChartType, got {type(chart_type).__name__}")
-        if not isinstance(metrics, DashboardMetrics):
-            raise TypeError(f"metrics must be a DashboardMetrics, got {type(metrics).__name__}")
-        if not isinstance(filter, DashboardFilterConfig):
-            raise TypeError(f"filter must be a DashboardFilterConfig, got {type(filter).__name__}")
-        if dimension is not None and not isinstance(dimension, DashboardDimension):
-            raise TypeError(f"dimension must be a DashboardDimension or None, got {type(dimension).__name__}")
+        if not isinstance(metrics, Metrics):
+            raise TypeError(f"metrics must be a Metrics, got {type(metrics).__name__}")
+        if not isinstance(filter, FilterConfig):
+            raise TypeError(f"filter must be a FilterConfig, got {type(filter).__name__}")
+        if dimension is not None and not isinstance(dimension, Dimension):
+            raise TypeError(f"dimension must be a Dimension or None, got {type(dimension).__name__}")
 
         result = self._client.query_data(
             scope=scope,

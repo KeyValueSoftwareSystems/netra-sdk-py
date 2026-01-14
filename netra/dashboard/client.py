@@ -7,10 +7,10 @@ import httpx
 from netra.config import Config
 from netra.dashboard.models import (
     ChartType,
-    DashboardDimension,
-    DashboardFilterConfig,
-    DashboardMetrics,
-    DashboardScope,
+    Dimension,
+    FilterConfig,
+    Metrics,
+    Scope,
 )
 
 logger = logging.getLogger(__name__)
@@ -106,17 +106,17 @@ class DashboardHttpClient:
 
     def query_data(
         self,
-        scope: DashboardScope,
+        scope: Scope,
         chart_type: ChartType,
-        metrics: DashboardMetrics,
-        filter: DashboardFilterConfig,
-        dimension: Optional[DashboardDimension] = None,
+        metrics: Metrics,
+        filter: FilterConfig,
+        dimension: Optional[Dimension] = None,
     ) -> Any:
         """
         Execute a dynamic query for dashboards.
 
         Args:
-            scope: The scope of data to query (DashboardScope.SPANS or DashboardScope.TRACES).
+            scope: The scope of data to query (Scope.SPANS or Scope.TRACES).
             chart_type: The type of chart visualization.
             metrics: Metrics configuration with measure and aggregation.
             filter: Filter configuration with time range, groupBy, and optional filters.
