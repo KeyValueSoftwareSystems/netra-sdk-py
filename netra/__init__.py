@@ -8,6 +8,7 @@ from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
 from netra.config import Config
+from netra.dashboard import Dashboard
 from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
@@ -123,6 +124,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize usage client: %s", e, exc_info=True)
                 cls.usage = None  # type:ignore[attr-defined]
+
+            # Initialize dashboard client and expose as class attribute
+            try:
+                cls.dashboard = Dashboard(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize dashboard client: %s", e, exc_info=True)
+                cls.dashboard = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             init_instrumentations(
