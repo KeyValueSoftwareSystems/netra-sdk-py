@@ -204,8 +204,34 @@ class Evaluation:
         Returns:
             A dictionary containing the run id and the results of the test suite.
         """
-        result = run_async_safely(self._run_test_suite_async(name, data, task, evaluators, max_concurrency))
-        return result
+        if not validate_run_inputs(name, data, task):
+            return None
+
+        items = list(data.items)
+        dataset_id = extract_dataset_id(items)
+        evaluators_config = build_evaluators_config(evaluators)
+
+        run_id = self.create_run(
+            name=name,
+            dataset_id=dataset_id,
+            evaluators_config=evaluators_config,
+        )
+        if not run_id:
+            logger.error("netra.evaluation: Failed to create run")
+            return None
+        logger.info("netra.evaluation: Initiated test run")
+
+        try:
+            result = run_async_safely(
+                self._run_test_suite_async(name, data, task, evaluators, max_concurrency, run_id=run_id)
+            )
+            return result
+        except Exception:
+            self._client.post_run_status(run_id, "failed")
+            raise
+        except BaseException:
+            self._client.post_run_status(run_id, "failed")
+            raise
 
     async def _run_test_suite_async(
         self,
@@ -214,6 +240,7 @@ class Evaluation:
         task: Callable[[Any], Any],
         evaluators: Optional[List[Any]],
         max_concurrency: int,
+        run_id: Optional[str] = None,
     ) -> Optional[Dict[str, Any]]:
         """
         Async implementation of run_test_suite.
@@ -228,23 +255,8 @@ class Evaluation:
         Returns:
             items: The results of the test suite.
         """
-        if not validate_run_inputs(name, data, task):
-            return None
-
         items = list(data.items)
         total_items = len(items)
-        dataset_id = extract_dataset_id(items)
-        evaluators_config = build_evaluators_config(evaluators)
-
-        run_id = self.create_run(
-            name=name,
-            dataset_id=dataset_id,
-            evaluators_config=evaluators_config,
-        )
-        if not run_id:
-            logger.error("netra.evaluation: Failed to create run")
-            return None
-        logger.info("netra.evaluation: Initiated test run")
 
         semaphore = asyncio.Semaphore(max(1, max_concurrency))
         results: List[Dict[str, Any]] = []
@@ -256,7 +268,7 @@ class Evaluation:
             async with semaphore:
                 ctx = self._create_item_context(idx, item)
                 item_result = await self._execute_item_pipeline(
-                    run_id=run_id,
+                    run_id=run_id,  # type:ignore[arg-type]
                     run_name=name,
                     ctx=ctx,
                     task=task,
@@ -280,7 +292,7 @@ class Evaluation:
         if bg_eval_tasks:
             await asyncio.gather(*bg_eval_tasks, return_exceptions=True)
 
-        self._client.post_run_status(run_id, "completed")
+        self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
         return {"runId": run_id, "items": results}
 
     def _create_item_context(self, idx: int, item: Any) -> ItemContext:
