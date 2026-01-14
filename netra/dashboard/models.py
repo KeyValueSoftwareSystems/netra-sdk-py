@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional, Union
 from pydantic import BaseModel
 
 
-class DashboardScope(str, Enum):
+class Scope(str, Enum):
     """Scope of data to query."""
 
     SPANS = "Spans"
@@ -64,7 +64,7 @@ class DimensionField(str, Enum):
     MODEL_NAME = "model_name"
 
 
-class FilterOperator(str, Enum):
+class Operator(str, Enum):
     """Filter operators for query conditions."""
 
     EQUALS = "equals"
@@ -81,7 +81,7 @@ class FilterOperator(str, Enum):
     NONE_OF = "none_of"
 
 
-class FilterType(str, Enum):
+class Type(str, Enum):
     """Data types for filter conditions."""
 
     STRING = "string"
@@ -129,7 +129,7 @@ def metadata_field(key: str) -> str:
     return f"metadata['{key}']"
 
 
-class DashboardFilter(BaseModel):  # type:ignore[misc]
+class Filter(BaseModel):  # type:ignore[misc]
     """
     Filter condition for dashboard queries.
 
@@ -142,13 +142,13 @@ class DashboardFilter(BaseModel):  # type:ignore[misc]
     """
 
     field: FilterField
-    operator: FilterOperator
-    type: FilterType
+    operator: Operator
+    type: Type
     value: Any
     key: Optional[str] = None
 
 
-class DashboardMetrics(BaseModel):  # type:ignore[misc]
+class Metrics(BaseModel):  # type:ignore[misc]
     """
     Metrics configuration for dashboard queries.
 
@@ -161,7 +161,7 @@ class DashboardMetrics(BaseModel):  # type:ignore[misc]
     aggregation: Aggregation
 
 
-class DashboardDimension(BaseModel):  # type:ignore[misc]
+class Dimension(BaseModel):  # type:ignore[misc]
     """
     Dimension configuration for dashboard queries.
 
@@ -172,7 +172,7 @@ class DashboardDimension(BaseModel):  # type:ignore[misc]
     field: DimensionField
 
 
-class DashboardFilterConfig(BaseModel):  # type:ignore[misc]
+class FilterConfig(BaseModel):  # type:ignore[misc]
     """
     Filter configuration for dashboard queries.
 
@@ -186,10 +186,10 @@ class DashboardFilterConfig(BaseModel):  # type:ignore[misc]
     start_time: str
     end_time: str
     group_by: GroupBy
-    filters: Optional[List[DashboardFilter]] = None
+    filters: Optional[List[Filter]] = None
 
 
-class DashboardTimeRange(BaseModel):  # type:ignore[misc]
+class TimeRange(BaseModel):  # type:ignore[misc]
     """Time range information in the response."""
 
     start_time: str
@@ -203,7 +203,7 @@ class TimeSeriesDataPoint(BaseModel):  # type:ignore[misc]
     value: float
 
 
-class DimensionValue(BaseModel):  # type:ignore[misc]
+class Value(BaseModel):  # type:ignore[misc]
     """Value for a specific dimension."""
 
     dimension: str
@@ -214,7 +214,7 @@ class TimeSeriesWithDimension(BaseModel):  # type:ignore[misc]
     """Time series data point with dimension values."""
 
     date: str
-    values: List[DimensionValue]
+    values: List[Value]
 
 
 class TimeSeriesResponse(BaseModel):  # type:ignore[misc]
@@ -237,7 +237,7 @@ class NumberResponse(BaseModel):  # type:ignore[misc]
     value: float
 
 
-DashboardData = Union[
+Data = Union[
     List[TimeSeriesDataPoint],
     TimeSeriesResponse,
     List[CategoricalDataPoint],
@@ -246,8 +246,8 @@ DashboardData = Union[
 ]
 
 
-class DashboardQueryResponse(BaseModel):  # type:ignore[misc]
+class QueryResponse(BaseModel):  # type:ignore[misc]
     """Response wrapper for dashboard queries."""
 
-    time_range: DashboardTimeRange
-    data: DashboardData
+    time_range: TimeRange
+    data: Data
