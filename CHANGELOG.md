@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.61] - 2026-01-14
+
+- Added dashboard-query utility
+
 ## [0.1.60] - 2025-12-22
 
 - Fixed conversation attribute handling to use OTel context first, then fallback to SessionManager spans
