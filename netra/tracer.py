@@ -91,6 +91,7 @@ class Tracer:
 
             from netra.processors import (
                 InstrumentationSpanProcessor,
+                LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
@@ -99,6 +100,7 @@ class Tracer:
             provider.add_span_processor(LocalFilteringSpanProcessor())
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
+            provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
 
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
