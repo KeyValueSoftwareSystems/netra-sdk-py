@@ -42,7 +42,7 @@ class Aggregation(str, Enum):
     P90 = "p90"
     P95 = "p95"
     P99 = "p99"
-    MEDIAN = "Median"
+    MEDIAN = "Median (p50)"
     PERCENTAGE = "Percentage"
     TOTAL_COUNT = "Total Count"
 
@@ -59,7 +59,6 @@ class DimensionField(str, Enum):
     """Dimension fields for grouping results."""
 
     ENVIRONMENT = "environment"
-    USER_ID = "user_id"
     SERVICE = "service"
     MODEL_NAME = "model_name"
 
@@ -110,23 +109,7 @@ class FilterField(str, Enum):
     LATENCY = "latency"
     MODEL_NAME = "model_name"
     MODELS = "models"
-
-
-def metadata_field(key: str) -> str:
-    """
-    Create a metadata filter field.
-
-    Args:
-        key: The metadata key to filter on.
-
-    Returns:
-        The formatted metadata field string (e.g., "metadata['key']").
-
-    Example:
-        >>> metadata_field("customer_tier")
-        "metadata['customer_tier']"
-    """
-    return f"metadata['{key}']"
+    METADATA = "metadata"
 
 
 class Filter(BaseModel):  # type:ignore[misc]

@@ -148,11 +148,6 @@ class Netra:
                 tracer = trace.get_tracer("netra.root.span")
                 root_name = f"{Config.LIBRARY_NAME}.root.span"
                 root_span = tracer.start_span(root_name, kind=SpanKind.INTERNAL)
-                # Add useful attributes
-                if cfg.app_name:
-                    root_span.set_attribute("service.name", cfg.app_name)
-                root_span.set_attribute("netra.environment", cfg.environment)
-                root_span.set_attribute("netra.library.version", Config.LIBRARY_VERSION)
 
                 # Attach span to current context so subsequent spans become its children
                 ctx = trace.set_span_in_context(root_span)
