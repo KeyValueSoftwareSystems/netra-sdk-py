@@ -21,7 +21,6 @@ from netra.dashboard.models import (
     TimeSeriesWithDimension,
     Type,
     Value,
-    metadata_field,
 )
 
 __all__ = [
@@ -47,5 +46,4 @@ __all__ = [
     "TimeSeriesResponse",
     "CategoricalDataPoint",
     "NumberResponse",
-    "metadata_field",
 ]
