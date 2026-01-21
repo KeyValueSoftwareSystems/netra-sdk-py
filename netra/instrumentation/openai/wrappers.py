@@ -59,7 +59,9 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    duration = end_time - start_time
+                    span.set_attribute("llm.response.duration", duration)
+                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -107,7 +109,9 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    duration = end_time - start_time
+                    span.set_attribute("llm.response.duration", duration)
+                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -135,7 +139,9 @@ def embeddings_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 end_time = time.time()
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
+                duration = end_time - start_time
+                span.set_attribute("llm.response.duration", duration)
+                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -165,7 +171,9 @@ def aembeddings_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 end_time = time.time()
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
+                duration = end_time - start_time
+                span.set_attribute("llm.response.duration", duration)
+                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -213,7 +221,9 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    duration = end_time - start_time
+                    span.set_attribute("llm.response.duration", duration)
+                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -261,7 +271,9 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    duration = end_time - start_time
+                    span.set_attribute("llm.response.duration", duration)
+                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -281,6 +293,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._first_content_recorded: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -324,6 +337,11 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 content_piece = None
                 if isinstance(delta, dict) and delta.get("content"):
                     content_piece = str(delta.get("content", ""))
+                    if content_piece and not self._first_content_recorded:
+                        self._first_content_recorded = True
+                        self._span.set_attribute(
+                            "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                        )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
                     )
@@ -336,6 +354,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._complete_response["usage"] = chunk_dict["usage"]
 
         # Response API
+        if chunk_dict.get("delta") and not self._first_content_recorded:
+            self._first_content_recorded = True
+            self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
@@ -374,6 +395,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._first_content_recorded: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -417,6 +439,11 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 content_piece = None
                 if isinstance(delta, dict) and delta.get("content"):
                     content_piece = str(delta.get("content", ""))
+                    if content_piece and not self._first_content_recorded:
+                        self._first_content_recorded = True
+                        self._span.set_attribute(
+                            "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                        )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
                     )
@@ -429,6 +456,9 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._complete_response["usage"] = chunk_dict["usage"]
 
         # Response API
+        if chunk_dict.get("delta") and not self._first_content_recorded:
+            self._first_content_recorded = True
+            self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":

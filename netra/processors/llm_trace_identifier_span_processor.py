@@ -61,16 +61,15 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         Handle span start events.
 
-        Registers root spans for trace tracking.
+        Registers "local root spans" for trace tracking. A local root is either:
+        - A true root span (no parent), OR
+        - The first span seen for a trace in this process (handles remote parent case)
 
         Args:
             span: The span that has started.
             parent_context: Optional parent context (unused).
         """
         try:
-            if not self._is_root_span(span):
-                return
-
             span_context = self._get_span_context(span)
             if span_context is None:
                 return
@@ -79,8 +78,12 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
             span_id = span_context.span_id
 
             with self._lock:
-                self._root_spans_by_trace.setdefault(trace_id, span)
-                self._root_span_ids_by_trace.setdefault(trace_id, span_id)
+                # Register the first span we see for this trace as the local root.
+                # Using setdefault ensures we only register the first span, handling
+                # both true roots and distributed tracing (remote parent) cases.
+                if trace_id not in self._root_spans_by_trace:
+                    self._root_spans_by_trace[trace_id] = span
+                    self._root_span_ids_by_trace[trace_id] = span_id
 
         except Exception as e:
             logger.warning("Error processing span start: %s", e, exc_info=True)
@@ -145,13 +148,13 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
     @staticmethod
     def _is_root_span(span: Span) -> bool:
         """
-        Determine if a span is a root span.
+        Determine if a span is a true root span (no valid parent).
 
         Args:
             span: The span to check.
 
         Returns:
-            True if the span is a root span, False otherwise.
+            True if the span has no valid parent, False otherwise.
         """
         parent = getattr(span, "parent", None)
         if parent is None:
