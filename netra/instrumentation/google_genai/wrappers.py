@@ -37,7 +37,9 @@ def content_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 response = wrapped(*args, **kwargs)
                 end_time = time.time()
                 set_response_attributes(span, response)
-                span.set_attribute("llm.response.duration", end_time - start_time)
+                duration = end_time - start_time
+                span.set_attribute("llm.response.duration", duration)
+                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -65,7 +67,9 @@ def acontent_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 response = await wrapped(*args, **kwargs)
                 end_time = time.time()
                 set_response_attributes(span, response)
-                span.set_attribute("llm.response.duration", end_time - start_time)
+                duration = end_time - start_time
+                span.set_attribute("llm.response.duration", duration)
+                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -244,6 +248,7 @@ class StreamingWrapper:
         self._buffer: dict[Any, Any] = {"chunk": None, "content": ""}
         self._chunk: Any = None
         self._response = response
+        self._first_content_recorded: bool = False
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -264,6 +269,9 @@ class StreamingWrapper:
         text = getattr(chunk, "text", None)
         self._buffer["chunk"] = chunk
         if isinstance(text, str):
+            if text and not self._first_content_recorded:
+                self._first_content_recorded = True
+                self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
 
@@ -282,6 +290,7 @@ class AsyncStreamingWrapper:
         self._start_time = start_time
         self._buffer: dict[Any, Any] = {"chunk": None, "content": ""}
         self._response = response
+        self._first_content_recorded: bool = False
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
@@ -302,6 +311,9 @@ class AsyncStreamingWrapper:
         text = getattr(chunk, "text", None)
         self._buffer["chunk"] = chunk
         if isinstance(text, str):
+            if text and not self._first_content_recorded:
+                self._first_content_recorded = True
+                self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
 
