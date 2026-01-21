@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.63] - 2026-01-21
+
+- Added support for first token time in OpenAI & Google GenAI instrumentations
+
 ## [0.1.62] - 2026-01-19
 
 - Fixed bug in dashboard query models
