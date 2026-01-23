@@ -248,3 +248,40 @@ class DashboardHttpClient:
         except Exception as exc:
             logger.error("netra.dashboard: Failed to fetch session stats: %s", exc)
             return None
+
+    def get_session_summary(self, start_time: str, end_time: str, filters: Optional[List[SessionFilter]]) -> Any:
+        if not self._client:
+            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+            return None
+
+        try:
+            url = "/public/dashboard/sessions/summary"
+            payload: Dict[str, Any] = {
+                "filter": {
+                    "startTime": start_time,
+                    "endTime": end_time,
+                }
+            }
+
+            if filters:
+                payload["filter"]["filters"] = [
+                    {
+                        "field": filter_item.field,
+                        "operator": filter_item.operator.value,
+                        "type": filter_item.type,
+                        "value": filter_item.value,
+                    }
+                    for filter_item in filters
+                ]
+
+            response = self._client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.dashboard: Failed to execute dashboard query: %s",
+                response_json.get("error").get("message", ""),
+            )
+            return None
