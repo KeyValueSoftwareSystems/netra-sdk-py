@@ -1,4 +1,5 @@
-from typing import Any, Optional
+import logging
+from typing import Any, Iterator, List, Literal, Optional
 
 from netra.config import Config
 from netra.dashboard.client import DashboardHttpClient
@@ -8,7 +9,13 @@ from netra.dashboard.models import (
     FilterConfig,
     Metrics,
     Scope,
+    SessionFilter,
+    SessionStatsData,
+    SessionStatsResult,
+    SortField,
 )
+
+logger = logging.getLogger(__name__)
 
 
 class Dashboard:
@@ -65,3 +72,126 @@ class Dashboard:
             dimension=dimension,
         )
         return result
+
+    def get_session_stats(
+        self,
+        start_time: str,
+        end_time: str,
+        filters: Optional[List[SessionFilter]] = None,
+        limit: Optional[int] = None,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+        sort_field: Optional[SortField] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+    ) -> SessionStatsResult | Any:
+        """
+        Get session statistics with pagination.
+
+        Args:
+            start_time: Start of the time window (ISO 8601 UTC timestamp).
+            end_time: End of the time window (ISO 8601 UTC timestamp).
+            filters: Optional list of SessionFilter conditions.
+            limit: Maximum number of results to return in this page.
+            page: Page number to get the respective paginated result.
+            search: Keyword to filter out the results.
+            sort_field: Field to sort results by.
+            sort_order: Sort order (asc/desc).
+
+        Returns:
+            SessionStatsResult containing session data and pagination info.
+        """
+        if not start_time or not end_time:
+            logger.error("netra.dashboard: start_time and end_time are required to fetch session stats")
+            return None
+
+        result = self._client.get_session_stats(
+            start_time=start_time,
+            end_time=end_time,
+            filters=filters,
+            limit=limit,
+            page=page,
+            search=search,
+            sort_field=sort_field,
+            sort_order=sort_order,
+        )
+
+        if not isinstance(result, dict):
+            return result
+
+        sessions = result.get("sessions", []) or []
+        cursor = result.get("cursor", {}) or {}
+        has_next_page = bool(cursor.get("hasMore", False))
+        next_page: Optional[int] = None
+        if has_next_page:
+            current_page = cursor.get("pageNo", 1)
+            next_page = current_page + 1
+
+        data = [
+            SessionStatsData(
+                session_id=item.get("session_id", ""),
+                start_time=item.get("start_time", ""),
+                total_requests=item.get("totalRequests", 0),
+                total_cost=item.get("totalCost", 0.0),
+                session_duration=item.get("session_duration", ""),
+            )
+            for item in sessions
+            if isinstance(item, dict)
+        ]
+
+        return SessionStatsResult(data=data, has_next_page=has_next_page, next_page=next_page)
+
+    def iter_session_stats(
+        self,
+        start_time: str,
+        end_time: str,
+        filters: Optional[List[SessionFilter]] = None,
+        limit: Optional[int] = None,
+        search: Optional[str] = None,
+        sort_field: Optional[SortField] = None,
+        sort_order: Optional[Literal["asc", "desc"]] = None,
+    ) -> Iterator[SessionStatsData]:
+        """
+        Iterate over session statistics using page-based pagination.
+
+        This is a convenience helper over get_session_stats that repeatedly
+        fetches pages and yields individual SessionStatsData items.
+
+        Args:
+            start_time: Start of the time window (ISO 8601 UTC timestamp).
+            end_time: End of the time window (ISO 8601 UTC timestamp).
+            filters: Optional list of SessionFilter conditions.
+            limit: Maximum number of results to return per page.
+            search: Keyword to filter out the results.
+            sort_field: Field to sort results by.
+            sort_order: Sort order (asc/desc).
+
+        Yields:
+            SessionStatsData items from all pages.
+        """
+        if not start_time or not end_time:
+            logger.error("netra.dashboard: start_time and end_time are required to iterate session stats")
+            return
+
+        current_page: Optional[int] = None
+        while True:
+            result = self.get_session_stats(
+                start_time=start_time,
+                end_time=end_time,
+                filters=filters,
+                limit=limit,
+                page=current_page,
+                search=search,
+                sort_field=sort_field,
+                sort_order=sort_order,
+            )
+
+            if not isinstance(result, SessionStatsResult):
+                break
+
+            for session in result.data:
+                yield session
+
+            if not result.has_next_page or not result.next_page:
+                break
+
+            current_page = result.next_page

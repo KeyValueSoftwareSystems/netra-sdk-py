@@ -234,3 +234,65 @@ class QueryResponse(BaseModel):  # type:ignore[misc]
 
     time_range: TimeRange
     data: Data
+
+
+class SessionFilterField(str, Enum):
+    """Filter fields for session stats queries."""
+
+    TENANT_ID = "tenant_id"
+
+
+class SessionFilterOperator(str, Enum):
+    """Filter operators for session stats queries."""
+
+    ANY_OF = "any_of"
+
+
+class SessionFilterType(str, Enum):
+    """Data types for session stats filter conditions."""
+
+    ARRAY = "arrayOptions"
+
+
+class SortField(str, Enum):
+    """Sort fields for session stats queries."""
+
+    SESSION_ID = "session_id"
+    START_TIME = "start_time"
+    TOTAL_REQUESTS = "totalRequests"
+    TOTAL_COST = "totalCost"
+
+
+class SessionFilter(BaseModel):  # type:ignore[misc]
+    """
+    Filter condition for session stats queries.
+
+    Attributes:
+        field: Filter field from SessionFilterField enum.
+        operator: Filter operator from SessionFilterOperator enum.
+        type: Data type from SessionFilterType enum.
+        value: The list of values to filter by.
+    """
+
+    field: SessionFilterField
+    operator: SessionFilterOperator
+    type: SessionFilterType
+    value: List[str]
+
+
+class SessionStatsData(BaseModel):  # type:ignore[misc]
+    """Individual session statistics data."""
+
+    session_id: str
+    start_time: str
+    total_requests: int
+    total_cost: float
+    session_duration: str
+
+
+class SessionStatsResult(BaseModel):  # type:ignore[misc]
+    """Response wrapper for session stats queries."""
+
+    data: List[SessionStatsData]
+    has_next_page: bool
+    next_page: Optional[int] = None
