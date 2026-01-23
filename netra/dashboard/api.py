@@ -10,6 +10,7 @@ from netra.dashboard.models import (
     Metrics,
     Scope,
     SessionFilter,
+    SessionFilterConfig,
     SessionStatsData,
     SessionStatsResult,
     SortField,
@@ -195,3 +196,20 @@ class Dashboard:
                 break
 
             current_page = result.next_page
+
+    def get_session_summary(self, filter: SessionFilterConfig) -> Any:
+
+        if not filter.start_time:
+            raise SyntaxError(f"start_time value was not provided")
+        if not filter.end_time:
+            raise SyntaxError(f"end_time value was not provided")
+        if not isinstance(filter, SessionFilterConfig):
+            raise TypeError(f"filter must be a SessionFilterConfig, got {type(filter).__name__}")
+        if filter.filters is not None and not isinstance(filter.filters, list):
+            raise TypeError("filters must be a list of SessionFilter")
+
+        result = self._client.get_session_summary(
+            start_time=filter.start_time, end_time=filter.end_time, filters=filter.filters
+        )
+
+        return result

@@ -296,3 +296,9 @@ class SessionStatsResult(BaseModel):  # type:ignore[misc]
     data: List[SessionStatsData]
     has_next_page: bool
     next_page: Optional[int] = None
+
+
+class SessionFilterConfig(BaseModel):  # type:ignore[misc]
+    start_time: str
+    end_time: str
+    filters: Optional[List[SessionFilter]] = None
