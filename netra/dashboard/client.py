@@ -1,6 +1,6 @@
 import logging
 import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict, List, Optional
 
 import httpx
 
@@ -11,6 +11,8 @@ from netra.dashboard.models import (
     FilterConfig,
     Metrics,
     Scope,
+    SessionFilter,
+    SortField,
 )
 
 logger = logging.getLogger(__name__)
@@ -172,4 +174,77 @@ class DashboardHttpClient:
                 "netra.dashboard: Failed to execute dashboard query: %s",
                 response_json.get("error").get("message", ""),
             )
+            return None
+
+    def get_session_stats(
+        self,
+        start_time: str,
+        end_time: str,
+        filters: Optional[List[SessionFilter]] = None,
+        limit: Optional[int] = None,
+        page: Optional[int] = None,
+        search: Optional[str] = None,
+        sort_field: Optional[SortField] = None,
+        sort_order: Optional[str] = None,
+    ) -> Any:
+        """
+        Get session statistics with pagination.
+
+        Args:
+            start_time: Start time in ISO 8601 UTC format.
+            end_time: End time in ISO 8601 UTC format.
+            filters: Optional list of session filters.
+            limit: Maximum number of results per page.
+            page: Page number for pagination.
+            search: Keyword to filter results.
+            sort_field: Field to sort by.
+            sort_order: Sort order (asc/desc).
+
+        Returns:
+            The session stats response data or None on error.
+        """
+        if not self._client:
+            logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session stats")
+            return None
+
+        try:
+            url = "/public/dashboard/sessions/stats"
+
+            payload: Dict[str, Any] = {
+                "startTime": start_time,
+                "endTime": end_time,
+            }
+
+            if filters:
+                payload["filters"] = [
+                    {
+                        "field": f.field.value,
+                        "operator": f.operator.value,
+                        "type": f.type.value,
+                        "value": f.value,
+                    }
+                    for f in filters
+                ]
+
+            pagination: Dict[str, Any] = {}
+            if limit is not None:
+                pagination["limit"] = limit
+            if page is not None:
+                pagination["cursor"] = {"pageNo": page}
+            if search is not None:
+                pagination["search"] = search
+            if pagination:
+                payload["pagination"] = pagination
+
+            if sort_field is not None:
+                payload["sortField"] = sort_field.value
+            if sort_order is not None:
+                payload["sortOrder"] = sort_order
+
+            response = self._client.post(url, json=payload)
+            response.raise_for_status()
+            data = response.json()
+            return data
+        except Exception as exc:
+            logger.error("netra.dashboard: Failed to fetch session stats: %s", exc)
             return None
