@@ -263,6 +263,11 @@ class SortField(str, Enum):
     TOTAL_COST = "totalCost"
 
 
+class SortOrder(str, Enum):
+    ASC = "asc"
+    DESC = "desc"
+
+
 class SessionFilter(BaseModel):  # type:ignore[misc]
     """
     Filter condition for session stats queries.
@@ -293,7 +298,7 @@ class SessionStatsData(BaseModel):  # type:ignore[misc]
 class SessionStatsResult(BaseModel):  # type:ignore[misc]
     """Response wrapper for session stats queries."""
 
-    data: List[SessionStatsData]
+    data: List[Dict[str, Any]]
     has_next_page: bool
     next_page: Optional[int] = None
 
