@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Iterator, List, Literal, Optional
+from typing import Any, Iterator, List, Optional
 
 from netra.config import Config
 from netra.dashboard.client import DashboardHttpClient
@@ -14,6 +14,7 @@ from netra.dashboard.models import (
     SessionStatsData,
     SessionStatsResult,
     SortField,
+    SortOrder,
 )
 
 logger = logging.getLogger(__name__)
@@ -81,9 +82,8 @@ class Dashboard:
         filters: Optional[List[SessionFilter]] = None,
         limit: Optional[int] = None,
         page: Optional[int] = None,
-        search: Optional[str] = None,
         sort_field: Optional[SortField] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
+        sort_order: Optional[SortOrder] = None,
     ) -> SessionStatsResult | Any:
         """
         Get session statistics with pagination.
@@ -94,7 +94,6 @@ class Dashboard:
             filters: Optional list of SessionFilter conditions.
             limit: Maximum number of results to return in this page.
             page: Page number to get the respective paginated result.
-            search: Keyword to filter out the results.
             sort_field: Field to sort results by.
             sort_order: Sort order (asc/desc).
 
@@ -111,46 +110,28 @@ class Dashboard:
             filters=filters,
             limit=limit,
             page=page,
-            search=search,
             sort_field=sort_field,
             sort_order=sort_order,
         )
 
-        if not isinstance(result, dict):
-            return result
+        if not result:
+            return None
 
-        sessions = result.get("sessions", []) or []
-        cursor = result.get("cursor", {}) or {}
+        data = result.get("data", {})
+        session_stats = data.get("sessions", [])
+        cursor = data.get("cursor", {})
         has_next_page = bool(cursor.get("hasMore", False))
-        next_page: Optional[int] = None
-        if has_next_page:
-            current_page = cursor.get("pageNo", 1)
-            next_page = current_page + 1
-
-        data = [
-            SessionStatsData(
-                session_id=item.get("session_id", ""),
-                start_time=item.get("start_time", ""),
-                total_requests=item.get("totalRequests", 0),
-                total_cost=item.get("totalCost", 0.0),
-                session_duration=item.get("session_duration", ""),
-            )
-            for item in sessions
-            if isinstance(item, dict)
-        ]
-
-        return SessionStatsResult(data=data, has_next_page=has_next_page, next_page=next_page)
+        next_page = cursor.get("pageNo") + 1 if has_next_page else None
+        return SessionStatsResult(data=session_stats, has_next_page=has_next_page, next_page=next_page)
 
     def iter_session_stats(
         self,
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
-        limit: Optional[int] = None,
-        search: Optional[str] = None,
         sort_field: Optional[SortField] = None,
-        sort_order: Optional[Literal["asc", "desc"]] = None,
-    ) -> Iterator[SessionStatsData]:
+        sort_order: Optional[SortOrder] = None,
+    ) -> Iterator[SessionStatsData | Any]:
         """
         Iterate over session statistics using page-based pagination.
 
@@ -161,8 +142,6 @@ class Dashboard:
             start_time: Start of the time window (ISO 8601 UTC timestamp).
             end_time: End of the time window (ISO 8601 UTC timestamp).
             filters: Optional list of SessionFilter conditions.
-            limit: Maximum number of results to return per page.
-            search: Keyword to filter out the results.
             sort_field: Field to sort results by.
             sort_order: Sort order (asc/desc).
 
@@ -171,45 +150,47 @@ class Dashboard:
         """
         if not start_time or not end_time:
             logger.error("netra.dashboard: start_time and end_time are required to iterate session stats")
-            return
+            return None
 
         current_page: Optional[int] = None
+
         while True:
             result = self.get_session_stats(
                 start_time=start_time,
                 end_time=end_time,
                 filters=filters,
-                limit=limit,
                 page=current_page,
-                search=search,
                 sort_field=sort_field,
                 sort_order=sort_order,
             )
 
-            if not isinstance(result, SessionStatsResult):
-                break
-
             for session in result.data:
                 yield session
 
-            if not result.has_next_page or not result.next_page:
+            if not result.has_next_page:
                 break
 
             current_page = result.next_page
 
     def get_session_summary(self, filter: SessionFilterConfig) -> Any:
+        """
+        Get aggregated session metrics including total sessions, costs, latency, and cost breakdown by model.
 
-        if not filter.start_time:
-            raise SyntaxError(f"start_time value was not provided")
-        if not filter.end_time:
-            raise SyntaxError(f"end_time value was not provided")
+        Args:
+            filter: SessionFilterConfig containing start_time, end_time, and optional filters.
+
+        Returns:
+            Dict containing aggregated session metrics.
+        """
         if not isinstance(filter, SessionFilterConfig):
-            raise TypeError(f"filter must be a SessionFilterConfig, got {type(filter).__name__}")
-        if filter.filters is not None and not isinstance(filter.filters, list):
-            raise TypeError("filters must be a list of SessionFilter")
+            logger.error("netra.dashboard: filter must be a SessionFilterConfig")
+            return None
+        if not filter.start_time or not filter.end_time:
+            logger.error("netra.dashboard: start_time and end_time are required to fetch session summary")
+            return None
 
         result = self._client.get_session_summary(
             start_time=filter.start_time, end_time=filter.end_time, filters=filter.filters
         )
-
-        return result
+        data = result.get("data", {})
+        return data
