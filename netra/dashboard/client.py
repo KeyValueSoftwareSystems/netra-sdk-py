@@ -183,7 +183,7 @@ class DashboardHttpClient:
         end_time: str,
         filters: Optional[List[SessionFilter]],
         limit: Optional[int],
-        page: Optional[int],
+        cursor: Optional[str],
         sort_field: Optional[SortField],
         sort_order: Optional[SortOrder],
     ) -> Any:
@@ -224,12 +224,12 @@ class DashboardHttpClient:
                     }
                     for filter_item in filters
                 ]
-            if limit or page:
+            if limit or cursor:
                 payload["pagination"] = {}
                 if limit:
                     payload["pagination"]["limit"] = limit
-                if page:
-                    payload["pagination"]["cursor"] = {"pageNo": page}
+                if cursor:
+                    payload["pagination"]["cursor"] = cursor
             if sort_field:
                 payload["sortField"] = sort_field.value
             if sort_order:
