@@ -129,14 +129,8 @@ class Dashboard:
             if isinstance(last_item, dict):
                 next_cursor = last_item.get("cursor")
 
-        sessions = [
-            SessionStatsData(**item)
-            for item in items
-            if isinstance(item, dict)
-        ]
-
         return SessionStatsResult(
-            data=sessions,
+            data=items,
             has_next_page=has_next_page,
             next_cursor=next_cursor,
         )
@@ -146,7 +140,6 @@ class Dashboard:
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
-        limit: Optional[int] = 20,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
     ) -> Iterator[SessionStatsData | Any]:
@@ -178,7 +171,6 @@ class Dashboard:
                 start_time=start_time,
                 end_time=end_time,
                 filters=filters,
-                limit=limit,
                 cursor=cursor,
                 sort_field=sort_field,
                 sort_order=sort_order,
