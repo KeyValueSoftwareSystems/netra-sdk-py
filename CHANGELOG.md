@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.64] - 2026-01-27
+
+- Added sessio summary and session stats dashboard utilities
 
 ## [0.1.64] - 2026-01-27
 
