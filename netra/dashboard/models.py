@@ -300,7 +300,7 @@ class SessionStatsResult(BaseModel):  # type:ignore[misc]
 
     data: List[Dict[str, Any]]
     has_next_page: bool
-    next_cursor: Optional[int] = None
+    next_cursor: Optional[str] = None
 
 
 class SessionFilterConfig(BaseModel):  # type:ignore[misc]
