@@ -80,7 +80,7 @@ class Dashboard:
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
-        limit: Optional[int] = None,
+        limit: Optional[int] = 10,
         page: Optional[int] = None,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
