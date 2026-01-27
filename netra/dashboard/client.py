@@ -13,6 +13,7 @@ from netra.dashboard.models import (
     Scope,
     SessionFilter,
     SortField,
+    SortOrder,
 )
 
 logger = logging.getLogger(__name__)
@@ -180,12 +181,11 @@ class DashboardHttpClient:
         self,
         start_time: str,
         end_time: str,
-        filters: Optional[List[SessionFilter]] = None,
-        limit: Optional[int] = None,
-        page: Optional[int] = None,
-        search: Optional[str] = None,
-        sort_field: Optional[SortField] = None,
-        sort_order: Optional[str] = None,
+        filters: Optional[List[SessionFilter]],
+        limit: Optional[int],
+        page: Optional[int],
+        sort_field: Optional[SortField],
+        sort_order: Optional[SortOrder],
     ) -> Any:
         """
         Get session statistics with pagination.
@@ -196,7 +196,6 @@ class DashboardHttpClient:
             filters: Optional list of session filters.
             limit: Maximum number of results per page.
             page: Page number for pagination.
-            search: Keyword to filter results.
             sort_field: Field to sort by.
             sort_order: Sort order (asc/desc).
 
@@ -218,38 +217,48 @@ class DashboardHttpClient:
             if filters:
                 payload["filters"] = [
                     {
-                        "field": f.field.value,
-                        "operator": f.operator.value,
-                        "type": f.type.value,
-                        "value": f.value,
+                        "field": filter_item.field.value,
+                        "operator": filter_item.operator.value,
+                        "type": filter_item.type.value,
+                        "value": filter_item.value,
                     }
-                    for f in filters
+                    for filter_item in filters
                 ]
-
-            pagination: Dict[str, Any] = {}
-            if limit is not None:
-                pagination["limit"] = limit
-            if page is not None:
-                pagination["cursor"] = {"pageNo": page}
-            if search is not None:
-                pagination["search"] = search
-            if pagination:
-                payload["pagination"] = pagination
-
-            if sort_field is not None:
+            if limit or page:
+                payload["pagination"] = {}
+                if limit:
+                    payload["pagination"]["limit"] = limit
+                if page:
+                    payload["pagination"]["cursor"] = {"pageNo": page}
+            if sort_field:
                 payload["sortField"] = sort_field.value
-            if sort_order is not None:
-                payload["sortOrder"] = sort_order
+            if sort_order:
+                payload["sortOrder"] = sort_order.value
 
             response = self._client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception as exc:
-            logger.error("netra.dashboard: Failed to fetch session stats: %s", exc)
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.dashboard: Failed to fetch session stats: %s",
+                response_json.get("error").get("message", ""),
+            )
             return None
 
     def get_session_summary(self, start_time: str, end_time: str, filters: Optional[List[SessionFilter]]) -> Any:
+        """
+        Get aggregated session metrics including total sessions, costs, latency, and cost breakdown by model.
+
+        Args:
+            start_time: Start time in ISO 8601 UTC format.
+            end_time: End time in ISO 8601 UTC format.
+            filters: Optional list of session filters.
+
+        Returns:
+            The session summary response data or None on error.
+        """
         if not self._client:
             logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
             return None
@@ -266,9 +275,9 @@ class DashboardHttpClient:
             if filters:
                 payload["filter"]["filters"] = [
                     {
-                        "field": filter_item.field,
+                        "field": filter_item.field.value,
                         "operator": filter_item.operator.value,
-                        "type": filter_item.type,
+                        "type": filter_item.type.value,
                         "value": filter_item.value,
                     }
                     for filter_item in filters
@@ -281,7 +290,7 @@ class DashboardHttpClient:
         except Exception:
             response_json = response.json()
             logger.error(
-                "netra.dashboard: Failed to execute dashboard query: %s",
+                "netra.dashboard: Failed to fetch session summary: %s",
                 response_json.get("error").get("message", ""),
             )
             return None
