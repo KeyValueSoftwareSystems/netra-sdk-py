@@ -80,8 +80,8 @@ class Dashboard:
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
-        limit: Optional[int] = 10,
-        page: Optional[int] = None,
+        limit: Optional[int] = 20,
+        cursor: Optional[str] = None,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
     ) -> SessionStatsResult | Any:
@@ -93,7 +93,7 @@ class Dashboard:
             end_time: End of the time window (ISO 8601 UTC timestamp).
             filters: Optional list of SessionFilter conditions.
             limit: Maximum number of results to return in this page.
-            page: Page number to get the respective paginated result.
+            cursor: Cursor for pagination.
             sort_field: Field to sort results by.
             sort_order: Sort order (asc/desc).
 
@@ -109,39 +109,58 @@ class Dashboard:
             end_time=end_time,
             filters=filters,
             limit=limit,
-            page=page,
+            cursor=cursor,
             sort_field=sort_field,
             sort_order=sort_order,
         )
 
-        if not result:
-            return None
+        if not isinstance(result, dict):
+            return result
 
-        data = result.get("data", {})
-        session_stats = data.get("sessions", [])
-        cursor = data.get("cursor", {})
-        has_next_page = bool(cursor.get("hasMore", False))
-        next_page = cursor.get("pageNo") + 1 if has_next_page else None
-        return SessionStatsResult(data=session_stats, has_next_page=has_next_page, next_page=next_page)
+        data_block = result.get("data", {}) or {}
+        items = data_block.get("sessions", []) or []
+        page_info = data_block.get("pageInfo", {}) or {}
+
+        has_next_page = bool(page_info.get("hasNextPage", False))
+
+        next_cursor: Optional[str] = None
+        if items:
+            last_item = items[-1]
+            if isinstance(last_item, dict):
+                next_cursor = last_item.get("cursor")
+
+        sessions = [
+            SessionStatsData(**item)
+            for item in items
+            if isinstance(item, dict)
+        ]
+
+        return SessionStatsResult(
+            data=sessions,
+            has_next_page=has_next_page,
+            next_cursor=next_cursor,
+        )
 
     def iter_session_stats(
         self,
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
+        limit: Optional[int] = 20,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
     ) -> Iterator[SessionStatsData | Any]:
         """
-        Iterate over session statistics using page-based pagination.
+        Iterate over session statistics using cursor-based pagination.
 
         This is a convenience helper over get_session_stats that repeatedly
-        fetches pages and yields individual SessionStatsData items.
+        fetches cursor-based pages and yields individual SessionStatsData items.
 
         Args:
             start_time: Start of the time window (ISO 8601 UTC timestamp).
             end_time: End of the time window (ISO 8601 UTC timestamp).
             filters: Optional list of SessionFilter conditions.
+            limit: Maximum number of results to return per page.
             sort_field: Field to sort results by.
             sort_order: Sort order (asc/desc).
 
@@ -152,14 +171,15 @@ class Dashboard:
             logger.error("netra.dashboard: start_time and end_time are required to iterate session stats")
             return None
 
-        current_page: Optional[int] = None
+        cursor: Optional[str] = None
 
         while True:
             result = self.get_session_stats(
                 start_time=start_time,
                 end_time=end_time,
                 filters=filters,
-                page=current_page,
+                limit=limit,
+                cursor=cursor,
                 sort_field=sort_field,
                 sort_order=sort_order,
             )
@@ -170,7 +190,7 @@ class Dashboard:
             if not result.has_next_page:
                 break
 
-            current_page = result.next_page
+            cursor = result.next_cursor
 
     def get_session_summary(self, filter: SessionFilterConfig) -> Any:
         """
