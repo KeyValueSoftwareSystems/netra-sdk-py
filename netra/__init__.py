@@ -10,6 +10,7 @@ from opentelemetry.trace import SpanKind
 from netra.config import Config
 from netra.dashboard import Dashboard
 from netra.evaluation import Evaluation
+from netra.simulation import Simulation
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
 from netra.logging_utils import configure_package_logging
@@ -131,6 +132,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize dashboard client: %s", e, exc_info=True)
                 cls.dashboard = None  # type:ignore[attr-defined]
+            
+            # Initialize simulation client and expose as class attribute
+            try:
+                cls.simulation = Simulation(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize simulation client: %s", e, exc_info=True)
+                cls.simulation = None  # type:ignore[attr-defined]  
 
             # Instrument all supported modules
             init_instrumentations(
