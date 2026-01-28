@@ -40,7 +40,7 @@ class SimulationHttpClient:
         """Extract base URL, removing telemetry suffix if present."""
         base_url = endpoint.rstrip("/")
         if base_url.endswith("/telemetry"):
-            base_url = base_url[:-len("/telemetry")]
+            base_url = base_url[: -len("/telemetry")]
         return base_url
 
     def _build_headers(self, config: Config) -> Dict[str, str]:

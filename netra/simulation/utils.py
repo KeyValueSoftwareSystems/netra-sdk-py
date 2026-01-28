@@ -55,7 +55,7 @@ def run_async_safely(coro: Awaitable[T]) -> T:
 
 
 async def execute_task(
-    task: Callable[[str, Optional[str]], Any],
+    task: Callable[[Any], Any],
     message: str,
     session_id: Optional[str],
 ) -> Tuple[str, Optional[str]]:

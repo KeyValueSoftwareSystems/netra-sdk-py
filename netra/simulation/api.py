@@ -56,7 +56,7 @@ class Simulation:
     ) -> Dict[str, Any]:
         """
         Async implementation of run_simulation with semaphore-based concurrency.
-        
+
         items: List of simulation items to process.
         task: The task function to execute (sync or async).
         max_concurrency: Maximum concurrent executions.
@@ -104,7 +104,7 @@ class Simulation:
     ) -> Dict[str, Any]:
         """
         Execute a multi-turn conversation for a single simulation item.
-        
+
         item: The simulation item to process.
         task: The task function to execute (sync or async).
 
