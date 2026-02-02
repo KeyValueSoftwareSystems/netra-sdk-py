@@ -240,6 +240,8 @@ class SessionFilterField(str, Enum):
     """Filter fields for session stats queries."""
 
     TENANT_ID = "tenant_id"
+    ENVIRONMENT = "environment"
+    SERVICE = "service"
 
 
 class SessionFilterOperator(str, Enum):
