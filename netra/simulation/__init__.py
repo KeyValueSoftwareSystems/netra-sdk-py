@@ -5,9 +5,11 @@ from netra.simulation.models import (
     SimulationItem,
     TaskResult,
 )
+from netra.simulation.task import BaseTask
 
 __all__ = [
     "Simulation",
+    "BaseTask",
     "ConversationResponse",
     "ConversationStatus",
     "SimulationItem",

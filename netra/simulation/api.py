@@ -4,11 +4,12 @@ import asyncio
 import concurrent.futures
 import logging
 import time
-from typing import Any, Callable, Optional
+from typing import Any, Optional
 
 from netra.config import Config
 from netra.simulation.client import SimulationHttpClient
 from netra.simulation.models import SimulationItem
+from netra.simulation.task import BaseTask
 from netra.simulation.utils import (
     execute_task,
     format_trace_id,
@@ -46,7 +47,7 @@ class Simulation:
         self,
         name: str,
         dataset_id: str,
-        task: Callable[[str, Optional[str]], Any],
+        task: BaseTask,
         context: Optional[dict[str, Any]] = None,
         max_concurrency: int = 5,
     ) -> Optional[dict[str, Any]]:
@@ -55,8 +56,8 @@ class Simulation:
         Args:
             name: Name of the simulation run.
             dataset_id: Identifier of the dataset to simulate.
-            task: Callable that receives (message, session_id) and returns TaskResult.
-                Can be sync or async.
+            task: A BaseTask instance whose run() method receives (message, session_id)
+                and returns TaskResult. Can be sync or async.
             context: Optional context data for the simulation.
             max_concurrency: Maximum parallel executions (default: 5).
 
@@ -95,7 +96,7 @@ class Simulation:
         self,
         run_id: str,
         run_items: list[SimulationItem],
-        task: Callable[[str, Optional[str]], Any],
+        task: BaseTask,
         max_concurrency: int,
     ) -> dict[str, Any]:
         """Async implementation of run_simulation with semaphore-based concurrency.
@@ -103,7 +104,7 @@ class Simulation:
         Args:
             run_id: The simulation run identifier.
             run_items: List of simulation items to process.
-            task: The task function to execute (sync or async).
+            task: The BaseTask instance to execute (sync or async).
             max_concurrency: Maximum concurrent executions.
 
         Returns:
@@ -153,13 +154,13 @@ class Simulation:
     async def _execute_conversation(
         self,
         run_item: SimulationItem,
-        task: Callable[[str, Optional[str]], Any],
+        task: BaseTask,
     ) -> Any:
         """Execute a multi-turn conversation for a single simulation item.
 
         Args:
             run_item: The simulation item to process.
-            task: The task function to execute (sync or async).
+            task: The BaseTask instance to execute (sync or async).
 
         Returns:
             Dictionary with execution result including success status.

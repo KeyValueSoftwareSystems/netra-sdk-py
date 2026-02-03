@@ -3,9 +3,10 @@
 import asyncio
 import logging
 import threading
-from typing import Any, Awaitable, Callable, Optional, Tuple, TypeVar
+from typing import Awaitable, Optional, Tuple, TypeVar
 
 from netra.simulation.models import TaskResult
+from netra.simulation.task import BaseTask
 
 logger = logging.getLogger(__name__)
 
@@ -26,13 +27,13 @@ def format_trace_id(trace_id: int) -> str:
 
 def validate_simulation_inputs(
     dataset_id: str,
-    task: Callable[[str, Optional[str]], Any],
+    task: BaseTask,
 ) -> bool:
     """Validate required inputs for simulation.
 
     Args:
         dataset_id: The dataset identifier to validate.
-        task: The task callable to validate.
+        task: The BaseTask instance to validate.
 
     Returns:
         True if inputs are valid, False otherwise.
@@ -40,8 +41,8 @@ def validate_simulation_inputs(
     if not dataset_id:
         logger.error("netra.simulation: dataset_id is required")
         return False
-    if not callable(task):
-        logger.error("netra.simulation: task must be a callable")
+    if not isinstance(task, BaseTask):
+        logger.error("netra.simulation: task must be a BaseTask instance")
         return False
     return True
 
@@ -88,14 +89,14 @@ def run_async_safely(coro: Awaitable[T]) -> T:
 
 
 async def execute_task(
-    task: Callable[[str, Optional[str]], Any],
+    task: BaseTask,
     message: str,
     session_id: Optional[str],
 ) -> Tuple[str, Optional[str]]:
-    """Execute a task function (sync or async) and extract message and session_id.
+    """Execute a task's run method (sync or async) and extract message and session_id.
 
     Args:
-        task: The task callable to execute.
+        task: The BaseTask instance to execute.
         message: The input message to pass to the task.
         session_id: The current session identifier.
 
@@ -105,7 +106,7 @@ async def execute_task(
     Raises:
         ValueError: If the task returns an unsupported type.
     """
-    result = task(message=message, session_id=session_id)  # type:ignore[call-arg]
+    result = task.run(message=message, session_id=session_id)
     if asyncio.iscoroutine(result):
         result = await result
 
