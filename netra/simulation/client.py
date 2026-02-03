@@ -132,7 +132,7 @@ class SimulationHttpClient:
                 "datasetId": dataset_id,
                 "context": context or {},
             }
-            response = self._client.post(url, json=payload)
+            response = self._client.post(url, json=payload, timeout=500)
             response.raise_for_status()
             data = response.json()
 
@@ -193,7 +193,7 @@ class SimulationHttpClient:
                 "traceId": trace_id,
             }
 
-            response = self._client.post(url, json=payload)
+            response = self._client.post(url, json=payload, timeout=500)
             response.raise_for_status()
             data = response.json()
 
