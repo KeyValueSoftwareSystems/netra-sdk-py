@@ -14,6 +14,7 @@ from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
 from netra.logging_utils import configure_package_logging
 from netra.session_manager import ConversationType, SessionManager
+from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
@@ -131,6 +132,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize dashboard client: %s", e, exc_info=True)
                 cls.dashboard = None  # type:ignore[attr-defined]
+
+            # Initialize simulation client and expose as class attribute
+            try:
+                cls.simulation = Simulation(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize simulation client: %s", e, exc_info=True)
+                cls.simulation = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             init_instrumentations(
