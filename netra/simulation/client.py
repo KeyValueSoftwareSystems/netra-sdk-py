@@ -224,10 +224,11 @@ class SimulationHttpClient:
             logger.error("%s: Failed to trigger conversation: %s", _LOG_PREFIX, error_msg)
             return None
 
-    def report_failure(self, run_item_id: str, error: str) -> None:
+    def report_failure(self, run_id: str, run_item_id: str, error: str) -> None:
         """Report a task execution failure to the backend.
 
         Args:
+            run_id: Identifier of the run.
             run_item_id: Identifier of the run item.
             error: Error message describing the failure.
         """
@@ -237,9 +238,9 @@ class SimulationHttpClient:
 
         response: Optional[httpx.Response] = None
         try:
-            url = f"/evaluations/run/{run_item_id}/item"
-            payload: dict[str, Any] = {"status": "failed"}
-            response = self._client.post(url, json=payload)
+            url = f"/evaluations/run/{run_id}/item/{run_item_id}/status"
+            payload: dict[str, Any] = {"status": "failed", "failureReason": error}
+            response = self._client.patch(url, json=payload)
             response.raise_for_status()
             logger.info("%s: Reported failure - %s", _LOG_PREFIX, error)
         except Exception as exc:
