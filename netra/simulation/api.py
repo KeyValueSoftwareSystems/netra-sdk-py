@@ -83,12 +83,20 @@ class Simulation:
             return None
 
         logger.info("%s: Starting simulation with %d items", _LOG_PREFIX, len(run_items))
-        result = run_async_safely(
-            self._run_simulation_async(run_id, run_items, task, max_concurrency)  # type:ignore[arg-type]
-        )
+        try:
+            result = run_async_safely(
+                self._run_simulation_async(run_id, run_items, task, max_concurrency)  # type:ignore[arg-type]
+            )
 
-        elapsed_time = time.time() - start_time
-        logger.info("%s: Simulation completed in %.2f seconds", _LOG_PREFIX, elapsed_time)
+            elapsed_time = time.time() - start_time
+            logger.info("%s: Simulation completed in %.2f seconds", _LOG_PREFIX, elapsed_time)
+        except Exception:
+            logger.error("%s: Run simulation failed", _LOG_PREFIX)
+            self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
+            raise
+        except BaseException:
+            logger.error("%s: Run simulation failed", _LOG_PREFIX)
+            self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
 
         return result
 
@@ -110,6 +118,7 @@ class Simulation:
         Returns:
             Dictionary with simulation results.
         """
+
         max_workers = min(5, max_concurrency)
         results: dict[str, Any] = {
             "success": True,
@@ -123,7 +132,7 @@ class Simulation:
         loop = asyncio.get_running_loop()
 
         def run_item_in_thread(run_item: SimulationItem) -> dict[str, Any]:
-            return run_async_safely(self._execute_conversation(run_item, task))
+            return run_async_safely(self._execute_conversation(run_id, run_item, task))
 
         async def process_item(run_item: SimulationItem) -> None:
             nonlocal processed_count
@@ -153,12 +162,14 @@ class Simulation:
 
     async def _execute_conversation(
         self,
+        run_id: str,
         run_item: SimulationItem,
         task: BaseTask,
     ) -> Any:
         """Execute a multi-turn conversation for a single simulation item.
 
         Args:
+            run_id: The simulation run identifier.
             run_item: The simulation item to process.
             task: The BaseTask instance to execute (sync or async).
 
@@ -191,7 +202,7 @@ class Simulation:
                     turn_id,
                     error_msg,
                 )
-                self._client.report_failure(run_item_id=run_item_id, error=error_msg)
+                self._client.report_failure(run_id=run_id, run_item_id=run_item_id, error=error_msg)
                 return {
                     "run_item_id": run_item_id,
                     "success": False,
