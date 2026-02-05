@@ -45,14 +45,14 @@ class Evaluation:
         self._config = config
         self._client = EvaluationHttpClient(config)
 
-    def create_dataset(self, name: str, tags: Optional[List[str]] = None, turnType: TurnType = TurnType.SINGLE) -> Any:
+    def create_dataset(self, name: str, tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE) -> Any:
         """
         Create an empty dataset and return its id on success, else None.
 
         Args:
             name: The name of the dataset.
             tags: Optional list of tags to associate with the dataset.
-            turnType: The turn type of the dataset, either "single" or "multi". Defaults to "single".
+            turn_type: The turn type of the dataset, either "single" or "multi". Defaults to "single".
 
         Returns:
             A backend JSON response containing dataset info (id, name, tags, etc.) on success,
@@ -60,7 +60,7 @@ class Evaluation:
         if not name:
             logger.error("netra.evaluation: Failed to create dataset: dataset name is required")
             return None
-        response = self._client.create_dataset(name=name, tags=tags, turnType=turnType)
+        response = self._client.create_dataset(name=name, tags=tags, turn_type=turn_type)
 
         if not response:
             return None

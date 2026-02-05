@@ -101,14 +101,14 @@ class EvaluationHttpClient:
             )
             return 10.0
 
-    def create_dataset(self, name: Optional[str], tags: Optional[List[str]] = None, turnType: TurnType = TurnType.SINGLE) -> Any:
+    def create_dataset(self, name: Optional[str], tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE) -> Any:
         """
         Create an empty dataset
 
         Args:
             name: The name of the dataset.
             tags: Optional list of tags to associate with the dataset.
-            turnType: The turn type of the dataset, either "single" or "multi". Defaults to "single".
+            turn_type: The turn type of the dataset, either "single" or "multi". Defaults to "single".
 
         Returns:
             A backend JSON response containing dataset info (id, name, tags, etc.) on success,
@@ -122,7 +122,7 @@ class EvaluationHttpClient:
             payload: Dict[str, Any] = {
                 "name": name,
                 "tags": tags if tags else [],
-                "turnType": turnType.value
+                "turnType": turn_type.value
             }
             response = self._client.post(url, json=payload)
             response.raise_for_status()
