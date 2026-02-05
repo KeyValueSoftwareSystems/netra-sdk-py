@@ -123,3 +123,8 @@ class LocalDataset(BaseModel):  # type:ignore[misc]
     """Local dataset class for running test suite locally."""
 
     items: List[DatasetItem]
+
+
+class TurnType(str, Enum):
+    SINGLE = "single"
+    MULTI = "multi"
