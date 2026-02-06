@@ -132,9 +132,24 @@ class Simulation:
         loop = asyncio.get_running_loop()
 
         def run_item_in_thread(run_item: SimulationItem) -> dict[str, Any]:
+            """
+            Run a single simulation item in a thread.
+
+            Args:
+                run_item: The simulation item to run.
+
+            Returns:
+                Dictionary with simulation result.
+            """
             return run_async_safely(self._execute_conversation(run_id, run_item, task))
 
         async def process_item(run_item: SimulationItem) -> None:
+            """
+            Process a single simulation item and handle its completion.
+
+            Args:
+                run_item: The simulation item to process.
+            """
             nonlocal processed_count
             result = await loop.run_in_executor(executor, run_item_in_thread, run_item)
             async with lock:
