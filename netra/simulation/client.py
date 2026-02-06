@@ -269,7 +269,7 @@ class SimulationHttpClient:
             response.raise_for_status()
             data = response.json()
             if isinstance(data, dict) and "data" in data:
-                logger.info("%s: Completed test run successfully", _LOG_PREFIX)
+                logger.info("%s: Test run status %s", _LOG_PREFIX, status)
                 return data.get("data", {})
             return data
         except Exception as exc:
