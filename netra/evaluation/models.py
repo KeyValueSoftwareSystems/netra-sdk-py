@@ -128,3 +128,13 @@ class LocalDataset(BaseModel):  # type:ignore[misc]
 class TurnType(str, Enum):
     SINGLE = "single"
     MULTI = "multi"
+
+@dataclass
+class ItemProcessingResult:
+    """Result of processing a single dataset item."""
+
+    item_entry: Dict[str, Any]
+    should_run_evaluators: bool
+    ctx: ItemContext
+    status: str
+
