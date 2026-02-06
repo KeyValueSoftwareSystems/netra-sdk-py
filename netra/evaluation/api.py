@@ -269,7 +269,12 @@ class Evaluation:
         loop = asyncio.get_running_loop()
 
         async def on_item_completed(result: ItemProcessingResult) -> None:
-            """Handle completion of a single item processing."""
+            """
+            Handle completion of a single item processing.
+
+            Args:
+                result: The result of item processing.
+            """
             nonlocal completed_count
             async with lock:
                 results.append(result.item_entry)
@@ -286,11 +291,23 @@ class Evaluation:
                 )
 
         def process_item_sync(idx: int, item: Any) -> ItemProcessingResult:
-            """Synchronous wrapper for thread pool execution."""
+            """
+            Synchronous wrapper for thread pool execution.
+
+            Args:
+                idx: The index of the item.
+                item: The dataset item to process.
+            """
             return run_async_safely(self._process_single_item(idx, item, run_id, name, task, evaluators))
 
         async def process_item(idx: int, item: Any) -> None:
-            """Process a single item and handle its completion."""
+            """
+            Process a single item and handle its completion.
+
+            Args:
+                idx: The index of the item.
+                item: The dataset item to process.
+            """
             result = await loop.run_in_executor(executor, process_item_sync, idx, item)
             await on_item_completed(result)
 
