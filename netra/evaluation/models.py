@@ -123,3 +123,13 @@ class LocalDataset(BaseModel):  # type:ignore[misc]
     """Local dataset class for running test suite locally."""
 
     items: List[DatasetItem]
+
+
+@dataclass
+class ItemProcessingResult:
+    """Result of processing a single dataset item."""
+
+    item_entry: Dict[str, Any]
+    should_run_evaluators: bool
+    ctx: ItemContext
+    status: str

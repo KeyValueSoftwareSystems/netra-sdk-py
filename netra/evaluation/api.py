@@ -1,4 +1,5 @@
 import asyncio
+import concurrent.futures
 import logging
 from typing import Any, Callable, Dict, List, Optional
 
@@ -13,6 +14,7 @@ from netra.evaluation.models import (
     EvaluatorConfig,
     GetDatasetItemsResponse,
     ItemContext,
+    ItemProcessingResult,
 )
 from netra.evaluation.utils import (
     build_evaluators_config,
@@ -251,49 +253,103 @@ class Evaluation:
             task: The task to be executed for each item in the dataset.
             evaluators: Optional list of evaluators to be used for the test suite.
             max_concurrency: The maximum number of concurrent tasks to be executed.
+            run_id: Optional run ID for the test suite.
 
         Returns:
-            items: The results of the test suite.
+            Dictionary containing runId and list of item results.
         """
         items = list(data.items)
         total_items = len(items)
+        max_workers = max(5, max_concurrency)
 
-        semaphore = asyncio.Semaphore(max(1, max_concurrency))
         results: List[Dict[str, Any]] = []
         bg_eval_tasks: List[asyncio.Task[None]] = []
-        completed_items = 0
-        completed_lock = asyncio.Lock()
+        completed_count = 0
+        lock = asyncio.Lock()
+        loop = asyncio.get_running_loop()
 
-        async def process_item(idx: int, item: Any) -> None:
-            async with semaphore:
-                ctx = self._create_item_context(idx, item)
-                item_result = await self._execute_item_pipeline(
-                    run_id=run_id,  # type:ignore[arg-type]
-                    run_name=name,
-                    ctx=ctx,
-                    task=task,
-                    evaluators=evaluators,
-                    results=results,
-                    bg_eval_tasks=bg_eval_tasks,
+        async def on_item_completed(result: ItemProcessingResult) -> None:
+            """Handle completion of a single item processing."""
+            nonlocal completed_count
+            async with lock:
+                results.append(result.item_entry)
+                if result.should_run_evaluators and run_id:
+                    eval_task = asyncio.create_task(self._run_evaluators_for_item(run_id, result.ctx, evaluators or []))
+                    bg_eval_tasks.append(eval_task)
+
+                completed_count += 1
+                logger.info(
+                    "netra.evaluation: %d/%d items processed (status=%s)",
+                    completed_count,
+                    total_items,
+                    result.status,
                 )
 
-                nonlocal completed_items
-                async with completed_lock:
-                    completed_items += 1
-                    logger.info(
-                        "netra.evaluation: %d/%d items processed (status=%s)",
-                        completed_items,
-                        total_items,
-                        item_result.get("status"),
-                    )
+        def process_item_sync(idx: int, item: Any) -> ItemProcessingResult:
+            """Synchronous wrapper for thread pool execution."""
+            return run_async_safely(self._process_single_item(idx, item, run_id, name, task, evaluators))
 
-        await asyncio.gather(*[process_item(i, item) for i, item in enumerate(items)])
+        async def process_item(idx: int, item: Any) -> None:
+            """Process a single item and handle its completion."""
+            result = await loop.run_in_executor(executor, process_item_sync, idx, item)
+            await on_item_completed(result)
+
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+            await asyncio.gather(*[process_item(i, item) for i, item in enumerate(items)])
 
         if bg_eval_tasks:
             await asyncio.gather(*bg_eval_tasks, return_exceptions=True)
 
         self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
         return {"runId": run_id, "items": results}
+
+    async def _process_single_item(
+        self,
+        idx: int,
+        item: Any,
+        run_id: Optional[str],
+        run_name: str,
+        task: Callable[[Any], Any],
+        evaluators: Optional[List[Any]],
+    ) -> ItemProcessingResult:
+        """
+        Process a single dataset item through the execution pipeline.
+
+        Args:
+            idx: Index of the item in the dataset.
+            item: The dataset item to process.
+            run_id: The run ID.
+            run_name: Name of the test run.
+            task: The task function to execute.
+            evaluators: Optional list of evaluators.
+
+        Returns:
+            ItemProcessingResult containing the processing outcome.
+        """
+        ctx = self._create_item_context(idx, item)
+        pipeline_result = await self._execute_item_pipeline(
+            run_id=run_id,  # type:ignore[arg-type]
+            run_name=run_name,
+            ctx=ctx,
+            task=task,
+        )
+
+        item_entry = {
+            "index": ctx.index,
+            "status": ctx.status,
+            "traceId": ctx.trace_id,
+            "spanId": ctx.span_id,
+            "testRunItemId": ctx.test_run_item_id,
+        }
+
+        should_run_evaluators = bool(evaluators) and ctx.status == "completed"
+
+        return ItemProcessingResult(
+            item_entry=item_entry,
+            should_run_evaluators=should_run_evaluators,
+            ctx=ctx,
+            status=pipeline_result.get("status", "unknown"),
+        )
 
     def _create_item_context(self, idx: int, item: Any) -> ItemContext:
         """
@@ -326,9 +382,6 @@ class Evaluation:
         run_name: str,
         ctx: ItemContext,
         task: Callable[[Any], Any],
-        evaluators: Optional[List[Any]],
-        results: List[Dict[str, Any]],
-        bg_eval_tasks: List[asyncio.Task[None]],
     ) -> Dict[str, Any]:
         """
         Execute the full pipeline for a single item.
@@ -354,20 +407,6 @@ class Evaluation:
 
             ctx.task_output, ctx.status = await execute_task(task, ctx.item_input)
             ctx.test_run_item_id = self._post_completed_status(run_id, ctx)
-
-            if evaluators and ctx.status == "completed":
-                eval_task = asyncio.create_task(self._run_evaluators_for_item(run_id, ctx, evaluators))
-                bg_eval_tasks.append(eval_task)
-
-            results.append(
-                {
-                    "index": ctx.index,
-                    "status": ctx.status,
-                    "traceId": ctx.trace_id,
-                    "spanId": ctx.span_id,
-                    "testRunItemId": ctx.test_run_item_id,
-                }
-            )
 
             return {
                 "status": ctx.status,
