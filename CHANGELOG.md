@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.67] - 2026-02-03
+## [0.1.67] - 2026-02-06
 
 - Added support for simulation utility to trigger multi-turn simulation
 
