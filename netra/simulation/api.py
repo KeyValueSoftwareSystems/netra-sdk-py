@@ -90,15 +90,12 @@ class Simulation:
 
             elapsed_time = time.time() - start_time
             logger.info("%s: Simulation completed in %.2f seconds", _LOG_PREFIX, elapsed_time)
-        except Exception:
-            logger.error("%s: Run simulation failed", _LOG_PREFIX)
-            self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
-            raise
+            self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
+            return result
         except BaseException:
             logger.error("%s: Run simulation failed", _LOG_PREFIX)
             self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
-
-        return result
+            return None
 
     async def _run_simulation_async(
         self,
@@ -165,14 +162,20 @@ class Simulation:
                 )
 
         with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
-            await asyncio.gather(*[process_item(run_item) for run_item in run_items])
+            tasks = [asyncio.create_task(process_item(run_item)) for run_item in run_items]
+            try:
+                await asyncio.gather(*tasks)
+            except (asyncio.CancelledError, KeyboardInterrupt):
+                for t in tasks:
+                    t.cancel()
+                await asyncio.gather(*tasks, return_exceptions=True)
+                executor.shutdown(wait=False, cancel_futures=True)
         logger.info(
             "%s: Completed=%d, Failed=%d",
             _LOG_PREFIX,
             len(results["completed"]),
             len(results["failed"]),
         )
-        self._client.post_run_status(run_id, "completed")
         return results
 
     async def _execute_conversation(
