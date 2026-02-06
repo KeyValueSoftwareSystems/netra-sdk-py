@@ -14,8 +14,8 @@ from netra.evaluation.models import (
     EvaluatorConfig,
     GetDatasetItemsResponse,
     ItemContext,
-    TurnType,
     ItemProcessingResult,
+    TurnType,
 )
 from netra.evaluation.utils import (
     build_evaluators_config,

@@ -129,6 +129,7 @@ class TurnType(str, Enum):
     SINGLE = "single"
     MULTI = "multi"
 
+
 @dataclass
 class ItemProcessingResult:
     """Result of processing a single dataset item."""
@@ -137,4 +138,3 @@ class ItemProcessingResult:
     should_run_evaluators: bool
     ctx: ItemContext
     status: str
-

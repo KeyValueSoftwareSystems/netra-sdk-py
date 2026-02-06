@@ -101,7 +101,9 @@ class EvaluationHttpClient:
             )
             return 10.0
 
-    def create_dataset(self, name: Optional[str], tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE) -> Any:
+    def create_dataset(
+        self, name: Optional[str], tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE
+    ) -> Any:
         """
         Create an empty dataset
 
@@ -119,11 +121,7 @@ class EvaluationHttpClient:
             return None
         try:
             url = "/evaluations/dataset"
-            payload: Dict[str, Any] = {
-                "name": name,
-                "tags": tags if tags else [],
-                "turnType": turn_type.value
-            }
+            payload: Dict[str, Any] = {"name": name, "tags": tags if tags else [], "turnType": turn_type.value}
             response = self._client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
