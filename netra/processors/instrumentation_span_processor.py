@@ -1,6 +1,7 @@
 """Span processor for instrumentation name recording and attribute truncation."""
 
 import logging
+import os
 from typing import Any, Callable, Optional, Set, Union
 
 from opentelemetry import context as otel_context
@@ -20,7 +21,31 @@ _OTEL_INSTRUMENTATION_PREFIX = "opentelemetry.instrumentation."
 _NETRA_INSTRUMENTATION_PREFIX = "netra.instrumentation."
 _HTTPX_INSTRUMENTATION = "httpx"
 _URL_ATTRIBUTE_KEYS = frozenset({"http.url", "url.full"})
-_BLOCKED_URL_PATTERNS = frozenset({"getnetra", "githubusercontent"})
+_DEFAULT_BLOCKED_URL_PATTERNS = frozenset({"getnetra", "githubusercontent"})
+
+
+def _load_blocked_url_patterns() -> frozenset[str]:
+    """Loads blocked URL patterns from defaults plus optional env var additions.
+
+    Environment variable format:
+        BLOCKED_URL_PATTERNS="pattern1,pattern2,pattern3"
+    """
+    try:
+        patterns = set(_DEFAULT_BLOCKED_URL_PATTERNS)
+        env_patterns = os.getenv("BLOCKED_URL_PATTERNS", "")
+
+        for pattern in env_patterns.split(","):
+            normalized_pattern = pattern.strip().lower()
+            if normalized_pattern:
+                patterns.add(normalized_pattern)
+
+        return frozenset(patterns)
+    except Exception as e:
+        logger.warning(f"Failed to load blocked URL patterns: {e}")
+        return _DEFAULT_BLOCKED_URL_PATTERNS
+
+
+_BLOCKED_URL_PATTERNS = _load_blocked_url_patterns()
 
 # Pre-computed allowed instrumentation names
 _ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet}  # type: ignore[attr-defined]
