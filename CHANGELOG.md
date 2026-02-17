@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.68] - 2026-02-17
+
+- Added support for audio duration & character count metric in dashboard query
+
 ## [0.1.67] - 2026-02-06
 
 - Added support for simulation utility to trigger multi-turn simulation
@@ -172,4 +176,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.67]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.68]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
