@@ -32,6 +32,8 @@ class Measure(str, Enum):
     TOTAL_COST = "Total Cost"
     VIOLATIONS = "Violations"
     TOTAL_TOKENS = "Total Tokens"
+    AUDIO_DURATION = "Audio Duration"
+    CHARACTER_COUNT = "Character Count"
 
 
 class Aggregation(str, Enum):
