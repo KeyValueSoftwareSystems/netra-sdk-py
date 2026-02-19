@@ -222,7 +222,7 @@ class SimulationHttpClient:
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
             logger.error("%s: Failed to trigger conversation: %s", _LOG_PREFIX, error_msg)
-            return None
+            raise
 
     def report_failure(self, run_id: str, run_item_id: str, error: str) -> None:
         """Report a task execution failure to the backend.
