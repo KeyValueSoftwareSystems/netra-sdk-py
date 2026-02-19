@@ -211,6 +211,39 @@ class Simulation:
                     response_message, task_session_id = await execute_task(task, message, session_id)
                     if task_session_id:
                         session_id = task_session_id
+
+                response = self._client.trigger_conversation(
+                    message=response_message,
+                    turn_id=turn_id,
+                    session_id=session_id or "",
+                    trace_id=trace_id,
+                )
+
+                if response is None:
+                    error_msg = "Failed to get conversation response"
+                    return {
+                        "run_item_id": run_item_id,
+                        "success": False,
+                        "error": error_msg,
+                        "turn_id": turn_id,
+                    }
+
+                if response.decision == "stop":
+                    logger.info(
+                        "%s: Completed run_item_id=%s reason=%s",
+                        _LOG_PREFIX,
+                        run_item_id,
+                        response.reason,
+                    )
+                    return {
+                        "run_item_id": run_item_id,
+                        "success": True,
+                        "final_turn_id": turn_id,
+                    }
+
+                message = response.next_user_message  # type:ignore[assignment]
+                turn_id = response.next_turn_id  # type:ignore[assignment]
+
             except Exception as exc:
                 error_msg = str(exc)
                 logger.error(
@@ -227,35 +260,3 @@ class Simulation:
                     "error": error_msg,
                     "turn_id": turn_id,
                 }
-
-            response = self._client.trigger_conversation(
-                message=response_message,
-                turn_id=turn_id,
-                session_id=session_id or "",
-                trace_id=trace_id,
-            )
-
-            if response is None:
-                error_msg = "Failed to get conversation response"
-                return {
-                    "run_item_id": run_item_id,
-                    "success": False,
-                    "error": error_msg,
-                    "turn_id": turn_id,
-                }
-
-            if response.decision == "stop":
-                logger.info(
-                    "%s: Completed run_item_id=%s reason=%s",
-                    _LOG_PREFIX,
-                    run_item_id,
-                    response.reason,
-                )
-                return {
-                    "run_item_id": run_item_id,
-                    "success": True,
-                    "final_turn_id": turn_id,
-                }
-
-            message = response.next_user_message  # type:ignore[assignment]
-            turn_id = response.next_turn_id  # type:ignore[assignment]
