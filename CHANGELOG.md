@@ -5,6 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.70] - 2026-02-24
+
+- Fixed traceloop-sdk version lock
+
 ## [0.1.69] - 2026-02-19
 
 - Added support for blocked URL pattern in span blocking utility
