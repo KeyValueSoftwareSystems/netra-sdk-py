@@ -7,7 +7,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.70] - 2026-02-24
 
-- Fixed traceloop-sdk version lock
+- Lock all dependency versions to avoid conflicts
 
 ## [0.1.69] - 2026-02-19
 
@@ -186,4 +186,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.69]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.70]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
