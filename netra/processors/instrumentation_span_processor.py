@@ -45,7 +45,21 @@ def _load_blocked_url_patterns() -> frozenset[str]:
         return _DEFAULT_BLOCKED_URL_PATTERNS
 
 
-_BLOCKED_URL_PATTERNS = _load_blocked_url_patterns()
+_BLOCKED_URL_PATTERNS: Optional[frozenset[str]] = None
+
+
+def _get_blocked_url_patterns() -> frozenset[str]:
+    """Returns the blocked URL patterns, loading them lazily on first access.
+
+    This defers reading the BLOCKED_URL_PATTERNS env var until runtime so that
+    callers such as ``load_dotenv()`` or ``Netra.init()`` have a chance to
+    populate the environment before the patterns are resolved.
+    """
+    global _BLOCKED_URL_PATTERNS
+    if _BLOCKED_URL_PATTERNS is None:
+        _BLOCKED_URL_PATTERNS = _load_blocked_url_patterns()
+    return _BLOCKED_URL_PATTERNS
+
 
 # Pre-computed allowed instrumentation names
 _ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet}  # type: ignore[attr-defined]
@@ -244,7 +258,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             return
 
         url_lower = url.lower()
-        for pattern in _BLOCKED_URL_PATTERNS:
+        for pattern in _get_blocked_url_patterns():
             if pattern in url_lower:
                 original_set_attribute("netra.local_blocked", True)
                 return
