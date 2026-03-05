@@ -13,6 +13,7 @@ from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
 from netra.logging_utils import configure_package_logging
+from netra.prompts import Prompts
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
@@ -23,6 +24,7 @@ __all__ = [
     "Netra",
     "UsageModel",
     "ActionModel",
+    "Prompts",
 ]
 
 logger = logging.getLogger(__name__)
@@ -132,6 +134,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize dashboard client: %s", e, exc_info=True)
                 cls.dashboard = None  # type:ignore[attr-defined]
+
+            # Initialize prompts client and expose as class attribute
+            try:
+                cls.prompts = Prompts(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize prompts client: %s", e, exc_info=True)
+                cls.prompts = None  # type:ignore[attr-defined]
 
             # Initialize simulation client and expose as class attribute
             try:
@@ -313,4 +322,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts"]
