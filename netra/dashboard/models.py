@@ -34,6 +34,7 @@ class Measure(str, Enum):
     TOTAL_TOKENS = "Total Tokens"
     AUDIO_DURATION = "Audio Duration"
     CHARACTER_COUNT = "Character Count"
+    TTFT = "Time to First Token"
 
 
 class Aggregation(str, Enum):
