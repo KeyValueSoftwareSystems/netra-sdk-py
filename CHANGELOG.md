@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.73] - 2026-10-14
+
+- Extended dependency support for opentelemetry and traceloop-sdk
+- Added TTFT for Cerebras and Groq instrumentation
+
+
 ## [0.1.72] - 2026-02-24
 
 - Fixed bug in blocking internal request calls
@@ -189,4 +195,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.72]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.73]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
