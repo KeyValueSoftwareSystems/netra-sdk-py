@@ -126,7 +126,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 key=key,
                 value=value,
                 original_set_attribute=original_set_attribute,
-                is_httpx=is_httpx,
             )
 
         setattr(span, "set_attribute", wrapped_set_attribute)
@@ -136,7 +135,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         key: str,
         value: Any,
         original_set_attribute: SetAttributeFunc,
-        is_httpx: bool,
     ) -> None:
         """Handles a set_attribute call with truncation and URL blocking.
 
@@ -147,7 +145,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             is_httpx: Whether this is an HTTPX instrumentation span.
         """
         try:
-            if is_httpx and key in _URL_ATTRIBUTE_KEYS:
+            if key in _URL_ATTRIBUTE_KEYS:
                 self._mark_blocked_if_internal_url(original_set_attribute, value)
 
             truncated_value = self._truncate_value(value)
