@@ -71,6 +71,7 @@ class CustomInstruments(Enum):
     DEEPGRAM = "deepgram"
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
+    CLAUDE_AGENT_SDK = "claude_agent_sdk"
 
 
 class NetraInstruments(Enum):
