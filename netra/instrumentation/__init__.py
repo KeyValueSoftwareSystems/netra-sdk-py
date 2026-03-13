@@ -61,6 +61,8 @@ def init_instrumentations(
             Instruments.MISTRAL,
             Instruments.OPENAI,
             Instruments.GROQ,
+            Instruments.REDIS,
+            Instruments.PYMYSQL
         }
     )
 
