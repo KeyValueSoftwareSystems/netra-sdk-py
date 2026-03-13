@@ -7,6 +7,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [0.1.76] - 2026-10-14
 
 - Added SDK utility to support custom metrics
+- Update block instrument functionality to correctly block Redis and SQLAlchemy
+- Remove httpx based check for blocking url
 
 
 ## [0.1.75] - 2026-03-18
@@ -14,12 +16,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - Added custom instrumentation for Claude Agent SDK
 
 
-## [0.1.74] - 2026-10-14
+## [0.1.74] - 2026-03-13
 
 - Add utility for prompt management
 
 
-## [0.1.73] - 2026-10-14
+## [0.1.73] - 2026-03-12
 
 - Extended dependency support for opentelemetry and traceloop-sdk
 - Added TTFT for Cerebras and Groq instrumentation
