@@ -313,6 +313,10 @@ def init_instrumentations(
     if CustomInstruments.ELEVENLABS in netra_custom_instruments:
         init_elevenlabs_instrumentation()
 
+    # Initialize claude_agent_sdk instrumentation.
+    if CustomInstruments.CLAUDE_AGENT_SDK in netra_custom_instruments:
+        init_claude_agent_sdk_instrumentation()
+
 
 def init_groq_instrumentation() -> bool:
     """Initialize Groq instrumentation."""
@@ -1341,5 +1345,25 @@ def init_elevenlabs_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing Elevenlabs instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_claude_agent_sdk_instrumentation() -> bool:
+    """Initialize Claude Agent SDK instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("claude-agent-sdk"):
+            from netra.instrumentation.claude_agent_sdk import NetraClaudeAgentSDKInstrumentor
+
+            instrumentor = NetraClaudeAgentSDKInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Claude Agent SDK instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
