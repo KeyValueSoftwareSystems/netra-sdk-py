@@ -358,6 +358,19 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             else:
                 self._complete_response["choices"].append({"text": ""})
 
+    def __enter__(self) -> "StreamingWrapper":
+        if hasattr(self.__wrapped__, "__enter__"):
+            self.__wrapped__.__enter__()
+        return self
+
+    def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if hasattr(self.__wrapped__, "__exit__"):
+            self.__wrapped__.__exit__(exc_type, exc_val, exc_tb)
+        if exc_type is not None:
+            self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+            self._span.record_exception(exc_val)
+            self._span.end()
+
     def __iter__(self) -> Iterator[Any]:
         return self
 
@@ -450,6 +463,19 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
             else:
                 self._complete_response["choices"].append({"text": ""})
+
+    async def __aenter__(self) -> "AsyncStreamingWrapper":
+        if hasattr(self.__wrapped__, "__aenter__"):
+            await self.__wrapped__.__aenter__()
+        return self
+
+    async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        if hasattr(self.__wrapped__, "__aexit__"):
+            await self.__wrapped__.__aexit__(exc_type, exc_val, exc_tb)
+        if exc_type is not None:
+            self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+            self._span.record_exception(exc_val)
+            self._span.end()
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
