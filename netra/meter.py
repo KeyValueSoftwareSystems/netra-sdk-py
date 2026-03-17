@@ -1,11 +1,26 @@
+import json
 import logging
 import threading
-from typing import Optional
+from typing import Any, Optional
 
+from google.protobuf.json_format import MessageToDict
 from opentelemetry import metrics
-from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter
-from opentelemetry.sdk.metrics import MeterProvider
-from opentelemetry.sdk.metrics.export import AggregationTemporality, PeriodicExportingMetricReader
+from opentelemetry.exporter.otlp.proto.http.metric_exporter import OTLPMetricExporter, encode_metrics
+from opentelemetry.sdk.metrics import (
+    Counter,
+    Histogram,
+    MeterProvider,
+    ObservableCounter,
+    ObservableGauge,
+    ObservableUpDownCounter,
+    UpDownCounter,
+)
+from opentelemetry.sdk.metrics.export import (
+    AggregationTemporality,
+    MetricExportResult,
+    MetricsData,
+    PeriodicExportingMetricReader,
+)
 from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
 
 from netra.config import Config
@@ -17,14 +32,72 @@ _provider_install_lock = threading.Lock()
 # Map every OTel instrument type to DELTA so the backend receives
 # incremental values on each export cycle, matching standard
 # observability platform behavior (Datadog, Prometheus pull model, etc.)
+# NOTE: Keys must be the SDK instrument classes (opentelemetry.sdk.metrics),
+# not the public API classes (opentelemetry.metrics).
 _DELTA_TEMPORALITY: dict = {
-    metrics.Counter: AggregationTemporality.DELTA,
-    metrics.UpDownCounter: AggregationTemporality.DELTA,
-    metrics.Histogram: AggregationTemporality.DELTA,
-    metrics.ObservableCounter: AggregationTemporality.DELTA,
-    metrics.ObservableUpDownCounter: AggregationTemporality.DELTA,
-    metrics.ObservableGauge: AggregationTemporality.DELTA,
+    Counter: AggregationTemporality.DELTA,
+    UpDownCounter: AggregationTemporality.DELTA,
+    Histogram: AggregationTemporality.DELTA,
+    ObservableCounter: AggregationTemporality.DELTA,
+    ObservableUpDownCounter: AggregationTemporality.DELTA,
+    ObservableGauge: AggregationTemporality.DELTA,
 }
+
+
+class _JsonOTLPMetricExporter(OTLPMetricExporter):
+    """Thin wrapper that sends OTLP metrics as JSON instead of protobuf.
+
+    The upstream ``OTLPMetricExporter`` serialises to protobuf and sets
+    ``Content-Type: application/x-protobuf``.  The Netra backend currently
+    only reliably parses the JSON encoding (matching the JS SDK), so this
+    subclass converts the protobuf ``ExportMetricsServiceRequest`` to its
+    JSON representation before posting.
+    """
+
+    def __init__(self, **kwargs: Any) -> None:
+        super().__init__(**kwargs)
+        self._session.headers["Content-Type"] = "application/json"
+
+    def export(
+        self,
+        metrics_data: MetricsData,
+        timeout_millis: Optional[float] = 10_000,
+        **kwargs: Any,
+    ) -> MetricExportResult:
+        if self._shutdown:
+            logger.warning("Exporter already shutdown, ignoring batch")
+            return MetricExportResult.FAILURE
+
+        pb_message = encode_metrics(metrics_data)
+        payload = MessageToDict(pb_message, preserving_proto_field_name=True)
+        serialized = json.dumps(payload).encode("utf-8")
+
+        try:
+            resp = self._session.post(
+                url=self._endpoint,
+                data=serialized,
+                verify=self._certificate_file,
+                timeout=self._timeout,
+                cert=getattr(self, "_client_cert", None),
+            )
+        except ConnectionError:
+            resp = self._session.post(
+                url=self._endpoint,
+                data=serialized,
+                verify=self._certificate_file,
+                timeout=self._timeout,
+                cert=getattr(self, "_client_cert", None),
+            )
+
+        if resp.ok:
+            return MetricExportResult.SUCCESS
+
+        logger.error(
+            "Failed to export metrics batch code: %s, reason: %s",
+            resp.status_code,
+            resp.text,
+        )
+        return MetricExportResult.FAILURE
 
 
 class MetricsSetup:
@@ -76,7 +149,7 @@ class MetricsSetup:
             resource = Resource(attributes=resource_attrs)
             metrics_endpoint = _format_metrics_endpoint(self.cfg.otlp_endpoint)
 
-            exporter = OTLPMetricExporter(
+            exporter = _JsonOTLPMetricExporter(
                 endpoint=metrics_endpoint,
                 headers=self.cfg.headers,
                 preferred_temporality=_DELTA_TEMPORALITY,
@@ -91,7 +164,7 @@ class MetricsSetup:
             metrics.set_meter_provider(provider)
 
             logger.info(
-                "Netra metrics pipeline started: endpoint=%s, interval=%dms",
+                "Netra metrics pipeline started (JSON): endpoint=%s, interval=%dms",
                 metrics_endpoint,
                 self.cfg.metrics_export_interval_ms,
             )

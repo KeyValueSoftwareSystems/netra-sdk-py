@@ -75,7 +75,7 @@ class Config:
         self.resource_attributes = self._get_resource_attributes(resource_attributes)
         self.blocked_spans = blocked_spans
         self.metrics_export_interval_ms = self._get_int_config(
-            metrics_export_interval_ms, "NETRA_METRICS_INTERVAL_MS", default=60000
+            metrics_export_interval_ms, "NETRA_METRICS_EXPORT_INTERVAL", default=60000
         )
 
         self._set_trace_content_env()
