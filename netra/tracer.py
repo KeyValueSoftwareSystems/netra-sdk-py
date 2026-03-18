@@ -1,6 +1,6 @@
 import logging
 import threading
-from typing import Any, Dict
+from typing import Any, Dict, Optional, Set
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -27,13 +27,18 @@ class Tracer:
     and appropriate span processors.
     """
 
-    def __init__(self, cfg: Config) -> None:
+    def __init__(self, cfg: Config, root_instrument_names: Optional[Set[str]] = None) -> None:
         """Initialize the Netra tracer with the provided configuration.
 
         Args:
             cfg: Configuration object with tracer settings
+            root_instrument_names: Optional set of instrumentation-name strings
+                that are allowed to produce root-level spans.  When provided, a
+                ``RootInstrumentFilterProcessor`` is installed that discards root
+                spans (and their entire subtree) from all other instrumentations.
         """
         self.cfg = cfg
+        self._root_instrument_names = root_instrument_names
         self._setup_tracer()
 
     def _setup_tracer(self) -> None:
@@ -93,9 +98,13 @@ class Tracer:
                 InstrumentationSpanProcessor,
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
+                RootInstrumentFilterProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
             )
+
+            if self._root_instrument_names is not None:
+                provider.add_span_processor(RootInstrumentFilterProcessor(self._root_instrument_names))
 
             provider.add_span_processor(LocalFilteringSpanProcessor())
             provider.add_span_processor(InstrumentationSpanProcessor())
