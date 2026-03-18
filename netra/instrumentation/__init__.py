@@ -7,7 +7,7 @@ from typing import Any, Callable, Optional, Set
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
-from netra.instrumentation.instruments import CustomInstruments, NetraInstruments
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS, CustomInstruments, NetraInstruments
 
 
 def init_instrumentations(
@@ -18,35 +18,33 @@ def init_instrumentations(
 ) -> None:
     from traceloop.sdk.tracing.tracing import init_instrumentations
 
+    # When the user does not pass instruments, fall back to the curated default set.
+    resolved_instruments = instruments if instruments is not None else DEFAULT_INSTRUMENTS
+
     traceloop_instruments = set()
     traceloop_block_instruments = set()
     netra_custom_instruments = set()
     netra_custom_block_instruments = set()
-    if instruments:
-        for instrument in instruments:
-            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
+    if resolved_instruments:
+        for instrument in resolved_instruments:
+            if isinstance(instrument, CustomInstruments):
                 netra_custom_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_instruments.add(getattr(Instruments, instrument.name))
     if block_instruments:
         for instrument in block_instruments:
-            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
+            if isinstance(instrument, CustomInstruments):
                 netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_block_instruments.add(getattr(Instruments, instrument.name))
 
     # If no instruments in traceloop are provided for instrumentation
-    if instruments and not traceloop_instruments and not traceloop_block_instruments:
+    if resolved_instruments and not traceloop_instruments and not traceloop_block_instruments:
         traceloop_block_instruments = set(Instruments)
 
     # If no custom instruments in netra are provided for instrumentation
-    if instruments and not netra_custom_instruments and not netra_custom_block_instruments:
+    if resolved_instruments and not netra_custom_instruments and not netra_custom_block_instruments:
         netra_custom_block_instruments = set(CustomInstruments)
-
-    # If no instruments are provided for instrumentation, instrument all instruments
-    if not instruments and not block_instruments:
-        traceloop_instruments = set(Instruments)
-        netra_custom_instruments = set(CustomInstruments)
 
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
     traceloop_instruments = traceloop_instruments - traceloop_block_instruments

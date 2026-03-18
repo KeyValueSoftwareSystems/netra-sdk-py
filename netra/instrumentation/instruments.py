@@ -94,6 +94,56 @@ for member in CustomInstruments:
 InstrumentSet = NetraInstruments("InstrumentSet", merged_members)
 
 
+# Curated default instrument set used for root_instruments when the user does
+# not pass an explicit value. Covers core LLM/AI providers and frameworks.
+DEFAULT_INSTRUMENTS_FOR_ROOT = {
+    InstrumentSet.ANTHROPIC,  # type:ignore[attr-defined]
+    InstrumentSet.CARTESIA,  # type:ignore[attr-defined]
+    InstrumentSet.COHEREAI,  # type:ignore[attr-defined]
+    InstrumentSet.CREWAI,  # type:ignore[attr-defined]
+    InstrumentSet.DEEPGRAM,  # type:ignore[attr-defined]
+    InstrumentSet.ELEVENLABS,  # type:ignore[attr-defined]
+    InstrumentSet.GOOGLE_GENERATIVEAI,  # type:ignore[attr-defined]
+    InstrumentSet.ADK,  # type:ignore[attr-defined]
+    InstrumentSet.GROQ,  # type:ignore[attr-defined]
+    InstrumentSet.LANGCHAIN,  # type:ignore[attr-defined]
+    InstrumentSet.LITELLM,  # type:ignore[attr-defined]
+    InstrumentSet.CEREBRAS,  # type:ignore[attr-defined]
+    InstrumentSet.MISTRALAI,  # type:ignore[attr-defined]
+    InstrumentSet.OPENAI,  # type:ignore[attr-defined]
+    InstrumentSet.OLLAMA,  # type:ignore[attr-defined]
+    InstrumentSet.VERTEXAI,  # type:ignore[attr-defined]
+    InstrumentSet.LLAMA_INDEX,  # type:ignore[attr-defined]
+    InstrumentSet.PYDANTIC_AI,  # type:ignore[attr-defined]
+    InstrumentSet.DSPY,  # type:ignore[attr-defined]
+    InstrumentSet.HAYSTACK,  # type:ignore[attr-defined]
+    InstrumentSet.BEDROCK,  # type:ignore[attr-defined]
+    InstrumentSet.TOGETHER,  # type:ignore[attr-defined]
+    InstrumentSet.REPLICATE,  # type:ignore[attr-defined]
+    InstrumentSet.ALEPHALPHA,  # type:ignore[attr-defined]
+    InstrumentSet.WATSONX,  # type:ignore[attr-defined]
+}
+
+# Broader default instrument set used for the ``instruments`` parameter when
+# the user does not pass an explicit value. Includes the root defaults plus
+# common vector DBs, HTTP client/server, and database ORM/client libraries.
+DEFAULT_INSTRUMENTS = DEFAULT_INSTRUMENTS_FOR_ROOT.union(
+    {
+        InstrumentSet.PINECONE,  # type:ignore[attr-defined]
+        InstrumentSet.CHROMA,  # type:ignore[attr-defined]
+        InstrumentSet.WEAVIATEDB,  # type:ignore[attr-defined]
+        InstrumentSet.QDRANTDB,  # type:ignore[attr-defined]
+        InstrumentSet.MILVUS,  # type:ignore[attr-defined]
+        InstrumentSet.LANCEDB,  # type:ignore[attr-defined]
+        InstrumentSet.MARQO,  # type:ignore[attr-defined]
+        InstrumentSet.PYMYSQL,  # type:ignore[attr-defined]
+        InstrumentSet.REQUESTS,  # type:ignore[attr-defined]
+        InstrumentSet.SQLALCHEMY,  # type:ignore[attr-defined]
+        InstrumentSet.HTTPX,  # type:ignore[attr-defined]
+    }
+)
+
+
 #####################################################################################
 """
 NetraInstruments follows the given structure. Refer this for usage within Netra SDK:

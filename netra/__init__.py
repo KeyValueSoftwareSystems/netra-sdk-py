@@ -11,7 +11,7 @@ from netra.config import Config
 from netra.dashboard import Dashboard
 from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
-from netra.instrumentation.instruments import NetraInstruments
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS_FOR_ROOT, NetraInstruments
 from netra.logging_utils import configure_package_logging
 from netra.prompts import Prompts
 from netra.session_manager import ConversationType, SessionManager
@@ -68,6 +68,7 @@ class Netra:
         blocked_spans: Optional[List[str]] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
         block_instruments: Optional[Set[NetraInstruments]] = None,
+        root_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
         """
         Thread-safe initialization of Netra.
@@ -85,6 +86,12 @@ class Netra:
             blocked_spans: List of spans to be blocked
             instruments: Set of instruments to be enabled
             block_instruments: Set of instruments to be blocked
+            root_instruments: Set of instruments allowed to produce root-level
+                spans.  When a root span is blocked, its entire subtree is
+                discarded.  Resolution priority:
+                1. Explicit ``root_instruments`` value if provided.
+                2. The ``instruments`` value if provided (but ``root_instruments`` is not).
+                3. ``DEFAULT_INSTRUMENTS_FOR_ROOT`` if neither is provided.
 
         Returns:
             None
@@ -111,8 +118,17 @@ class Netra:
             # Configure logging based on debug mode
             configure_package_logging(debug_mode=cfg.debug_mode)
 
+            # Resolve root_instruments → set of instrumentation-name strings.
+            resolved_root: Optional[Set[str]] = None
+            if root_instruments is not None:
+                resolved_root = {m.value for m in root_instruments}
+            elif instruments is not None:
+                resolved_root = {m.value for m in instruments}
+            else:
+                resolved_root = {m.value for m in DEFAULT_INSTRUMENTS_FOR_ROOT}
+
             # Initialize tracer (OTLP exporter, span processor, resource)
-            Tracer(cfg)
+            Tracer(cfg, root_instrument_names=resolved_root)
 
             # Initialize evaluation client and expose as class attribute
             try:
