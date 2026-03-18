@@ -73,7 +73,7 @@ class CustomInstruments(Enum):
     ELEVENLABS = "elevenlabs"
 
 
-class NetraInstruments(Enum):
+class InstrumentSet(Enum):
     """Custom enum that stores the original enum class in an 'origin' attribute."""
 
     def __new__(cls: Any, value: Any, origin: Any = None) -> Any:
@@ -82,46 +82,127 @@ class NetraInstruments(Enum):
         member.origin = origin
         return member
 
+    ADK = ("adk", CustomInstruments)
+    AIOHTTP = ("aiohttp", CustomInstruments)
+    AIOHTTP_SERVER = ("aiohttp_server", CustomInstruments)
+    AIO_PIKA = ("aio_pika", CustomInstruments)
+    AIOKAFKA = ("aiokafka", CustomInstruments)
+    AIOPG = ("aiopg", CustomInstruments)
+    ALEPHALPHA = ("alephalpha", Instruments)
+    ANTHROPIC = ("anthropic", Instruments)
+    ASGI = ("asgi", CustomInstruments)
+    ASYNCCLICK = ("asyncclick", CustomInstruments)
+    ASYNCIO = ("asyncio", CustomInstruments)
+    ASYNCPG = ("asyncpg", CustomInstruments)
+    AWS_LAMBDA = ("aws_lambda", CustomInstruments)
+    BEDROCK = ("bedrock", Instruments)
+    BOTO = ("boto", CustomInstruments)
+    BOTO3SQS = ("boto3sqs", CustomInstruments)
+    BOTOCORE = ("botocore", CustomInstruments)
+    CARTESIA = ("cartesia", CustomInstruments)
+    CASSANDRA = ("cassandra", CustomInstruments)
+    CEREBRAS = ("cerebras", CustomInstruments)
+    CELERY = ("celery", CustomInstruments)
+    CHROMA = ("chroma", Instruments)
+    CLICK = ("click", CustomInstruments)
+    COHEREAI = ("cohere_ai", CustomInstruments)
+    CONFLUENT_KAFKA = ("confluent_kafka", CustomInstruments)
+    CREWAI = ("crewai", Instruments)
+    DEEPGRAM = ("deepgram", CustomInstruments)
+    DBAPI = ("dbapi", CustomInstruments)
+    DJANGO = ("django", CustomInstruments)
+    DSPY = ("dspy", CustomInstruments)
+    ELASTICSEARCH = ("elasticsearch", CustomInstruments)
+    ELEVENLABS = ("elevenlabs", CustomInstruments)
+    FALCON = ("falcon", CustomInstruments)
+    FASTAPI = ("fastapi", CustomInstruments)
+    FLASK = ("flask", CustomInstruments)
+    GOOGLE_GENERATIVEAI = ("google_genai", CustomInstruments)
+    GROQ = ("groq", CustomInstruments)
+    GRPC = ("grpc", CustomInstruments)
+    HAYSTACK = ("haystack", Instruments)
+    HTTPX = ("httpx", CustomInstruments)
+    JINJA2 = ("jinja2", CustomInstruments)
+    KAFKA_PYTHON = ("kafka_python", CustomInstruments)
+    LANCEDB = ("lancedb", Instruments)
+    LANGCHAIN = ("langchain", Instruments)
+    LITELLM = ("litellm", CustomInstruments)
+    LLAMA_INDEX = ("llama_index", Instruments)
+    LOGGING = ("logging", CustomInstruments)
+    MARQO = ("marqo", Instruments)
+    MCP = ("mcp", Instruments)
+    MILVUS = ("milvus", Instruments)
+    MISTRALAI = ("mistral_ai", CustomInstruments)
+    MYSQL = ("mysql", CustomInstruments)
+    MYSQLCLIENT = ("mysqlclient", CustomInstruments)
+    OLLAMA = ("ollama", Instruments)
+    OPENAI = ("openai", CustomInstruments)
+    OPENAI_AGENTS = ("openai_agents", Instruments)
+    PIKA = ("pika", CustomInstruments)
+    PINECONE = ("pinecone", Instruments)
+    PSYCOPG = ("psycopg", CustomInstruments)
+    PSYCOPG2 = ("psycopg2", CustomInstruments)
+    PYDANTIC_AI = ("pydantic_ai", CustomInstruments)
+    PYMEMCACHE = ("pymemcache", CustomInstruments)
+    PYMONGO = ("pymongo", CustomInstruments)
+    PYMSSQL = ("pymssql", CustomInstruments)
+    PYMYSQL = ("pymysql", CustomInstruments)
+    PYRAMID = ("pyramid", CustomInstruments)
+    QDRANTDB = ("qdrant_db", CustomInstruments)
+    REDIS = ("redis", CustomInstruments)
+    REMOULADE = ("remoulade", CustomInstruments)
+    REPLICATE = ("replicate", Instruments)
+    REQUESTS = ("requests", CustomInstruments)
+    SAGEMAKER = ("sagemaker", Instruments)
+    SQLALCHEMY = ("sqlalchemy", CustomInstruments)
+    SQLITE3 = ("sqlite3", CustomInstruments)
+    STARLETTE = ("starlette", CustomInstruments)
+    SYSTEM_METRICS = ("system_metrics", CustomInstruments)
+    THREADING = ("threading", CustomInstruments)
+    TOGETHER = ("together", Instruments)
+    TORNADO = ("tornado", CustomInstruments)
+    TORTOISEORM = ("tortoiseorm", CustomInstruments)
+    TRANSFORMERS = ("transformers", Instruments)
+    URLLIB = ("urllib", CustomInstruments)
+    URLLIB3 = ("urllib3", CustomInstruments)
+    VERTEXAI = ("vertexai", Instruments)
+    WATSONX = ("watsonx", Instruments)
+    WEAVIATEDB = ("weaviate_db", CustomInstruments)
+    WRITER = ("writer", Instruments)
+    WSGI = ("wsgi", CustomInstruments)
 
-merged_members = {}
 
-for member in Instruments:
-    merged_members[member.name] = (member.value, Instruments)
-
-for member in CustomInstruments:
-    merged_members[member.name] = (member.value, CustomInstruments)
-
-InstrumentSet = NetraInstruments("InstrumentSet", merged_members)
+NetraInstruments = InstrumentSet
 
 
 # Curated default instrument set used for root_instruments when the user does
 # not pass an explicit value. Covers core LLM/AI providers and frameworks.
 DEFAULT_INSTRUMENTS_FOR_ROOT = {
-    InstrumentSet.ANTHROPIC,  # type:ignore[attr-defined]
-    InstrumentSet.CARTESIA,  # type:ignore[attr-defined]
-    InstrumentSet.COHEREAI,  # type:ignore[attr-defined]
-    InstrumentSet.CREWAI,  # type:ignore[attr-defined]
-    InstrumentSet.DEEPGRAM,  # type:ignore[attr-defined]
-    InstrumentSet.ELEVENLABS,  # type:ignore[attr-defined]
-    InstrumentSet.GOOGLE_GENERATIVEAI,  # type:ignore[attr-defined]
-    InstrumentSet.ADK,  # type:ignore[attr-defined]
-    InstrumentSet.GROQ,  # type:ignore[attr-defined]
-    InstrumentSet.LANGCHAIN,  # type:ignore[attr-defined]
-    InstrumentSet.LITELLM,  # type:ignore[attr-defined]
-    InstrumentSet.CEREBRAS,  # type:ignore[attr-defined]
-    InstrumentSet.MISTRALAI,  # type:ignore[attr-defined]
-    InstrumentSet.OPENAI,  # type:ignore[attr-defined]
-    InstrumentSet.OLLAMA,  # type:ignore[attr-defined]
-    InstrumentSet.VERTEXAI,  # type:ignore[attr-defined]
-    InstrumentSet.LLAMA_INDEX,  # type:ignore[attr-defined]
-    InstrumentSet.PYDANTIC_AI,  # type:ignore[attr-defined]
-    InstrumentSet.DSPY,  # type:ignore[attr-defined]
-    InstrumentSet.HAYSTACK,  # type:ignore[attr-defined]
-    InstrumentSet.BEDROCK,  # type:ignore[attr-defined]
-    InstrumentSet.TOGETHER,  # type:ignore[attr-defined]
-    InstrumentSet.REPLICATE,  # type:ignore[attr-defined]
-    InstrumentSet.ALEPHALPHA,  # type:ignore[attr-defined]
-    InstrumentSet.WATSONX,  # type:ignore[attr-defined]
+    InstrumentSet.ANTHROPIC,
+    InstrumentSet.CARTESIA,
+    InstrumentSet.COHEREAI,
+    InstrumentSet.CREWAI,
+    InstrumentSet.DEEPGRAM,
+    InstrumentSet.ELEVENLABS,
+    InstrumentSet.GOOGLE_GENERATIVEAI,
+    InstrumentSet.ADK,
+    InstrumentSet.GROQ,
+    InstrumentSet.LANGCHAIN,
+    InstrumentSet.LITELLM,
+    InstrumentSet.CEREBRAS,
+    InstrumentSet.MISTRALAI,
+    InstrumentSet.OPENAI,
+    InstrumentSet.OLLAMA,
+    InstrumentSet.VERTEXAI,
+    InstrumentSet.LLAMA_INDEX,
+    InstrumentSet.PYDANTIC_AI,
+    InstrumentSet.DSPY,
+    InstrumentSet.HAYSTACK,
+    InstrumentSet.BEDROCK,
+    InstrumentSet.TOGETHER,
+    InstrumentSet.REPLICATE,
+    InstrumentSet.ALEPHALPHA,
+    InstrumentSet.WATSONX,
 }
 
 # Broader default instrument set used for the ``instruments`` parameter when
@@ -129,17 +210,17 @@ DEFAULT_INSTRUMENTS_FOR_ROOT = {
 # common vector DBs, HTTP client/server, and database ORM/client libraries.
 DEFAULT_INSTRUMENTS = DEFAULT_INSTRUMENTS_FOR_ROOT.union(
     {
-        InstrumentSet.PINECONE,  # type:ignore[attr-defined]
-        InstrumentSet.CHROMA,  # type:ignore[attr-defined]
-        InstrumentSet.WEAVIATEDB,  # type:ignore[attr-defined]
-        InstrumentSet.QDRANTDB,  # type:ignore[attr-defined]
-        InstrumentSet.MILVUS,  # type:ignore[attr-defined]
-        InstrumentSet.LANCEDB,  # type:ignore[attr-defined]
-        InstrumentSet.MARQO,  # type:ignore[attr-defined]
-        InstrumentSet.PYMYSQL,  # type:ignore[attr-defined]
-        InstrumentSet.REQUESTS,  # type:ignore[attr-defined]
-        InstrumentSet.SQLALCHEMY,  # type:ignore[attr-defined]
-        InstrumentSet.HTTPX,  # type:ignore[attr-defined]
+        InstrumentSet.PINECONE,
+        InstrumentSet.CHROMA,
+        InstrumentSet.WEAVIATEDB,
+        InstrumentSet.QDRANTDB,
+        InstrumentSet.MILVUS,
+        InstrumentSet.LANCEDB,
+        InstrumentSet.MARQO,
+        InstrumentSet.PYMYSQL,
+        InstrumentSet.REQUESTS,
+        InstrumentSet.SQLALCHEMY,
+        InstrumentSet.HTTPX,
     }
 )
 
