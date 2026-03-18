@@ -1,6 +1,6 @@
 import logging
 import threading
-from typing import Any, Optional, Set
+from typing import Optional, Set, cast
 
 from opentelemetry import context as otel_context
 from opentelemetry import trace
@@ -130,7 +130,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
     @staticmethod
     def _resolve_parent_span_id(
         parent_context: Optional[otel_context.Context],
-    ) -> Any:
+    ) -> Optional[int]:
         """
         Return the parent span's ``span_id`` from the supplied context, or ``None``.
 
@@ -148,7 +148,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         sc = parent_span.get_span_context()
         if sc is None:
             return None
-        return sc.span_id
+        return cast(Optional[int], sc.span_id)
 
     @staticmethod
     def _get_span_id(span: object) -> Optional[int]:
@@ -164,7 +164,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         ctx = getattr(span, "context", None) or getattr(span, "get_span_context", lambda: None)()
         if ctx is None:
             return None
-        return getattr(ctx, "span_id", None)
+        return cast(Optional[int], getattr(ctx, "span_id", None))
 
     @staticmethod
     def _mark_blocked(span: Span) -> None:

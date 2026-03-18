@@ -27,13 +27,13 @@ def init_instrumentations(
     netra_custom_block_instruments = set()
     if resolved_instruments:
         for instrument in resolved_instruments:
-            if isinstance(instrument, CustomInstruments):
+            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
                 netra_custom_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_instruments.add(getattr(Instruments, instrument.name))
     if block_instruments:
         for instrument in block_instruments:
-            if isinstance(instrument, CustomInstruments):
+            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
                 netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
             else:
                 traceloop_block_instruments.add(getattr(Instruments, instrument.name))
