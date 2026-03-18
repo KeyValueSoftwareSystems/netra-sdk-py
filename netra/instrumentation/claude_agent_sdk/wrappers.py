@@ -27,7 +27,19 @@ async def _dispatch_messages(
     aiterator: AsyncIterator,
     prompt_index: int,
 ) -> AsyncIterator:
-    """Dispatch each incoming SDK message to its span attribute handler and yield it."""
+    """
+    Dispatch each incoming SDK message to its span attribute handler and yield it.
+
+    Args:
+        tracer (Tracer): The OpenTelemetry tracer for creating child spans.
+        root_span (Span): The root span to attach message attributes to.
+        root_ctx (Context): The root span context for child span parenting.
+        aiterator (AsyncIterator): The async iterator of SDK messages to process.
+        prompt_index (int): The current prompt index passed to the result message attribute setter.
+
+    Returns:
+        AsyncIterator: Yields each SDK message after processing its span attributes.
+    """
     while True:
         try:
             message = await anext(aiterator)
@@ -50,13 +62,33 @@ async def _dispatch_messages(
 
 
 def query_wrapper(tracer: Tracer):
-    """Traces a single query through InternalClient, creating child spans per message."""
+    """
+    Return a wrapper that traces a single InternalClient.process_query call with child spans per message.
+
+    Args:
+        tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
+
+    Returns:
+        Callable: An async generator wrapper function for InternalClient.process_query.
+    """
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
         args: Tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
+        """
+        Wrap InternalClient.process_query to create a root span and dispatch per-message child spans.
+
+        Args:
+            wrapped (Callable): The original process_query function.
+            instance (Any): The InternalClient instance.
+            args (Tuple): Positional arguments
+            kwargs (dict): Keyword arguments; may include 'prompt' and 'options'.
+
+        Returns:
+            AsyncIterator: Yields SDK messages with span instrumentation applied.
+        """
         prompt = args[0] if len(args) > 0 else kwargs.get("prompt")
         options = args[1] if len(args) > 1 else kwargs.get("options")
 
@@ -82,8 +114,8 @@ def query_wrapper(tracer: Tracer):
             try:
                 root_span.record_exception(e)
                 root_span.set_status(Status(StatusCode.ERROR, str(e)))
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error("Failed to record exception on span: %s", span_err)
             raise
         finally:
             try:
@@ -95,13 +127,33 @@ def query_wrapper(tracer: Tracer):
 
 
 def client_query_wrapper():
-    """Intercepts ClaudeSDKClient.query to capture the prompt for later tracing."""
+    """
+    Return a wrapper that captures the prompt from ClaudeSDKClient.query for later tracing.
+
+    Args:
+        None
+
+    Returns:
+        Callable: An async wrapper function for ClaudeSDKClient.query.
+    """
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
         args: Tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
+        """
+        Intercept ClaudeSDKClient.query to store the prompt on the instance for later tracing.
+
+        Args:
+            wrapped (Callable): The original query function.
+            instance (Any): The ClaudeSDKClient instance; prompt is stored as _instrumentation_prompt.
+            args (Tuple): Positional arguments
+            kwargs (dict): Keyword arguments; may include 'prompt'.
+
+        Returns:
+            Any: The result of the original query function.
+        """
         instance._instrumentation_prompt = args[0] if len(args) > 0 else kwargs.get("prompt")
         return await wrapped(*args, **kwargs)
 
@@ -109,13 +161,33 @@ def client_query_wrapper():
 
 
 def client_response_wrapper(tracer: Tracer):
-    """Traces a full ClaudeSDKClient conversation, covering all messages from prompt to result."""
+    """
+    Return a wrapper that traces a full ClaudeSDKClient.receive_messages call covering all messages.
+
+    Args:
+        tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
+
+    Returns:
+        Callable: An async generator wrapper function for ClaudeSDKClient.receive_messages.
+    """
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
         args: Tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
+        """
+        Wrap ClaudeSDKClient.receive_messages to create a root span and dispatch per-message child spans.
+
+        Args:
+            wrapped (Callable): The original receive_messages function.
+            instance (Any): The ClaudeSDKClient instance; prompt and options are read from it.
+            args (Tuple): Positional arguments forwarded to the original function.
+            kwargs (dict): Keyword arguments forwarded to the original function.
+
+        Returns:
+            AsyncIterator: Yields SDK messages with span instrumentation applied.
+        """
         prompt = getattr(instance, "_instrumentation_prompt", None)
         options = getattr(instance, "options", None)
 
@@ -141,8 +213,8 @@ def client_response_wrapper(tracer: Tracer):
             try:
                 root_span.record_exception(e)
                 root_span.set_status(Status(StatusCode.ERROR, str(e)))
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error("Failed to record exception on span: %s", span_err)
             raise
         finally:
             try:
