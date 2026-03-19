@@ -6,7 +6,6 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.76] - 2026-03-19
 
-- Added SDK utility to support custom metrics
 - Update block instrument functionality to correctly block Redis and SQLAlchemy
 - Remove httpx based check for blocking url
 
