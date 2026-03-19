@@ -4,6 +4,7 @@ import threading
 from typing import Any, Dict, List, Optional, Set
 
 from opentelemetry import context as context_api
+from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind
 
@@ -13,6 +14,8 @@ from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
 from netra.instrumentation.instruments import NetraInstruments
 from netra.logging_utils import configure_package_logging
+from netra.meter import MetricsSetup
+from netra.meter import get_meter as _get_meter
 from netra.prompts import Prompts
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
@@ -41,6 +44,7 @@ class Netra:
     _init_lock = threading.RLock()
     _root_span = None
     _root_ctx_token = None
+    _metrics_enabled = False
 
     @classmethod
     def is_initialized(cls) -> bool:
@@ -68,6 +72,9 @@ class Netra:
         blocked_spans: Optional[List[str]] = None,
         instruments: Optional[Set[NetraInstruments]] = None,
         block_instruments: Optional[Set[NetraInstruments]] = None,
+        enable_metrics: Optional[bool] = None,
+        metrics_export_interval_ms: Optional[int] = None,
+        export_auto_metrics: Optional[bool] = None,
     ) -> None:
         """
         Thread-safe initialization of Netra.
@@ -85,6 +92,9 @@ class Netra:
             blocked_spans: List of spans to be blocked
             instruments: Set of instruments to be enabled
             block_instruments: Set of instruments to be blocked
+            enable_metrics: Whether to enable OTLP custom metrics export (default: False)
+            metrics_export_interval_ms: Metrics push interval in milliseconds (default: 60000)
+            export_auto_metrics: Whether to export OTel auto-instrumented metrics (default: False)
 
         Returns:
             None
@@ -106,6 +116,9 @@ class Netra:
                 environment=environment,
                 enable_scrubbing=enable_scrubbing,
                 blocked_spans=blocked_spans,
+                enable_metrics=enable_metrics,
+                metrics_export_interval_ms=metrics_export_interval_ms,
+                export_auto_metrics=export_auto_metrics,
             )
 
             # Configure logging based on debug mode
@@ -113,6 +126,14 @@ class Netra:
 
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg)
+
+            # Initialize metrics pipeline when explicitly enabled
+            if cfg.enable_metrics:
+                try:
+                    MetricsSetup(cfg)
+                    cls._metrics_enabled = True
+                except Exception as e:
+                    logger.warning("Failed to initialize metrics pipeline: %s", e, exc_info=True)
 
             # Initialize evaluation client and expose as class attribute
             try:
@@ -184,7 +205,7 @@ class Netra:
 
     @classmethod
     def shutdown(cls) -> None:
-        """Optional cleanup to end the root span and detach context."""
+        """Flush all pending telemetry and release SDK resources."""
         with cls._init_lock:
             if cls._root_ctx_token is not None:
                 try:
@@ -200,7 +221,7 @@ class Netra:
                     pass
                 finally:
                     cls._root_span = None
-            # Try to flush and shutdown the tracer provider to ensure export
+            # Flush and shutdown the tracer provider
             try:
                 provider = trace.get_tracer_provider()
                 if hasattr(provider, "force_flush"):
@@ -209,6 +230,56 @@ class Netra:
                     provider.shutdown()
             except Exception:
                 pass
+            # Flush and shutdown the metrics provider
+            if cls._metrics_enabled:
+                try:
+                    meter_provider = otel_metrics.get_meter_provider()
+                    if hasattr(meter_provider, "force_flush"):
+                        meter_provider.force_flush()
+                    if hasattr(meter_provider, "shutdown"):
+                        meter_provider.shutdown()
+                except Exception:
+                    pass
+
+    @classmethod
+    def get_meter(cls, name: str = "netra", version: Optional[str] = None) -> otel_metrics.Meter:
+        """
+        Return an OpenTelemetry ``Meter`` for recording custom metrics.
+
+        This follows the same pattern as Datadog, New Relic, and other OTel-compatible
+        platforms: a named ``Meter`` is obtained from the global metrics API, backed by
+        whichever ``MeterProvider`` was installed during ``Netra.init()``.
+
+        If ``enable_metrics=False`` was passed to ``init()``, a no-op ``Meter`` is
+        returned — instrumented code never needs to guard against ``None``.
+
+        Args:
+            name:    Instrumentation scope name, e.g. ``"payment_service"`` or
+                     ``"my_agent"``.  Defaults to ``"netra"``.
+            version: Optional scope version string.
+
+        Returns:
+            An OTel ``Meter`` instance.
+
+        Example::
+
+            meter = Netra.get_meter("order_service")
+
+            # Counter — total requests processed
+            requests = meter.create_counter("order.requests", unit="1")
+            requests.add(1, {"status": "success"})
+
+            # Histogram — end-to-end latency
+            latency = meter.create_histogram("order.latency_ms", unit="ms")
+            latency.record(42, {"provider": "stripe"})
+
+            # Gauge (via UpDownCounter) — queue depth
+            queue_depth = meter.create_up_down_counter("order.queue_depth", unit="1")
+            queue_depth.add(5)
+        """
+        if not cls._initialized:
+            logger.warning("Netra.get_meter() called before Netra.init(); returning no-op meter.")
+        return _get_meter(name, version)
 
     @classmethod
     def set_session_id(cls, session_id: str) -> None:
@@ -322,4 +393,4 @@ class Netra:
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts", "ConversationType"]
