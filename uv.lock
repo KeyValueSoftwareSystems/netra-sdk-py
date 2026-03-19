@@ -1,5 +1,5 @@
 version = 1
-revision = 3
+revision = 2
 requires-python = ">=3.10, <3.14"
 resolution-markers = [
     "python_full_version >= '3.13'",
@@ -1488,12 +1488,13 @@ wheels = [
 
 [[package]]
 name = "netra-sdk"
-version = "0.1.49"
+version = "0.1.69"
 source = { editable = "." }
 dependencies = [
     { name = "dspy" },
     { name = "json-repair" },
     { name = "opentelemetry-api" },
+    { name = "opentelemetry-exporter-otlp-proto-http" },
     { name = "opentelemetry-instrumentation-aio-pika" },
     { name = "opentelemetry-instrumentation-aiohttp-client" },
     { name = "opentelemetry-instrumentation-aiokafka" },
@@ -1556,6 +1557,7 @@ requires-dist = [
     { name = "dspy", specifier = ">=3.0.3" },
     { name = "json-repair", specifier = "==0.44.1" },
     { name = "opentelemetry-api", specifier = ">=1.34.0,<2.0.0" },
+    { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=0.55b1,<2.0.0" },
     { name = "opentelemetry-instrumentation-aio-pika", specifier = ">=0.55b1,<1.0.0" },
     { name = "opentelemetry-instrumentation-aiohttp-client", specifier = ">=0.55b1,<1.0.0" },
     { name = "opentelemetry-instrumentation-aiokafka", specifier = ">=0.55b1,<1.0.0" },

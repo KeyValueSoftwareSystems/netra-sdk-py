@@ -32,6 +32,9 @@ class Config:
         environment: Optional[str] = None,
         enable_scrubbing: Optional[bool] = None,
         blocked_spans: Optional[List[str]] = None,
+        enable_metrics: Optional[bool] = None,
+        metrics_export_interval_ms: Optional[int] = None,
+        export_auto_metrics: Optional[bool] = None,
     ):
         """
         Initialize the configuration.
@@ -46,6 +49,9 @@ class Config:
             resource_attributes: Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
             enable_scrubbing: Whether to enable pydantic logfire scrubbing (default: False)
             blocked_spans: List of span names (prefix/suffix patterns) to block from export
+            enable_metrics: Whether to enable custom metrics export via OTLP (default: False)
+            metrics_export_interval_ms: How often to push metrics to the collector in ms (default: 60000)
+            export_auto_metrics: Whether to export OTel auto-instrumented system metrics (default: False)
         """
         self.app_name = self._get_app_name(app_name)
         self.otlp_endpoint = self._get_otlp_endpoint()
@@ -60,10 +66,17 @@ class Config:
         self.debug_mode = self._get_bool_config(debug_mode, "NETRA_DEBUG", default=False)
         self.enable_root_span = self._get_bool_config(enable_root_span, "NETRA_ENABLE_ROOT_SPAN", default=False)
         self.enable_scrubbing = self._get_bool_config(enable_scrubbing, "NETRA_ENABLE_SCRUBBING", default=False)
+        self.enable_metrics = self._get_bool_config(enable_metrics, "NETRA_ENABLE_METRICS", default=False)
+        self.export_auto_metrics = self._get_bool_config(
+            export_auto_metrics, "NETRA_EXPORT_AUTO_METRICS", default=False
+        )
 
         self.environment = environment or os.getenv("NETRA_ENV", "default")
         self.resource_attributes = self._get_resource_attributes(resource_attributes)
         self.blocked_spans = blocked_spans
+        self.metrics_export_interval_ms = self._get_int_config(
+            metrics_export_interval_ms, "NETRA_METRICS_EXPORT_INTERVAL", default=60000
+        )
 
         self._set_trace_content_env()
 
@@ -130,6 +143,20 @@ class Config:
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to parse NETRA_RESOURCE_ATTRS: {e}")
             return {}
+
+    def _get_int_config(self, param: Optional[int], env_var: str, default: int) -> int:
+        """Get integer configuration from parameter or environment variable."""
+        if param is not None:
+            return param
+
+        env_value = os.getenv(env_var)
+        if env_value is None:
+            return default
+
+        try:
+            return int(env_value)
+        except ValueError:
+            return default
 
     def _set_trace_content_env(self) -> None:
         """Set TRACELOOP_TRACE_CONTENT environment variable based on trace_content."""
