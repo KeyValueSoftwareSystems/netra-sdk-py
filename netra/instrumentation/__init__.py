@@ -60,7 +60,7 @@ def init_instrumentations(
             Instruments.OPENAI,
             Instruments.GROQ,
             Instruments.REDIS,
-            Instruments.PYMYSQL
+            Instruments.PYMYSQL,
         }
     )
 

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.77] - 2026-03-23
+
+- Cleanup and refactor claude agent sdk instrumentation
+
+
 ## [0.1.76] - 2026-03-19
 
 - Added SDK utility to support custom metrics
@@ -212,4 +217,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.76]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.77]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
