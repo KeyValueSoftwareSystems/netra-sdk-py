@@ -36,7 +36,7 @@ RESOURCE_ATTR_DEPLOYMENT_ENVIRONMENT = "environment"
 # observability platform behavior (Datadog, Prometheus pull model, etc.)
 # NOTE: Keys must be the SDK instrument classes (opentelemetry.sdk.metrics),
 # not the public API classes (opentelemetry.metrics).
-_DELTA_TEMPORALITY: dict = {
+_DELTA_TEMPORALITY: dict[type, AggregationTemporality] = {
     Counter: AggregationTemporality.DELTA,
     UpDownCounter: AggregationTemporality.DELTA,
     Histogram: AggregationTemporality.DELTA,
@@ -46,7 +46,7 @@ _DELTA_TEMPORALITY: dict = {
 }
 
 
-class _JsonOTLPMetricExporter(OTLPMetricExporter):
+class _JsonOTLPMetricExporter(OTLPMetricExporter):  # type: ignore[misc]
     """Thin wrapper that sends OTLP metrics as JSON instead of protobuf.
 
     The upstream ``OTLPMetricExporter`` serialises to protobuf and sets
