@@ -2,20 +2,22 @@ import json
 import logging
 import threading
 from typing import Any
-from opentelemetry.context import Context
-from opentelemetry.trace import Span, Tracer
-from opentelemetry.semconv_ai import SpanAttributes
+
 from claude_agent_sdk import (
-    ClaudeAgentOptions,
-    SystemMessage,
     AssistantMessage,
-    UserMessage,
+    ClaudeAgentOptions,
     ResultMessage,
+    SystemMessage,
     TextBlock,
     ThinkingBlock,
-    ToolUseBlock,
     ToolResultBlock,
+    ToolUseBlock,
+    UserMessage,
 )
+from opentelemetry.context import Context
+from opentelemetry.semconv_ai import SpanAttributes
+from opentelemetry.trace import Span, Tracer
+
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,7 @@ def _set_conversation(span: Span, role: str, content: str, prompt_index: int = 0
     return prompt_index
 
 
-def _set_usage(span: Span, usage: dict) -> None:
+def _set_usage(span: Span, usage: dict[str, Any]) -> None:
     """
     Write token usage attributes to the span.
 

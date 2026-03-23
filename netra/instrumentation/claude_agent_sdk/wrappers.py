@@ -1,17 +1,18 @@
 import logging
 from typing import Any, AsyncIterator, Callable, Tuple
+
+from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, UserMessage
 from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.trace import Span, SpanKind, Tracer
 from opentelemetry.trace.status import Status, StatusCode
-from claude_agent_sdk import SystemMessage, AssistantMessage, UserMessage, ResultMessage
 
 from netra.instrumentation.claude_agent_sdk.utils import (
-    set_request_attributes,
-    set_system_message_attributes,
     set_assistant_message_attributes,
-    set_user_message_attributes,
+    set_request_attributes,
     set_result_message_attributes,
+    set_system_message_attributes,
+    set_user_message_attributes,
 )
 
 logger = logging.getLogger(__name__)
@@ -24,9 +25,9 @@ async def _dispatch_messages(
     tracer: Tracer,
     root_span: Span,
     root_ctx: Context,
-    aiterator: AsyncIterator,
+    aiterator: AsyncIterator[Any],
     prompt_index: int,
-) -> AsyncIterator:
+) -> AsyncIterator[Any]:
     """
     Dispatch each incoming SDK message to its span attribute handler and yield it.
 
@@ -61,7 +62,7 @@ async def _dispatch_messages(
         yield message
 
 
-def query_wrapper(tracer: Tracer):
+def query_wrapper(tracer: Tracer) -> Callable[..., Any]:
     """
     Return a wrapper that traces a single InternalClient.process_query call with child spans per message.
 
@@ -71,6 +72,7 @@ def query_wrapper(tracer: Tracer):
     Returns:
         Callable: An async generator wrapper function for InternalClient.process_query.
     """
+
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
@@ -126,7 +128,7 @@ def query_wrapper(tracer: Tracer):
     return wrapper
 
 
-def client_query_wrapper():
+def client_query_wrapper() -> Callable[..., Any]:
     """
     Return a wrapper that captures the prompt from ClaudeSDKClient.query for later tracing.
 
@@ -136,6 +138,7 @@ def client_query_wrapper():
     Returns:
         Callable: An async wrapper function for ClaudeSDKClient.query.
     """
+
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
@@ -160,7 +163,7 @@ def client_query_wrapper():
     return wrapper
 
 
-def client_response_wrapper(tracer: Tracer):
+def client_response_wrapper(tracer: Tracer) -> Callable[..., Any]:
     """
     Return a wrapper that traces a full ClaudeSDKClient.receive_messages call covering all messages.
 
@@ -170,6 +173,7 @@ def client_response_wrapper(tracer: Tracer):
     Returns:
         Callable: An async generator wrapper function for ClaudeSDKClient.receive_messages.
     """
+
     async def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
