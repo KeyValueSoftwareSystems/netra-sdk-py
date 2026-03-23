@@ -151,14 +151,6 @@ class Netra:
                 except Exception as e:
                     logger.warning("Failed to initialize metrics pipeline: %s", e, exc_info=True)
 
-            # Initialize metrics pipeline when explicitly enabled
-            if cfg.enable_metrics:
-                try:
-                    MetricsSetup(cfg)
-                    cls._metrics_enabled = True
-                except Exception as e:
-                    logger.warning("Failed to initialize metrics pipeline: %s", e, exc_info=True)
-
             # Initialize evaluation client and expose as class attribute
             try:
                 cls.evaluation = Evaluation(cfg)  # type:ignore[attr-defined]
