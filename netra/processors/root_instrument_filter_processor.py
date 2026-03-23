@@ -12,6 +12,9 @@ logger = logging.getLogger(__name__)
 # Attribute written on blocked spans so that the FilteringSpanExporter drops them.
 _LOCAL_BLOCKED_ATTR = "netra.local_blocked"
 
+# Scope-name prefixes that identify auto-instrumentation libraries.
+_INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
+
 
 class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
     """Blocks root spans (and their entire subtree) from instrumentations not in
@@ -118,7 +121,12 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
                     self._mark_blocked(span)
             return
 
-        # Root span – check instrumentation name against the allow-list.
+        # Root span – only apply the allow-list to auto-instrumentation spans.
+        # Spans created directly through netra (decorators / Netra.start_span)
+        # use arbitrary tracer names and must never be blocked.
+        if not self._is_from_instrumentation_library(span):
+            return
+
         instr_name = self._extract_instrumentation_name(span)
         if instr_name is not None and instr_name not in self._allowed:
             own_id = self._get_span_id(span)
@@ -180,6 +188,29 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
             pass
 
     @staticmethod
+    def _is_from_instrumentation_library(span: Span) -> bool:
+        """Return ``True`` if the span originates from a known auto-instrumentation library.
+
+        Spans created by netra decorators or ``Netra.start_span`` use arbitrary
+        tracer names that do not match the instrumentation naming convention and
+        will return ``False``.
+
+        Args:
+            span: The span to check.
+
+        Returns:
+            ``True`` when the span's instrumentation scope starts with a known
+            instrumentation prefix, ``False`` otherwise.
+        """
+        scope = getattr(span, "instrumentation_scope", None)
+        if scope is None:
+            return False
+        name = getattr(scope, "name", None)
+        if not isinstance(name, str) or not name:
+            return False
+        return name.startswith(_INSTRUMENTATION_PREFIXES)
+
+    @staticmethod
     def _extract_instrumentation_name(span: Span) -> Optional[str]:
         """
         Extract the short instrumentation name from the span's scope.
@@ -198,7 +229,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         name = getattr(scope, "name", None)
         if not isinstance(name, str) or not name:
             return None
-        for prefix in ("opentelemetry.instrumentation.", "netra.instrumentation."):
+        for prefix in _INSTRUMENTATION_PREFIXES:
             if name.startswith(prefix):
                 base = name.rsplit(".", 1)[-1].strip()
                 return base if base else name
