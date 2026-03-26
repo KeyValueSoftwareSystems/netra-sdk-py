@@ -78,7 +78,6 @@ dependencies = [
     "opentelemetry-instrumentation-urllib>=0.55b1,<=0.60b1",
     "opentelemetry-instrumentation-urllib3>=0.55b1,<=0.60b1",
     "json-repair==0.44.1",
-    "dspy==3.0.3",
 ]
 
 [project.urls]
