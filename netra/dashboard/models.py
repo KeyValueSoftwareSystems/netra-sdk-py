@@ -9,6 +9,7 @@ class Scope(str, Enum):
 
     SPANS = "Spans"
     TRACES = "Traces"
+    CUSTOM = "Custom"
 
 
 class ChartType(str, Enum):
@@ -35,6 +36,7 @@ class Measure(str, Enum):
     AUDIO_DURATION = "Audio Duration"
     CHARACTER_COUNT = "Character Count"
     TTFT = "Time to First Token"
+    CUSTOM = "Custom"
 
 
 class Aggregation(str, Enum):
@@ -48,6 +50,7 @@ class Aggregation(str, Enum):
     MEDIAN = "Median (p50)"
     PERCENTAGE = "Percentage"
     TOTAL_COUNT = "Total Count"
+    SUM = "Sum"
 
 
 class GroupBy(str, Enum):
@@ -64,6 +67,7 @@ class DimensionField(str, Enum):
     ENVIRONMENT = "environment"
     SERVICE = "service"
     MODEL_NAME = "model_name"
+    CUSTOM = "custom"
 
 
 class Operator(str, Enum):
@@ -145,6 +149,7 @@ class Metrics(BaseModel):  # type:ignore[misc]
 
     measure: Measure
     aggregation: Aggregation
+    metric_name: Optional[str] = None
 
 
 class Dimension(BaseModel):  # type:ignore[misc]
@@ -156,6 +161,7 @@ class Dimension(BaseModel):  # type:ignore[misc]
     """
 
     field: DimensionField
+    name: Optional[str] = None
 
 
 class FilterConfig(BaseModel):  # type:ignore[misc]
