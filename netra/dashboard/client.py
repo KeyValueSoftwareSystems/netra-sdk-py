@@ -8,6 +8,7 @@ from netra.config import Config
 from netra.dashboard.models import (
     ChartType,
     Dimension,
+    DimensionField,
     FilterConfig,
     Metrics,
     Scope,
@@ -144,6 +145,9 @@ class DashboardHttpClient:
                 },
             }
 
+            if metrics.metric_name:
+                payload["metrics"]["metricName"] = metrics.metric_name
+
             if filter:
                 payload["filter"] = {
                     "startTime": filter.start_time,
@@ -163,7 +167,10 @@ class DashboardHttpClient:
                     ]
 
             if dimension:
-                payload["dimension"] = {"field": dimension.field.value}
+                if dimension.field.value == DimensionField.CUSTOM.value:
+                    payload["dimension"] = {"field": dimension.name}
+                else:
+                    payload["dimension"] = {"field": dimension.field.value}
 
             response = self._client.post(url, json=payload)
             response.raise_for_status()
