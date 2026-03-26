@@ -108,7 +108,7 @@ class InstrumentSet(Enum):
     CLICK = ("click", CustomInstruments)
     COHEREAI = ("cohere_ai", CustomInstruments)
     CONFLUENT_KAFKA = ("confluent_kafka", CustomInstruments)
-    CREWAI = ("crewai", Instruments)
+    CREW = ("crew", Instruments)
     DEEPGRAM = ("deepgram", CustomInstruments)
     DBAPI = ("dbapi", CustomInstruments)
     DJANGO = ("django", CustomInstruments)
@@ -182,7 +182,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT = {
     InstrumentSet.ANTHROPIC,
     InstrumentSet.CARTESIA,
     InstrumentSet.COHEREAI,
-    InstrumentSet.CREWAI,
+    InstrumentSet.CREW,
     InstrumentSet.DEEPGRAM,
     InstrumentSet.ELEVENLABS,
     InstrumentSet.GOOGLE_GENERATIVEAI,
