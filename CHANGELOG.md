@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.77] - 2026-03-27
+- Added custom-metric utility in SDK
+- Added support for custom-metric in dashboard utility
+
+
 ## [0.1.76] - 2026-03-19
 
 - Update block instrument functionality to correctly block Redis and SQLAlchemy
