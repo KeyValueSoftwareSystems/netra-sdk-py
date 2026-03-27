@@ -21,13 +21,15 @@ from opentelemetry.sdk.metrics.export import (
     MetricsData,
     PeriodicExportingMetricReader,
 )
-from opentelemetry.sdk.resources import DEPLOYMENT_ENVIRONMENT, SERVICE_NAME, Resource
-
+from opentelemetry.sdk.resources import Resource
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
 
 _provider_install_lock = threading.Lock()
+
+RESOURCE_ATTR_SERVICE_NAME = "service"
+RESOURCE_ATTR_DEPLOYMENT_ENVIRONMENT = "environment"
 
 # Map every OTel instrument type to DELTA so the backend receives
 # incremental values on each export cycle, matching standard
@@ -140,8 +142,8 @@ class MetricsSetup:
                 return
 
             resource_attrs = {
-                SERVICE_NAME: self.cfg.app_name,
-                DEPLOYMENT_ENVIRONMENT: self.cfg.environment,
+                RESOURCE_ATTR_SERVICE_NAME: self.cfg.app_name,
+                RESOURCE_ATTR_DEPLOYMENT_ENVIRONMENT: self.cfg.environment,
             }
             if self.cfg.resource_attributes:
                 resource_attrs.update(self.cfg.resource_attributes)
