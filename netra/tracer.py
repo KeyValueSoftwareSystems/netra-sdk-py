@@ -101,6 +101,7 @@ class Tracer:
                 RootInstrumentFilterProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
+                SpanIONormalizerProcessor,
             )
 
             if self._root_instrument_names is not None:
@@ -109,6 +110,7 @@ class Tracer:
             provider.add_span_processor(LocalFilteringSpanProcessor())
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
+            provider.add_span_processor(SpanIONormalizerProcessor())
             provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
 
             if self.cfg.enable_scrubbing:

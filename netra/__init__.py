@@ -1,4 +1,5 @@
 import atexit
+import json
 import logging
 import threading
 from typing import Any, Dict, List, Optional, Set
@@ -385,6 +386,46 @@ class Netra:
             content: Content of the conversation
         """
         SessionManager.add_conversation(conversation_type=conversation_type, role=role, content=content)
+
+    @classmethod
+    def set_input(cls, value: Any) -> None:
+        """Set the ``input`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The input value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            SessionManager.set_attribute_on_active_span("input", serialized)
+        except Exception:
+            logger.exception("Netra.set_input: failed to set input attribute")
+
+    @classmethod
+    def set_output(cls, value: Any) -> None:
+        """Set the ``output`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The output value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            SessionManager.set_attribute_on_active_span("output", serialized)
+        except Exception:
+            logger.exception("Netra.set_output: failed to set output attribute")
 
     @classmethod
     def start_span(
