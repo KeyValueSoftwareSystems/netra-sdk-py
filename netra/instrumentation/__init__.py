@@ -61,6 +61,7 @@ def init_instrumentations(
             Instruments.GROQ,
             Instruments.REDIS,
             Instruments.PYMYSQL,
+            Instruments.REQUESTS,
         }
     )
 
