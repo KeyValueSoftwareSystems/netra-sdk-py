@@ -501,14 +501,23 @@ def _wrap_class_methods(
         The wrapped class.
     """
     class_name = name if name is not None else cls.__name__
-    for attr_name in cls.__dict__:
-        attr = getattr(cls, attr_name)
+    for attr_name in list(cls.__dict__):
         if attr_name.startswith("_"):
             continue
-        if callable(attr) and inspect.isfunction(attr):
-            method_span_name = f"{class_name}.{attr_name}"
-            wrapped_method = _create_function_wrapper(attr, entity_type, method_span_name, as_type=as_type)
-            setattr(cls, attr_name, wrapped_method)
+        raw = cls.__dict__[attr_name]
+        method_span_name = f"{class_name}.{attr_name}"
+
+        if isinstance(raw, staticmethod):
+            func = raw.__func__
+            wrapped = _create_function_wrapper(func, entity_type, method_span_name, as_type=as_type)
+            setattr(cls, attr_name, staticmethod(wrapped))
+        elif isinstance(raw, classmethod):
+            func = raw.__func__
+            wrapped = _create_function_wrapper(func, entity_type, method_span_name, as_type=as_type)
+            setattr(cls, attr_name, classmethod(wrapped))
+        elif callable(raw) and inspect.isfunction(raw):
+            wrapped = _create_function_wrapper(raw, entity_type, method_span_name, as_type=as_type)
+            setattr(cls, attr_name, wrapped)
     return cls
 
 

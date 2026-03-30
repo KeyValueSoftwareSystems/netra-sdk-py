@@ -22,6 +22,7 @@ from opentelemetry.sdk.metrics.export import (
     PeriodicExportingMetricReader,
 )
 from opentelemetry.sdk.resources import Resource
+
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
