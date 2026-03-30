@@ -95,7 +95,7 @@ class TestAddSpanAttributes:
 
         # Check input attributes
         expected_input = json.dumps({"arg1": "hello", "arg2": "42"})
-        mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.entity.input", expected_input)
+        mock_span.set_attribute.assert_any_call("input", expected_input)
 
     def test_add_span_attributes_with_kwargs(self):
         """Test adding span attributes with keyword arguments."""
@@ -111,7 +111,7 @@ class TestAddSpanAttributes:
 
         # Check input attributes include both args and kwargs
         expected_input = json.dumps({"arg1": "hello", "arg2": "42"})
-        mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.entity.input", expected_input)
+        mock_span.set_attribute.assert_any_call("input", expected_input)
 
     def test_add_span_attributes_with_self_parameter(self):
         """Test adding span attributes ignoring self parameter."""
@@ -124,7 +124,7 @@ class TestAddSpanAttributes:
 
         # Check that self parameter is ignored
         expected_input = json.dumps({"arg1": "hello"})
-        mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.entity.input", expected_input)
+        mock_span.set_attribute.assert_any_call("input", expected_input)
 
     def test_add_span_attributes_with_cls_parameter(self):
         """Test adding span attributes ignoring cls parameter."""
@@ -137,7 +137,7 @@ class TestAddSpanAttributes:
 
         # Check that cls parameter is ignored
         expected_input = json.dumps({"arg1": "hello"})
-        mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.entity.input", expected_input)
+        mock_span.set_attribute.assert_any_call("input", expected_input)
 
     def test_add_span_attributes_exception_handling(self):
         """Test span attribute addition with exception handling."""
@@ -151,7 +151,7 @@ class TestAddSpanAttributes:
             _add_span_attributes(mock_span, problematic_func, (), {}, "workflow")
 
         # Check that error is recorded
-        mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.input_error", "Signature error")
+        mock_span.set_attribute.assert_any_call("input_error", "Signature error")
 
 
 class TestAddOutputAttributes:
@@ -164,7 +164,7 @@ class TestAddOutputAttributes:
 
         _add_output_attributes(mock_span, result)
 
-        mock_span.set_attribute.assert_called_once_with(f"{Config.LIBRARY_NAME}.entity.output", "test_result")
+        mock_span.set_attribute.assert_called_once_with("output", "test_result")
 
     def test_add_output_attributes_complex_result(self):
         """Test adding output attributes for complex result."""
@@ -174,7 +174,7 @@ class TestAddOutputAttributes:
         _add_output_attributes(mock_span, result)
 
         expected_output = '{"status": "success", "data": [1, 2, 3]}'
-        mock_span.set_attribute.assert_called_once_with(f"{Config.LIBRARY_NAME}.entity.output", expected_output)
+        mock_span.set_attribute.assert_called_once_with("output", expected_output)
 
     def test_add_output_attributes_exception_handling(self):
         """Test output attribute addition with exception handling."""
@@ -190,9 +190,7 @@ class TestAddOutputAttributes:
         with patch("netra.decorators._serialize_value", side_effect=ValueError("Cannot serialize")):
             _add_output_attributes(mock_span, result)
 
-        mock_span.set_attribute.assert_called_once_with(
-            f"{Config.LIBRARY_NAME}.entity.output_error", "Cannot serialize"
-        )
+        mock_span.set_attribute.assert_called_once_with("output_error", "Cannot serialize")
 
 
 class TestCreateFunctionWrapper:

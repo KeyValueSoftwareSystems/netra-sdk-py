@@ -89,25 +89,50 @@ def _add_span_attributes(
             input_data[key] = _serialize_value(value)
 
         if input_data:
-            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.input", json.dumps(input_data))
+            span.set_attribute("input", json.dumps(input_data))
 
     except Exception as e:
-        span.set_attribute(f"{Config.LIBRARY_NAME}.input_error", str(e))
+        span.set_attribute(f"input_error", str(e))
+
+
+def _span_has_output(span: trace.Span) -> bool:
+    """Return True if the span already has an ``output`` attribute set.
+
+    Checks both the public ``attributes`` property and the internal
+    ``_attributes`` dict for compatibility with different span implementations.
+
+    Args:
+        span: The span to inspect.
+
+    Returns:
+        True if ``output`` is already present on the span.
+    """
+    for attr_name in ("attributes", "_attributes"):
+        attrs = getattr(span, attr_name, None)
+        if attrs is not None and "output" in attrs and attrs["output"]:
+            return True
+    return False
 
 
 def _add_output_attributes(span: trace.Span, result: Any) -> None:
     """
     Helper function to add output attributes to span.
 
+    Skips setting ``output`` if the user already set it manually via
+    ``Netra.set_output()`` inside the decorated function — the explicit
+    value takes priority over the auto-captured return value.
+
     Args:
         span: The OpenTelemetry span to add attributes to.
         result: The result to serialize and add as an attribute.
     """
     try:
+        if _span_has_output(span):
+            return
         serialized_output = _serialize_value(result)
-        span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output", serialized_output)
+        span.set_attribute("output", serialized_output)
     except Exception as e:
-        span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output_error", str(e))
+        span.set_attribute(f"output_error", str(e))
 
 
 def _is_streaming_response(obj: Any) -> bool:
