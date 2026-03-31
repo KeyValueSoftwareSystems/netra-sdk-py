@@ -1,26 +1,3 @@
-"""General-purpose span processor that normalises ``input`` / ``output``
-attributes and remaps third-party vendor keys to the Netra namespace.
-
-1. **LLM spans** — OTel semantic-convention gen_ai indexed attributes:
-       gen_ai.prompts.{index}.role    / gen_ai.prompts.{index}.content
-       gen_ai.completions.{index}.role / gen_ai.completions.{index}.content
-
-   These are accumulated per-span (closure-scoped) and kept in sync as:
-
-       input  = '[{"role": "system", "content": "..."}, ...]'
-       output = '[{"role": "assistant", "content": "..."}]'
-
-   The original ``gen_ai.*`` attributes are preserved alongside the new ones.
-
-2. **Traceloop / LangChain-instrumented spans** — traceloop-prefixed keys:
-       traceloop.entity.input   → ``input``   (inner ``inputs`` field extracted)
-       traceloop.entity.output  → ``output``  (inner ``outputs`` field extracted)
-       traceloop.<rest>         → ``netra.<rest>``
-
-   The original ``traceloop.*`` key is *not* written; only the remapped key is.
-
-"""
-
 import json
 import logging
 import re
