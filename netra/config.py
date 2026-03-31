@@ -23,7 +23,7 @@ class Config:
     def __init__(
         self,
         app_name: Optional[str] = None,
-        headers: Optional[str] = None,
+        headers: Optional[str | Dict[str, str]] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
@@ -88,11 +88,13 @@ class Config:
         """Get OTLP endpoint from environment variables."""
         return os.getenv("NETRA_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
-    def _parse_headers(self, headers: Optional[str]) -> Dict[str, str] | Any:
+    def _parse_headers(self, headers: Optional[str] | Dict[str, str]) -> Dict[str, str] | Any:
         """Parse headers from parameter or environment variable."""
         headers = headers or os.getenv("NETRA_HEADERS")
         if isinstance(headers, str):
             return parse_env_headers(headers)
+        elif isinstance(headers, dict):
+            return headers
         return {}
 
     def _validate_api_key(self) -> None:
