@@ -92,25 +92,29 @@ def _add_span_attributes(
             span.set_attribute("input", json.dumps(input_data))
 
     except Exception as e:
-        span.set_attribute(f"input_error", str(e))
+        span.set_attribute("input_error", str(e))
 
 
 def _span_has_output(span: trace.Span) -> bool:
-    """Return True if the span already has an ``output`` attribute set.
+    """Return True if the span already has a non-empty ``output`` attribute set.
 
     Checks both the public ``attributes`` property and the internal
     ``_attributes`` dict for compatibility with different span implementations.
+    Returns False on any error to ensure output is never silently dropped.
 
     Args:
         span: The span to inspect.
 
     Returns:
-        True if ``output`` is already present on the span.
+        True if a non-empty ``output`` attribute is already present on the span.
     """
-    for attr_name in ("attributes", "_attributes"):
-        attrs = getattr(span, attr_name, None)
-        if attrs is not None and "output" in attrs and attrs["output"]:
-            return True
+    try:
+        for attr_name in ("attributes", "_attributes"):
+            attrs = getattr(span, attr_name, None)
+            if attrs is not None and "output" in attrs and attrs["output"]:
+                return True
+    except Exception:
+        pass
     return False
 
 
@@ -132,7 +136,7 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         serialized_output = _serialize_value(result)
         span.set_attribute("output", serialized_output)
     except Exception as e:
-        span.set_attribute(f"output_error", str(e))
+        span.set_attribute("output_error", str(e))
 
 
 def _is_streaming_response(obj: Any) -> bool:
