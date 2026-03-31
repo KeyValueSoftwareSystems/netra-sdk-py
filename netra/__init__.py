@@ -61,7 +61,7 @@ class Netra:
     def init(
         cls,
         app_name: Optional[str] = None,
-        headers: Optional[str] = None,
+        headers: Optional[str | Dict[str, str]] = None,
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
