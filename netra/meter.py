@@ -1,7 +1,7 @@
 import json
 import logging
 import threading
-from typing import Any, Optional
+from typing import Any, List, Optional
 
 from google.protobuf.json_format import MessageToDict
 from opentelemetry import metrics
@@ -21,6 +21,7 @@ from opentelemetry.sdk.metrics.export import (
     MetricsData,
     PeriodicExportingMetricReader,
 )
+from opentelemetry.sdk.metrics.view import DropAggregation, View
 from opentelemetry.sdk.resources import Resource
 
 from netra.config import Config
@@ -31,6 +32,14 @@ _provider_install_lock = threading.Lock()
 
 RESOURCE_ATTR_SERVICE_NAME = "service"
 RESOURCE_ATTR_DEPLOYMENT_ENVIRONMENT = "environment"
+
+# Glob patterns for OTel SDK internal metrics emitted by TracerProvider /
+# BatchSpanProcessor (e.g. otel.sdk.span.live, otel.sdk.span.started).
+# These are suppressed via DropAggregation views when export_auto_metrics
+# is disabled so only user-defined metrics reach the backend.
+_OTEL_SDK_AUTO_METRIC_PATTERNS: List[str] = [
+    "otel.sdk.*",
+]
 
 # Map every OTel instrument type to DELTA so the backend receives
 # incremental values on each export cycle, matching standard
@@ -127,6 +136,26 @@ class MetricsSetup:
         self.cfg = cfg
         self._setup_meter()
 
+    def _build_views(self) -> List[View]:
+        """Build the list of metric Views for the MeterProvider.
+
+        When ``export_auto_metrics`` is disabled, OTel SDK internal metrics
+        (e.g. ``otel.sdk.span.live``, ``otel.sdk.span.started``) are dropped
+        via ``DropAggregation`` so only user-defined metrics are exported.
+
+        Returns:
+            A list of ``View`` instances to pass to the ``MeterProvider``.
+        """
+        views: List[View] = []
+        if not self.cfg.export_auto_metrics:
+            for pattern in _OTEL_SDK_AUTO_METRIC_PATTERNS:
+                views.append(View(instrument_name=pattern, aggregation=DropAggregation()))
+            logger.debug(
+                "Auto-metrics export disabled; dropping patterns: %s",
+                _OTEL_SDK_AUTO_METRIC_PATTERNS,
+            )
+        return views
+
     def _setup_meter(self) -> None:
         """Install a global MeterProvider with an OTLP exporter."""
         if not self.cfg.otlp_endpoint:
@@ -163,7 +192,13 @@ class MetricsSetup:
                 export_interval_millis=self.cfg.metrics_export_interval_ms,
             )
 
-            provider = MeterProvider(resource=resource, metric_readers=[reader])
+            views = self._build_views()
+
+            provider = MeterProvider(
+                resource=resource,
+                metric_readers=[reader],
+                views=views,
+            )
             metrics.set_meter_provider(provider)
 
             logger.info(
