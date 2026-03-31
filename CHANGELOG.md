@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.78] - 2026-03-31
+- Added descriptor based binding of class methods when using decorators.
+
 ## [0.1.77] - 2026-03-27
 - Added custom-metric utility in SDK
 - Added support for custom-metric in dashboard utility
