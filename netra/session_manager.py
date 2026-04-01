@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime
 from enum import Enum
@@ -371,6 +372,46 @@ class SessionManager:
                 logger.exception("Failed to set conversation attribute directly on span")
         except Exception as e:
             logger.exception("Failed to add conversation attribute: %s", e)
+
+    @classmethod
+    def set_input(cls, value: Any) -> None:
+        """Set the ``input`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The input value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_active_span("input", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_input: failed to set input attribute")
+
+    @classmethod
+    def set_output(cls, value: Any) -> None:
+        """Set the ``output`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The output value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_active_span("output", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_output: failed to set output attribute")
 
     @staticmethod
     def set_attribute_on_active_span(attr_key: str, attr_value: Any) -> None:

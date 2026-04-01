@@ -5,9 +5,10 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
-## [0.1.79] - 2026-03-31
+## [0.1.79] - 2026-04-01
 - Added input/output attributes across LLM, traceloop, and custom spans
 - Added utility function to explicitly set input/output attributes on the active span
+- Move serialization logic to SessionManager
 
 
 ## [0.1.78] - 2026-03-31
