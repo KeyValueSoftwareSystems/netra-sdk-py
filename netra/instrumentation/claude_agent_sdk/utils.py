@@ -119,10 +119,10 @@ def _set_tool_result(tracer: Tracer, parent_ctx: Context, block: ToolResultBlock
         with tracer.start_as_current_span(tool_name, parent_ctx) as span:
             try:
                 if tool_call:
-                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.input", _serialize(tool_call.get("input", {})))
+                    span.set_attribute("input", _serialize(tool_call.get("input", {})))
 
                 span.set_attribute(f"{Config.LIBRARY_NAME}.span.type", "TOOL")
-                span.set_attribute(f"{Config.LIBRARY_NAME}.entity.output", _serialize(block.content))
+                span.set_attribute(f"output", _serialize(block.content))
 
             except Exception as e:
                 logger.error(f"Cannot set tool result attributes for tool_use_id={block.tool_use_id}: {e}")

@@ -5,6 +5,12 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.79] - 2026-04-01
+- Added input/output attributes across LLM, traceloop, and custom spans
+- Added utility function to explicitly set input/output attributes on the active span
+- Move serialization logic to SessionManager
+
+
 ## [0.1.78] - 2026-03-31
 - Added descriptor based binding of class methods when using decorators.
 
@@ -221,4 +227,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.78]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.79]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
