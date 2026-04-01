@@ -7,8 +7,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.80] - 2026-04-06
 - Added input/output attributes across LLM, traceloop, and custom spans
-- Added utility functions to explicitly set input/output attributes on the active span
-- Added utility functions to explicitly set input/output attributes on the root span
+- Added utility function to explicitly set input/output attributes on the active span
+- Added utility function to explicitly set input/output attributes on the root span
+- Move serialization logic to SessionManager
 
 
 ## [0.1.79] - 2026-04-02
