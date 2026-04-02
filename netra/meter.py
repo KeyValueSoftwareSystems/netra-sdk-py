@@ -67,7 +67,7 @@ class _JsonOTLPMetricExporter(OTLPMetricExporter):
         timeout_millis: Optional[float] = 10_000,
         **kwargs: Any,
     ) -> MetricExportResult:
-        if self._shutdown:
+        if hasattr(self, "_shutdown") and self._shutdown:
             logger.warning("Exporter already shutdown, ignoring batch")
             return MetricExportResult.FAILURE
 
