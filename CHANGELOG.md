@@ -4,8 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+
+## [0.1.79] - 2026-04-02
+- Added version-safe check for _shutdown attribute in _JsonOTLPMetricExporter for compatability with opentelemetry libraries
+
+
 ## [0.1.78] - 2026-03-31
 - Added descriptor based binding of class methods when using decorators.
+
 
 ## [0.1.77] - 2026-03-27
 - Added custom-metric utility in SDK
@@ -219,4 +225,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.76]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.79]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
