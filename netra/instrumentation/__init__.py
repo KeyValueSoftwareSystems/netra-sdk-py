@@ -460,9 +460,9 @@ def init_httpx_instrumentation() -> bool:
     """
     try:
         if is_package_installed("httpx"):
-            from opentelemetry.instrumentation.httpx import HTTPXClientInstrumentor
+            from netra.instrumentation.httpx import HTTPXInstrumentor
 
-            instrumentor = HTTPXClientInstrumentor()
+            instrumentor = HTTPXInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
@@ -1111,7 +1111,7 @@ def init_requests_instrumentation() -> bool:
     """Initialize requests instrumentation."""
     try:
         if is_package_installed("requests"):
-            from opentelemetry.instrumentation.requests import RequestsInstrumentor
+            from netra.instrumentation.requests import RequestsInstrumentor
 
             instrumentor = RequestsInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
