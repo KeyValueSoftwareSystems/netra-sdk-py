@@ -1,6 +1,7 @@
 import json
 import logging
 import re
+import threading
 from typing import Any, Callable, Dict, Optional
 
 from opentelemetry import context as otel_context
@@ -77,14 +78,34 @@ def _extract_traceloop_output(raw: Any) -> str:
         return str(raw)
 
 
-class SpanIONormalizerProcessor(SpanProcessor):  # type: ignore[misc]
+class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
     """Normalises ``input`` / ``output`` attributes and remaps ``traceloop.*``
     keys to ``netra.*`` on all spans.
 
+    Also tracks the root span per trace (the first span seen for each trace_id)
+    so that callers can set input/output attributes directly on the trace root.
+
     All interception is done in ``on_start`` via a per-span closure that wraps
     ``span.set_attribute``, following the same pattern as
-    ``InstrumentationSpanProcessor``.  No shared mutable state is used.
+    ``InstrumentationSpanProcessor``.
     """
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._root_spans: Dict[int, Span] = {}
+        self._root_span_ids: Dict[int, int] = {}
+
+    def get_root_span(self, trace_id: int) -> Optional[Span]:
+        """Return the root span for the given trace_id, or None if not tracked.
+
+        Args:
+            trace_id: The trace ID to look up.
+
+        Returns:
+            The root span, or None.
+        """
+        with self._lock:
+            return self._root_spans.get(trace_id)
 
     def on_start(
         self,
@@ -92,12 +113,21 @@ class SpanIONormalizerProcessor(SpanProcessor):  # type: ignore[misc]
         parent_context: Optional[otel_context.Context] = None,
     ) -> None:
         """Wrap the span's ``set_attribute`` to intercept and normalise writes.
+        Also registers the first span seen for each trace as the root span.
 
         Args:
             span: The span that was started.
             parent_context: The parent context (unused).
         """
         try:
+            span_context = span.get_span_context()
+            if span_context is not None and span_context.is_valid:
+                trace_id = span_context.trace_id
+                with self._lock:
+                    if trace_id not in self._root_spans:
+                        self._root_spans[trace_id] = span
+                        self._root_span_ids[trace_id] = span_context.span_id
+
             attrs = span.attributes or {}
             if "input" not in attrs:
                 span.set_attribute("input", "")
@@ -105,10 +135,21 @@ class SpanIONormalizerProcessor(SpanProcessor):  # type: ignore[misc]
                 span.set_attribute("output", "")
             self._wrap_set_attribute(span)
         except Exception:
-            logger.exception("SpanIONormalizerProcessor.on_start failed")
+            logger.exception("SpanIOProcessor.on_start failed")
 
     def on_end(self, span: ReadableSpan) -> None:
-        """No-op — all work is done live in the set_attribute closure."""
+        """Clean up root span tracking when the root span ends."""
+        try:
+            span_context = span.get_span_context()
+            if span_context is None:
+                return
+            trace_id = span_context.trace_id
+            with self._lock:
+                if self._root_span_ids.get(trace_id) == span_context.span_id:
+                    self._root_spans.pop(trace_id, None)
+                    self._root_span_ids.pop(trace_id, None)
+        except Exception:
+            logger.exception("SpanIOProcessor.on_end failed")
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush.
@@ -182,7 +223,7 @@ class SpanIONormalizerProcessor(SpanProcessor):  # type: ignore[misc]
                 original(key, value)
 
             except Exception:
-                logger.debug("SpanIONormalizerProcessor: error processing key=%s", key, exc_info=True)
+                logger.debug("SpanIOProcessor: error processing key=%s", key, exc_info=True)
                 try:
                     original(key, value)
                 except Exception:
