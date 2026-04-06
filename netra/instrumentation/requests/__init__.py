@@ -19,18 +19,18 @@ from opentelemetry.semconv.metrics.http_metrics import HTTP_CLIENT_REQUEST_DURAT
 from opentelemetry.trace import get_tracer
 from opentelemetry.util.http import get_excluded_urls, parse_excluded_urls
 
-from netra.instrumentation.httpx.version import __version__
-from netra.instrumentation.httpx.wrappers import instrument, uninstrument
+from netra.instrumentation.requests.version import __version__
+from netra.instrumentation.requests.wrappers import instrument, uninstrument
 
 logger = logging.getLogger(__name__)
 
-_instruments = ("httpx >= 0.18.0",)
+_instruments = ("requests >= 2.0.0",)
 
-_excluded_urls_from_env = get_excluded_urls("HTTPX")
+_excluded_urls_from_env = get_excluded_urls("REQUESTS")
 
 
-class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore
-    """An instrumentor for httpx. See `BaseInstrumentor`."""
+class RequestsInstrumentor(BaseInstrumentor):  # type: ignore
+    """An instrumentor for the requests library."""
 
     def instrumentation_dependencies(self) -> Collection[str]:
         return _instruments
