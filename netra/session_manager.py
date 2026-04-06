@@ -475,23 +475,14 @@ class SessionManager:
             attr_value: Value for the attribute to set
         """
         try:
-            span = None
-            if cls._span_io_processor is not None:
-                span_ctx = trace.get_current_span().get_span_context()
-                if span_ctx.is_valid:
-                    span = cls._span_io_processor.get_root_span(span_ctx.trace_id)
-                else:
-                    logger.warning("set_attribute_on_root_span called outside any active span context")
-                    return
-
-            if span is None:
-                logger.warning("No root span found for attribute '%s'", attr_key)
+            if cls._span_io_processor is None:
+                logger.warning("SpanIOProcessor not initialised; cannot set root attribute '%s'", attr_key)
                 return
-
-            if getattr(span, "is_recording", lambda: False)():
-                span.set_attribute(attr_key, attr_value)
-            else:
-                logger.warning("Root span is no longer recording; cannot set attribute '%s'", attr_key)
+            span_ctx = trace.get_current_span().get_span_context()
+            if not span_ctx.is_valid:
+                logger.warning("set_attribute_on_root_span called outside any active span context")
+                return
+            cls._span_io_processor.set_root_attribute(span_ctx.trace_id, attr_key, attr_value)
         except Exception:
             logger.exception("Failed to set attribute '%s' on root span", attr_key)
 

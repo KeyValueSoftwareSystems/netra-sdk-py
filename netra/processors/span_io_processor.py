@@ -95,17 +95,27 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         self._root_spans: Dict[int, Span] = {}
         self._root_span_ids: Dict[int, int] = {}
 
-    def get_root_span(self, trace_id: int) -> Optional[Span]:
-        """Return the root span for the given trace_id, or None if not tracked.
+    def set_root_attribute(self, trace_id: int, key: str, value: Any) -> None:
+        """Set an attribute on the root span for the given trace.
 
         Args:
-            trace_id: The trace ID to look up.
-
-        Returns:
-            The root span, or None.
+            trace_id: The trace ID whose root span should be updated.
+            key: Attribute key to set.
+            value: Attribute value to set.
         """
         with self._lock:
-            return self._root_spans.get(trace_id)
+            span = self._root_spans.get(trace_id)
+            if span is not None and not getattr(span, "is_recording", lambda: False)():
+                span = None
+
+        if span is None:
+            logger.warning("No root span found for trace_id=%s; cannot set '%s'", trace_id, key)
+            return
+
+        try:
+            span.set_attribute(key, value)
+        except Exception:
+            logger.exception("Failed to set attribute '%s' on root span", key)
 
     def on_start(
         self,
