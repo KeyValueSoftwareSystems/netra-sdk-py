@@ -1,9 +1,11 @@
 import logging
 import threading
-from typing import Dict, Optional, Set
+from typing import Optional, Set
 
-from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.trace import SpanContext
+
+from netra.processors.root_span_processor import RootSpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +46,12 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
         Raises:
             ValueError: If any attribute key is empty.
+
+        NOTE: This processor must be registered before RootSpanProcessor so that
+        ``_is_root_span_ending`` can query the mapping before it is cleaned up by
+        RootSpanProcessor.on_end.
         """
+
         self._request_model_key = request_model_attribute_key
         self._response_model_key = response_model_attribute_key
         self._root_marker_key = root_marker_attribute_key
@@ -53,47 +60,14 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
         self._lock = threading.Lock()
 
         # Trace state tracking
-        self._root_spans_by_trace: Dict[int, Span] = {}
-        self._root_span_ids_by_trace: Dict[int, int] = {}
         self._marked_traces: Set[int] = set()
-
-    def on_start(self, span: Span, parent_context: Optional[object] = None) -> None:
-        """
-        Handle span start events.
-
-        Registers "local root spans" for trace tracking. A local root is either:
-        - A true root span (no parent), OR
-        - The first span seen for a trace in this process (handles remote parent case)
-
-        Args:
-            span: The span that has started.
-            parent_context: Optional parent context (unused).
-        """
-        try:
-            span_context = self._get_span_context(span)
-            if span_context is None:
-                return
-
-            trace_id = span_context.trace_id
-            span_id = span_context.span_id
-
-            with self._lock:
-                # Register the first span we see for this trace as the local root.
-                # Using setdefault ensures we only register the first span, handling
-                # both true roots and distributed tracing (remote parent) cases.
-                if trace_id not in self._root_spans_by_trace:
-                    self._root_spans_by_trace[trace_id] = span
-                    self._root_span_ids_by_trace[trace_id] = span_id
-
-        except Exception as e:
-            logger.warning("Error processing span start: %s", e, exc_info=True)
 
     def on_end(self, span: ReadableSpan) -> None:
         """
         Handle span end events.
 
         Checks if the span contains LLM call attributes and marks the root span
-        if found. Cleans up trace state when root spans complete.
+        if found. Cleans up marked-trace state when the root span completes.
 
         Args:
             span: The span that has ended.
@@ -138,33 +112,10 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         Shutdown the processor and release all resources.
 
-        Clears all internal state and releases locks.
+        Clears all internal state
         """
         with self._lock:
-            self._root_spans_by_trace.clear()
-            self._root_span_ids_by_trace.clear()
             self._marked_traces.clear()
-
-    @staticmethod
-    def _is_root_span(span: Span) -> bool:
-        """
-        Determine if a span is a true root span (no valid parent).
-
-        Args:
-            span: The span to check.
-
-        Returns:
-            True if the span has no valid parent, False otherwise.
-        """
-        parent = getattr(span, "parent", None)
-        if parent is None:
-            return True
-
-        # is_valid can be either a property (bool) or a method (callable)
-        is_valid = getattr(parent, "is_valid", False)
-        if callable(is_valid):
-            return not is_valid()
-        return not is_valid
 
     @staticmethod
     def _get_span_context(span: ReadableSpan) -> Optional[SpanContext]:
@@ -194,9 +145,7 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
         Returns:
             True if this is the root span ending, False otherwise.
         """
-        with self._lock:
-            root_span_id = self._root_span_ids_by_trace.get(trace_id)
-            return root_span_id is not None and span_id == root_span_id
+        return RootSpanProcessor.is_root_span_for_trace(trace_id, span_id)
 
     def _is_trace_marked(self, trace_id: int) -> bool:
         """
@@ -238,26 +187,26 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
             trace_id: The trace ID whose root span should be marked.
         """
         with self._lock:
-            root_span = self._root_spans_by_trace.get(trace_id)
             self._marked_traces.add(trace_id)
 
-            if root_span is None:
-                return
+        root_span = RootSpanProcessor.get_root_span_by_trace_id(trace_id)
+        if root_span is None:
+            return
 
-            is_recording = getattr(root_span, "is_recording", lambda: False)()
-            if not is_recording:
-                logger.debug("Root span not recording for trace_id=%s", trace_id)
-                return
+        is_recording = getattr(root_span, "is_recording", lambda: False)()
+        if not is_recording:
+            logger.debug("Root span not recording for trace_id=%s", trace_id)
+            return
 
-            try:
-                root_span.set_attribute(self._root_marker_key, True)
-            except Exception as e:
-                logger.warning(
-                    "Failed to mark root span for trace_id=%s: %s",
-                    trace_id,
-                    e,
-                    exc_info=True,
-                )
+        try:
+            root_span.set_attribute(self._root_marker_key, True)
+        except Exception as e:
+            logger.warning(
+                "Failed to mark root span for trace_id=%s: %s",
+                trace_id,
+                e,
+                exc_info=True,
+            )
 
     def _cleanup_trace(self, trace_id: int) -> None:
         """
@@ -267,6 +216,4 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
             trace_id: The trace ID to clean up.
         """
         with self._lock:
-            self._root_spans_by_trace.pop(trace_id, None)
-            self._root_span_ids_by_trace.pop(trace_id, None)
             self._marked_traces.discard(trace_id)
