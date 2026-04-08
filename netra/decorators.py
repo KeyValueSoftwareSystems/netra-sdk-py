@@ -114,7 +114,7 @@ def _span_has_output(span: trace.Span) -> bool:
             if attrs is not None and "output" in attrs and attrs["output"]:
                 return True
     except Exception:
-        pass
+        logger.debug("_span_has_output: error inspecting span attributes", exc_info=True)
     return False
 
 

@@ -237,6 +237,6 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                 try:
                     original(key, value)
                 except Exception:
-                    pass
+                    logger.debug("SpanIOProcessor: error calling set_attribute key=%s", key, exc_info=True)
 
         setattr(span, "set_attribute", patched_set_attribute)
