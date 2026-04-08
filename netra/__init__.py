@@ -448,5 +448,15 @@ class Netra:
         """
         return SpanWrapper(name, attributes, module_name, as_type=as_type)
 
+    @classmethod
+    def get_trace_id(cls) -> Optional[str]:
+        """
+        Return the trace ID of the currently active span.
+
+        Returns:
+            str: 32-character lowercase hex trace ID, or None if no active span exists.
+        """
+        return SessionManager.get_trace_id()
+
 
 __all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts", "ConversationType"]

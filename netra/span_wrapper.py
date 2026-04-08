@@ -311,3 +311,12 @@ class SpanWrapper:
             The current OpenTelemetry span
         """
         return self.span
+
+    def get_trace_id(self) -> Optional[str]:
+        """
+        Return the trace ID of this span.
+
+        Returns:
+            str: 32-character lowercase hex trace ID, or None if the span is invalid.
+        """
+        return SessionManager.get_trace_id()
