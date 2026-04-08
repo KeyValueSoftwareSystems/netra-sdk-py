@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.80] - 2026-04-06
+- Added input/output attributes across LLM, traceloop, and custom spans
+- Added utility function to explicitly set input/output attributes on the active span
+- Added utility function to explicitly set input/output attributes on the root span
+- Move serialization logic to SessionManager
+
+
 ## [0.1.79] - 2026-04-02
 - Added version-safe check for _shutdown attribute in _JsonOTLPMetricExporter for compatability with opentelemetry libraries
 
@@ -225,4 +232,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.79]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.80]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
