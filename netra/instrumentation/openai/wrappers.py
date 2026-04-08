@@ -14,6 +14,7 @@ from netra.instrumentation.openai.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,8 @@ logger = logging.getLogger(__name__)
 CHAT_SPAN_NAME = "openai.chat"
 EMBEDDING_SPAN_NAME = "openai.embedding"
 RESPONSE_SPAN_NAME = "openai.response"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 
 def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -61,7 +64,8 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     set_response_attributes(span, response_dict)
                     duration = end_time - start_time
                     span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -111,7 +115,8 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     set_response_attributes(span, response_dict)
                     duration = end_time - start_time
                     span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -141,7 +146,8 @@ def embeddings_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 set_response_attributes(span, response_dict)
                 duration = end_time - start_time
                 span.set_attribute("llm.response.duration", duration)
-                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -173,7 +179,8 @@ def aembeddings_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 set_response_attributes(span, response_dict)
                 duration = end_time - start_time
                 span.set_attribute("llm.response.duration", duration)
-                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -223,7 +230,8 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     set_response_attributes(span, response_dict)
                     duration = end_time - start_time
                     span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -273,7 +281,8 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     set_response_attributes(span, response_dict)
                     duration = end_time - start_time
                     span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -352,8 +361,10 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     content_piece = str(delta.get("content", ""))
                     if content_piece and not self._first_content_recorded:
                         self._first_content_recorded = True
-                        self._span.set_attribute(
-                            "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
@@ -369,7 +380,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Response API
         if chunk_dict.get("delta") and not self._first_content_recorded:
             self._first_content_recorded = True
-            self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
+            first_token_time = time.time()
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
@@ -467,8 +480,10 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     content_piece = str(delta.get("content", ""))
                     if content_piece and not self._first_content_recorded:
                         self._first_content_recorded = True
-                        self._span.set_attribute(
-                            "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
@@ -484,7 +499,9 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         # Response API
         if chunk_dict.get("delta") and not self._first_content_recorded:
             self._first_content_recorded = True
-            self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
+            first_token_time = time.time()
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":

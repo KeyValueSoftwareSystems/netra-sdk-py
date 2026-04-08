@@ -11,6 +11,7 @@ from netra.instrumentation.google_genai.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
@@ -19,6 +20,8 @@ CONTENT_SPAN_NAME = "genai.generate_content"
 CONTENT_STREAM_SPAN_NAME = "genai.generate_content_stream"
 IMAGES_SPAN_NAME = "genai.generate_images"
 VIDEOS_SPAN_NAME = "genai.generate_videos"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 
 def content_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -39,7 +42,8 @@ def content_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 set_response_attributes(span, response)
                 duration = end_time - start_time
                 span.set_attribute("llm.response.duration", duration)
-                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -69,7 +73,8 @@ def acontent_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 set_response_attributes(span, response)
                 duration = end_time - start_time
                 span.set_attribute("llm.response.duration", duration)
-                span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -271,7 +276,9 @@ class StreamingWrapper:
         if isinstance(text, str):
             if text and not self._first_content_recorded:
                 self._first_content_recorded = True
-                self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
+                first_token_time = time.time()
+                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
 
@@ -313,7 +320,9 @@ class AsyncStreamingWrapper:
         if isinstance(text, str):
             if text and not self._first_content_recorded:
                 self._first_content_recorded = True
-                self._span.set_attribute("gen_ai.performance.time_to_first_token", time.time() - self._start_time)
+                first_token_time = time.time()
+                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
 
