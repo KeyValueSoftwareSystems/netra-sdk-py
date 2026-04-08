@@ -110,6 +110,20 @@ class SessionManager:
             logger.exception("Failed to unregister span '%s'", name)
 
     @classmethod
+    def get_trace_id(cls) -> Optional[str]:
+        """
+        Return the trace ID of the currently active span.
+
+        Returns:
+            str: 32-character lowercase hex trace ID, or None if no active span exists.
+        """
+        span = trace.get_current_span()
+        ctx = span.get_span_context()
+        if ctx.is_valid:
+            return format(ctx.trace_id, "032x")
+        return None
+
+    @classmethod
     def get_span_by_name(cls, name: str) -> Optional[trace.Span]:
         """
         Get the most recently registered span with the given name.
