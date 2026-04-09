@@ -1,9 +1,29 @@
+import logging
 import time
-from typing import Optional
+from typing import Any, Optional
+
+logger = logging.getLogger(__name__)
 
 from opentelemetry.trace import Span
 
 from netra.processors.root_span_processor import RootSpanProcessor
+
+
+def _safe_set_attribute(span: Span, key: str, value: Any, max_length: Optional[int] = None) -> bool:
+    """Safely set span attribute with optional truncation and null checks."""
+    if not span.is_recording() or value is None:
+        return False
+
+    str_value = str(value)
+    if max_length and len(str_value) > max_length:
+        str_value = str_value[:max_length]
+
+    try:
+        span.set_attribute(key, str_value)
+    except Exception:
+        logger.warning("Failed to set span attribute '%s'", key, exc_info=True)
+        return False
+    return True
 
 
 def record_span_timing(
@@ -37,5 +57,4 @@ def record_span_timing(
         return False
 
     elapsed = t - start_time / 1e9  # Convert nanoseconds to seconds
-    span.set_attribute(attribute, elapsed)
-    return True
+    return _safe_set_attribute(span, attribute, elapsed)

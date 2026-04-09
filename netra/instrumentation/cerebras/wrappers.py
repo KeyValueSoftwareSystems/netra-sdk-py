@@ -22,6 +22,7 @@ CHAT_SPAN_NAME = "cerebras.chat.completions"
 COMPLETION_SPAN_NAME = "cerebras.completions"
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
+LLM_RESPONSE_DURATION = "llm.response.duration"
 
 
 def _detect_streaming(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> bool:
@@ -39,10 +40,9 @@ def _detect_streaming(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> bool:
 class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Wrapper for streaming responses"""
 
-    def __init__(self, span: Span, response: Iterator[Any], start_time: float, request_kwargs: Dict[str, Any]) -> None:
+    def __init__(self, span: Span, response: Iterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
@@ -123,10 +123,8 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
@@ -134,12 +132,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Async wrapper for streaming responses"""
 
-    def __init__(
-        self, span: Span, response: AsyncIterator[Any], start_time: float, request_kwargs: Dict[str, Any]
-    ) -> None:
+    def __init__(self, span: Span, response: AsyncIterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
@@ -222,10 +217,8 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
@@ -245,9 +238,8 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 ctx = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, LLMRequestTypeValues.CHAT, kwargs)
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 logger.error("netra.instrumentation.cerebras: %s", e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -263,12 +255,10 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, LLMRequestTypeValues.CHAT, kwargs)
-                    start_time = time.time()
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     set_response_attributes(span, response)
-                    duration = end_time - start_time
-                    span.set_attribute("llm.response.duration", duration)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                     record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
@@ -293,9 +283,8 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 ctx = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, LLMRequestTypeValues.CHAT, kwargs)
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 logger.error("netra.instrumentation.cerebras: %s", e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -308,13 +297,10 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, LLMRequestTypeValues.CHAT, kwargs)
-                    start_time = time.time()
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     set_response_attributes(span, response)
-                    duration = end_time - start_time
-                    span.set_attribute("llm.response.duration", duration)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                     record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
@@ -341,12 +327,10 @@ def completions_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 ctx = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, LLMRequestTypeValues.COMPLETION, kwargs)
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
                 return StreamingWrapper(
                     span=span,
                     response=response,
-                    start_time=start_time,
                     request_kwargs=kwargs,
                 )
             except Exception as e:
@@ -362,12 +346,10 @@ def completions_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, LLMRequestTypeValues.COMPLETION, kwargs)
-                    start_time = time.time()
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     set_response_attributes(span, response)
-                    duration = end_time - start_time
-                    span.set_attribute("llm.response.duration", duration)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                     record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
@@ -393,12 +375,10 @@ def acompletions_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 ctx = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, LLMRequestTypeValues.COMPLETION, kwargs)
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
                 return AsyncStreamingWrapper(
                     span=span,
                     response=response,
-                    start_time=start_time,
                     request_kwargs=kwargs,
                 )
             except Exception as e:
@@ -413,12 +393,10 @@ def acompletions_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, LLMRequestTypeValues.COMPLETION, kwargs)
-                    start_time = time.time()
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     set_response_attributes(span, response)
-                    duration = end_time - start_time
-                    span.set_attribute("llm.response.duration", duration)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                     record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
