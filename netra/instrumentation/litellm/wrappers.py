@@ -14,6 +14,7 @@ from netra.instrumentation.litellm.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
@@ -21,6 +22,9 @@ COMPLETION_SPAN_NAME = "litellm.completion"
 EMBEDDING_SPAN_NAME = "litellm.embedding"
 IMAGE_GENERATION_SPAN_NAME = "litellm.image_generation"
 RESPONSE_SPAN_NAME = "litellm.responses"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
+LLM_RESPONSE_DURATION = "llm.response.duration"
 
 
 def is_streaming_response(response: Any) -> bool:
@@ -47,9 +51,8 @@ def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
             context = context_api.attach(set_span_in_context(span))
             try:
                 set_request_attributes(span, kwargs, "chat")
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
@@ -64,12 +67,13 @@ def completion_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, kwargs, "chat")
-                    start_time = time.time()
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -97,9 +101,8 @@ def acompletion_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             context = context_api.attach(set_span_in_context(span))
             try:
                 set_request_attributes(span, kwargs, "chat")
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
@@ -113,12 +116,13 @@ def acompletion_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             ) as span:
                 set_request_attributes(span, kwargs, "chat")
                 try:
-                    start_time = time.time()
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -143,9 +147,8 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "response")
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 logger.error("netra.instrumentation.openai: %s", e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -160,12 +163,13 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, kwargs, "response")
-                    start_time = time.time()
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -191,9 +195,8 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             try:
                 context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "response")
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
                 logger.error("netra.instrumentation.openai: %s", e)
                 span.set_status(Status(StatusCode.ERROR, str(e)))
@@ -208,12 +211,13 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             ) as span:
                 try:
                     set_request_attributes(span, kwargs, "response")
-                    start_time = time.time()
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    span.set_attribute("llm.response.duration", end_time - start_time)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
                 except Exception as e:
@@ -236,12 +240,10 @@ def embedding_wrapper(tracer: Tracer) -> Callable[..., Any]:
         ) as span:
             set_request_attributes(span, kwargs, "embedding")
             try:
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                end_time = time.time()
+                record_span_timing(span, LLM_RESPONSE_DURATION)
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -265,12 +267,10 @@ def aembedding_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         ) as span:
             set_request_attributes(span, kwargs, "embedding")
             try:
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                end_time = time.time()
+                record_span_timing(span, LLM_RESPONSE_DURATION)
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -292,12 +292,10 @@ def image_generation_wrapper(tracer: Tracer) -> Callable[..., Any]:
         ) as span:
             set_request_attributes(span, kwargs, "image_generation")
             try:
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                end_time = time.time()
+                record_span_timing(span, LLM_RESPONSE_DURATION)
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -321,12 +319,10 @@ def aimage_generation_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
         ) as span:
             set_request_attributes(span, kwargs, "image_generation")
             try:
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                end_time = time.time()
+                record_span_timing(span, LLM_RESPONSE_DURATION)
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
-                span.set_attribute("llm.response.duration", end_time - start_time)
                 span.set_status(Status(StatusCode.OK))
                 return response
             except Exception as e:
@@ -339,12 +335,12 @@ def aimage_generation_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
 class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Wrapper for streaming responses"""
 
-    def __init__(self, span: Span, response: Iterator[Any], start_time: float, request_kwargs: Dict[str, Any]) -> None:
+    def __init__(self, span: Span, response: Iterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._first_content_recorded: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -401,6 +397,13 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 content_piece = None
                 if isinstance(delta, dict) and delta.get("content"):
                     content_piece = str(delta.get("content", ""))
+                    if content_piece and not self._first_content_recorded:
+                        self._first_content_recorded = True
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                        )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
                     )
@@ -413,6 +416,11 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._complete_response["usage"] = chunk_dict["usage"]
 
         # Response API
+        if chunk_dict.get("delta") and not self._first_content_recorded:
+            self._first_content_recorded = True
+            first_token_time = time.time()
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
@@ -432,10 +440,8 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
@@ -443,14 +449,12 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Async wrapper for streaming responses"""
 
-    def __init__(
-        self, span: Span, response: AsyncIterator[Any], start_time: float, request_kwargs: Dict[str, Any]
-    ) -> None:
+    def __init__(self, span: Span, response: AsyncIterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
+        self._first_content_recorded: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -507,6 +511,13 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 content_piece = None
                 if isinstance(delta, dict) and delta.get("content"):
                     content_piece = str(delta.get("content", ""))
+                    if content_piece and not self._first_content_recorded:
+                        self._first_content_recorded = True
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                        )
                     self._complete_response["choices"][index].setdefault(
                         "message", {"role": "assistant", "content": ""}
                     )
@@ -519,6 +530,11 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._complete_response["usage"] = chunk_dict["usage"]
 
         # Response API
+        if chunk_dict.get("delta") and not self._first_content_recorded:
+            self._first_content_recorded = True
+            first_token_time = time.time()
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
@@ -538,9 +554,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()

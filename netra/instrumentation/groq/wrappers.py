@@ -13,19 +13,22 @@ from netra.instrumentation.groq.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
 CHAT_SPAN_NAME = "groq.chat"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
+LLM_RESPONSE_DURATION = "llm.response.duration"
 
 
 class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Wrapper for streaming responses (OpenAI-style)."""
 
-    def __init__(self, span: Span, response: Iterator[Any], start_time: float, request_kwargs: Dict[str, Any]) -> None:
+    def __init__(self, span: Span, response: Iterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
@@ -70,8 +73,10 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if content:
                         if not self._first_content_recorded:
                             self._first_content_recorded = True
-                            self._span.set_attribute(
-                                "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                            first_token_time = time.time()
+                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                            record_span_timing(
+                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                             )
                         message = self._complete_response["choices"][index].setdefault(
                             "message", {"role": "assistant", "content": ""}
@@ -89,10 +94,8 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._span.add_event("llm.content.completion.chunk")
 
     def _finalize_span(self) -> None:
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
@@ -100,12 +103,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Async wrapper for streaming responses (OpenAI-style)."""
 
-    def __init__(
-        self, span: Span, response: AsyncIterator[Any], start_time: float, request_kwargs: Dict[str, Any]
-    ) -> None:
+    def __init__(self, span: Span, response: AsyncIterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
-        self._start_time = start_time
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
@@ -150,8 +150,10 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if content:
                         if not self._first_content_recorded:
                             self._first_content_recorded = True
-                            self._span.set_attribute(
-                                "gen_ai.performance.time_to_first_token", time.time() - self._start_time
+                            first_token_time = time.time()
+                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                            record_span_timing(
+                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                             )
                         message = self._complete_response["choices"][index].setdefault(
                             "message", {"role": "assistant", "content": ""}
@@ -169,10 +171,8 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._span.add_event("llm.content.completion.chunk")
 
     def _finalize_span(self) -> None:
-        end_time = time.time()
-        duration = end_time - self._start_time
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
-        self._span.set_attribute("llm.response.duration", duration)
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
@@ -190,9 +190,8 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "chat")
-                start_time = time.time()
                 response = wrapped(*args, **kwargs)
-                return StreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:  # pylint: disable=broad-except
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
@@ -207,13 +206,13 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, kwargs, "chat")
-                    start_time = time.time()
                     response = wrapped(*args, **kwargs)
+                    end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    duration = time.time() - start_time
-                    span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                 except Exception:
                     logger.warning("Failed to set response attributes for Groq span", exc_info=True)
@@ -235,9 +234,8 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 context = context_api.attach(set_span_in_context(span))
                 set_request_attributes(span, kwargs, "chat")
-                start_time = time.time()
                 response = await wrapped(*args, **kwargs)
-                return AsyncStreamingWrapper(span=span, response=response, start_time=start_time, request_kwargs=kwargs)
+                return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:  # pylint: disable=broad-except
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
@@ -252,13 +250,13 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_request_attributes(span, kwargs, "chat")
-                    start_time = time.time()
                     response = await wrapped(*args, **kwargs)
+                    end_time = time.time()
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
-                    duration = time.time() - start_time
-                    span.set_attribute("llm.response.duration", duration)
-                    span.set_attribute("gen_ai.performance.time_to_first_token", duration)
+                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                 except Exception:
                     logger.warning("Failed to set response attributes for Groq span", exc_info=True)
