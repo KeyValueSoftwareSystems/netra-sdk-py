@@ -2,8 +2,9 @@ import logging
 import threading
 from typing import Optional, Set
 
+from opentelemetry import context as context_api
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
-from opentelemetry.trace import SpanContext
+from opentelemetry.trace import Span, SpanContext
 
 from netra.processors.root_span_processor import RootSpanProcessor
 
@@ -61,6 +62,18 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
         # Trace state tracking
         self._marked_traces: Set[int] = set()
+
+    def on_start(
+        self,
+        span: Span,
+        parent_context: Optional[context_api.Context] = None,
+    ) -> None:
+        """No-op. LLM attributes are only available once the span completes, so all processing is deferred to on_end.
+
+        Args:
+            span: The span that was started.
+            parent_context: The parent context.
+        """
 
     def on_end(self, span: ReadableSpan) -> None:
         """

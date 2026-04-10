@@ -4,7 +4,7 @@ import re
 from typing import Any, Callable, Dict, Optional
 
 from opentelemetry import context as otel_context
-from opentelemetry.sdk.trace import Span, SpanProcessor
+from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -106,6 +106,13 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
             self._wrap_set_attribute(span)
         except Exception:
             logger.exception("SpanIOProcessor.on_start failed")
+
+    def on_end(self, span: ReadableSpan) -> None:
+        """No-op. All attribute normalisation is applied eagerly via the set_attribute wrapper installed in on_start.
+
+        Args:
+            span: The span that has ended.
+        """
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush.

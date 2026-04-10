@@ -485,8 +485,8 @@ class SessionManager:
             trace_id = span_ctx.trace_id
             root_span = RootSpanProcessor.get_root_span_by_trace_id(trace_id)
             if not root_span:
-                # trace_id converted to hex to match the trace_id format used in span events
-                logger.warning(f"Cannot find root span for trace_id: 0x{trace_id:x}")
+                # Format as 32-character zero-padded lowercase hex
+                logger.warning(f"Cannot find root span for trace_id: {trace_id:032x}")
                 return
             root_span.set_attribute(attr_key, attr_value)
         except Exception:

@@ -159,9 +159,10 @@ class RootSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
             with self._lock:
                 root = self._root_spans.get(span_ctx.trace_id)
-                # Remove only if this span is the recorded root span
-                if root and root.get_span_context().span_id == span_ctx.span_id:
-                    self._root_spans.pop(span_ctx.trace_id, None)
+                if root is not None:
+                    root_ctx = root.get_span_context()
+                    if root_ctx is not None and root_ctx.span_id == span_ctx.span_id:
+                        self._root_spans.pop(span_ctx.trace_id, None)
 
         except Exception:
             logger.debug("RootSpanProcessor: error in on_end", exc_info=True)
