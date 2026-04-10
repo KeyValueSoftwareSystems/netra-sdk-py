@@ -573,11 +573,8 @@ class InstrumentedStreamedRunResult:
         if not self._span or not self._span.is_recording():
             return
 
-        # Calculate duration
-        end_time = time.time()
-        end_time - self._start_time
-
         # Set timing attributes
+        end_time = time.time()
         _set_timing_attributes(self._span, self._start_time, end_time)
 
         # Set response attributes if we have access to the final result
