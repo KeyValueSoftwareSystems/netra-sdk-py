@@ -56,6 +56,12 @@ class SpanType(str, Enum):
     AGENT = "AGENT"
 
 
+SPAN_TYPE_TO_ENTITY_TYPE: Dict[SpanType, str] = {
+    SpanType.AGENT: "agent",
+    SpanType.TOOL: "task",
+}
+
+
 class SpanWrapper:
     """
     Context manager for tracking observability data for external API calls.
@@ -96,13 +102,19 @@ class SpanWrapper:
 
         if isinstance(as_type, SpanType):
             self.attributes["netra.span.type"] = as_type.value
+            self._entity_type: Optional[str] = SPAN_TYPE_TO_ENTITY_TYPE.get(as_type)
         else:
             logger.error("Invalid span type: %s", as_type)
+            self._entity_type = None
             return
 
     def __enter__(self) -> "SpanWrapper":
         """Start the span wrapper, begin time tracking, and create OpenTelemetry span."""
         self.start_time = time.time()
+
+        # Push entity before span starts so SessionSpanProcessor can capture the name
+        if self._entity_type:
+            SessionManager.push_entity(self._entity_type, self.name)
 
         # If user provided local blocked patterns in attributes, attach them as baggage
         try:
@@ -190,6 +202,10 @@ class SpanWrapper:
                 logger.debug("Failed to detach local blocked spans baggage token", exc_info=True)
             finally:
                 self._local_block_token = None
+
+        # Pop entity from session stack so nested spans get correct parentage
+        if self._entity_type:
+            SessionManager.pop_entity(self._entity_type)
 
         # Don't suppress exceptions
         return False
