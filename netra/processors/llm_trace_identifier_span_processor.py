@@ -199,9 +199,6 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
         Args:
             trace_id: The trace ID whose root span should be marked.
         """
-        with self._lock:
-            self._marked_traces.add(trace_id)
-
         root_span = RootSpanProcessor.get_root_span_by_trace_id(trace_id)
         if root_span is None:
             return
@@ -220,6 +217,9 @@ class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 e,
                 exc_info=True,
             )
+
+        with self._lock:
+            self._marked_traces.add(trace_id)
 
     def _cleanup_trace(self, trace_id: int) -> None:
         """
