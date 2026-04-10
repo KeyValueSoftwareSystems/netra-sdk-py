@@ -93,6 +93,7 @@ class Tracer:
                 InstrumentationSpanProcessor,
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
+                RootSpanProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
             )
