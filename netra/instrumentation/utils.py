@@ -10,13 +10,28 @@ from netra.processors.root_span_processor import RootSpanProcessor
 
 
 def _safe_set_attribute(span: Span, key: str, value: Any, max_length: Optional[int] = None) -> bool:
-    """Safely set span attribute with optional truncation and null checks."""
+    """Safely set a span attribute with optional truncation and null checks.
+
+    Args:
+        span: The OpenTelemetry span on which to set the attribute.
+        key: The attribute key.
+        value: The attribute value. If None, the attribute is not set.
+        max_length: If provided, the string representation of value is truncated
+            to this length before being set.
+
+    Returns:
+        True if the attribute was successfully set, False otherwise.
+    """
     if not span.is_recording() or value is None:
         return False
 
-    str_value = str(value)
-    if max_length and len(str_value) > max_length:
-        str_value = str_value[:max_length]
+    try:
+        str_value = str(value)
+        if max_length and len(str_value) > max_length:
+            str_value = str_value[:max_length]
+    except Exception:
+        logger.warning("Failed to convert value to string for attribute '%s'", key, exc_info=True)
+        return False
 
     try:
         span.set_attribute(key, str_value)
@@ -32,15 +47,23 @@ def record_span_timing(
     event_time: Optional[float] = None,
     use_root_span: bool = False,
 ) -> bool:
-    """
-    Compute elapsed time for an event.
+    """Compute elapsed time for an event and set it as a span attribute.
 
-    Elapsed is measured from:
-      use_root_span=False (default): start_time of the given span
-      use_root_span=True           : start_time of the root span of the given span
+    Elapsed time is measured from:
+      - ``use_root_span=False`` (default): the start time of the given span.
+      - ``use_root_span=True``: the start time of the root span of the given span.
 
-    Returns: True if the attribute was set, False if it could not be computed.
+    Args:
+        span: The OpenTelemetry span on which to record the timing attribute.
+        attribute: The attribute key under which the elapsed time is stored.
+        event_time: The event timestamp in seconds since epoch. Defaults to
+            ``time.time()`` if not provided.
+        use_root_span: If True, elapsed time is measured from the root span's
+            start time instead of the given span's start time.
 
+    Returns:
+        True if the timing attribute was successfully set, False if the elapsed
+        time could not be computed (e.g. missing start time or root span).
     """
     t = event_time if event_time is not None else time.time()
     start_time = None
