@@ -99,6 +99,7 @@ class Tracer:
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
                 RootInstrumentFilterProcessor,
+                RootSpanProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
                 SpanIOProcessor,
@@ -110,13 +111,13 @@ class Tracer:
             provider.add_span_processor(LocalFilteringSpanProcessor())
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
-            span_io_processor = SpanIOProcessor()
-            provider.add_span_processor(span_io_processor)
+            provider.add_span_processor(SpanIOProcessor())
             provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
 
-            from netra.session_manager import SessionManager
-
-            SessionManager.set_span_io_processor(span_io_processor)
+            # Adding RootSpanProcessor after LlmTraceIdentifierSpanProcessor
+            # to ensure the on_end function in LlmTraceIdentifierSpanProcessor
+            # can get root_span correctly using RootSpanProcessor
+            provider.add_span_processor(RootSpanProcessor())
 
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
