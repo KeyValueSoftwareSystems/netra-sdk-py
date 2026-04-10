@@ -11,6 +11,7 @@ from netra.instrumentation.elevenlabs.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
@@ -79,7 +80,6 @@ def stream_dialogue_wrapper(tracer: Tracer, span_name: str, request_type: str) -
         )
 
         context = context_api.attach(set_span_in_context(span))
-        start_time = time.time()
 
         try:
             set_request_attributes(span, kwargs)
@@ -87,7 +87,6 @@ def stream_dialogue_wrapper(tracer: Tracer, span_name: str, request_type: str) -
             return ElevenLabsStreamingWrapper(
                 span=span,
                 response=response,
-                start_time=start_time,
                 context=context,
             )
 
@@ -273,7 +272,6 @@ def async_generator_wrapper(tracer: Tracer, span_name: str, request_type: str) -
         )
 
         context = context_api.attach(set_span_in_context(span))
-        start_time = time.time()
 
         try:
             set_request_attributes(span, kwargs)
@@ -281,7 +279,6 @@ def async_generator_wrapper(tracer: Tracer, span_name: str, request_type: str) -
             return ElevenLabsAsyncStreamingWrapper(
                 span=span,
                 response=response,
-                start_time=start_time,
                 context=context,
             )
         except Exception as e:
@@ -364,12 +361,10 @@ class ElevenLabsStreamingWrapper:
         self,
         span: Span,
         response: Iterator[Any],
-        start_time: float,
         context: Any,
     ) -> None:
         self._span = span
         self._response = response
-        self._start_time = start_time
         self._context = context
 
         self._buffer: Dict[str, Any] = {
@@ -414,8 +409,7 @@ class ElevenLabsStreamingWrapper:
         self._buffer["chunks"].append(chunk)
 
     def _finalize_span(self) -> None:
-        end_time = time.time()
-        self._span.set_attribute("gen_ai.response.duration", end_time - self._start_time)
+        record_span_timing(self._span, "gen_ai.response.duration")
 
         if self._buffer["duration"]:
             self._span.set_attribute("gen_ai.audio.duration", self._buffer["duration"])
@@ -428,17 +422,15 @@ class ElevenLabsStreamingWrapper:
 class ElevenLabsAsyncStreamingWrapper:
     """Async wrapper for streaming responses (async generators)."""
 
-    def __init__(self, span: Span, response: AsyncIterator[Any], start_time: float, context: Any) -> None:
+    def __init__(self, span: Span, response: AsyncIterator[Any], context: Any) -> None:
         """Initialize async streaming wrapper.
 
         Args:
             span: OpenTelemetry span for this operation
             response: Async generator/iterator from the wrapped method
-            start_time: Start time for duration calculation
             context: OpenTelemetry context token from context_api.attach()
         """
         self._span: Span = span
-        self._start_time: float = start_time
         self._response: AsyncIterator[Any] = response
         self._context: Any = context
         self._buffer: Dict[str, Any] = {"chunks": [], "duration": 0.0, "alignment": [], "voice_segments": []}
@@ -490,8 +482,7 @@ class ElevenLabsAsyncStreamingWrapper:
 
     def _finalize_span(self) -> None:
         """Finalize span after streaming completes."""
-        end_time = time.time()
-        self._span.set_attribute("gen_ai.response.duration", end_time - self._start_time)
+        record_span_timing(self._span, "gen_ai.response.duration")
 
         if self._buffer["duration"]:
             self._span.set_attribute("gen_ai.audio.duration", self._buffer["duration"])
