@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.80] - 2026-04-14
+- Add relative time to first token for all LLM spans
+- Add custom HTTPX and Requests instrumentation
+
 
 ## [0.1.79] - 2026-04-02
 
@@ -228,8 +232,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-<<<<<<< HEAD
-[0.1.79]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
-=======
-[0.1.82]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
->>>>>>> 2ce6cca ([NET-624] feat: Add a centralized span processor to manage root span handling (#249))
+[0.1.80]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
