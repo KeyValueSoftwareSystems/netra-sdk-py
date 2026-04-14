@@ -24,7 +24,12 @@ _SENSITIVE_HEADERS = frozenset(
 
 
 def should_suppress_instrumentation() -> bool:
-    """Check if instrumentation should be suppressed."""
+    """Check if instrumentation should be suppressed.
+
+    Returns:
+        True if the OpenTelemetry suppression key is active in the current
+        context, False otherwise.
+    """
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
@@ -143,6 +148,60 @@ def set_span_output(span: Span, response: httpx.Response) -> None:
         logger.error(f"Failed to set output attribute on httpx span: {e}")
 
 
+def _parse_streaming_body(accumulated: bytes) -> Any:
+    """Parse accumulated streaming response bytes into a structured value.
+
+    Handles SSE (``data: {...}``), NDJSON, plain concatenated JSON objects,
+    and falls back to a decoded string or a binary placeholder.
+
+    Args:
+        accumulated: Raw bytes collected from the streaming response chunks.
+
+    Returns:
+        A parsed JSON object or list, a plain string, or a binary-size
+        placeholder string if the bytes cannot be decoded as UTF-8.
+    """
+    try:
+        text = accumulated.decode("utf-8")
+    except UnicodeDecodeError:
+        return f"<binary content: {len(accumulated)} bytes>"
+
+    # SSE: any line starts with "data:"
+    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
+    if any(ln.startswith("data:") for ln in lines):
+        parsed: List[Any] = []
+        for ln in lines:
+            if ln.startswith("data:"):
+                data = ln[5:].strip()
+                if data == "[DONE]":
+                    continue
+                try:
+                    parsed.append(json.loads(data))
+                except json.JSONDecodeError:
+                    parsed.append(data)
+        if parsed:
+            return parsed[0] if len(parsed) == 1 else parsed
+
+    # Sequential JSON decoding: handles single JSON, NDJSON, and bare concatenated objects
+    decoder = json.JSONDecoder()
+    results: List[Any] = []
+    idx = 0
+    stripped = text.strip()
+    try:
+        while idx < len(stripped):
+            obj, end_idx = decoder.raw_decode(stripped, idx)
+            results.append(obj)
+            idx = end_idx
+            while idx < len(stripped) and stripped[idx] in " \t\n\r":
+                idx += 1
+        if results and idx == len(stripped):
+            return results[0] if len(results) == 1 else results
+    except json.JSONDecodeError:
+        pass
+
+    return text
+
+
 def set_streaming_span_output(span: Span, response: httpx.Response, chunks: List[bytes]) -> None:
     """Serialize accumulated streaming chunks and set them as the span ``output`` attribute.
 
@@ -159,15 +218,7 @@ def set_streaming_span_output(span: Span, response: httpx.Response, chunks: List
             "headers": _sanitize_headers(response.headers),
         }
         if chunks:
-            accumulated = b"".join(chunks)
-            try:
-                body: Any = json.loads(accumulated)
-            except (json.JSONDecodeError, UnicodeDecodeError):
-                try:
-                    body = accumulated.decode("utf-8")
-                except UnicodeDecodeError:
-                    body = f"<binary content: {len(accumulated)} bytes>"
-            output_data["body"] = body
+            output_data["body"] = _parse_streaming_body(b"".join(chunks))
         span.set_attribute("output", json.dumps(output_data))
     except Exception as e:
         logger.error(f"Failed to set streaming output attribute on httpx span: {e}")

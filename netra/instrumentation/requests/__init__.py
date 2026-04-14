@@ -18,11 +18,21 @@ class RequestsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """Custom requests instrumentor for Netra SDK."""
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        """Return the list of required instrumentation dependencies."""
+        """Return the list of required instrumentation dependencies.
+
+        Returns:
+            A collection of package requirement strings that must be satisfied
+            for this instrumentor to function.
+        """
         return _instruments
 
     def _instrument(self, **kwargs: Any) -> None:
-        """Instrument requests.Session.send."""
+        """Instrument requests.Session.send.
+
+        Args:
+            **kwargs: Keyword arguments passed by the instrumentation framework.
+                tracer_provider: Optional TracerProvider to use for creating spans.
+        """
         try:
             tracer_provider = kwargs.get("tracer_provider")
             tracer = get_tracer(__name__, __version__, tracer_provider)
@@ -36,7 +46,12 @@ class RequestsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to instrument requests: {e}")
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        """Uninstrument requests.Session.send."""
+        """Uninstrument requests.Session.send.
+
+        Args:
+            **kwargs: Keyword arguments passed by the instrumentation framework
+                (unused but required by the base class interface).
+        """
         try:
             import requests as requests_lib  # type:ignore[import-untyped]
 

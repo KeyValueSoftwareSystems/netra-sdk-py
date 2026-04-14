@@ -23,7 +23,12 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         return _instruments
 
     def _instrument(self, **kwargs: Any) -> None:
-        """Instrument httpx client methods."""
+        """Instrument httpx.Client.send and httpx.AsyncClient.send.
+
+        Args:
+            **kwargs: Keyword arguments passed by the instrumentation framework.
+                tracer_provider: Optional TracerProvider to use for creating spans.
+        """
         try:
             tracer_provider = kwargs.get("tracer_provider")
             tracer = get_tracer(__name__, __version__, tracer_provider)
@@ -38,7 +43,11 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to instrument httpx: {e}")
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        """Uninstrument httpx client methods."""
+        """Uninstrument httpx.Client.send and httpx.AsyncClient.send.
+
+        Args:
+            **kwargs: Keyword arguments passed by the instrumentation framework.
+        """
         try:
             import httpx
 

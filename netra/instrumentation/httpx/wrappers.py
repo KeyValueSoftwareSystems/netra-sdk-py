@@ -25,12 +25,22 @@ class _BaseStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Base proxy for streaming httpx responses; finalizes the span when the stream ends."""
 
     def __init__(self, response: Any, span: Span) -> None:
+        """Initialize the base streaming wrapper.
+
+        Args:
+            response: The streaming httpx response to wrap.
+            span: The open OpenTelemetry span to keep alive during streaming.
+        """
         super().__init__(response)
         self._span = span
         self._chunks: List[bytes] = []
         self._finalized = False
 
     def _finalize_span(self) -> None:
+        """Write accumulated chunk data to the span output attribute and end the span.
+
+        Idempotent — subsequent calls after the first are no-ops.
+        """
         if self._finalized:
             return
         self._finalized = True
@@ -42,6 +52,7 @@ class _BaseStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             self._span.end()
 
     def __del__(self) -> None:
+        """Finalize the span on garbage collection as a last-resort safety net."""
         self._finalize_span()
 
 
@@ -55,7 +66,14 @@ class StreamingWrapper(_BaseStreamingWrapper):
     """
 
     def _wrap_iter(self, inner: Iterator[Any]) -> Iterator[Any]:
-        """Proxy a synchronous iterator, accumulating raw bytes for the span."""
+        """Proxy a synchronous iterator, accumulating raw bytes for the span.
+
+        Args:
+            inner: The underlying iterator to wrap.
+
+        Yields:
+            Each chunk from *inner* unchanged.
+        """
         try:
             for chunk in inner:
                 if isinstance(chunk, bytes):
@@ -71,23 +89,81 @@ class StreamingWrapper(_BaseStreamingWrapper):
             raise
 
     def iter_bytes(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
-        """Proxy ``Response.iter_bytes``, capturing chunks for span output."""
+        """Proxy ``Response.iter_bytes``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.iter_bytes``.
+            **kwargs: Keyword arguments forwarded to ``Response.iter_bytes``.
+
+        Returns:
+            An iterator that yields raw bytes chunks and accumulates them for
+            the span output attribute.
+        """
         return self._wrap_iter(self.__wrapped__.iter_bytes(*args, **kwargs))
 
     def iter_text(self, *args: Any, **kwargs: Any) -> Iterator[str]:
-        """Proxy ``Response.iter_text``, capturing chunks for span output."""
+        """Proxy ``Response.iter_text``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.iter_text``.
+            **kwargs: Keyword arguments forwarded to ``Response.iter_text``.
+
+        Returns:
+            An iterator that yields decoded text chunks and accumulates the
+            encoded bytes for the span output attribute.
+        """
         return self._wrap_iter(self.__wrapped__.iter_text(*args, **kwargs))
 
     def iter_lines(self, *args: Any, **kwargs: Any) -> Iterator[str]:
-        """Proxy ``Response.iter_lines``, capturing chunks for span output."""
+        """Proxy ``Response.iter_lines``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.iter_lines``.
+            **kwargs: Keyword arguments forwarded to ``Response.iter_lines``.
+
+        Returns:
+            An iterator that yields line strings and accumulates the encoded
+            bytes for the span output attribute.
+        """
         return self._wrap_iter(self.__wrapped__.iter_lines(*args, **kwargs))
 
     def iter_raw(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
-        """Proxy ``Response.iter_raw``, capturing chunks for span output."""
+        """Proxy ``Response.iter_raw``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.iter_raw``.
+            **kwargs: Keyword arguments forwarded to ``Response.iter_raw``.
+
+        Returns:
+            An iterator that yields raw (un-decoded) bytes chunks and
+            accumulates them for the span output attribute.
+        """
         return self._wrap_iter(self.__wrapped__.iter_raw(*args, **kwargs))
 
+    def __enter__(self) -> "StreamingWrapper":
+        """Return the wrapper itself so iteration methods are captured inside a with-block.
+
+        Returns:
+            This StreamingWrapper instance.
+        """
+        self.__wrapped__.__enter__()
+        return self
+
+    def __exit__(self, *args: Any) -> None:
+        """Close via the wrapper so the span is finalized.
+
+        Args:
+            *args: Exception info tuple (exc_type, exc_val, exc_tb) forwarded
+                from the context manager protocol.
+        """
+        self.close()
+
     def close(self) -> None:
-        """Close the underlying response and finalize the span."""
+        """Close the underlying response and finalize the span.
+
+        Calls ``Response.close()`` on the wrapped response, then invokes
+        :meth:`_finalize_span` to record the accumulated output and end the span.
+        """
         try:
             self.__wrapped__.close()
         finally:
@@ -103,7 +179,14 @@ class AsyncStreamingWrapper(_BaseStreamingWrapper):
     """
 
     async def _wrap_aiter(self, inner: AsyncIterator[Any]) -> AsyncIterator[Any]:
-        """Proxy an asynchronous iterator, accumulating raw bytes for the span."""
+        """Proxy an asynchronous iterator, accumulating raw bytes for the span.
+
+        Args:
+            inner: The underlying async iterator to wrap.
+
+        Yields:
+            Each chunk from *inner* unchanged.
+        """
         try:
             async for chunk in inner:
                 if isinstance(chunk, bytes):
@@ -119,23 +202,81 @@ class AsyncStreamingWrapper(_BaseStreamingWrapper):
             raise
 
     def aiter_bytes(self, *args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
-        """Proxy ``Response.aiter_bytes``, capturing chunks for span output."""
+        """Proxy ``Response.aiter_bytes``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.aiter_bytes``.
+            **kwargs: Keyword arguments forwarded to ``Response.aiter_bytes``.
+
+        Returns:
+            An async iterator that yields raw bytes chunks and accumulates
+            them for the span output attribute.
+        """
         return self._wrap_aiter(self.__wrapped__.aiter_bytes(*args, **kwargs))
 
     def aiter_text(self, *args: Any, **kwargs: Any) -> AsyncIterator[str]:
-        """Proxy ``Response.aiter_text``, capturing chunks for span output."""
+        """Proxy ``Response.aiter_text``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.aiter_text``.
+            **kwargs: Keyword arguments forwarded to ``Response.aiter_text``.
+
+        Returns:
+            An async iterator that yields decoded text chunks and accumulates
+            the encoded bytes for the span output attribute.
+        """
         return self._wrap_aiter(self.__wrapped__.aiter_text(*args, **kwargs))
 
     def aiter_lines(self, *args: Any, **kwargs: Any) -> AsyncIterator[str]:
-        """Proxy ``Response.aiter_lines``, capturing chunks for span output."""
+        """Proxy ``Response.aiter_lines``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.aiter_lines``.
+            **kwargs: Keyword arguments forwarded to ``Response.aiter_lines``.
+
+        Returns:
+            An async iterator that yields line strings and accumulates the
+            encoded bytes for the span output attribute.
+        """
         return self._wrap_aiter(self.__wrapped__.aiter_lines(*args, **kwargs))
 
     def aiter_raw(self, *args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
-        """Proxy ``Response.aiter_raw``, capturing chunks for span output."""
+        """Proxy ``Response.aiter_raw``, capturing chunks for span output.
+
+        Args:
+            *args: Positional arguments forwarded to ``Response.aiter_raw``.
+            **kwargs: Keyword arguments forwarded to ``Response.aiter_raw``.
+
+        Returns:
+            An async iterator that yields raw (un-decoded) bytes chunks and
+            accumulates them for the span output attribute.
+        """
         return self._wrap_aiter(self.__wrapped__.aiter_raw(*args, **kwargs))
 
+    async def __aenter__(self) -> "AsyncStreamingWrapper":
+        """Return the wrapper itself so iteration methods are captured inside an async with-block.
+
+        Returns:
+            This AsyncStreamingWrapper instance.
+        """
+        await self.__wrapped__.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: Any) -> None:
+        """Close via the wrapper so the span is finalized.
+
+        Args:
+            *args: Exception info tuple (exc_type, exc_val, exc_tb) forwarded
+                from the async context manager protocol.
+        """
+        await self.aclose()
+
     async def aclose(self) -> None:
-        """Close the underlying response and finalize the span."""
+        """Close the underlying response and finalize the span.
+
+        Awaits ``Response.aclose()`` on the wrapped response, then invokes
+        :meth:`_finalize_span` to record the accumulated output and end the span.
+        """
         try:
             await self.__wrapped__.aclose()
         finally:
@@ -143,17 +284,37 @@ class AsyncStreamingWrapper(_BaseStreamingWrapper):
 
 
 def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Wrapper factory for httpx.Client.send."""
+    """Return a wrapt-compatible wrapper for ``httpx.Client.send``.
+
+    Args:
+        tracer: The OpenTelemetry Tracer used to create spans.
+
+    Returns:
+        A callable suitable for use with ``wrap_function_wrapper``.
+    """
 
     def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        """Intercept ``Client.send``, create a span, and capture request/response data.
+
+        Args:
+            wrapped: The original ``Client.send`` method.
+            instance: The ``Client`` instance on which the method is called.
+            args: Positional arguments passed to ``Client.send``; the first
+                element is the ``httpx.Request``.
+            kwargs: Keyword arguments passed to ``Client.send``.
+
+        Returns:
+            The original ``httpx.Response`` for non-streaming requests, or a
+            :class:`StreamingWrapper` that keeps the span open while the
+            caller iterates over a streaming response.
+        """
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
         try:
-
             request = args[0] if args else kwargs.get("request")
             if request is None:
-                return wrapped(*args, **kwargs)
+                raise ValueError("No request object found in arguments")
             method = request.method
             url = remove_url_credentials(str(request.url))
             span_name = get_default_span_name(method)
@@ -239,18 +400,39 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
-    """Wrapper factory for httpx.AsyncClient.send."""
+    """Return a wrapt-compatible async wrapper for ``httpx.AsyncClient.send``.
+
+    Args:
+        tracer: The OpenTelemetry Tracer used to create spans.
+
+    Returns:
+        An async callable suitable for use with ``wrap_function_wrapper``.
+    """
 
     async def wrapper(
         wrapped: Callable[..., Awaitable[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
+        """Intercept ``AsyncClient.send``, create a span, and capture request/response data.
+
+        Args:
+            wrapped: The original ``AsyncClient.send`` coroutine.
+            instance: The ``AsyncClient`` instance on which the method is called.
+            args: Positional arguments passed to ``AsyncClient.send``; the first
+                element is the ``httpx.Request``.
+            kwargs: Keyword arguments passed to ``AsyncClient.send``.
+
+        Returns:
+            The original ``httpx.Response`` for non-streaming requests, or an
+            :class:`AsyncStreamingWrapper` that keeps the span open while the
+            caller iterates over a streaming response.
+        """
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
         try:
             request = args[0] if args else kwargs.get("request")
             if request is None:
-                return await wrapped(*args, **kwargs)
+                raise ValueError("No request object found in arguments")
             method = request.method
             url = remove_url_credentials(str(request.url))
             span_name = get_default_span_name(method)
