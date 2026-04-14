@@ -128,7 +128,6 @@ def set_span_input(span: Span, request: requests_lib.PreparedRequest) -> None:
         return
     try:
         input_data: Dict[str, Any] = {
-            "method": request.method or "",
             "url": remove_url_credentials(request.url or ""),
             "headers": _sanitize_headers(request.headers),
         }

@@ -110,7 +110,6 @@ def set_span_input(span: Span, request: httpx.Request) -> None:
         return
     try:
         input_data: Dict[str, Any] = {
-            "method": request.method,
             "url": remove_url_credentials(str(request.url)),
             "headers": _sanitize_headers(request.headers),
         }
