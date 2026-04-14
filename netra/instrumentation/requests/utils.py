@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict
+from typing import Any, Dict, List
 
 import requests as requests_lib  # type: ignore[import-untyped]
 from opentelemetry import context as context_api
@@ -159,3 +159,33 @@ def set_span_output(span: Span, response: requests_lib.Response) -> None:
         span.set_attribute("output", json.dumps(output_data))
     except Exception:
         logger.debug("Failed to set output attribute on requests span", exc_info=True)
+
+
+def set_streaming_span_output(span: Span, response: requests_lib.Response, chunks: List[bytes]) -> None:
+    """Serialize accumulated streaming chunks and set them as the span ``output`` attribute.
+
+    Args:
+        span: The active OpenTelemetry span.
+        response: The requests Response whose headers/status are used.
+        chunks: Raw bytes chunks accumulated during iteration.
+    """
+    if not span.is_recording():
+        return
+    try:
+        output_data: Dict[str, Any] = {
+            "status_code": response.status_code,
+            "headers": _sanitize_headers(response.headers),
+        }
+        if chunks:
+            accumulated = b"".join(chunks)
+            try:
+                body: Any = json.loads(accumulated)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                try:
+                    body = accumulated.decode("utf-8")
+                except UnicodeDecodeError:
+                    body = f"<binary content: {len(accumulated)} bytes>"
+            output_data["body"] = body
+        span.set_attribute("output", json.dumps(output_data))
+    except Exception:
+        logger.debug("Failed to set streaming output attribute on requests span", exc_info=True)
