@@ -74,8 +74,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             return wrapped(*args, **kwargs)
 
         try:
-            is_streaming = kwargs.get("stream", False)
-            request = args[0] if not is_streaming else kwargs.get("request")
+            request = args[0] if args else kwargs.get("request")
             if request is None:
                 return wrapped(*args, **kwargs)
             method = (request.method or "").upper()

@@ -38,7 +38,7 @@ class RequestsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     def _uninstrument(self, **kwargs: Any) -> None:
         """Uninstrument requests.Session.send."""
         try:
-            import requests as requests_lib  # type: ignore[import-untyped]
+            import requests as requests_lib  # type:ignore[import-untyped]
 
             unwrap(requests_lib.Session, "send")
         except Exception as e:

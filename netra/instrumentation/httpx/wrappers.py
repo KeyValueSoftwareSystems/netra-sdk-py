@@ -46,59 +46,100 @@ class _BaseStreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
 
 class StreamingWrapper(_BaseStreamingWrapper):
-    """Wraps a streaming httpx.Response, keeping the span open until the stream is exhausted."""
+    """Wraps a streaming httpx.Response, keeping the span open until the stream is closed.
 
-    def __init__(self, response: Any, span: Span) -> None:
-        super().__init__(response, span)
-        self._iterator: Iterator[bytes] = iter(response)
+    httpx streaming responses are consumed via ``iter_bytes()``, ``iter_text()``,
+    ``iter_lines()``, or ``iter_raw()`` — not via ``iter(response)``.  This wrapper
+    proxies those methods so that each yielded chunk is captured for the span
+    output attribute, and overrides ``close()`` to finalize the span.
+    """
 
-    def __iter__(self) -> Iterator[bytes]:
-        return self
-
-    def __next__(self) -> bytes:
+    def _wrap_iter(self, inner: Iterator[Any]) -> Iterator[Any]:
+        """Proxy a synchronous iterator, accumulating raw bytes for the span."""
         try:
-            chunk = next(self._iterator)
-            if isinstance(chunk, bytes):
-                self._chunks.append(chunk)
-            elif isinstance(chunk, str):
-                self._chunks.append(chunk.encode("utf-8"))
-            return chunk
-        except StopIteration:
-            self._finalize_span()
-            raise
+            for chunk in inner:
+                if isinstance(chunk, bytes):
+                    self._chunks.append(chunk)
+                elif isinstance(chunk, str):
+                    self._chunks.append(chunk.encode("utf-8"))
+                yield chunk
+        except GeneratorExit:
+            return
         except Exception as e:
             self._span.set_status(Status(StatusCode.ERROR, str(e)))
             self._span.record_exception(e)
-            self._finalize_span()
             raise
+
+    def iter_bytes(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
+        """Proxy ``Response.iter_bytes``, capturing chunks for span output."""
+        return self._wrap_iter(self.__wrapped__.iter_bytes(*args, **kwargs))
+
+    def iter_text(self, *args: Any, **kwargs: Any) -> Iterator[str]:
+        """Proxy ``Response.iter_text``, capturing chunks for span output."""
+        return self._wrap_iter(self.__wrapped__.iter_text(*args, **kwargs))
+
+    def iter_lines(self, *args: Any, **kwargs: Any) -> Iterator[str]:
+        """Proxy ``Response.iter_lines``, capturing chunks for span output."""
+        return self._wrap_iter(self.__wrapped__.iter_lines(*args, **kwargs))
+
+    def iter_raw(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
+        """Proxy ``Response.iter_raw``, capturing chunks for span output."""
+        return self._wrap_iter(self.__wrapped__.iter_raw(*args, **kwargs))
+
+    def close(self) -> None:
+        """Close the underlying response and finalize the span."""
+        try:
+            self.__wrapped__.close()
+        finally:
+            self._finalize_span()
 
 
 class AsyncStreamingWrapper(_BaseStreamingWrapper):
-    """Wraps a streaming httpx.Response from an AsyncClient, keeping the span open until exhausted."""
+    """Wraps a streaming httpx.Response from an AsyncClient, keeping the span open until closed.
 
-    def __init__(self, response: Any, span: Span) -> None:
-        super().__init__(response, span)
-        self._iterator: AsyncIterator[bytes] = response.__aiter__()
+    Mirrors :class:`StreamingWrapper` for the async iteration methods
+    (``aiter_bytes``, ``aiter_text``, ``aiter_lines``, ``aiter_raw``) and
+    overrides ``aclose()`` to finalize the span.
+    """
 
-    def __aiter__(self) -> AsyncIterator[bytes]:
-        return self
-
-    async def __anext__(self) -> bytes:
+    async def _wrap_aiter(self, inner: AsyncIterator[Any]) -> AsyncIterator[Any]:
+        """Proxy an asynchronous iterator, accumulating raw bytes for the span."""
         try:
-            chunk = await self._iterator.__anext__()
-            if isinstance(chunk, bytes):
-                self._chunks.append(chunk)
-            elif isinstance(chunk, str):
-                self._chunks.append(chunk.encode("utf-8"))
-            return chunk
-        except StopAsyncIteration:
-            self._finalize_span()
-            raise
+            async for chunk in inner:
+                if isinstance(chunk, bytes):
+                    self._chunks.append(chunk)
+                elif isinstance(chunk, str):
+                    self._chunks.append(chunk.encode("utf-8"))
+                yield chunk
+        except GeneratorExit:
+            return
         except Exception as e:
             self._span.set_status(Status(StatusCode.ERROR, str(e)))
             self._span.record_exception(e)
-            self._finalize_span()
             raise
+
+    def aiter_bytes(self, *args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+        """Proxy ``Response.aiter_bytes``, capturing chunks for span output."""
+        return self._wrap_aiter(self.__wrapped__.aiter_bytes(*args, **kwargs))
+
+    def aiter_text(self, *args: Any, **kwargs: Any) -> AsyncIterator[str]:
+        """Proxy ``Response.aiter_text``, capturing chunks for span output."""
+        return self._wrap_aiter(self.__wrapped__.aiter_text(*args, **kwargs))
+
+    def aiter_lines(self, *args: Any, **kwargs: Any) -> AsyncIterator[str]:
+        """Proxy ``Response.aiter_lines``, capturing chunks for span output."""
+        return self._wrap_aiter(self.__wrapped__.aiter_lines(*args, **kwargs))
+
+    def aiter_raw(self, *args: Any, **kwargs: Any) -> AsyncIterator[bytes]:
+        """Proxy ``Response.aiter_raw``, capturing chunks for span output."""
+        return self._wrap_aiter(self.__wrapped__.aiter_raw(*args, **kwargs))
+
+    async def aclose(self) -> None:
+        """Close the underlying response and finalize the span."""
+        try:
+            await self.__wrapped__.aclose()
+        finally:
+            self._finalize_span()
 
 
 def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -109,8 +150,8 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             return wrapped(*args, **kwargs)
 
         try:
-            is_streaming = kwargs.get("stream", False)
-            request = args[0] if not is_streaming else kwargs.get("request")
+
+            request = args[0] if args else kwargs.get("request")
             if request is None:
                 return wrapped(*args, **kwargs)
             method = request.method
@@ -120,6 +161,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             logger.debug("netra.instrumentation.httpx: failed to extract request metadata: %s", e)
             return wrapped(*args, **kwargs)
 
+        is_streaming = kwargs.get("stream", False)
         if not is_streaming:
             with tracer.start_as_current_span(
                 span_name,
@@ -206,8 +248,7 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             return await wrapped(*args, **kwargs)
 
         try:
-            is_streaming = kwargs.get("stream", False)
-            request = args[0] if not is_streaming else kwargs.get("request")
+            request = args[0] if args else kwargs.get("request")
             if request is None:
                 return await wrapped(*args, **kwargs)
             method = request.method
@@ -217,6 +258,7 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             logger.debug("netra.instrumentation.httpx: failed to extract request metadata: %s", e)
             return await wrapped(*args, **kwargs)
 
+        is_streaming = kwargs.get("stream", False)
         if not is_streaming:
             with tracer.start_as_current_span(
                 span_name,
