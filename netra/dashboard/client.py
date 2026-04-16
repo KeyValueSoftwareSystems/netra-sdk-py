@@ -176,11 +176,10 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to execute dashboard query: %s",
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return None
 
@@ -246,11 +245,10 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to fetch session stats: %s",
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return None
 
@@ -294,10 +292,32 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to fetch session summary: %s",
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return None
+
+    def _extract_error_message(self, exc: Exception) -> Any:
+        """Extract a human-readable error message from an exception.
+
+        For HTTP status errors that carry a response, attempts to parse the
+        backend JSON error payload. Falls back to ``str(exc)`` otherwise.
+
+        Args:
+            exc: The exception that was raised.
+
+        Returns:
+            A descriptive error message string.
+        """
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                response_json = response.json()
+                error_data = response_json.get("error", {})
+                if isinstance(error_data, dict):
+                    return error_data.get("message", str(exc))
+            except Exception:
+                pass
+        return str(exc)

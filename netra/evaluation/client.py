@@ -128,11 +128,8 @@ class EvaluationHttpClient:
             if isinstance(data, dict) and "data" in data:
                 logger.info("netra.evaluation: Dataset created successfully")
                 return data.get("data", {})
-        except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.evaluation: Failed to create dataset: %s", response_json.get("error").get("message", "")
-            )
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to create dataset: %s", self._extract_error_message(exc))
             return None
 
     def add_dataset_item(self, dataset_id: str, item: DatasetItem) -> Any:
@@ -163,12 +160,11 @@ class EvaluationHttpClient:
             if isinstance(data, dict) and "data" in data:
                 logger.info("netra.evaluation: Dataset item added successfully")
                 return data.get("data", {})
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.evaluation: Failed to add item to dataset '%s': %s",
                 dataset_id,
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return None
 
@@ -193,12 +189,11 @@ class EvaluationHttpClient:
             if isinstance(data, dict) and "data" in data:
                 logger.info("netra.evaluation: Dataset fetched successfully")
                 return data.get("data", [])
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.evaluation: Failed to fetch dataset '%s': %s",
                 dataset_id,
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return None
 
@@ -234,11 +229,8 @@ class EvaluationHttpClient:
             data = response.json()
             if isinstance(data, dict) and "data" in data:
                 return data.get("data", {})
-        except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.evaluation: Failed to create run '%s': %s", name, response_json.get("error").get("message", "")
-            )
+        except Exception as exc:
+            logger.error("netra.evaluation: Failed to create run '%s': %s", name, self._extract_error_message(exc))
             return {"success": False}
 
     def post_run_item(self, run_id: str, payload: Dict[str, Any]) -> Any:
@@ -265,12 +257,11 @@ class EvaluationHttpClient:
                 run_item_id = run_item.get("id")
                 return run_item_id
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.evaluation: Failed to post run item for run '%s': %s",
                 run_id,
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return {"success": False}
 
@@ -300,13 +291,12 @@ class EvaluationHttpClient:
             if isinstance(data, dict) and "data" in data:
                 return data.get("data", {})
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.evaluation: Failed to submit local evaluations for run '%s', item '%s': %s",
                 run_id,
                 test_run_item_id,
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return {"success": False}
 
@@ -334,14 +324,36 @@ class EvaluationHttpClient:
                 logger.info("netra.evaluation: Completed test run successfully")
                 return data.get("data", {})
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.evaluation: Failed to post run status for run '%s': %s",
                 run_id,
-                response_json.get("error").get("message", ""),
+                self._extract_error_message(exc),
             )
             return {"success": False}
+
+    def _extract_error_message(self, exc: Exception) -> Any:
+        """Extract a human-readable error message from an exception.
+
+        For HTTP status errors that carry a response, attempts to parse the
+        backend JSON error payload. Falls back to ``str(exc)`` otherwise.
+
+        Args:
+            exc: The exception that was raised.
+
+        Returns:
+            A descriptive error message string.
+        """
+        response = getattr(exc, "response", None)
+        if response is not None:
+            try:
+                response_json = response.json()
+                error_data = response_json.get("error", {})
+                if isinstance(error_data, dict):
+                    return error_data.get("message", str(exc))
+            except Exception:
+                pass
+        return str(exc)
 
     def get_span_by_id(self, span_id: str) -> Any:
         """
