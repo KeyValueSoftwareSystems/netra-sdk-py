@@ -187,7 +187,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             with tracer.start_as_current_span(
                 span_name,
                 kind=SpanKind.CLIENT,
-                attributes={"http.request.method": method, "url.full": url},
+                attributes={"http.method": method, "http.url": url},
             ) as span:
                 try:
                     set_span_input(span, request)
@@ -205,7 +205,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     raise
 
                 try:
-                    span.set_attribute("http.response.status_code", response.status_code)
+                    span.set_attribute("http.status_code", response.status_code)
                     set_span_output(span, response)
                     if response.status_code >= 500:
                         span.set_status(Status(StatusCode.ERROR, f"HTTP {response.status_code}"))
@@ -219,7 +219,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
         span = tracer.start_span(
             span_name,
             kind=SpanKind.CLIENT,
-            attributes={"http.request.method": method, "url.full": url},
+            attributes={"http.method": method, "http.url": url},
         )
         try:
             context = context_api.attach(set_span_in_context(span))
@@ -240,7 +240,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 raise
 
             try:
-                span.set_attribute("http.response.status_code", response.status_code)
+                span.set_attribute("http.status_code", response.status_code)
                 if response.status_code >= 500:
                     span.set_status(Status(StatusCode.ERROR, f"HTTP {response.status_code}"))
                 else:
