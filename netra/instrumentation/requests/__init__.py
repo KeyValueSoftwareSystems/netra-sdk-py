@@ -6,24 +6,28 @@ from opentelemetry.instrumentation.utils import unwrap
 from opentelemetry.trace import get_tracer
 from wrapt import wrap_function_wrapper
 
-from netra.instrumentation.httpx.utils import get_default_span_name
-from netra.instrumentation.httpx.version import __version__
-from netra.instrumentation.httpx.wrappers import async_send_wrapper, send_wrapper
+from netra.instrumentation.requests.version import __version__
+from netra.instrumentation.requests.wrappers import send_wrapper
 
 logger = logging.getLogger(__name__)
 
-_instruments = ("httpx >= 0.18.0",)
+_instruments = ("requests >= 2.0.0",)
 
 
-class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
-    """Custom HTTPX instrumentor for Netra SDK."""
+class RequestsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
+    """Custom requests instrumentor for Netra SDK."""
 
     def instrumentation_dependencies(self) -> Collection[str]:
-        """Return the list of required instrumentation dependencies."""
+        """Return the list of required instrumentation dependencies.
+
+        Returns:
+            A collection of package requirement strings that must be satisfied
+            for this instrumentor to function.
+        """
         return _instruments
 
     def _instrument(self, **kwargs: Any) -> None:
-        """Instrument httpx.Client.send and httpx.AsyncClient.send.
+        """Instrument requests.Session.send.
 
         Args:
             **kwargs: Keyword arguments passed by the instrumentation framework.
@@ -37,19 +41,18 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             return
 
         try:
-            wrap_function_wrapper("httpx", "Client.send", send_wrapper(tracer))
-            wrap_function_wrapper("httpx", "AsyncClient.send", async_send_wrapper(tracer))
+            wrap_function_wrapper("requests", "Session.send", send_wrapper(tracer))
         except Exception as e:
-            logger.error(f"Failed to instrument httpx: {e}")
+            logger.error(f"Failed to instrument requests: {e}")
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        """Uninstrument httpx.Client.send and httpx.AsyncClient.send.
+        """Uninstrument requests.Session.send.
 
         Args:
-            **kwargs: Keyword arguments passed by the instrumentation framework.
+            **kwargs: Keyword arguments passed by the instrumentation framework
+                (unused but required by the base class interface).
         """
         try:
-            unwrap("httpx.Client", "send")
-            unwrap("httpx.AsyncClient", "send")
+            unwrap("requests.Session", "send")
         except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument httpx")
+            logger.error("Failed to uninstrument requests")
