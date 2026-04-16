@@ -53,8 +53,6 @@ class RequestsInstrumentor(BaseInstrumentor):  # type: ignore[misc]
                 (unused but required by the base class interface).
         """
         try:
-            import requests as requests_lib  # type:ignore[import-untyped]
-
-            unwrap(requests_lib.Session, "send")
-        except Exception as e:
-            logger.error(f"Failed to uninstrument requests: {e}")
+            unwrap("requests.Session", "send")
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument requests")

@@ -49,9 +49,7 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             **kwargs: Keyword arguments passed by the instrumentation framework.
         """
         try:
-            import httpx
-
-            unwrap(httpx.Client, "send")
-            unwrap(httpx.AsyncClient, "send")
+            unwrap("httpx.Client", "send")
+            unwrap("httpx.AsyncClient", "send")
         except (AttributeError, ModuleNotFoundError):
             logger.error("Failed to uninstrument httpx")
