@@ -103,6 +103,11 @@ class Tracer:
             provider.add_span_processor(SessionSpanProcessor())
             provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
 
+            # Adding RootSpanProcessor after LlmTraceIdentifierSpanProcessor
+            # to ensure the on_end function in LlmTraceIdentifierSpanProcessor
+            # can get root_span correctly using RootSpanProcessor
+            provider.add_span_processor(RootSpanProcessor())
+
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
 
