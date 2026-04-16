@@ -5,16 +5,9 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
-## [0.1.80] - 2026-04-10
+## [0.1.80] - 2026-04-16
 
-- Added input/output attributes across LLM, traceloop, and custom spans
-- Added utility function to explicitly set input/output attributes on the active span
-- Added utility function to explicitly set input/output attributes on the root span
-- Move serialization logic to SessionManager
-- Added custom instrumentation for httpx and request libraries
-- Add a centralized span processor to manage root span handling
 - Add relative_time_to_first_token attribute on LLM spans
-- Create a common util function to centralize adding time duration attributes on a span
 - Add time_to_first_token and relative_time_to_first_token for litellm instrumentation
 
 
