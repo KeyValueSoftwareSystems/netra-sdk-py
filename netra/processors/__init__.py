@@ -4,10 +4,12 @@ from netra.processors.local_filtering_span_processor import LocalFilteringSpanPr
 from netra.processors.root_span_processor import RootSpanProcessor
 from netra.processors.scrubbing_span_processor import ScrubbingSpanProcessor
 from netra.processors.session_span_processor import SessionSpanProcessor
+from netra.processors.span_io_processor import SpanIOProcessor
 
 __all__ = [
     "SessionSpanProcessor",
     "InstrumentationSpanProcessor",
+    "SpanIOProcessor",
     "LlmTraceIdentifierSpanProcessor",
     "ScrubbingSpanProcessor",
     "LocalFilteringSpanProcessor",
