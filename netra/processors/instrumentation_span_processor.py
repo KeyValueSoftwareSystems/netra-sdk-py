@@ -62,7 +62,7 @@ def _get_blocked_url_patterns() -> frozenset[str]:
 
 
 # Pre-computed allowed instrumentation names
-_ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet}  # type: ignore[attr-defined]
+_ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet}
 
 
 class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
@@ -115,7 +115,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             span: The span whose set_attribute method will be wrapped.
         """
         original_set_attribute: SetAttributeFunc = span.set_attribute
-        instrumentation_name = self._extract_instrumentation_name(span)
+        self._extract_instrumentation_name(span)
         # is_httpx = self._is_httpx_instrumentation(instrumentation_name)
 
         # if is_httpx:
