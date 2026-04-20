@@ -387,6 +387,46 @@ class Netra:
         SessionManager.add_conversation(conversation_type=conversation_type, role=role, content=content)
 
     @classmethod
+    def set_input(cls, value: Any) -> None:
+        """
+        Set the input attribute on the current active span.
+
+        Args:
+            value: The input value to record
+        """
+        SessionManager.set_input(value)
+
+    @classmethod
+    def set_output(cls, value: Any) -> None:
+        """
+        Set the output attribute on the current active span.
+
+        Args:
+            value: The output value to record
+        """
+        SessionManager.set_output(value)
+
+    @classmethod
+    def set_root_input(cls, value: Any) -> None:
+        """
+        Set the input attribute on the root span of the current trace.
+
+        Args:
+            value: The input value to record
+        """
+        SessionManager.set_root_input(value)
+
+    @classmethod
+    def set_root_output(cls, value: Any) -> None:
+        """
+        Set the output attribute on the root span of the current trace.
+
+        Args:
+            value: The output value to record
+        """
+        SessionManager.set_root_output(value)
+
+    @classmethod
     def start_span(
         cls,
         name: str,
