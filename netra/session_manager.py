@@ -38,9 +38,6 @@ class SessionManager:
     # Maintained for spans registered via SessionManager (e.g., SpanWrapper)
     _active_spans: List[trace.Span] = []
 
-    # Reference to SpanIOProcessor for root span lookup keyed by trace_id
-    _span_io_processor: Optional[Any] = None
-
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
         """
@@ -455,34 +452,29 @@ class SessionManager:
             logger.exception("SessionManager.set_root_output: failed to set output attribute")
 
     @classmethod
-    def set_span_io_processor(cls, processor: Any) -> None:
-        """Store a reference to the SpanIOProcessor for root span lookup.
-
-        Args:
-            processor: The SpanIOProcessor instance.
-        """
-        cls._span_io_processor = processor
-
-    @classmethod
     def set_attribute_on_root_span(cls, attr_key: str, attr_value: Any) -> None:
         """Set an attribute on the root span of the current trace.
 
-        Resolves the root span via SpanIOProcessor (keyed by trace_id of the
-        current active span), which is correct under concurrent traces.
 
         Args:
             attr_key: Key for the attribute to set
             attr_value: Value for the attribute to set
         """
         try:
-            if cls._span_io_processor is None:
-                logger.warning("SpanIOProcessor not initialised; cannot set root attribute '%s'", attr_key)
-                return
+            from netra.processors.root_span_processor import RootSpanProcessor
+
             span_ctx = trace.get_current_span().get_span_context()
             if not span_ctx.is_valid:
                 logger.warning("set_attribute_on_root_span called outside any active span context")
                 return
-            cls._span_io_processor.set_root_attribute(span_ctx.trace_id, attr_key, attr_value)
+
+            trace_id = span_ctx.trace_id
+            root_span = RootSpanProcessor.get_root_span_by_trace_id(trace_id)
+            if not root_span:
+                # Format as 32-character zero-padded lowercase hex
+                logger.warning(f"Cannot find root span for trace_id: {trace_id:032x}")
+                return
+            root_span.set_attribute(attr_key, attr_value)
         except Exception:
             logger.exception("Failed to set attribute '%s' on root span", attr_key)
 
