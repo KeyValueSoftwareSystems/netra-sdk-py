@@ -1,3 +1,4 @@
+import json
 import logging
 from datetime import datetime
 from enum import Enum
@@ -36,6 +37,9 @@ class SessionManager:
     # Global stack of active spans in creation order (oldest first, newest last)
     # Maintained for spans registered via SessionManager (e.g., SpanWrapper)
     _active_spans: List[trace.Span] = []
+
+    # Reference to SpanIOProcessor for root span lookup keyed by trace_id
+    _span_io_processor: Optional[Any] = None
 
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
@@ -371,6 +375,116 @@ class SessionManager:
                 logger.exception("Failed to set conversation attribute directly on span")
         except Exception as e:
             logger.exception("Failed to add conversation attribute: %s", e)
+
+    @classmethod
+    def set_input(cls, value: Any) -> None:
+        """Set the ``input`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The input value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_active_span("input", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_input: failed to set input attribute")
+
+    @classmethod
+    def set_output(cls, value: Any) -> None:
+        """Set the ``output`` attribute on the current active span.
+
+        Accepts any value. Dicts and lists are JSON-serialised; primitives are
+        converted with ``str()``. The result is truncated to
+        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+
+        Args:
+            value: The output value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_active_span("output", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_output: failed to set output attribute")
+
+    @classmethod
+    def set_root_input(cls, value: Any) -> None:
+        """Set the ``input`` attribute on the root span of the current trace.
+
+        The root span is the oldest span registered via :meth:`register_span`.
+        If no such span exists, falls back to the current active OTel span.
+
+        Args:
+            value: The input value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_root_span("input", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_root_input: failed to set input attribute")
+
+    @classmethod
+    def set_root_output(cls, value: Any) -> None:
+        """Set the ``output`` attribute on the root span of the current trace.
+
+        The root span is the oldest span registered via :meth:`register_span`.
+        If no such span exists, falls back to the current active OTel span.
+
+        Args:
+            value: The output value to record.
+        """
+        try:
+            if isinstance(value, (dict, list)):
+                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
+            else:
+                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
+            cls.set_attribute_on_root_span("output", serialized)
+        except Exception:
+            logger.exception("SessionManager.set_root_output: failed to set output attribute")
+
+    @classmethod
+    def set_span_io_processor(cls, processor: Any) -> None:
+        """Store a reference to the SpanIOProcessor for root span lookup.
+
+        Args:
+            processor: The SpanIOProcessor instance.
+        """
+        cls._span_io_processor = processor
+
+    @classmethod
+    def set_attribute_on_root_span(cls, attr_key: str, attr_value: Any) -> None:
+        """Set an attribute on the root span of the current trace.
+
+        Resolves the root span via SpanIOProcessor (keyed by trace_id of the
+        current active span), which is correct under concurrent traces.
+
+        Args:
+            attr_key: Key for the attribute to set
+            attr_value: Value for the attribute to set
+        """
+        try:
+            if cls._span_io_processor is None:
+                logger.warning("SpanIOProcessor not initialised; cannot set root attribute '%s'", attr_key)
+                return
+            span_ctx = trace.get_current_span().get_span_context()
+            if not span_ctx.is_valid:
+                logger.warning("set_attribute_on_root_span called outside any active span context")
+                return
+            cls._span_io_processor.set_root_attribute(span_ctx.trace_id, attr_key, attr_value)
+        except Exception:
+            logger.exception("Failed to set attribute '%s' on root span", attr_key)
 
     @staticmethod
     def set_attribute_on_active_span(attr_key: str, attr_value: Any) -> None:

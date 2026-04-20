@@ -96,11 +96,13 @@ class Tracer:
                 RootSpanProcessor,
                 ScrubbingSpanProcessor,
                 SessionSpanProcessor,
+                SpanIOProcessor,
             )
 
             provider.add_span_processor(LocalFilteringSpanProcessor())
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
+            provider.add_span_processor(SpanIOProcessor())
             provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
 
             # Adding RootSpanProcessor after LlmTraceIdentifierSpanProcessor
