@@ -1,15 +1,15 @@
 import logging
-import os
 from typing import Any, Dict, Optional
 
-import httpx
-
+from netra.client import BaseNetraClient
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
 
+_LOG_PREFIX = "netra.usage"
 
-class UsageHttpClient:
+
+class UsageHttpClient(BaseNetraClient):
     """Internal HTTP client for usage APIs."""
 
     def __init__(self, config: Config) -> None:
@@ -17,68 +17,31 @@ class UsageHttpClient:
         Initialize the usage HTTP client.
 
         Args:
-            config: Configuration object with usage settings
+            config: Configuration object with usage settings.
         """
-        self._client: Optional[httpx.Client] = self._create_client(config)
+        super().__init__(
+            config,
+            log_prefix=_LOG_PREFIX,
+            timeout_env_var="NETRA_USAGE_TIMEOUT",
+        )
 
-    def _create_client(self, config: Config) -> Optional[httpx.Client]:
-        endpoint = (config.otlp_endpoint or "").strip()
-        if not endpoint:
-            logger.error("netra.usage: NETRA_OTLP_ENDPOINT is required for usage APIs")
-            return None
-
-        base_url = self._resolve_base_url(endpoint)
-        headers = self._build_headers(config)
-        timeout = self._get_timeout()
-
-        try:
-            return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("netra.usage: Failed to initialize usage HTTP client: %s", exc)
-            return None
-
-    def _resolve_base_url(self, endpoint: str) -> str:
-        base_url = endpoint.rstrip("/")
-        if base_url.endswith("/telemetry"):
-            base_url = base_url[: -len("/telemetry")]
-        return base_url
-
-    def _build_headers(self, config: Config) -> Dict[str, str]:
-        headers: Dict[str, str] = dict(config.headers or {})
-        api_key = config.api_key
-        if api_key:
-            headers["x-api-key"] = api_key
-        return headers
-
-    def _get_timeout(self) -> float:
-        timeout_env = os.getenv("NETRA_USAGE_TIMEOUT")
-        if not timeout_env:
-            return 10.0
-        try:
-            return float(timeout_env)
-        except ValueError:
-            logger.warning(
-                "netra.usage: Invalid NETRA_USAGE_TIMEOUT value '%s', using default 10.0",
-                timeout_env,
-            )
-            return 10.0
-
-    def get_session_usage(self, session_id: str, start_time: str | None = None, end_time: str | None = None) -> Any:
+    def get_session_usage(
+        self, session_id: str, start_time: Optional[str] = None, end_time: Optional[str] = None
+    ) -> Any:
         """
         Get session usage data.
 
         Args:
-            session_id: Session identifier
+            session_id: Session identifier.
+            start_time: Optional start time filter.
+            end_time: Optional end time filter.
 
         Returns:
-            Any: Session usage data
+            Session usage data.
         """
         if not self._client:
-            logger.error(
-                "netra.usage: Usage client is not initialized; cannot fetch session usage '%s'",
-                session_id,
-            )
-            return {}
+            logger.error("%s: Client is not initialized; cannot fetch session usage '%s'", _LOG_PREFIX, session_id)
+            return None
 
         try:
             url = f"/usage/sessions/{session_id}"
@@ -94,25 +57,26 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to fetch session usage '%s': %s", session_id, exc)
-            return {}
+            logger.error(
+                "%s: Failed to fetch session usage '%s': %s", _LOG_PREFIX, session_id, self._extract_error_message(exc)
+            )
+            return None
 
-    def get_tenant_usage(self, tenant_id: str, start_time: str | None = None, end_time: str | None = None) -> Any:
+    def get_tenant_usage(self, tenant_id: str, start_time: Optional[str] = None, end_time: Optional[str] = None) -> Any:
         """
         Get tenant usage data.
 
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier.
+            start_time: Optional start time filter.
+            end_time: Optional end time filter.
 
         Returns:
-            Any: Tenant usage data
+            Tenant usage data.
         """
         if not self._client:
-            logger.error(
-                "netra.usage: Usage client is not initialized; cannot fetch tenant usage '%s'",
-                tenant_id,
-            )
-            return {}
+            logger.error("%s: Client is not initialized; cannot fetch tenant usage '%s'", _LOG_PREFIX, tenant_id)
+            return None
 
         try:
             url = f"/usage/tenants/{tenant_id}"
@@ -128,45 +92,47 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to fetch tenant usage '%s': %s", tenant_id, exc)
-            return {}
+            logger.error(
+                "%s: Failed to fetch tenant usage '%s': %s", _LOG_PREFIX, tenant_id, self._extract_error_message(exc)
+            )
+            return None
 
     def list_traces(
         self,
-        start_time: str | None = None,
-        end_time: str | None = None,
-        trace_id: str | None = None,
-        session_id: str | None = None,
-        user_id: str | None = None,
-        tenant_id: str | None = None,
-        limit: int | None = None,
-        cursor: str | None = None,
-        direction: str | None = None,
-        sort_field: str | None = None,
-        sort_order: str | None = None,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+        trace_id: Optional[str] = None,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+        limit: Optional[int] = None,
+        cursor: Optional[str] = None,
+        direction: Optional[str] = None,
+        sort_field: Optional[str] = None,
+        sort_order: Optional[str] = None,
     ) -> Any:
         """
         List all traces.
 
         Args:
-            start_time: Start time for the traces (in ISO 8601 UTC format)
-            end_time: End time for the traces (in ISO 8601 UTC format)
-            trace_id: Search based on trace_id, if provided
-            session_id: Search based on session_id, if provided
-            user_id: Search based on user_id, if provided
-            tenant_id: Search based on tenant_id, if provided
-            limit: Maximum number of traces to return
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            sort_field: Field to sort by
-            sort_order: Order to sort by
+            start_time: Start time for the traces (in ISO 8601 UTC format).
+            end_time: End time for the traces (in ISO 8601 UTC format).
+            trace_id: Search based on trace_id, if provided.
+            session_id: Search based on session_id, if provided.
+            user_id: Search based on user_id, if provided.
+            tenant_id: Search based on tenant_id, if provided.
+            limit: Maximum number of traces to return.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            sort_field: Field to sort by.
+            sort_order: Order to sort by.
 
         Returns:
-            Any: Traces data
+            Traces data.
         """
         if not self._client:
-            logger.error("netra.usage: Usage client is not initialized; cannot list traces")
-            return {}
+            logger.error("%s: Client is not initialized; cannot list traces", _LOG_PREFIX)
+            return None
 
         try:
             url = "/sdk/traces"
@@ -207,36 +173,35 @@ class UsageHttpClient:
 
             response = self._client.post(url, json=payload or None)
             response.raise_for_status()
-            data = response.json()
-            return data
+            return response.json()
         except Exception as exc:
-            logger.error("netra.usage: Failed to list traces: %s", exc)
-            return {}
+            logger.error("%s: Failed to list traces: %s", _LOG_PREFIX, self._extract_error_message(exc))
+            return None
 
     def list_spans_by_trace_id(
         self,
         trace_id: str,
-        cursor: str | None = None,
-        direction: str | None = None,
-        limit: int | None = None,
-        span_name: str | None = None,
+        cursor: Optional[str] = None,
+        direction: Optional[str] = None,
+        limit: Optional[int] = None,
+        span_name: Optional[str] = None,
     ) -> Any:
         """
         List all spans for a given trace.
 
         Args:
-            trace_id: Trace identifier
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            limit: Maximum number of spans to return
-            span_name: Search query for the spans
+            trace_id: Trace identifier.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            limit: Maximum number of spans to return.
+            span_name: Search query for the spans.
 
         Returns:
-            Any: Spans data
+            Spans data.
         """
         if not self._client:
-            logger.error("netra.usage: Usage client is not initialized; cannot list spans for trace '%s'", trace_id)
-            return {}
+            logger.error("%s: Client is not initialized; cannot list spans for trace '%s'", _LOG_PREFIX, trace_id)
+            return None
 
         try:
             url = f"/sdk/traces/{trace_id}/spans"
@@ -252,8 +217,9 @@ class UsageHttpClient:
 
             response = self._client.get(url, params=params or None)
             response.raise_for_status()
-            data = response.json()
-            return data
+            return response.json()
         except Exception as exc:
-            logger.error("netra.usage: Failed to list spans for trace '%s': %s", trace_id, exc)
-            return {}
+            logger.error(
+                "%s: Failed to list spans for trace '%s': %s", _LOG_PREFIX, trace_id, self._extract_error_message(exc)
+            )
+            return None

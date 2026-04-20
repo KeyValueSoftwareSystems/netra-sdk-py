@@ -1,9 +1,7 @@
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
-import httpx
-
+from netra.client import BaseNetraClient
 from netra.config import Config
 from netra.dashboard.models import (
     ChartType,
@@ -19,8 +17,10 @@ from netra.dashboard.models import (
 
 logger = logging.getLogger(__name__)
 
+_LOG_PREFIX = "netra.dashboard"
 
-class DashboardHttpClient:
+
+class DashboardHttpClient(BaseNetraClient):
     """Internal HTTP client for Dashboard APIs."""
 
     def __init__(self, config: Config) -> None:
@@ -28,85 +28,15 @@ class DashboardHttpClient:
         Initialize the dashboard HTTP client.
 
         Args:
-            config: Configuration object with dashboard settings
+            config: Configuration object with dashboard settings.
         """
-        self._client: Optional[httpx.Client] = self._create_client(config)
-
-    def _create_client(self, config: Config) -> Optional[httpx.Client]:
-        """
-        Create an HTTP client for dashboard endpoints.
-
-        Args:
-            config: The configuration object.
-
-        Returns:
-            An HTTP client for dashboard endpoints, or None if creation fails.
-        """
-        endpoint = (config.otlp_endpoint or "").strip()
-        if not endpoint:
-            logger.error("netra.dashboard: NETRA_OTLP_ENDPOINT is required for dashboard APIs")
-            return None
-
-        base_url = self._resolve_base_url(endpoint)
-        headers = self._build_headers(config)
-        timeout = self._get_timeout()
-
-        try:
-            return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("netra.dashboard: Failed to initialize dashboard HTTP client: %s", exc)
-            return None
-
-    def _resolve_base_url(self, endpoint: str) -> str:
-        """
-        Resolve base URL from endpoint.
-
-        Args:
-            endpoint: The endpoint to resolve.
-
-        Returns:
-            The resolved base URL.
-        """
-        base_url = endpoint.rstrip("/")
-        if base_url.endswith("/telemetry"):
-            base_url = base_url[: -len("/telemetry")]
-        return base_url
-
-    def _build_headers(self, config: Config) -> Dict[str, str]:
-        """
-        Build Headers for Dashboard Client.
-
-        Args:
-            config: The configuration object.
-
-        Returns:
-            The headers for dashboard client.
-        """
-        headers: Dict[str, str] = dict(config.headers or {})
-        api_key = config.api_key
-        if api_key:
-            headers["x-api-key"] = api_key
-        headers["Content-Type"] = "application/json"
-        return headers
-
-    def _get_timeout(self) -> float:
-        """
-        Get timeout for dashboard client.
-
-        Returns:
-            The timeout for dashboard client.
-        """
-        timeout_env = os.getenv("NETRA_DASHBOARD_TIMEOUT")
-        if not timeout_env:
-            return 30.0
-        try:
-            return float(timeout_env)
-        except ValueError:
-            logger.warning(
-                "netra.dashboard: Invalid NETRA_DASHBOARD_TIMEOUT value '%s', using default 30.0",
-                timeout_env,
-            )
-            return 30.0
+        super().__init__(
+            config,
+            log_prefix=_LOG_PREFIX,
+            timeout_env_var="NETRA_DASHBOARD_TIMEOUT",
+            default_timeout=30.0,
+            extra_headers={"Content-Type": "application/json"},
+        )
 
     def query_data(
         self,
@@ -130,7 +60,7 @@ class DashboardHttpClient:
             The query response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+            logger.error("%s: Client is not initialized; cannot execute query", _LOG_PREFIX)
             return None
 
         try:
@@ -174,13 +104,12 @@ class DashboardHttpClient:
 
             response = self._client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
-            return data
-        except Exception:
-            response_json = response.json()
+            return response.json()
+        except Exception as exc:
             logger.error(
-                "netra.dashboard: Failed to execute dashboard query: %s",
-                response_json.get("error").get("message", ""),
+                "%s: Failed to execute dashboard query: %s",
+                _LOG_PREFIX,
+                self._extract_error_message(exc),
             )
             return None
 
@@ -202,7 +131,7 @@ class DashboardHttpClient:
             end_time: End time in ISO 8601 UTC format.
             filters: Optional list of session filters.
             limit: Maximum number of results per page.
-            page: Page number for pagination.
+            cursor: Cursor for pagination.
             sort_field: Field to sort by.
             sort_order: Sort order (asc/desc).
 
@@ -210,7 +139,7 @@ class DashboardHttpClient:
             The session stats response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session stats")
+            logger.error("%s: Client is not initialized; cannot fetch session stats", _LOG_PREFIX)
             return None
 
         try:
@@ -244,13 +173,12 @@ class DashboardHttpClient:
 
             response = self._client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
-            return data
-        except Exception:
-            response_json = response.json()
+            return response.json()
+        except Exception as exc:
             logger.error(
-                "netra.dashboard: Failed to fetch session stats: %s",
-                response_json.get("error").get("message", ""),
+                "%s: Failed to fetch session stats: %s",
+                _LOG_PREFIX,
+                self._extract_error_message(exc),
             )
             return None
 
@@ -267,7 +195,7 @@ class DashboardHttpClient:
             The session summary response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+            logger.error("%s: Client is not initialized; cannot fetch session summary", _LOG_PREFIX)
             return None
 
         try:
@@ -292,12 +220,11 @@ class DashboardHttpClient:
 
             response = self._client.post(url, json=payload)
             response.raise_for_status()
-            data = response.json()
-            return data
-        except Exception:
-            response_json = response.json()
+            return response.json()
+        except Exception as exc:
             logger.error(
-                "netra.dashboard: Failed to fetch session summary: %s",
-                response_json.get("error").get("message", ""),
+                "%s: Failed to fetch session summary: %s",
+                _LOG_PREFIX,
+                self._extract_error_message(exc),
             )
             return None

@@ -184,6 +184,8 @@ class Evaluation:
         if evaluators_config:
             evaluators_config_dicts = [e.model_dump(by_alias=True) for e in evaluators_config]
         response = self._client.create_run(name=name, dataset_id=dataset_id, evaluators_config=evaluators_config_dicts)
+        if not response:
+            return None
         run_id = response.get("id", None)
         return run_id
 

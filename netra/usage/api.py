@@ -45,6 +45,8 @@ class Usage:
             logger.error("netra.usage: start_time and end_time are required to fetch session usage")
             return None
         result = self._client.get_session_usage(session_id, start_time=start_time, end_time=end_time)
+        if not result:
+            return None
         session_id = result.get("session_id", "")
         if not session_id:
             return None
@@ -83,6 +85,8 @@ class Usage:
             logger.error("netra.usage: start_time and end_time are required to fetch tenant usage")
             return None
         result = self._client.get_tenant_usage(tenant_id, start_time=start_time, end_time=end_time)
+        if not result:
+            return None
         tenant_id = result.get("tenant_id", "")
         if not tenant_id:
             return None
