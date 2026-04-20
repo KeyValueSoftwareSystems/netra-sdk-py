@@ -116,9 +116,6 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         original_set_attribute: SetAttributeFunc = span.set_attribute
         self._extract_instrumentation_name(span)
-        # is_httpx = self._is_httpx_instrumentation(instrumentation_name)
-
-        # if is_httpx:
         self._check_and_mark_blocked_url(span, original_set_attribute)
 
         def wrapped_set_attribute(key: str, value: Any) -> None:
