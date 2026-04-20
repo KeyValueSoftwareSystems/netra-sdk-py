@@ -24,7 +24,6 @@ import time
 from typing import Any, Dict, List
 
 from dotenv import load_dotenv
-
 from opentelemetry.metrics import Observation
 
 from netra import Netra
@@ -44,6 +43,7 @@ load_dotenv()
 # 1.  Initialise the SDK with metrics enabled
 # ---------------------------------------------------------------------------
 
+
 def init_sdk() -> None:
     Netra.init(
         app_name="custom-metrics-example",
@@ -60,6 +60,7 @@ def init_sdk() -> None:
 # ---------------------------------------------------------------------------
 # 2.  Create instruments from a named Meter
 # ---------------------------------------------------------------------------
+
 
 def create_instruments():
     """Return a dict of OTel instruments scoped to an 'ai_service' meter."""
@@ -195,9 +196,7 @@ def run_inference(
             results.append({"prompt": prompt[:40], "error": str(exc)})
 
     successes = sum(1 for r in results if "error" not in r)
-    logger.info(
-        "Inference workflow complete: %d/%d succeeded", successes, len(results)
-    )
+    logger.info("Inference workflow complete: %d/%d succeeded", successes, len(results))
     return results
 
 
@@ -244,6 +243,7 @@ def setup_observable_instruments() -> None:
 # 5.  Async example — concurrent requests with shared instruments
 # ---------------------------------------------------------------------------
 
+
 @task(name="async_llm_call")  # type: ignore[arg-type]
 async def async_llm_call(
     prompt: str,
@@ -285,10 +285,7 @@ async def run_async_inference(
     logger.info("Starting async inference for %d prompts", len(prompts))
     instruments["queue_depth"].add(len(prompts), {"source": "async_batch"})
 
-    tasks = [
-        async_llm_call(prompt, select_model(prompt), instruments)  # type: ignore[misc]
-        for prompt in prompts
-    ]
+    tasks = [async_llm_call(prompt, select_model(prompt), instruments) for prompt in prompts]  # type: ignore[misc]
     results = await asyncio.gather(*tasks, return_exceptions=True)
 
     ok = [r for r in results if isinstance(r, dict)]
@@ -299,6 +296,7 @@ async def run_async_inference(
 # ---------------------------------------------------------------------------
 # 6.  Dedicated-meter example — separate meter per domain
 # ---------------------------------------------------------------------------
+
 
 def demonstrate_multiple_meters(instruments: Dict[str, Any]) -> None:
     """Show that different parts of an app can own independent meters."""
@@ -332,6 +330,7 @@ def demonstrate_multiple_meters(instruments: Dict[str, Any]) -> None:
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
+
 
 def main() -> None:
     print("=" * 65)
@@ -367,18 +366,12 @@ def main() -> None:
     # --- Async fan-out ---
     print("\n--- Async concurrent inference ---")
     async_prompts = [f"Async prompt #{i}: tell me something interesting" for i in range(8)]
-    async_results = asyncio.run(
-        run_async_inference(async_prompts, instruments)  # type: ignore[misc]
-    )
+    async_results = asyncio.run(run_async_inference(async_prompts, instruments))  # type: ignore[misc]
     for r in async_results:
         if "error" in r:
             print(f"  FAIL: {r}")
         else:
-            print(
-                f"  {r['model']:>15}  "
-                f"tokens={r['tokens']:<5}  "
-                f"latency={r['latency_ms']}ms"
-            )
+            print(f"  {r['model']:>15}  " f"tokens={r['tokens']:<5}  " f"latency={r['latency_ms']}ms")
 
     # --- Multiple meters ---
     print("\n--- Multiple independent meters ---")
