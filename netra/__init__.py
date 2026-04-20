@@ -12,7 +12,7 @@ from netra.config import Config
 from netra.dashboard import Dashboard
 from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
-from netra.instrumentation.instruments import NetraInstruments
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS_FOR_ROOT, NetraInstruments
 from netra.logging_utils import configure_package_logging
 from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
@@ -75,6 +75,7 @@ class Netra:
         enable_metrics: Optional[bool] = None,
         metrics_export_interval_ms: Optional[int] = None,
         export_auto_metrics: Optional[bool] = None,
+        root_instruments: Optional[Set[NetraInstruments]] = None,
     ) -> None:
         """
         Thread-safe initialization of Netra.
@@ -95,6 +96,12 @@ class Netra:
             enable_metrics: Whether to enable OTLP custom metrics export (default: False)
             metrics_export_interval_ms: Metrics push interval in milliseconds (default: 60000)
             export_auto_metrics: Whether to export OTel auto-instrumented metrics (default: False)
+            root_instruments: Set of instruments allowed to produce root-level
+                spans.  When a root span is blocked, its entire subtree is
+                discarded.  Resolution priority:
+                1. Explicit ``root_instruments`` value if provided.
+                2. The ``instruments`` value if provided (but ``root_instruments`` is not).
+                3. ``DEFAULT_INSTRUMENTS_FOR_ROOT`` if neither is provided.
 
         Returns:
             None
@@ -124,8 +131,25 @@ class Netra:
             # Configure logging based on debug mode
             configure_package_logging(debug_mode=cfg.debug_mode)
 
+            # Resolve root_instruments → set of instrumentation-name strings.
+            resolved_root: Optional[Set[str]] = None
+            if root_instruments is not None:
+                resolved_root = {m.value for m in root_instruments}
+            elif instruments is not None:
+                resolved_root = {m.value for m in instruments}
+            else:
+                resolved_root = {m.value for m in DEFAULT_INSTRUMENTS_FOR_ROOT}
+
             # Initialize tracer (OTLP exporter, span processor, resource)
-            Tracer(cfg)
+            Tracer(cfg, root_instrument_names=resolved_root)
+
+            # Initialize metrics pipeline when explicitly enabled
+            if cfg.enable_metrics:
+                try:
+                    MetricsSetup(cfg)
+                    cls._metrics_enabled = True
+                except Exception as e:
+                    logger.warning("Failed to initialize metrics pipeline: %s", e, exc_info=True)
 
             # Initialize metrics pipeline when explicitly enabled
             if cfg.enable_metrics:
