@@ -11,22 +11,24 @@ logger = logging.getLogger(__name__)
 NETRA_SPAN_TYPE = "netra.span.type"
 
 
-def _build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
+def build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
+    """Serialize an ADK LlmRequest into a plain dict suitable for tracing, stripping binary/schema fields."""
     from google.genai import types
 
     result: Dict[str, Any] = {
         "model": llm_request.model,
-        "config": llm_request.config.model_dump(exclude_none=True, exclude="response_schema"),
+        "config": llm_request.config.model_dump(exclude_none=True, exclude={"response_schema"}),
         "contents": [],
     }
 
-    for content in llm_request.contents:
+    for content in llm_request.contents or []:
         parts = [part for part in content.parts if not hasattr(part, "inline_data") or not part.inline_data]
         result["contents"].append(types.Content(role=content.role, parts=parts).model_dump(exclude_none=True))
     return result
 
 
 def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a serialized LLM request dict into OpenTelemetry span attributes."""
     attributes: Dict[str, Any] = {}
 
     if "model" in llm_request_dict:
@@ -139,6 +141,7 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
 
 
 def _get_event_content(event: Any) -> Tuple[List[Any], "str | None"]:
+    """Return (parts, role) from an ADK event, falling back to empty on error."""
     try:
         parts = event.content.parts if event.content and event.content.parts else []
         role = event.content.role if event.content else None
@@ -170,6 +173,7 @@ def _extract_pending_tool_calls(event: Any) -> Dict[str, Any]:
 
 
 def _resolve_span_type(role: str | None) -> SpanType:
+    """Map an ADK content role to the corresponding Netra SpanType."""
     if role == "model":
         return SpanType.GENERATION
     if role == "user":
@@ -178,6 +182,7 @@ def _resolve_span_type(role: str | None) -> SpanType:
 
 
 def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, Any]]:
+    """Extract flat (non-content) attributes from an ADK event. Returns (span_name_hint, attributes)."""
     attributes: Dict[str, Any] = {}
     span_name = None
 
@@ -234,6 +239,7 @@ def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, A
 def _process_content_parts(
     parts: List[Any], role: "str | None", pending_tool_calls: "Dict[str, Any] | None" = None
 ) -> Tuple[str | None, Dict[str, Any]]:
+    """Build input/output attributes from content parts, optionally correlating with pending tool calls."""
     input_parts: List[Any] = []
     output_parts: List[Any] = []
     span_name = None
@@ -286,6 +292,7 @@ def _process_content_parts(
 def extract_event_attributes(
     event: Any, pending_tool_calls: "Dict[str, Any] | None" = None
 ) -> Tuple[str, Dict[str, Any]]:
+    """Extract all tracing attributes from an ADK event. Returns (span_name, attributes)."""
     parts, role = _get_event_content(event)
 
     scalar_span_name, attributes = extract_scalar_event_attributes(event)
@@ -299,6 +306,7 @@ def extract_event_attributes(
 
 
 def extract_llm_response_attributes(last_response: Any, accumulated_text: List[str]) -> Dict[str, Any]:
+    """Build span attributes from the final LLM response event and accumulated streamed text."""
     attributes: Dict[str, Any] = {}
     _, scalar_attrs = extract_scalar_event_attributes(last_response)
     attributes.update(scalar_attrs)
@@ -348,10 +356,12 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
 
 
 def extract_llm_attributes(llm_request: Dict[str, Any], llm_response: Any) -> Dict[str, Any]:
+    """Merge request and response attributes into a single attribute dict."""
     return {**extract_llm_request_attributes(llm_request), **extract_llm_response_attributes(llm_response, [])}
 
 
 def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
+    """Extract agent metadata attributes from a BaseAgent instance, including nested sub-agents."""
     attributes: Dict[str, Any] = {}
     attributes["gen_ai.agent.name"] = getattr(instance, "name", "unknown")
     if hasattr(instance, "description") and instance.description:

@@ -2,7 +2,6 @@ import json
 import logging
 from typing import Any, AsyncIterator, Callable, Dict, List, Tuple, cast
 
-import wrapt
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
 from opentelemetry.semconv_ai import SpanAttributes
@@ -10,11 +9,12 @@ from opentelemetry.trace import SpanKind, StatusCode, Tracer
 
 from netra.config import Config
 from netra.instrumentation.google_adk.utils import (
-    _build_llm_request_for_trace,
+    NETRA_SPAN_TYPE,
+    build_llm_request_for_trace,
     extract_agent_attributes,
-    extract_llm_attributes,
     extract_llm_request_attributes,
     extract_llm_response_attributes,
+    extract_scalar_event_attributes,
 )
 from netra.span_wrapper import SpanType
 
@@ -22,6 +22,8 @@ logger = logging.getLogger(__name__)
 
 
 class NoOpSpan:
+    """Span implementation that silently discards all operations, used to suppress ADK's built-in tracing."""
+
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         pass
 
@@ -57,6 +59,8 @@ class NoOpSpan:
 
 
 class NoOpTracer:
+    """Tracer that returns NoOpSpans, injected into ADK modules to prevent duplicate span emission."""
+
     def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
         return NoOpSpan()
 
@@ -74,8 +78,10 @@ class _SpanScope:
         self.span = tracer.start_span(name, kind=kind)
         ctx = opentelemetry_api_trace.set_span_in_context(self.span)
         self._token = opentelemetry_context.attach(ctx)
+        self._token_valid = True
 
     def record_error(self, exc: Exception) -> None:
+        """Record the exception in the span"""
         try:
             self.span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(exc))
             self.span.record_exception(exc)
@@ -83,15 +89,28 @@ class _SpanScope:
         except Exception as e:
             logger.warning("Failed to record error on span: %s", e)
 
-    def end(self) -> None:
+    def detach(self) -> None:
+        """Detach the span from the active context without ending the span"""
+        if not self._token_valid:
+            return
         try:
             opentelemetry_context.detach(self._token)
+            self._token_valid = False
+        except Exception as e:
+            logger.warning("Failed to detach span context: %s", e)
+
+    def end(self) -> None:
+        """Detach the span from active context (if attached) and end the span"""
+        try:
+            self.detach()
             self.span.end()
         except Exception as e:
             logger.warning("Failed to end span: %s", e)
 
 
 def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
+    """Return a wrapt wrapper that creates an agent span around BaseAgent.run_async."""
+
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
@@ -109,7 +128,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 span = scope.span
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "adk")
                 span.set_attribute("gen_ai.entity", "agent")
-                span.set_attribute("netra.span.type", SpanType.AGENT)
+                span.set_attribute(NETRA_SPAN_TYPE, SpanType.AGENT)
                 span.set_attributes(extract_agent_attributes(instance))
 
                 invocation_context = args[0] if args else None
@@ -142,6 +161,8 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
 
 
 def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
+    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._call_llm_async."""
+
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
@@ -161,21 +182,29 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                 span = scope.span
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
                 span.set_attribute("gen_ai.entity", "request")
-                span.set_attribute("netra.span.type", SpanType.GENERATION)
+                span.set_attribute(NETRA_SPAN_TYPE, SpanType.GENERATION)
 
                 if llm_request:
-                    llm_request_dict = _build_llm_request_for_trace(llm_request)
+                    llm_request_dict = build_llm_request_for_trace(llm_request)
                     span.set_attributes(extract_llm_request_attributes(llm_request_dict))
 
             except Exception as e:
                 logger.warning("Failed to set LLM span attributes: %s", e)
 
+            # Detach the LLM span from the active context so subsequent spans
+            # (sub-agent calls, tool executions) remain direct children of the
+            # parent agent span rather than nested under this LLM span.
+            scope.detach()
+
             accumulated_text: List[str] = []
             last_response = None
+            last_usage_response = None
 
             try:
                 async for item in wrapped(*args, **kwargs):
                     last_response = item
+                    if getattr(item, "usage_metadata", None) is not None:
+                        last_usage_response = item
                     try:
                         parts = item.content.parts if item.content and item.content.parts else []
                         for part in parts:
@@ -187,7 +216,20 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
 
                 if last_response is not None:
                     try:
-                        span.set_attributes(extract_llm_response_attributes(last_response, accumulated_text))
+                        response_attrs = extract_llm_response_attributes(last_response, accumulated_text)
+                        if last_usage_response is not None and last_usage_response is not last_response:
+                            _, usage_attrs = extract_scalar_event_attributes(last_usage_response)
+                            usage_keys = {
+                                SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
+                                SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
+                                SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
+                                "gen_ai.usage.cached_tokens",
+                                "gen_ai.usage.thoughts_tokens",
+                            }
+                            for key in usage_keys:
+                                if key in usage_attrs:
+                                    response_attrs[key] = usage_attrs[key]
+                        span.set_attributes(response_attrs)
                     except Exception as e:
                         logger.warning("Failed to set LLM response attributes: %s", e)
 
@@ -202,181 +244,67 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
     return cast(Callable[..., Any], wrapper)
 
 
-def finalize_model_response_event_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        result = wrapped(*args, **kwargs)
-
-        llm_request = args[0] if len(args) > 0 else kwargs.get("llm_request")
-        llm_response = args[1] if len(args) > 1 else kwargs.get("llm_response")
-
-        current_span = opentelemetry_api_trace.get_current_span()
-        if current_span.is_recording() and llm_request and llm_response:
-            span_name = getattr(current_span, "name", "")
-            if "ADK.LLM" in span_name:
-                llm_request_dict = _build_llm_request_for_trace(llm_request)
-                llm_response_json = llm_response.model_dump_json(exclude_none=True)
-                llm_attrs = extract_llm_attributes(llm_request_dict, llm_response)
-
-                for key, value in llm_attrs.items():
-                    if "usage" in key or "completion" in key or "response" in key:
-                        current_span.set_attribute(key, value)
-
-        return result
-
-    return cast(Callable[..., Any], wrapper)
-
-
-def adk_trace_tool_call_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    @wrapt.decorator  # type: ignore[misc]
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        result = wrapped(*args, **kwargs)
-
-        tool_args = args[0] if args else kwargs.get("args")
-        current_span = opentelemetry_api_trace.get_current_span()
-        if current_span.is_recording() and tool_args is not None:
-            current_span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
-            current_span.set_attribute("gcp.vertex.agent.tool_call_args", str(tool_args))
-        return result
-
-    return cast(Callable[..., Any], wrapper)
-
-
-def adk_trace_tool_response_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    @wrapt.decorator  # type: ignore[misc]
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        result = wrapped(*args, **kwargs)
-
-        invocation_context = args[0] if len(args) > 0 else kwargs.get("invocation_context")
-        event_id = args[1] if len(args) > 1 else kwargs.get("event_id")
-        function_response_event = args[2] if len(args) > 2 else kwargs.get("function_response_event")
-
-        current_span = opentelemetry_api_trace.get_current_span()
-        if current_span.is_recording():
-            current_span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
-            if invocation_context:
-                current_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_context.invocation_id)
-            if event_id:
-                current_span.set_attribute("gcp.vertex.agent.event_id", event_id)
-            if function_response_event:
-                current_span.set_attribute(
-                    "gcp.vertex.agent.tool_response", function_response_event.model_dump_json(exclude_none=True)
-                )
-            current_span.set_attribute("gcp.vertex.agent.llm_request", "{}")
-            current_span.set_attribute("gcp.vertex.agent.llm_response", "{}")
-        return result
-
-    return cast(Callable[..., Any], wrapper)
-
-
-def adk_trace_call_llm_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    @wrapt.decorator  # type: ignore[misc]
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        result = wrapped(*args, **kwargs)
-
-        invocation_context = args[0] if len(args) > 0 else kwargs.get("invocation_context")
-        event_id = args[1] if len(args) > 1 else kwargs.get("event_id")
-        llm_request = args[2] if len(args) > 2 else kwargs.get("llm_request")
-        llm_response = args[3] if len(args) > 3 else kwargs.get("llm_response")
-
-        current_span = opentelemetry_api_trace.get_current_span()
-        if current_span.is_recording():
-            current_span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
-            if llm_request:
-                current_span.set_attribute(SpanAttributes.LLM_REQUEST_MODEL, llm_request.model)
-            if invocation_context:
-                current_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_context.invocation_id)
-                current_span.set_attribute("gcp.vertex.agent.session_id", invocation_context.session.id)
-            if event_id:
-                current_span.set_attribute("gcp.vertex.agent.event_id", event_id)
-
-            if llm_request:
-                llm_request_dict = _build_llm_request_for_trace(llm_request)
-                current_span.set_attribute("gcp.vertex.agent.llm_request", json.dumps(llm_request_dict))
-
-                llm_response_json = None
-                if llm_response:
-                    llm_response_json = llm_response.model_dump_json(exclude_none=True)
-                    current_span.set_attribute("gcp.vertex.agent.llm_response", llm_response_json)
-
-                llm_attrs = extract_llm_attributes(llm_request_dict, llm_response)
-                for key, value in llm_attrs.items():
-                    current_span.set_attribute(key, value)
-
-        return result
-
-    return cast(Callable[..., Any], wrapper)
-
-
-def adk_trace_send_data_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    @wrapt.decorator  # type: ignore[misc]
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
-        result = wrapped(*args, **kwargs)
-
-        invocation_context = args[0] if len(args) > 0 else kwargs.get("invocation_context")
-        event_id = args[1] if len(args) > 1 else kwargs.get("event_id")
-        data = args[2] if len(args) > 2 else kwargs.get("data")
-
-        current_span = opentelemetry_api_trace.get_current_span()
-        if current_span.is_recording():
-            if invocation_context:
-                current_span.set_attribute("gcp.vertex.agent.invocation_id", invocation_context.invocation_id)
-            if event_id:
-                current_span.set_attribute("gcp.vertex.agent.event_id", event_id)
-            if data:
-                from google.genai import types
-
-                current_span.set_attribute(
-                    "gcp.vertex.agent.data",
-                    json.dumps(
-                        [
-                            types.Content(role=content.role, parts=content.parts).model_dump(exclude_none=True)
-                            for content in data
-                        ]
-                    ),
-                )
-        return result
-
-    return cast(Callable[..., Any], wrapper)
-
-
 def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+    """Return a wrapt wrapper that creates a tool span around __call_tool_async."""
+
+    def wrapper(wrapped: Callable[..., Any], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         async def new_function() -> Any:
             tool = args[0] if args else kwargs.get("tool")
             tool_args = args[1] if len(args) > 1 else kwargs.get("args", {})
             tool_context = args[2] if len(args) > 2 else kwargs.get("tool_context")
 
             tool_name = getattr(tool, "name", "unknown_tool")
-            # span_name = f"ADK.Tool.{tool_name}"
-            span_name = tool_name
 
-            with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
+            try:
+                scope = _SpanScope(tracer, tool_name)
+            except Exception as e:
+                logger.warning("Failed to start tool span: %s", e)
+                return await wrapped(*args, **kwargs)
+
+            try:
+                span = scope.span
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
                 span.set_attribute("gen_ai.entity", "tool")
-                span.set_attribute("netra.span.type", "tool")
-
+                span.set_attribute(NETRA_SPAN_TYPE, SpanType.TOOL)
                 span.set_attribute("gen_ai.tool.name", tool_name)
+
                 if tool is not None and hasattr(tool, "description"):
-                    span.set_attribute("gen_ai.tool.description", getattr(tool, "description"))
+                    span.set_attribute("gen_ai.tool.description", tool.description)
                 if tool is not None and hasattr(tool, "is_long_running"):
-                    span.set_attribute("gen_ai.tool.is_long_running", getattr(tool, "is_long_running"))
-                span.set_attribute("gen_ai.tool.parameters", str(tool_args))
+                    span.set_attribute("gen_ai.tool.is_long_running", tool.is_long_running)
 
-                if tool_context and hasattr(tool_context, "function_call_id"):
-                    span.set_attribute("tool.call_id", tool_context.function_call_id)
-                if tool_context and hasattr(tool_context, "invocation_context"):
-                    span.set_attribute("adk.invocation_id", tool_context.invocation_context.invocation_id)
+                if tool_args is not None:
+                    try:
+                        span.set_attribute(
+                            "input", json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
+                        )
+                    except Exception:
+                        span.set_attribute("input", str(tool_args))
 
+                if tool_context:
+                    if hasattr(tool_context, "function_call_id"):
+                        span.set_attribute("tool.call_id", tool_context.function_call_id)
+                    if hasattr(tool_context, "invocation_context"):
+                        span.set_attribute("adk.invocation_id", tool_context.invocation_context.invocation_id)
+            except Exception as e:
+                logger.warning("Failed to set tool span attributes: %s", e)
+
+            try:
                 result = await wrapped(*args, **kwargs)
 
-                if result:
-                    if isinstance(result, dict):
-                        span.set_attribute("gen_ai.tool.result", json.dumps(result))
-                    else:
-                        span.set_attribute("gen_ai.tool.result", str(result))
+                if result is not None:
+                    try:
+                        span.set_attribute("output", json.dumps(result) if isinstance(result, dict) else str(result))
+                    except Exception:
+                        span.set_attribute("output", str(result))
 
                 return result
+            except Exception as e:
+                scope.record_error(e)
+                raise
+            finally:
+                scope.end()
 
         return new_function()
 
-    return wrapper
+    return cast(Callable[..., Any], wrapper)
