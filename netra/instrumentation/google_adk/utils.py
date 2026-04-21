@@ -1,7 +1,11 @@
 import json
-from typing import Any, Dict
+from typing import Any, Dict, List, Tuple
 
 from opentelemetry.semconv_ai import SpanAttributes
+
+from netra.span_wrapper import SpanType
+
+NETRA_SPAN_TYPE = "netra.span.type"
 
 
 def _build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
@@ -140,14 +144,173 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
     return attributes
 
 
+def _get_event_content(event: Any) -> Tuple[List[Any], "str | None"]:
+    try:
+        parts = event.content.parts if event.content and event.content.parts else []
+        role = event.content.role if event.content else None
+    except Exception:
+        parts, role = [], None
+    return parts, role
+
+
+def _extract_pending_tool_calls(event: Any) -> Dict[str, Any]:
+    """Collect function_call info from an LLM event keyed by call id (or name) for later matching."""
+    pending: Dict[str, Any] = {}
+    try:
+        parts = event.content.parts if event.content and event.content.parts else []
+        for part in parts:
+            if func_call := getattr(part, "function_call", None):
+                call_id = getattr(func_call, "id", None)
+                call_name = getattr(func_call, "name", None)
+                entry: Dict[str, Any] = {}
+                if call_name:
+                    entry["name"] = call_name
+                entry["arguments"] = getattr(func_call, "args", {})
+                key = call_id or call_name
+                if key:
+                    pending[key] = entry
+    except Exception:
+        pass
+    return pending
+
+
+def _resolve_span_type(role: str | None) -> SpanType:
+    if role == "model":
+        return SpanType.GENERATION
+    if role == "user":
+        return SpanType.TOOL
+    return SpanType.SPAN
+
+
+def _extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, Any]]:
+    attributes: Dict[str, Any] = {}
+    span_name = None
+
+    if model_version := getattr(event, "model_version", None):
+        attributes[SpanAttributes.LLM_REQUEST_MODEL] = model_version
+        span_name = model_version
+
+    if author := getattr(event, "author", None):
+        attributes["gen_ai.event.author"] = author
+
+    if invocation_id := getattr(event, "invocation_id", None):
+        attributes["gen_ai.invocation.id"] = invocation_id
+
+    if (timestamp := getattr(event, "timestamp", None)) is not None:
+        attributes["gen_ai.event.timestamp"] = timestamp
+
+    if (finish_reason := getattr(event, "finish_reason", None)) is not None:
+        attributes[SpanAttributes.LLM_RESPONSE_FINISH_REASON] = (
+            finish_reason.value if hasattr(finish_reason, "value") else str(finish_reason)
+        )
+
+    if (error_code := getattr(event, "error_code", None)) is not None:
+        attributes["gen_ai.error.code"] = error_code
+
+    if error_message := getattr(event, "error_message", None):
+        attributes["gen_ai.error.message"] = error_message
+
+    if usage := getattr(event, "usage_metadata", None):
+        if (v := getattr(usage, "prompt_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = v
+        if (v := getattr(usage, "candidates_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = v
+        if (v := getattr(usage, "total_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = v
+        if (v := getattr(usage, "cached_content_token_count", None)) is not None:
+            attributes["gen_ai.usage.cached_tokens"] = v
+        if (v := getattr(usage, "thoughts_token_count", None)) is not None:
+            attributes["gen_ai.usage.thoughts_tokens"] = v
+
+    if (avg_logprobs := getattr(event, "avg_logprobs", None)) is not None:
+        attributes["gen_ai.response.avg_logprobs"] = avg_logprobs
+
+    if actions := getattr(event, "actions", None):
+        if v := getattr(actions, "transfer_to_agent", None):
+            attributes["gen_ai.actions.transfer_to_agent"] = v
+        if v := getattr(actions, "state_delta", None):
+            attributes["gen_ai.actions.state_delta"] = json.dumps(v)
+        if (v := getattr(actions, "escalate", None)) is not None:
+            attributes["gen_ai.actions.escalate"] = v
+
+    return span_name, attributes
+
+
+def _process_content_parts(
+    parts: List[Any], role: "str | None", pending_tool_calls: "Dict[str, Any] | None" = None
+) -> Tuple[str | None, Dict[str, Any]]:
+    input_parts: List[Any] = []
+    output_parts: List[Any] = []
+    span_name = None
+
+    for part in parts:
+        if func_call := getattr(part, "function_call", None):
+            entry: Dict[str, Any] = {}
+            if call_id := getattr(func_call, "id", None):
+                entry["id"] = call_id
+            if call_name := getattr(func_call, "name", None):
+                entry["name"] = call_name
+                span_name = span_name or call_name
+            entry["arguments"] = getattr(func_call, "args", {})
+            # function_call is the LLM's output decision (what tool to invoke)
+            output_parts.append(entry)
+
+        elif func_resp := getattr(part, "function_response", None):
+            entry = {}
+            resp_id = getattr(func_resp, "id", None)
+            resp_name = getattr(func_resp, "name", None)
+            if resp_id:
+                entry["id"] = resp_id
+            if resp_name:
+                entry["name"] = resp_name
+                span_name = span_name or resp_name
+            entry["result"] = getattr(func_resp, "response", {})
+            output_parts.append(entry)
+
+            # Populate input from the matching function_call recorded earlier
+            if pending_tool_calls:
+                lookup_key = resp_id or resp_name
+                if lookup_key and lookup_key in pending_tool_calls:
+                    input_parts.append(pending_tool_calls[lookup_key])
+
+        elif (text := getattr(part, "text", None)) is not None:
+            if role == "user":
+                input_parts.append(str(text))
+            else:
+                output_parts.append(str(text))
+
+    attributes: Dict[str, Any] = {}
+    if input_parts:
+        attributes["input"] = json.dumps(input_parts if len(input_parts) > 1 else input_parts[0])
+    if output_parts:
+        attributes["output"] = json.dumps(output_parts if len(output_parts) > 1 else output_parts[0])
+
+    return span_name, attributes
+
+
+def extract_event_attributes(
+    event: Any, pending_tool_calls: "Dict[str, Any] | None" = None
+) -> Tuple[str, Dict[str, Any]]:
+    parts, role = _get_event_content(event)
+
+    scalar_span_name, attributes = _extract_scalar_event_attributes(event)
+    parts_span_name, parts_attributes = _process_content_parts(parts, role, pending_tool_calls)
+
+    attributes[NETRA_SPAN_TYPE] = _resolve_span_type(role)
+    attributes.update(parts_attributes)
+
+    span_name = scalar_span_name or parts_span_name or "unknown"
+    return span_name, attributes
+
+
 def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
     attributes: Dict[str, Any] = {}
     attributes["gen_ai.agent.name"] = getattr(instance, "name", "unknown")
-    if hasattr(instance, "description"):
+    if hasattr(instance, "description") and instance.description:
         attributes["gen_ai.agent.description"] = instance.description
-    if hasattr(instance, "model"):
+    if hasattr(instance, "model") and instance.model:
         attributes["gen_ai.agent.model"] = instance.model
-    if hasattr(instance, "instruction"):
+    if hasattr(instance, "instruction") and instance.instruction:
         attributes["gen_ai.agent.instruction"] = instance.instruction
     if hasattr(instance, "tools"):
         for idx, tool in enumerate(instance.tools):
@@ -155,11 +318,12 @@ def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
                 attributes[f"gen_ai.agent.tools.{idx}.name"] = tool.name
             if hasattr(tool, "description"):
                 attributes[f"gen_ai.agent.tools.{idx}.description"] = tool.description
-    if hasattr(instance, "output_key"):
+    if hasattr(instance, "output_key") and instance.output_key:
         attributes["gen_ai.agent.output_key"] = instance.output_key
     if hasattr(instance, "sub_agents"):
         for i, sub_agent in enumerate(instance.sub_agents):
             sub_attrs = extract_agent_attributes(sub_agent)
             for key, value in sub_attrs.items():
-                attributes[f"gen_ai.agent.sub_agents.{i}.{key}"] = value
+                if value:
+                    attributes[f"gen_ai.agent.sub_agents.{i}.{key}"] = value
     return attributes

@@ -3,15 +3,20 @@ import logging
 from typing import Any, AsyncIterator, Callable, Dict, Tuple, cast
 
 import wrapt
+from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
 from opentelemetry.semconv_ai import SpanAttributes
-from opentelemetry.trace import SpanKind, Tracer
+from opentelemetry.trace import SpanKind, StatusCode, Tracer
 
+from netra.config import Config
 from netra.instrumentation.google_adk.utils import (
     _build_llm_request_for_trace,
     _extract_llm_attributes,
+    _extract_pending_tool_calls,
     extract_agent_attributes,
+    extract_event_attributes,
 )
+from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
 
@@ -65,21 +70,81 @@ class NoOpTracer:
 def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
     def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
         async def new_function() -> AsyncIterator[Any]:
-            agent_name = instance.name if hasattr(instance, "name") else "unknown"
-            span_name = f"ADK.Agent.{agent_name}"
+            try:
+                agent_name = getattr(instance, "name", "unknown")
+                span_name = f"ADK.Agent.{agent_name}"
+                span = tracer.start_span(span_name, kind=SpanKind.CLIENT)
+                ctx = opentelemetry_api_trace.set_span_in_context(span)
+                token = opentelemetry_context.attach(ctx)
+            except Exception as e:
+                logger.warning("Failed to start agent span: %s", e)
+                async for event in wrapped(*args, **kwargs):
+                    yield event
+                return
 
-            with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
-                span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
+            try:
+                span.set_attribute(SpanAttributes.LLM_SYSTEM, "adk")
                 span.set_attribute("gen_ai.entity", "agent")
-                span.set_attribute("netra.span.type", "span")
-
+                span.set_attribute("netra.span.type", SpanType.AGENT)
                 span.set_attributes(extract_agent_attributes(instance))
-                if len(args) > 0 and hasattr(args[0], "invocation_id"):
-                    span.set_attribute("adk.invocation_id", args[0].invocation_id)
 
-                async_gen = wrapped(*args, **kwargs)
-                async for item in async_gen:
-                    yield item
+                invocation_context = args[0] if args else None
+                if invocation_context:
+                    if hasattr(invocation_context, "invocation_id"):
+                        span.set_attribute("adk.invocation_id", invocation_context.invocation_id)
+                    user_content = getattr(invocation_context, "user_content", None)
+                    if user_content:
+                        try:
+                            parts = getattr(user_content, "parts", []) or []
+                            user_texts = [
+                                str(getattr(p, "text", "")) for p in parts if getattr(p, "text", None) is not None
+                            ]
+                            if user_texts:
+                                span.set_attribute("input", "\n".join(user_texts))
+                        except Exception as e:
+                            logger.warning("Failed to set user input on agent span: %s", e)
+
+            except Exception as e:
+                logger.warning("Failed to set agent span attributes: %s", e)
+
+            try:
+                pending_tool_calls: Dict[str, Any] = {}
+                async for event in wrapped(*args, **kwargs):
+                    try:
+                        error_code = getattr(event, "error_code", None)
+                        error_message = getattr(event, "error_message", None)
+                        has_error = error_code is not None or bool(error_message)
+
+                        if event.author == getattr(instance, "name", None):
+                            pending_tool_calls.update(_extract_pending_tool_calls(event))
+                            event_span_name, event_span_attrs = extract_event_attributes(event, pending_tool_calls)
+                            with tracer.start_as_current_span(event_span_name, kind=SpanKind.CLIENT) as event_span:
+                                event_span.set_attributes(event_span_attrs)
+                                if has_error:
+                                    event_span.set_status(
+                                        StatusCode.ERROR,
+                                        description=error_message or str(error_code),
+                                    )
+                    except Exception as e:
+                        logger.warning("Failed to create event span: %s", e)
+
+                    yield event
+
+            except Exception as e:
+                try:
+                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
+                    span.record_exception(e)
+                    span.set_status(StatusCode.ERROR, str(e))
+                except Exception as inner_e:
+                    logger.warning("Failed to record error on agent span: %s", inner_e)
+                raise
+
+            finally:
+                try:
+                    opentelemetry_context.detach(token)
+                    span.end()
+                except Exception as e:
+                    logger.warning("Failed to end agent span: %s", e)
 
         return new_function()
 
@@ -99,20 +164,46 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
             span_name = f"ADK.LLM.{model_name}"
 
-            with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
-                span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
-                span.set_attribute("gen_ai.entity", "request")
-                span.set_attribute("netra.span.type", "generation")
+            try:
+                span = tracer.start_span(span_name, kind=SpanKind.CLIENT)
+                ctx = opentelemetry_api_trace.set_span_in_context(span)
+                token = opentelemetry_context.attach(ctx)
+            except Exception as e:
+                logger.warning("Failed to start LLM span: %s", e)
+                span = NoOpSpan()
+                token = None
+            try:
+                try:
+                    span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
+                    span.set_attribute("gen_ai.entity", "request")
+                    span.set_attribute("netra.span.type", "generation")
 
-                if llm_request:
-                    llm_request_dict = _build_llm_request_for_trace(llm_request)
-                    llm_attrs = _extract_llm_attributes(llm_request_dict, None)
-                    for key, value in llm_attrs.items():
-                        span.set_attribute(key, value)
+                    if llm_request:
+                        llm_request_dict = _build_llm_request_for_trace(llm_request)
+                        llm_attrs = _extract_llm_attributes(llm_request_dict, None)
+                        for key, value in llm_attrs.items():
+                            span.set_attribute(key, value)
+                except Exception as e:
+                    logger.warning("Failed to set LLM span attributes: %s", e)
 
-                async_gen = wrapped(*args, **kwargs)
-                async for item in async_gen:
-                    yield item
+                try:
+                    async_gen = wrapped(*args, **kwargs)
+                    async for item in async_gen:
+                        yield item
+                except Exception as e:
+                    try:
+                        span.record_exception(e)
+                        span.set_status(StatusCode.ERROR, str(e))
+                    except Exception as inner_e:
+                        logger.warning("Failed to record error on LLM span: %s", inner_e)
+                    raise
+            finally:
+                if token is not None:
+                    opentelemetry_context.detach(token)
+                try:
+                    span.end()
+                except Exception as e:
+                    logger.warning("Failed to end LLM span: %s", e)
 
         return new_function()
 
