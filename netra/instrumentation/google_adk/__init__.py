@@ -10,19 +10,33 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.google_adk.version import __version__
 from netra.instrumentation.google_adk.wrappers import (
     NoOpTracer,
-    adk_trace_call_llm_wrapper,
-    adk_trace_send_data_wrapper,
-    adk_trace_tool_call_wrapper,
-    adk_trace_tool_response_wrapper,
     base_agent_run_async_wrapper,
     base_llm_flow_call_llm_async_wrapper,
     call_tool_async_wrapper,
-    finalize_model_response_event_wrapper,
 )
 
 logger = logging.getLogger(__name__)
 
 _instruments = ("google-adk >= 0.1.0",)
+
+_ADK_TRACER_MODULES = (
+    "google.adk.agents.base_agent",
+    "google.adk.flows.llm_flows.base_llm_flow",
+    "google.adk.flows.llm_flows.functions",
+    "google.adk.models.gemini_context_cache_manager",
+    "google.adk.models.google_llm",
+    "google.adk.plugins.bigquery_agent_analytics_plugin",
+    "google.adk.runners",
+    "google.adk.telemetry",
+    "google.adk.telemetry.tracing",
+    "google.cloud.bigquery.opentelemetry_tracing",
+    "google.cloud.pubsub_v1.open_telemetry.publish_message_wrapper",
+    "google.cloud.pubsub_v1.open_telemetry.subscribe_opentelemetry",
+    "google.cloud.pubsub_v1.publisher._batch.thread",
+    "google.cloud.spanner_v1._opentelemetry_tracing",
+    "google.cloud.sqlalchemy_spanner._opentelemetry_tracing",
+    "google.cloud.storage._opentelemetry_tracing",
+)
 
 
 class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
@@ -39,25 +53,8 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to initialize tracer: {e}")
             return
 
-        # Set ADK tracer to NoOpTracer to prevent ADK from creating its own spans
-        for module_name in (
-            "google.adk.agents.base_agent",
-            "google.adk.flows.llm_flows.base_llm_flow",
-            "google.adk.flows.llm_flows.functions",
-            "google.adk.models.gemini_context_cache_manager",
-            "google.adk.models.google_llm",
-            "google.adk.plugins.bigquery_agent_analytics_plugin",
-            "google.adk.runners",
-            "google.adk.telemetry",
-            "google.adk.telemetry.tracing",
-            "google.cloud.bigquery.opentelemetry_tracing",
-            "google.cloud.pubsub_v1.open_telemetry.publish_message_wrapper",
-            "google.cloud.pubsub_v1.open_telemetry.subscribe_opentelemetry",
-            "google.cloud.pubsub_v1.publisher._batch.thread",
-            "google.cloud.spanner_v1._opentelemetry_tracing",
-            "google.cloud.sqlalchemy_spanner._opentelemetry_tracing",
-            "google.cloud.storage._opentelemetry_tracing",
-        ):
+        # Replace ADK's own tracers with NoOp to prevent duplicate spans
+        for module_name in _ADK_TRACER_MODULES:
             try:
                 if module_name in sys.modules:
                     module = sys.modules[module_name]
@@ -85,28 +82,28 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         # except Exception as e:
         #     logger.error(f"Failed to instrument ADK telemetry functions: {e}")
 
-        # try:
-        #     wrap_function_wrapper(
-        #         "google.adk.flows.llm_flows.base_llm_flow",
-        #         "BaseLlmFlow._call_llm_async",
-        #         base_llm_flow_call_llm_async_wrapper(tracer),
-        #     )
-        #     wrap_function_wrapper(
-        #         "google.adk.flows.llm_flows.base_llm_flow",
-        #         "BaseLlmFlow._finalize_model_response_event",
-        #         finalize_model_response_event_wrapper(tracer),
-        #     )
-        # except Exception as e:
-        #     logger.error(f"Failed to instrument BaseLlmFlow methods: {e}")
+        try:
+            wrap_function_wrapper(
+                "google.adk.flows.llm_flows.base_llm_flow",
+                "BaseLlmFlow._call_llm_async",
+                base_llm_flow_call_llm_async_wrapper(tracer),
+            )
+            # wrap_function_wrapper(
+            #     "google.adk.flows.llm_flows.base_llm_flow",
+            #     "BaseLlmFlow._finalize_model_response_event",
+            #     finalize_model_response_event_wrapper(tracer),
+            # )
+        except Exception as e:
+            logger.error(f"Failed to instrument BaseLlmFlow methods: {e}")
 
-        # try:
-        #     wrap_function_wrapper(
-        #         "google.adk.flows.llm_flows.functions",
-        #         "__call_tool_async",
-        #         call_tool_async_wrapper(tracer),
-        #     )
-        # except Exception as e:
-        #     logger.error(f"Failed to instrument __call_tool_async: {e}")
+        try:
+            wrap_function_wrapper(
+                "google.adk.flows.llm_flows.functions",
+                "__call_tool_async",
+                call_tool_async_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error(f"Failed to instrument __call_tool_async: {e}")
 
     def _uninstrument(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
         # Unwrap in reverse order
