@@ -4,8 +4,6 @@ from typing import Any, Dict, List, Tuple
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.span_wrapper import SpanType
-
 logger = logging.getLogger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
@@ -59,11 +57,13 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
             attributes["gen_ai.request.response_mime_type"] = config["response_mime_type"]
 
         if "tools" in config:
-            for i, tool in enumerate(config["tools"]):
+            func_index = 0
+            for tool in config["tools"]:
                 if "function_declarations" in tool:
-                    for j, func in enumerate(tool["function_declarations"]):
-                        attributes[f"gen_ai.request.tools.{j}.name"] = func.get("name", "")
-                        attributes[f"gen_ai.request.tools.{j}.description"] = func.get("description", "")
+                    for func in tool["function_declarations"]:
+                        attributes[f"gen_ai.request.tools.{func_index}.name"] = func.get("name", "")
+                        attributes[f"gen_ai.request.tools.{func_index}.description"] = func.get("description", "")
+                        func_index += 1
 
     message_index = 0
     all_inputs: List[Dict[str, Any]] = []
@@ -140,47 +140,6 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
     return attributes
 
 
-def _get_event_content(event: Any) -> Tuple[List[Any], "str | None"]:
-    """Return (parts, role) from an ADK event, falling back to empty on error."""
-    try:
-        parts = event.content.parts if event.content and event.content.parts else []
-        role = event.content.role if event.content else None
-    except Exception:
-        logger.exception("Failed to extract content parts and role from event")
-        parts, role = [], None
-    return parts, role
-
-
-def _extract_pending_tool_calls(event: Any) -> Dict[str, Any]:
-    """Collect function_call info from an LLM event keyed by call id (or name) for later matching."""
-    pending: Dict[str, Any] = {}
-    try:
-        parts = event.content.parts if event.content and event.content.parts else []
-        for part in parts:
-            if func_call := getattr(part, "function_call", None):
-                call_id = getattr(func_call, "id", None)
-                call_name = getattr(func_call, "name", None)
-                entry: Dict[str, Any] = {}
-                if call_name:
-                    entry["name"] = call_name
-                entry["arguments"] = getattr(func_call, "args", {})
-                key = call_id or call_name
-                if key:
-                    pending[key] = entry
-    except Exception:
-        logger.exception("Failed to extract pending tool calls from event")
-    return pending
-
-
-def _resolve_span_type(role: str | None) -> SpanType:
-    """Map an ADK content role to the corresponding Netra SpanType."""
-    if role == "model":
-        return SpanType.GENERATION
-    if role == "user":
-        return SpanType.TOOL
-    return SpanType.SPAN
-
-
 def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, Any]]:
     """Extract flat (non-content) attributes from an ADK event. Returns (span_name_hint, attributes)."""
     attributes: Dict[str, Any] = {}
@@ -236,75 +195,6 @@ def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, A
     return span_name, attributes
 
 
-def _process_content_parts(
-    parts: List[Any], role: "str | None", pending_tool_calls: "Dict[str, Any] | None" = None
-) -> Tuple[str | None, Dict[str, Any]]:
-    """Build input/output attributes from content parts, optionally correlating with pending tool calls."""
-    input_parts: List[Any] = []
-    output_parts: List[Any] = []
-    span_name = None
-
-    for part in parts:
-        if func_call := getattr(part, "function_call", None):
-            entry: Dict[str, Any] = {}
-            if call_id := getattr(func_call, "id", None):
-                entry["id"] = call_id
-            if call_name := getattr(func_call, "name", None):
-                entry["name"] = call_name
-                span_name = span_name or call_name
-            entry["arguments"] = getattr(func_call, "args", {})
-            # function_call is the LLM's output decision (what tool to invoke)
-            output_parts.append(entry)
-
-        elif func_resp := getattr(part, "function_response", None):
-            entry = {}
-            resp_id = getattr(func_resp, "id", None)
-            resp_name = getattr(func_resp, "name", None)
-            if resp_id:
-                entry["id"] = resp_id
-            if resp_name:
-                entry["name"] = resp_name
-                span_name = span_name or resp_name
-            entry["result"] = getattr(func_resp, "response", {})
-            output_parts.append(entry)
-
-            # Populate input from the matching function_call recorded earlier
-            if pending_tool_calls:
-                lookup_key = resp_id or resp_name
-                if lookup_key and lookup_key in pending_tool_calls:
-                    input_parts.append(pending_tool_calls[lookup_key])
-
-        elif (text := getattr(part, "text", None)) is not None:
-            if role == "user":
-                input_parts.append(str(text))
-            else:
-                output_parts.append(str(text))
-
-    attributes: Dict[str, Any] = {}
-    if input_parts:
-        attributes["input"] = json.dumps(input_parts if len(input_parts) > 1 else input_parts[0])
-    if output_parts:
-        attributes["output"] = json.dumps(output_parts if len(output_parts) > 1 else output_parts[0])
-
-    return span_name, attributes
-
-
-def extract_event_attributes(
-    event: Any, pending_tool_calls: "Dict[str, Any] | None" = None
-) -> Tuple[str, Dict[str, Any]]:
-    """Extract all tracing attributes from an ADK event. Returns (span_name, attributes)."""
-    parts, role = _get_event_content(event)
-
-    scalar_span_name, attributes = extract_scalar_event_attributes(event)
-    parts_span_name, parts_attributes = _process_content_parts(parts, role, pending_tool_calls)
-
-    attributes[NETRA_SPAN_TYPE] = _resolve_span_type(role)
-    attributes.update(parts_attributes)
-
-    span_name = scalar_span_name or parts_span_name or "unknown"
-    return span_name, attributes
-
-
 def extract_llm_response_attributes(last_response: Any, accumulated_text: List[str]) -> Dict[str, Any]:
     """Build span attributes from the final LLM response event and accumulated streamed text."""
     attributes: Dict[str, Any] = {}
@@ -353,11 +243,6 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
             attributes["output"] = str(output)
 
     return attributes
-
-
-def extract_llm_attributes(llm_request: Dict[str, Any], llm_response: Any) -> Dict[str, Any]:
-    """Merge request and response attributes into a single attribute dict."""
-    return {**extract_llm_request_attributes(llm_request), **extract_llm_response_attributes(llm_response, [])}
 
 
 def extract_agent_attributes(instance: Any) -> Dict[str, Any]:

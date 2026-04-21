@@ -78,7 +78,6 @@ class _SpanScope:
         self.span = tracer.start_span(name, kind=kind)
         ctx = opentelemetry_api_trace.set_span_in_context(self.span)
         self._token = opentelemetry_context.attach(ctx)
-        self._token_valid = True
 
     def record_error(self, exc: Exception) -> None:
         """Record the exception in the span"""
@@ -89,20 +88,10 @@ class _SpanScope:
         except Exception as e:
             logger.warning("Failed to record error on span: %s", e)
 
-    def detach(self) -> None:
-        """Detach the span from the active context without ending the span"""
-        if not self._token_valid:
-            return
+    def end(self) -> None:
+        """Detach the span from active context and end the span"""
         try:
             opentelemetry_context.detach(self._token)
-            self._token_valid = False
-        except Exception as e:
-            logger.warning("Failed to detach span context: %s", e)
-
-    def end(self) -> None:
-        """Detach the span from active context (if attached) and end the span"""
-        try:
-            self.detach()
             self.span.end()
         except Exception as e:
             logger.warning("Failed to end span: %s", e)
@@ -146,13 +135,26 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             except Exception as e:
                 logger.warning("Failed to set agent span attributes: %s", e)
 
+            last_text_output: List[str] = []
             try:
                 async for event in wrapped(*args, **kwargs):
+                    try:
+                        parts = event.content.parts if event.content and event.content.parts else []
+                        texts = [str(getattr(p, "text", "")) for p in parts if getattr(p, "text", None) is not None]
+                        if texts:
+                            last_text_output = texts
+                    except Exception:
+                        pass
                     yield event
             except Exception as e:
                 scope.record_error(e)
                 raise
             finally:
+                if last_text_output:
+                    try:
+                        span.set_attribute("output", "\n".join(last_text_output))
+                    except Exception as e:
+                        logger.warning("Failed to set agent output attribute: %s", e)
                 scope.end()
 
         return new_function()
@@ -191,14 +193,17 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
             except Exception as e:
                 logger.warning("Failed to set LLM span attributes: %s", e)
 
-            # Detach the LLM span from the active context so subsequent spans
-            # (sub-agent calls, tool executions) remain direct children of the
-            # parent agent span rather than nested under this LLM span.
-            scope.detach()
-
             accumulated_text: List[str] = []
             last_response = None
             last_usage_response = None
+
+            # Peek-ahead buffer: hold back one item so the inner generator is
+            # fully exhausted — and the span closed — before the last item
+            # reaches the caller.  Without this, the caller processes the last
+            # item (potentially launching sub-agent / tool spans) while the LLM
+            # span is still open, inflating its duration.
+            prev_item = None
+            span_ended = False
 
             try:
                 async for item in wrapped(*args, **kwargs):
@@ -212,8 +217,12 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                                 accumulated_text.append(str(text))
                     except Exception:
                         pass
-                    yield item
+                    if prev_item is not None:
+                        yield prev_item
+                    prev_item = item
 
+                # Inner generator is exhausted.  Close the span now, before
+                # handing the last item to the caller.
                 if last_response is not None:
                     try:
                         response_attrs = extract_llm_response_attributes(last_response, accumulated_text)
@@ -233,11 +242,18 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                     except Exception as e:
                         logger.warning("Failed to set LLM response attributes: %s", e)
 
-            except Exception as e:
-                scope.record_error(e)
-                raise
-            finally:
                 scope.end()
+                span_ended = True
+
+                # Yield the last item after ending the span
+                if prev_item is not None:
+                    yield prev_item
+
+            except Exception as e:
+                if not span_ended:
+                    scope.record_error(e)
+                    scope.end()
+                raise
 
         return new_function()
 
