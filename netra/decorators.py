@@ -209,12 +209,12 @@ def _finalize_span(
             span.record_exception(error)
         except Exception:
             logger.debug("Failed to record error on span '%s'", span_name, exc_info=True)
-    span.end()
     try:
+        span.end()
         SessionManager.unregister_span(span_name, span)
-    except Exception:
-        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
-    SessionManager.pop_entity(entity_type)
+        SessionManager.pop_entity(entity_type)
+    except Exception as e:
+        logger.exception("Failed to unregister span '%s' and pop entity '%s': %s", span_name, entity_type, e)
 
 
 def _wrap_async_generator_with_span(
