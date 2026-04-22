@@ -191,14 +191,16 @@ def _extract_event_attributes(event: Any) -> Dict[str, Any]:
     if usage := getattr(event, "usage_metadata", None):
         if (v := getattr(usage, "prompt_token_count", None)) is not None:
             attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = v
+
+        # Calculate completion tokens
         output = 0
         if isinstance(ct := getattr(usage, "candidates_token_count", None), int):
             output += ct
         if isinstance(tt := getattr(usage, "thoughts_token_count", None), int):
             output += tt
-            attributes["gen_ai.usage.thoughts_tokens"] = tt
         if output > 0:
             attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = output
+
         if (v := getattr(usage, "total_token_count", None)) is not None:
             attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = v
         if (v := getattr(usage, "cached_content_token_count", None)) is not None:
