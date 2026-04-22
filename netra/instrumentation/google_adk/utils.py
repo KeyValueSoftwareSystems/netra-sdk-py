@@ -1,6 +1,6 @@
 import json
 import logging
-from typing import Any, Dict, List, Tuple
+from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
@@ -10,7 +10,14 @@ NETRA_SPAN_TYPE = "netra.span.type"
 
 
 def build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
-    """Serialize an ADK LlmRequest into a plain dict suitable for tracing, stripping binary/schema fields."""
+    """Serialize an ADK LlmRequest into a plain dict suitable for tracing, stripping binary/schema fields.
+
+    Args:
+        llm_request: The ADK LlmRequest object to serialize.
+
+    Returns:
+        A dictionary with model, config, and contents fields suitable for tracing.
+    """
     from google.genai import types
 
     result: Dict[str, Any] = {
@@ -26,7 +33,14 @@ def build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
 
 
 def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str, Any]:
-    """Convert a serialized LLM request dict into OpenTelemetry span attributes."""
+    """Convert a serialized LLM request dict into OpenTelemetry span attributes.
+
+    Args:
+        llm_request_dict: Serialized LLM request dict from build_llm_request_for_trace.
+
+    Returns:
+        A dictionary of OpenTelemetry span attributes for the LLM request.
+    """
     attributes: Dict[str, Any] = {}
 
     if "model" in llm_request_dict:
@@ -140,14 +154,19 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
     return attributes
 
 
-def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, Any]]:
-    """Extract flat (non-content) attributes from an ADK event. Returns (span_name_hint, attributes)."""
+def _extract_event_attributes(event: Any) -> Dict[str, Any]:
+    """Extract non-content attributes from an ADK event.
+
+    Args:
+        event: The event object to extract attributes from.
+
+    Returns:
+        A dictionary of attributes.
+    """
     attributes: Dict[str, Any] = {}
-    span_name = None
 
     if model_version := getattr(event, "model_version", None):
         attributes[SpanAttributes.LLM_REQUEST_MODEL] = model_version
-        span_name = model_version
 
     if author := getattr(event, "author", None):
         attributes["gen_ai.event.author"] = author
@@ -172,14 +191,18 @@ def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, A
     if usage := getattr(event, "usage_metadata", None):
         if (v := getattr(usage, "prompt_token_count", None)) is not None:
             attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = v
-        if (v := getattr(usage, "candidates_token_count", None)) is not None:
-            attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = v
+        output = 0
+        if isinstance(ct := getattr(usage, "candidates_token_count", None), int):
+            output += ct
+        if isinstance(tt := getattr(usage, "thoughts_token_count", None), int):
+            output += tt
+            attributes["gen_ai.usage.thoughts_tokens"] = tt
+        if output > 0:
+            attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = output
         if (v := getattr(usage, "total_token_count", None)) is not None:
             attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = v
         if (v := getattr(usage, "cached_content_token_count", None)) is not None:
-            attributes["gen_ai.usage.cached_tokens"] = v
-        if (v := getattr(usage, "thoughts_token_count", None)) is not None:
-            attributes["gen_ai.usage.thoughts_tokens"] = v
+            attributes[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] = v
 
     if (avg_logprobs := getattr(event, "avg_logprobs", None)) is not None:
         attributes["gen_ai.response.avg_logprobs"] = avg_logprobs
@@ -192,14 +215,21 @@ def extract_scalar_event_attributes(event: Any) -> Tuple[str | None, Dict[str, A
         if (v := getattr(actions, "escalate", None)) is not None:
             attributes["gen_ai.actions.escalate"] = v
 
-    return span_name, attributes
+    return attributes
 
 
 def extract_llm_response_attributes(last_response: Any, accumulated_text: List[str]) -> Dict[str, Any]:
-    """Build span attributes from the final LLM response event and accumulated streamed text."""
+    """Build span attributes from the final LLM response event and accumulated streamed text.
+
+    Args:
+        last_response: The last ADK event from the LLM response stream.
+        accumulated_text: List of text strings accumulated during streaming.
+
+    Returns:
+        A dictionary of OpenTelemetry span attributes for the LLM response.
+    """
     attributes: Dict[str, Any] = {}
-    _, scalar_attrs = extract_scalar_event_attributes(last_response)
-    attributes.update(scalar_attrs)
+    attributes.update(_extract_event_attributes(last_response))
 
     content = getattr(last_response, "content", None)
     parts = (content.parts or []) if content else []
@@ -246,7 +276,14 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
 
 
 def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
-    """Extract agent metadata attributes from a BaseAgent instance, including nested sub-agents."""
+    """Extract agent metadata attributes from a BaseAgent instance, including nested sub-agents.
+
+    Args:
+        instance: The BaseAgent instance to extract attributes from.
+
+    Returns:
+        A dictionary of agent metadata attributes for tracing.
+    """
     attributes: Dict[str, Any] = {}
     attributes["gen_ai.agent.name"] = getattr(instance, "name", "unknown")
     if hasattr(instance, "description") and instance.description:

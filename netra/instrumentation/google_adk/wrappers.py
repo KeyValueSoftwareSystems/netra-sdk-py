@@ -1,5 +1,6 @@
 import json
 import logging
+import time
 from typing import Any, AsyncIterator, Callable, Dict, List, Tuple, cast
 
 from opentelemetry import context as opentelemetry_context
@@ -14,9 +15,12 @@ from netra.instrumentation.google_adk.utils import (
     extract_agent_attributes,
     extract_llm_request_attributes,
     extract_llm_response_attributes,
-    extract_scalar_event_attributes,
 )
+from netra.instrumentation.utils import record_span_timing
 from netra.span_wrapper import SpanType
+
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 logger = logging.getLogger(__name__)
 
@@ -25,49 +29,69 @@ class NoOpSpan:
     """Span implementation that silently discards all operations, used to suppress ADK's built-in tracing."""
 
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Initialize the NoOpSpan, discarding all arguments."""
 
     def __enter__(self) -> "NoOpSpan":
+        """Enter the context manager.
+
+        Returns: The NoOpSpan instance.
+        """
         return self
 
     def __exit__(self, *_args: Any) -> None:
-        pass
+        """Exit the context manager, discarding all arguments."""
 
     def set_attribute(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Set a span attribute (no-op), discarding all arguments."""
 
     def set_attributes(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Set multiple span attributes (no-op), discarding all arguments."""
 
     def add_event(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Add a span event (no-op), discarding all arguments."""
 
     def set_status(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Set the span status (no-op), discarding all arguments."""
 
     def update_name(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Update the span name (no-op), discarding all arguments."""
 
     def is_recording(self) -> bool:
+        """Check whether the span is recording.
+
+        Returns: Always False for a NoOpSpan.
+        """
         return False
 
     def end(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """End the span (no-op), discarding all arguments."""
 
     def record_exception(self, *_args: Any, **_kwargs: Any) -> None:
-        pass
+        """Record an exception on the span (no-op), discarding all arguments."""
 
 
 class NoOpTracer:
     """Tracer that returns NoOpSpans, injected into ADK modules to prevent duplicate span emission."""
 
     def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
+        """Start a span as the current span (no-op).
+
+        Returns: A NoOpSpan instance.
+        """
         return NoOpSpan()
 
     def start_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
+        """Start a new span (no-op).
+
+        Returns: A NoOpSpan instance.
+        """
         return NoOpSpan()
 
     def use_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
+        """Use an existing span as context (no-op).
+
+        Returns: A NoOpSpan instance.
+        """
         return NoOpSpan()
 
 
@@ -75,12 +99,23 @@ class _SpanScope:
     """Manages span lifecycle for async generators (start, attach context, record errors, detach, end)."""
 
     def __init__(self, tracer: Tracer, name: str, kind: SpanKind = SpanKind.CLIENT) -> None:
+        """Start a span and attach it as the current context.
+
+        Args:
+            tracer: The OpenTelemetry tracer used to start the span.
+            name: The span name.
+            kind: The span kind; defaults to SpanKind.CLIENT.
+        """
         self.span = tracer.start_span(name, kind=kind)
         ctx = opentelemetry_api_trace.set_span_in_context(self.span)
         self._token = opentelemetry_context.attach(ctx)
 
     def record_error(self, exc: Exception) -> None:
-        """Record the exception in the span"""
+        """Record an exception on the span and set its status to ERROR.
+
+        Args:
+            exc: The exception to record.
+        """
         try:
             self.span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(exc))
             self.span.record_exception(exc)
@@ -89,7 +124,7 @@ class _SpanScope:
             logger.warning("Failed to record error on span: %s", e)
 
     def end(self) -> None:
-        """Detach the span from active context and end the span"""
+        """Detach the span from the active context and end it."""
         try:
             opentelemetry_context.detach(self._token)
             self.span.end()
@@ -98,11 +133,30 @@ class _SpanScope:
 
 
 def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
-    """Return a wrapt wrapper that creates an agent span around BaseAgent.run_async."""
+    """Return a wrapt wrapper that creates an agent span around BaseAgent.run_async.
+
+    Args:
+        tracer: The OpenTelemetry tracer used to create agent spans.
+
+    Returns:
+        A wrapt-compatible wrapper function for BaseAgent.run_async.
+    """
 
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
+        """Wrap a single BaseAgent.run_async call, creating and closing an agent span.
+
+        Args:
+            wrapped: The original BaseAgent.run_async coroutine.
+            instance: The BaseAgent instance being called.
+            args: Positional arguments passed to run_async.
+            kwargs: Keyword arguments passed to run_async.
+
+        Returns:
+            An async generator that yields ADK events with agent span instrumentation.
+        """
+
         async def new_function() -> AsyncIterator[Any]:
             agent_name = getattr(instance, "name", "unknown")
             try:
@@ -163,11 +217,30 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
 
 
 def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
-    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._call_llm_async."""
+    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._call_llm_async.
+
+    Args:
+        tracer: The OpenTelemetry tracer used to create LLM generation spans.
+
+    Returns:
+        A wrapt-compatible wrapper function for BaseLlmFlow._call_llm_async.
+    """
 
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
+        """Wrap a single _call_llm_async call, creating and closing an LLM span.
+
+        Args:
+            wrapped: The original _call_llm_async coroutine.
+            _instance: The BaseLlmFlow instance.
+            args: Positional arguments passed to _call_llm_async.
+            kwargs: Keyword arguments passed to _call_llm_async.
+
+        Returns:
+            An async generator that yields ADK events with LLM span instrumentation.
+        """
+
         async def new_function() -> AsyncIterator[Any]:
             llm_request = args[1] if len(args) > 1 else None
             model_name = getattr(llm_request, "model", "unknown") if llm_request else "unknown"
@@ -195,7 +268,6 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
 
             accumulated_text: List[str] = []
             last_response = None
-            last_usage_response = None
 
             # Peek-ahead buffer: hold back one item so the inner generator is
             # fully exhausted — and the span closed — before the last item
@@ -204,12 +276,18 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
             # span is still open, inflating its duration.
             prev_item = None
             span_ended = False
+            first_token_recorded = False
 
             try:
                 async for item in wrapped(*args, **kwargs):
+                    if not first_token_recorded:
+                        first_token_time = time.time()
+                        record_span_timing(span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
+                        first_token_recorded = True
                     last_response = item
                     if getattr(item, "usage_metadata", None) is not None:
-                        last_usage_response = item
+                        pass
                     try:
                         parts = item.content.parts if item.content and item.content.parts else []
                         for part in parts:
@@ -226,18 +304,6 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                 if last_response is not None:
                     try:
                         response_attrs = extract_llm_response_attributes(last_response, accumulated_text)
-                        if last_usage_response is not None and last_usage_response is not last_response:
-                            _, usage_attrs = extract_scalar_event_attributes(last_usage_response)
-                            usage_keys = {
-                                SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
-                                SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
-                                SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
-                                "gen_ai.usage.cached_tokens",
-                                "gen_ai.usage.thoughts_tokens",
-                            }
-                            for key in usage_keys:
-                                if key in usage_attrs:
-                                    response_attrs[key] = usage_attrs[key]
                         span.set_attributes(response_attrs)
                     except Exception as e:
                         logger.warning("Failed to set LLM response attributes: %s", e)
@@ -261,9 +327,28 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
 
 
 def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Return a wrapt wrapper that creates a tool span around __call_tool_async."""
+    """Return a wrapt wrapper that creates a tool span around __call_tool_async.
+
+    Args:
+        tracer: The OpenTelemetry tracer used to create tool spans.
+
+    Returns:
+        A wrapt-compatible wrapper function for __call_tool_async.
+    """
 
     def wrapper(wrapped: Callable[..., Any], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        """Wrap a single __call_tool_async call, creating and closing a tool span.
+
+        Args:
+            wrapped: The original __call_tool_async coroutine.
+            _instance: The BaseLlmFlow instance.
+            args: Positional arguments passed to __call_tool_async.
+            kwargs: Keyword arguments passed to __call_tool_async.
+
+        Returns:
+            A coroutine that awaits the tool call with tool span instrumentation.
+        """
+
         async def new_function() -> Any:
             tool = args[0] if args else kwargs.get("tool")
             tool_args = args[1] if len(args) > 1 else kwargs.get("args", {})
