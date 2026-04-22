@@ -279,10 +279,15 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
             first_token_recorded = False
 
             try:
+                # Capture timestamp right before the LLM call to measure TIME_TO_FIRST_TOKEN accurately.
+                # ADK uses iterator start time as the closest approximation (span start introduces larger variance).
+                # GenAI uses span start time since delay to actual call is negligible.
+                # Keeps latency metrics reasonably aligned across both.
+                llm_call_start = time.time()
                 async for item in wrapped(*args, **kwargs):
                     if not first_token_recorded:
                         first_token_time = time.time()
-                        record_span_timing(span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(span, TIME_TO_FIRST_TOKEN, first_token_time, reference_time=llm_call_start)
                         record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
                         first_token_recorded = True
                     last_response = item
