@@ -211,6 +211,15 @@ def is_run_content(event: Any) -> bool:
         return bool(getattr(event_type, "value", None) == "RunContent")
 
 
+def parse_input_message_item(input_content: Dict[str, Any]) -> Dict[str, Any]:
+    role = input_content.get("role")
+    content = input_content.get("content")
+    if role and content:
+        return {"role": role, "content": content}
+    else:
+        return {"role": "user", "content": input_content}
+
+
 def build_agent_input(agent: Any, input_content: Any) -> str:
     """
     Normalize and assemble agent input.
@@ -247,19 +256,10 @@ def build_agent_input(agent: Any, input_content: Any) -> str:
         messages = [{"role": "user", "content": input_content}]
 
     elif isinstance(input_content, dict):
-        role = input_content.get("role")
-        content = input_content.get("content")
-        messages = [{"role": role, "content": content}] if role and content is not None else []
+        messages = [parse_input_message_item(input_content)]
 
     elif isinstance(input_content, list):
-        messages = [
-            {
-                "role": str(item.get("role")),
-                "content": str(item.get("content")),
-            }
-            for item in input_content
-            if isinstance(item, dict) and item.get("role") and item.get("content") is not None
-        ]
+        messages = [parse_input_message_item(item) for item in input_content if isinstance(item, dict)]
 
     else:
         messages = [{"role": "user", "content": str(input_content)}]
