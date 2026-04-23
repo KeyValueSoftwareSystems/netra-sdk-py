@@ -12,10 +12,8 @@ from netra.span_wrapper import SpanType
 logger = logging.getLogger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
-
 LLM_SYSTEM_AGNO = "agno"
 
-# GenAI semantic convention attribute keys used across Agno instrumentation
 ATTR_AGENT_NAME = "gen_ai.agent.name"
 ATTR_AGENT_ID = "gen_ai.agent.id"
 ATTR_AGENT_DESCRIPTION = "gen_ai.agent.description"
@@ -45,7 +43,6 @@ ATTR_MEMORY_INPUT = "gen_ai.agno.memory.input"
 ATTR_MEMORY_USER_ID = "gen_ai.agno.memory.user_id"
 
 ATTR_KNOWLEDGE_DATASOURCE_ID = "gen_ai.data_source.id"
-
 ATTR_VECTORDB_DATASOURCE_ID = "gen_ai.data_source.id"
 ATTR_VECTORDB_OPERATION = "gen_ai.agno.vectordb.operation"
 
@@ -57,13 +54,6 @@ ATTR_OUTPUT_TYPE = "gen_ai.output.type"
 
 ATTR_ENTITY = "gen_ai.entity"
 
-_ENTITY_EXTRACT_MAP = {
-    "agent": "extract_agent_attributes",
-    "team": "extract_team_attributes",
-    "workflow": "extract_workflow_attributes",
-    "tool": "extract_tool_attributes",
-}
-
 _ENTITY_SPAN_TYPE_MAP: Dict[str, SpanType] = {
     "agent": SpanType.AGENT,
     "team": SpanType.AGENT,
@@ -74,77 +64,36 @@ _ENTITY_SPAN_TYPE_MAP: Dict[str, SpanType] = {
     "knowledge": SpanType.SPAN,
 }
 
+# Maps entity type to an attribute extractor with unified signature (instance, kwargs).
+# Extractors that don't use kwargs simply ignore the second argument.
+_ENTITY_EXTRACTOR_MAP: Dict[str, str] = {
+    "agent": "extract_agent_attributes",
+    "team": "extract_team_attributes",
+    "workflow": "extract_workflow_attributes",
+    "tool": "extract_tool_attributes",
+}
+
 
 def should_suppress_instrumentation() -> bool:
-    """Check if instrumentation should be suppressed."""
+    """Return True if OTel instrumentation suppression is active in this context.
+
+    Returns:
+        True if the suppress-instrumentation context key is set, False otherwise.
+    """
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
-def set_request_attributes(
-    span: Span,
-    instance: Any,
-    args: Tuple[Any, ...],
-    kwargs: Dict[str, Any],
-    entity_type: str,
-) -> None:
-    """Set request attributes on span for an Agno entity.
-
-    Combines common attributes (system, entity, span_type), entity-specific
-    attributes extracted from the instance, and input content.
-
-    Parameters:
-        span: The OpenTelemetry span.
-        instance: The Agno object (Agent, Team, Tool, etc.).
-        args: Positional arguments from the wrapped call.
-        kwargs: Keyword arguments from the wrapped call.
-        entity_type: Entity type string (e.g. "agent", "tool", "team").
-    """
-    if not span.is_recording():
-        return
-
-    span.set_attribute(SpanAttributes.LLM_SYSTEM, LLM_SYSTEM_AGNO)
-    span.set_attribute(ATTR_ENTITY, entity_type)
-    span.set_attribute(NETRA_SPAN_TYPE, _ENTITY_SPAN_TYPE_MAP.get(entity_type, SpanType.SPAN))
-
-    extractor_name = _ENTITY_EXTRACT_MAP.get(entity_type)
-    if extractor_name:
-        extractor = globals().get(extractor_name)
-        if extractor:
-            span.set_attributes(extractor(instance))
-
-    input_content = extract_input_content(args, kwargs)
-    if input_content:
-        span.set_attribute("input", input_content)
-
-
-def set_response_attributes(span: Span, response: Any) -> None:
-    """Set response attributes on span from an Agno response object.
-
-    Sets token usage, output content, response ID, and output type.
-
-    Parameters:
-        span: The OpenTelemetry span.
-        response: The Agno response object (RunResponse, TeamRunOutput, etc.).
-    """
-    if not span.is_recording():
-        return
-
-    usage = extract_token_usage(response)
-    if usage:
-        span.set_attributes(usage)
-
-    output = extract_output_content(response)
-    if output:
-        span.set_attribute("output", output)
-        span.set_attribute(ATTR_OUTPUT_TYPE, "text")
-
-    response_id = extract_response_id(response)
-    if response_id:
-        span.set_attribute(ATTR_RESPONSE_ID, response_id)
-
-
 def _safe_getattr(obj: Any, attr: str, default: Any = None) -> Any:
-    """Safely retrieve an attribute from an object, returning default on failure."""
+    """Return ``getattr(obj, attr, default)``, swallowing any unexpected exception.
+
+    Args:
+        obj: The object to read from.
+        attr: Attribute name.
+        default: Value returned when the attribute is missing or access raises.
+
+    Returns:
+        The attribute value, or ``default`` on failure.
+    """
     try:
         return getattr(obj, attr, default)
     except Exception:
@@ -152,21 +101,102 @@ def _safe_getattr(obj: Any, attr: str, default: Any = None) -> Any:
 
 
 def _safe_str(value: Any) -> str:
-    """Convert a value to string, falling back to repr on failure."""
+    """Convert ``value`` to str, falling back to ``repr`` if ``str()`` raises.
+
+    Args:
+        value: Any Python object.
+
+    Returns:
+        A string representation of ``value``.
+    """
     try:
         return str(value)
     except Exception:
         return repr(value)
 
 
-def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
-    """Extract span attributes from an Agno Agent instance.
+def _normalize(value: Any, *, clean: bool) -> Any:
+    """Convert ``value`` into a JSON-serializable structure.
 
-    Parameters:
-        instance: An Agno Agent object.
+    Handles Pydantic models (via ``model_dump``), dictionaries, lists,
+    and generic Python objects exposing ``__dict__``. Optionally removes
+    ``None`` values during traversal.
+
+    Args:
+        value: The input value to normalize.
+        clean: If ``True``, recursively removes keys/items whose value is ``None``.
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        A JSON-serializable Python object. Structure mirrors the input,
+        with optional removal of ``None`` values.
+    """
+    if value is None:
+        return None
+
+    if hasattr(value, "model_dump"):
+        return _normalize(value.model_dump(), clean=clean)
+
+    if isinstance(value, dict):
+        return {
+            k: v for k, v in ((k, _normalize(v, clean=clean)) for k, v in value.items()) if not (clean and v is None)
+        }
+
+    if isinstance(value, list):
+        return [v for v in (_normalize(item, clean=clean) for item in value) if not (clean and v is None)]
+
+    if hasattr(value, "__dict__"):
+        return {
+            k: v
+            for k, v in ((k, _normalize(v, clean=clean)) for k, v in vars(value).items() if not k.startswith("_"))
+            if not (clean and v is None)
+        }
+
+    return value
+
+
+def serialize_value(data: Any, clean: bool = False) -> Optional[str]:
+    """Serialize ``data`` into a JSON string.
+
+    Converts supported Python objects into a JSON-serializable structure
+    and encodes it using ``json.dumps``. Falls back to ``_safe_str`` if
+    serialization fails.
+
+    Args:
+        data: The value to serialize.
+        clean: If ``True``, removes ``None`` values from the structure
+            before serialization.
+
+    Returns:
+        A JSON-encoded string representation of ``data``. Returns the
+        original string if ``data`` is already a string. Returns ``None``
+        if ``data`` is ``None``. Falls back to ``_safe_str(data)`` if
+        serialization fails.
+    """
+    if data is None:
+        return None
+
+    try:
+        result = _normalize(data, clean=clean)
+
+        if isinstance(result, str):
+            return result
+
+        return json.dumps(result)
+
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to serialize value: %s", e)
+        return _safe_str(data)
+
+
+def extract_agent_attributes(instance: Any, run_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
+    """Extract span attributes from an Agno Agent instance.
+
+    Args:
+        instance: An Agno Agent object.
+        run_kwargs: Keyword arguments from the ``run()`` call (e.g. ``session_id``).
+
+    Returns:
+        Dict of span attribute key-value pairs for the agent.
     """
     attributes: Dict[str, Any] = {}
 
@@ -209,12 +239,14 @@ def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
             if tool_def:
                 tool_defs.append(tool_def)
         if tool_defs:
-            try:
-                attributes[ATTR_AGENT_TOOLS] = json.dumps(tool_defs)
-            except Exception:
-                attributes[ATTR_AGENT_TOOLS] = _safe_str(tool_defs)
+            attributes[ATTR_AGENT_TOOLS] = serialize_value(tool_defs)
 
-    conversation_id = _safe_getattr(instance, "session_id") or _safe_getattr(instance, "conversation_id")
+    # Prefer session_id from run() kwargs (set per-run); fall back to instance attribute
+    conversation_id = (
+        (run_kwargs.get("session_id") or run_kwargs.get("conversation_id") if run_kwargs else None)
+        or _safe_getattr(instance, "session_id")
+        or _safe_getattr(instance, "conversation_id")
+    )
     if conversation_id:
         attributes[ATTR_AGENT_CONVERSATION_ID] = _safe_str(conversation_id)
 
@@ -228,11 +260,11 @@ def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
 def extract_team_attributes(instance: Any) -> Dict[str, Any]:
     """Extract span attributes from an Agno Team instance.
 
-    Parameters:
+    Args:
         instance: An Agno Team object.
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the team.
     """
     attributes: Dict[str, Any] = {}
 
@@ -252,10 +284,7 @@ def extract_team_attributes(instance: Any) -> Dict[str, Any]:
             if m_name:
                 member_names.append(m_name)
         if member_names:
-            try:
-                attributes[ATTR_TEAM_AGENTS] = json.dumps(member_names)
-            except Exception:
-                attributes[ATTR_TEAM_AGENTS] = _safe_str(member_names)
+            attributes[ATTR_TEAM_AGENTS] = serialize_value(member_names)
 
     conversation_id = _safe_getattr(instance, "session_id") or _safe_getattr(instance, "conversation_id")
     if conversation_id:
@@ -267,11 +296,11 @@ def extract_team_attributes(instance: Any) -> Dict[str, Any]:
 def extract_workflow_attributes(instance: Any) -> Dict[str, Any]:
     """Extract span attributes from an Agno Workflow instance.
 
-    Parameters:
+    Args:
         instance: An Agno Workflow object.
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the workflow.
     """
     attributes: Dict[str, Any] = {}
 
@@ -293,11 +322,11 @@ def extract_workflow_attributes(instance: Any) -> Dict[str, Any]:
 def extract_tool_attributes(instance: Any) -> Dict[str, Any]:
     """Extract span attributes from an Agno FunctionCall instance.
 
-    Parameters:
+    Args:
         instance: An Agno FunctionCall object.
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the tool call.
     """
     attributes: Dict[str, Any] = {}
 
@@ -328,22 +357,19 @@ def extract_tool_attributes(instance: Any) -> Dict[str, Any]:
 def extract_memory_attributes(instance: Any, args: Tuple[Any, ...], operation: str) -> Dict[str, Any]:
     """Extract span attributes from an Agno Memory operation.
 
-    Parameters:
+    Args:
         instance: The Memory or MemoryManager object.
         args: Positional arguments passed to the memory method.
-        operation: The memory operation name (e.g. "add_user_memory", "search_user_memories").
+        operation: The memory operation name (e.g. ``"add_user_memory"``).
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the memory operation.
     """
-    attributes: Dict[str, Any] = {
-        ATTR_MEMORY_OPERATION: operation,
-    }
+    attributes: Dict[str, Any] = {ATTR_MEMORY_OPERATION: operation}
 
-    db_type = _safe_getattr(instance, "db")
-    if db_type:
-        db_class = type(db_type).__name__
-        attributes[ATTR_MEMORY_DB_TYPE] = db_class
+    db = _safe_getattr(instance, "db")
+    if db is not None:
+        attributes[ATTR_MEMORY_DB_TYPE] = type(db).__name__
 
     user_id = _safe_getattr(instance, "user_id")
     if user_id:
@@ -352,8 +378,8 @@ def extract_memory_attributes(instance: Any, args: Tuple[Any, ...], operation: s
     if args:
         try:
             attributes[ATTR_MEMORY_INPUT] = _safe_str(args[0])
-        except (IndexError, Exception):
-            pass
+        except Exception as e:
+            logger.debug("netra.instrumentation.agno: failed to extract memory input: %s", e)
 
     return attributes
 
@@ -361,11 +387,11 @@ def extract_memory_attributes(instance: Any, args: Tuple[Any, ...], operation: s
 def extract_knowledge_attributes(instance: Any) -> Dict[str, Any]:
     """Extract span attributes from an Agno Knowledge instance.
 
-    Parameters:
+    Args:
         instance: An Agno AgentKnowledge or Knowledge object.
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the knowledge source.
     """
     attributes: Dict[str, Any] = {}
 
@@ -379,16 +405,14 @@ def extract_knowledge_attributes(instance: Any) -> Dict[str, Any]:
 def extract_vectordb_attributes(instance: Any, operation: str) -> Dict[str, Any]:
     """Extract span attributes from an Agno VectorDb operation.
 
-    Parameters:
+    Args:
         instance: An Agno VectorDb object.
-        operation: The vectordb operation name (e.g. "search", "upsert").
+        operation: The operation name (e.g. ``"search"``, ``"upsert"``).
 
     Returns:
-        Dictionary of span attribute key-value pairs.
+        Dict of span attribute key-value pairs for the vectordb operation.
     """
-    attributes: Dict[str, Any] = {
-        ATTR_VECTORDB_OPERATION: operation,
-    }
+    attributes: Dict[str, Any] = {ATTR_VECTORDB_OPERATION: operation}
 
     data_source_id = _safe_getattr(instance, "name") or _safe_getattr(instance, "id")
     if data_source_id:
@@ -400,11 +424,11 @@ def extract_vectordb_attributes(instance: Any, operation: str) -> Dict[str, Any]
 def extract_token_usage(response: Any) -> Dict[str, Any]:
     """Extract token usage metrics from an Agno response object.
 
-    Parameters:
-        response: An Agno RunResponse / RunOutput / TeamRunOutput object.
+    Args:
+        response: An Agno RunResponse, RunOutput, or TeamRunOutput object.
 
     Returns:
-        Dictionary of token usage span attributes.
+        Dict with input/output token count attributes, or empty dict if unavailable.
     """
     attributes: Dict[str, Any] = {}
 
@@ -428,29 +452,25 @@ def extract_token_usage(response: Any) -> Dict[str, Any]:
 
 
 def extract_input_content(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Optional[str]:
-    """Extract user query / input content from wrapper arguments.
+    """Extract user query or input content from wrapper call arguments.
 
-    Checks the first positional arg, then common keyword arg names.
+    Checks the first positional arg first, then common keyword argument names
+    (``input``, ``input_message``, ``message``).
 
-    Parameters:
+    Args:
         args: Positional arguments from the wrapped call.
         kwargs: Keyword arguments from the wrapped call.
 
     Returns:
-        The extracted input string, or None if not found.
+        The extracted input as a string, or ``None`` if not found.
     """
-    if args:
-        first_arg = args[0]
-        if isinstance(first_arg, str) and first_arg:
-            return first_arg
+    if args and (first_arg := args[0]):
+        return serialize_value(first_arg, clean=True)
 
     for key in ("input", "input_message", "message"):
         value = kwargs.get(key)
         if value is not None:
-            return _safe_str(value)
-
-    if args:
-        return _safe_str(args[0])
+            return serialize_value(value, clean=True)
 
     return None
 
@@ -458,16 +478,25 @@ def extract_input_content(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Opti
 def extract_output_content(response: Any) -> Optional[str]:
     """Extract output content from an Agno response object.
 
-    Parameters:
+    Checks ``content``, ``message``, and ``result`` attributes in order,
+    handling Pydantic models with ``model_dump_json``.
+
+    Args:
         response: An Agno RunResponse or similar result object.
 
     Returns:
-        The extracted output string, or None if not available.
+        The output as a string, or ``None`` if not available.
     """
     for attr in ("content", "message", "result"):
         value = _safe_getattr(response, attr)
-        if value is not None:
-            return _safe_str(value)
+        if not value:
+            continue
+        if hasattr(value, "model_dump_json"):
+            try:
+                return str(value.model_dump_json())
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to serialize Pydantic output: %s", e)
+        return _safe_str(value)
 
     if isinstance(response, str):
         return response
@@ -478,11 +507,11 @@ def extract_output_content(response: Any) -> Optional[str]:
 def extract_response_id(response: Any) -> Optional[str]:
     """Extract the run/response ID from an Agno response object.
 
-    Parameters:
+    Args:
         response: An Agno RunResponse or similar result object.
 
     Returns:
-        The response ID string, or None if not available.
+        The response ID string, or ``None`` if not available.
     """
     run_id = _safe_getattr(response, "run_id")
     if run_id:
@@ -493,40 +522,115 @@ def extract_response_id(response: Any) -> Optional[str]:
 def get_tool_name(instance: Any) -> str:
     """Derive the tool function name from a FunctionCall instance.
 
-    Parameters:
+    Args:
         instance: An Agno FunctionCall object.
 
     Returns:
-        The tool name string, defaulting to "unknown_tool".
+        The tool name string, defaulting to ``"unknown_tool"``.
     """
     func = _safe_getattr(instance, "function")
     if func:
         name = _safe_getattr(func, "name")
         if name:
-            return name
+            return str(name)
     name = _safe_getattr(instance, "name")
-    return name if name else "unknown_tool"
+    return str(name) if name else "unknown_tool"
 
 
 def get_tool_arguments(instance: Any, kwargs: Dict[str, Any]) -> Optional[str]:
     """Serialize tool call arguments for span attributes.
 
-    Parameters:
+    Prefers ``instance.arguments``; falls back to the wrapper ``kwargs``.
+
+    Args:
         instance: An Agno FunctionCall object.
         kwargs: Keyword arguments from the wrapped call.
 
     Returns:
-        JSON-serialized arguments string, or None.
+        JSON-serialized arguments string, or ``None``.
     """
     arguments = _safe_getattr(instance, "arguments")
     if arguments is not None:
-        try:
-            return json.dumps(arguments) if isinstance(arguments, dict) else _safe_str(arguments)
-        except Exception:
-            return _safe_str(arguments)
+        return serialize_value(arguments) if isinstance(arguments, dict) else _safe_str(arguments)
     if kwargs:
-        try:
-            return json.dumps(kwargs)
-        except Exception:
-            return _safe_str(kwargs)
+        return serialize_value(kwargs)
     return None
+
+
+def set_request_attributes(
+    span: Span,
+    instance: Any,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+    entity_type: str,
+) -> None:
+    """Set request-side span attributes for an Agno entity call.
+
+    Writes system, entity type, and span-type attributes, then entity-specific
+    attributes (agent name/model/tools, team members, etc.), then the input content.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno object (Agent, Team, Tool, etc.).
+        args: Positional arguments from the wrapped call.
+        kwargs: Keyword arguments from the wrapped call.
+        entity_type: Entity type string (``"agent"``, ``"tool"``, ``"team"``, etc.).
+    """
+    if not span.is_recording():
+        return
+
+    span.set_attribute(SpanAttributes.LLM_SYSTEM, LLM_SYSTEM_AGNO)
+    span.set_attribute(ATTR_ENTITY, entity_type)
+    span.set_attribute(NETRA_SPAN_TYPE, _ENTITY_SPAN_TYPE_MAP.get(entity_type, SpanType.SPAN))
+
+    extractor_name = _ENTITY_EXTRACTOR_MAP.get(entity_type)
+    extractor = globals().get(extractor_name) if extractor_name else None
+    if extractor:
+        try:
+            if entity_type == "agent":
+                span.set_attributes(extractor(instance, kwargs))
+            else:
+                span.set_attributes(extractor(instance))
+        except Exception as e:
+            logger.debug(
+                "netra.instrumentation.agno: failed to extract %s attributes: %s",
+                entity_type,
+                e,
+            )
+
+    input_content = extract_input_content(args, kwargs)
+
+    # If the entity is an agent , filter the response for `role` and `content`
+    if entity_type == "agent" and isinstance(input_content, (list, dict)):
+        if isinstance(input_content, dict):
+            input_content = [input_content]
+        input_content = [
+            {k: v for k, v in input_item.items() if k in ("role", "content")} for input_item in input_content
+        ]
+
+    span.set_attribute("input", input_content)
+
+
+def set_response_attributes(span: Span, response: Any) -> None:
+    """Set response-side span attributes from an Agno response object.
+
+    Writes token usage, output content, response ID, and output type.
+
+    Args:
+        span: The active OpenTelemetry span.
+        response: The Agno response object (RunResponse, TeamRunOutput, etc.).
+    """
+    if not span.is_recording():
+        return
+
+    usage = extract_token_usage(response)
+    if usage:
+        span.set_attributes(usage)
+
+    output = extract_output_content(response)
+    if output:
+        span.set_attribute("output", output)
+
+    response_id = extract_response_id(response)
+    if response_id:
+        span.set_attribute(ATTR_RESPONSE_ID, response_id)
