@@ -50,7 +50,8 @@ def _resolve_memory_target() -> Optional[Tuple[str, str]]:
             mod = __import__(module_path, fromlist=[class_name])
             if hasattr(mod, class_name):
                 return (module_path, class_name)
-        except (ImportError, Exception):
+        except Exception as e:
+            logger.warning("netra.instrumentation.agno: failed to import %s.%s: %s", module_path, class_name, e)
             continue
     return None
 
@@ -71,13 +72,15 @@ def _resolve_knowledge_target() -> Optional[Tuple[str, str]]:
             mod = __import__(module_path, fromlist=[class_name])
             if hasattr(mod, class_name):
                 return (module_path, class_name)
-        except (ImportError, Exception):
+        except Exception as e:
+            logger.warning("netra.instrumentation.agno: failed to import %s.%s: %s", module_path, class_name, e)
             continue
     return None
 
 
 class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
-    """Custom Agno instrumentor for Netra SDK.
+    """
+    Custom Agno instrumentor for Netra SDK.
 
     Patches Agno Agent, Team, Workflow, Tool, VectorDB, Memory, and Knowledge
     entry points with OpenTelemetry spans following Netra conventions.
@@ -214,58 +217,60 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             except Exception as e:
                 logger.error("Failed to instrument %s.search: %s", know_class, e)
 
-    def _uninstrument(self, **kwargs: Any) -> None:
+    def _uninstrument(self, **_kwargs: Any) -> None:
         """Remove Netra wrappers from Agno classes."""
         try:
             unwrap("agno.agent.agent", "Agent.run")
             unwrap("agno.agent.agent", "Agent.arun")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument Agent.run/arun")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument Agent.run/arun: %s", e)
 
         try:
             unwrap("agno.agent.agent", "Agent.continue_run")
             unwrap("agno.agent.agent", "Agent.acontinue_run")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument Agent.continue_run/acontinue_run")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument Agent.continue_run/acontinue_run: %s", e)
 
         try:
             unwrap("agno.tools.function", "FunctionCall.execute")
             unwrap("agno.tools.function", "FunctionCall.aexecute")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument FunctionCall.execute/aexecute")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument FunctionCall.execute/aexecute: %s", e)
 
         try:
             unwrap("agno.team.team", "Team.run")
             unwrap("agno.team.team", "Team.arun")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument Team.run/arun")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument Team.run/arun: %s", e)
 
         try:
             unwrap("agno.workflow.workflow", "Workflow.run_workflow")
             unwrap("agno.workflow.workflow", "Workflow.arun_workflow")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument Workflow.run_workflow/arun_workflow")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error(
+                "netra.instrumentation.agno: failed to uninstrument Workflow.run_workflow/arun_workflow: %s", e
+            )
 
         try:
             unwrap("agno.vectordb.base", "VectorDb.search")
             unwrap("agno.vectordb.base", "VectorDb.upsert")
-        except (AttributeError, ModuleNotFoundError):
-            logger.error("Failed to uninstrument VectorDb.search/upsert")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument VectorDb.search/upsert: %s", e)
 
         if self._memory_target:
             mem_module, mem_class = self._memory_target
             try:
                 unwrap(mem_module, f"{mem_class}.add_user_memory")
                 unwrap(mem_module, f"{mem_class}.search_user_memories")
-            except (AttributeError, ModuleNotFoundError):
-                logger.error("Failed to uninstrument %s memory methods", mem_class)
+            except (AttributeError, ModuleNotFoundError) as e:
+                logger.error("netra.instrumentation.agno: failed to uninstrument %s memory methods: %s", mem_class, e)
 
         if self._knowledge_target:
             know_module, know_class = self._knowledge_target
             try:
                 unwrap(know_module, f"{know_class}.search")
-            except (AttributeError, ModuleNotFoundError):
-                logger.error("Failed to uninstrument %s.search", know_class)
+            except (AttributeError, ModuleNotFoundError) as e:
+                logger.error("netra.instrumentation.agno: failed to uninstrument %s.search: %s", know_class, e)
 
 
 __all__ = ["NetraAgnoInstrumentor"]
