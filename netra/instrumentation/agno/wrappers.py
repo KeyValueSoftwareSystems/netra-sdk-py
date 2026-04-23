@@ -19,6 +19,7 @@ from netra.instrumentation.agno.utils import (
     extract_vectordb_attributes,
     get_tool_arguments,
     get_tool_name,
+    is_run_content,
     serialize_value,
     set_request_attributes,
     set_response_attributes,
@@ -275,9 +276,10 @@ async def _agent_arun_stream(
         async for event in wrapped(*args, **kwargs):
             last_response = event
             try:
-                content = getattr(event, "content", None)
-                if content:
-                    content_chunks.append(str(content))
+                if is_run_content(event):
+                    content = getattr(event, "content", None)
+                    if content:
+                        content_chunks.append(str(content))
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate stream content: %s", e)
             yield event
@@ -934,9 +936,10 @@ class AgnoStreamingWrapper:
             event = self._response.__next__()
             self._last_response = event
             try:
-                content = getattr(event, "content", None)
-                if content:
-                    self._content_chunks.append(str(content))
+                if is_run_content(event):
+                    content = getattr(event, "content", None)
+                    if content:
+                        self._content_chunks.append(str(content))
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate stream content: %s", e)
             return event
