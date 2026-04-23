@@ -233,6 +233,11 @@ def build_agent_input(agent: Any, input_content: Any) -> str:
     if system_message := getattr(agent, "system_message", None):
         system_messages.append({"role": "system", "content": system_message})
 
+    try:
+        input_content = json.loads(input_content)
+    except Exception as e:
+        logger.warning("netra.instrumentation.agno: failed to parse input_content as JSON: %s", e)
+
     # --- Fast path: return raw string if no system context ---
     if not system_messages and not isinstance(input_content, (list, dict)):
         return str(input_content)
@@ -265,7 +270,7 @@ def build_agent_input(agent: Any, input_content: Any) -> str:
     try:
         return json.dumps(total_messages)
     except Exception as e:
-        logger.warning("netra.instrumentation.agno: failed to conevrt input messages to JSON string: %s", e)
+        logger.warning("netra.instrumentation.agno: failed to convert input messages to JSON string: %s", e)
         return str(total_messages)
 
 
