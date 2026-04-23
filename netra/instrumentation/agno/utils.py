@@ -188,6 +188,29 @@ def serialize_value(data: Any, clean: bool = False) -> Optional[str]:
         return _safe_str(data)
 
 
+def is_run_content(event: Any) -> bool:
+    """
+    Return True if the event represents a "run_content" event.
+    Falls back to checking event.value == "RunContent" if import fails.
+
+    Args:
+        event: The event object to evaluate. May be None or any arbitrary type.
+
+    Returns:
+        True if the event corresponds to "run_content", otherwise False.
+
+    """
+    if event is None or (event_type := getattr(event, "event", None)) is None:
+        return False
+
+    try:
+        from agno.agent import RunEvent
+
+        return bool(event_type == RunEvent.run_content)
+    except Exception:
+        return bool(getattr(event_type, "value", None) == "RunContent")
+
+
 def extract_agent_attributes(instance: Any, run_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
     """Extract span attributes from an Agno Agent instance.
 
