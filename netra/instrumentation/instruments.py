@@ -17,7 +17,7 @@ class CustomInstruments(Enum):
     WEAVIATEDB = "weaviate_db"
     GOOGLE_GENERATIVEAI = "google_genai"
     FASTAPI = "fastapi"
-    ADK = "adk"
+    ADK = "google_adk"
     AIO_PIKA = "aio_pika"
     AIOHTTP_SERVER = "aiohttp_server"
     AIOKAFKA = "aiokafka"
@@ -100,7 +100,7 @@ InstrumentSet = NetraInstruments("InstrumentSet", merged_members)
 NetraInstruments follows the given structure. Refer this for usage within Netra SDK:
 
 class InstrumentSet(Enum):
-    ADK = "adk"
+    ADK = "google_adk"
     AIOHTTP = "aiohttp"
     AIO_PIKA = "aio_pika"
     AIOKAFKA = "aiokafka"
