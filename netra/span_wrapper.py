@@ -9,7 +9,7 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import SpanKind, Status, StatusCode
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from netra.config import Config
 from netra.session_manager import SessionManager
@@ -21,7 +21,7 @@ _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
 
 
 class ActionModel(BaseModel):  # type: ignore[misc]
-    start_time: str = str((datetime.now().timestamp() * 1_000_000_000))
+    start_time: str = Field(default_factory=lambda: str(int(datetime.now().timestamp() * 1_000_000_000)))
     action: str
     action_type: str
     success: bool
@@ -71,7 +71,7 @@ class SpanWrapper:
         self,
         name: str,
         attributes: Optional[Dict[str, str]] = None,
-        module_name: str = "combat_sdk",
+        module_name: str = Config.SDK_NAME,
         as_type: Optional[SpanType] = SpanType.SPAN,
     ):
         """
