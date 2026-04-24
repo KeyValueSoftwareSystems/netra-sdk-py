@@ -9,7 +9,7 @@ from opentelemetry.sdk.trace.export import (
 
 from netra.exporters.utils import add_blocked_trace_id, get_trace_id, is_trace_id_blocked, is_trial_blocked
 from netra.processors.local_filtering_span_processor import (
-    BLOCKED_LOCAL_PARENT_MAP,
+    blocked_local_parent_map_snapshot,
 )
 
 logger = logging.getLogger(__name__)
@@ -113,12 +113,7 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
 
         # Merge with registry of locally blocked spans captured by processor to handle
         # cases where children export before their blocked parent (SimpleSpanProcessor)
-        merged_map: Dict[Any, Any] = {}
-        try:
-            if BLOCKED_LOCAL_PARENT_MAP:
-                merged_map.update(BLOCKED_LOCAL_PARENT_MAP)
-        except Exception:
-            pass
+        merged_map: Dict[Any, Any] = blocked_local_parent_map_snapshot()
         merged_map.update(blocked_parent_map)
 
         if merged_map:

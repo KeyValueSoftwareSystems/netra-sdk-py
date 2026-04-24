@@ -1,5 +1,6 @@
 import json
 import logging
+import threading
 from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional, Union
@@ -20,7 +21,14 @@ class ConversationType(str, Enum):
 
 
 class SessionManager:
-    """Manages session and user context for applications."""
+    """Manages session and user context for applications.
+
+    All mutable class-level state is protected by ``_lock`` so that
+    concurrent threads (or ``asyncio.to_thread`` calls) cannot corrupt
+    the internal stacks and registries.
+    """
+
+    _lock = threading.Lock()
 
     # Class variable to track the current span
     _current_span: Optional[trace.Span] = None
@@ -46,7 +54,8 @@ class SessionManager:
         Args:
             span: The current span to store
         """
-        cls._current_span = span
+        with cls._lock:
+            cls._current_span = span
 
     @classmethod
     def get_current_span(cls) -> Optional[trace.Span]:
@@ -56,7 +65,8 @@ class SessionManager:
         Returns:
             The stored current span or None if not set
         """
-        return cls._current_span
+        with cls._lock:
+            return cls._current_span
 
     @classmethod
     def register_span(cls, name: str, span: trace.Span) -> None:
@@ -68,13 +78,13 @@ class SessionManager:
             span: The span to register
         """
         try:
-            stack = cls._spans_by_name.get(name)
-            if stack is None:
-                cls._spans_by_name[name] = [span]
-            else:
-                stack.append(span)
-            # Track globally as active
-            cls._active_spans.append(span)
+            with cls._lock:
+                stack = cls._spans_by_name.get(name)
+                if stack is None:
+                    cls._spans_by_name[name] = [span]
+                else:
+                    stack.append(span)
+                cls._active_spans.append(span)
         except Exception:
             logger.exception("Failed to register span '%s'", name)
 
@@ -88,21 +98,20 @@ class SessionManager:
             span: The span to unregister
         """
         try:
-            stack = cls._spans_by_name.get(name)
-            if not stack:
-                return
-            # Remove the last matching instance (normal case)
-            for i in range(len(stack) - 1, -1, -1):
-                if stack[i] is span:
-                    stack.pop(i)
-                    break
-            if not stack:
-                cls._spans_by_name.pop(name, None)
-            # Also remove from global active list (remove last matching instance)
-            for i in range(len(cls._active_spans) - 1, -1, -1):
-                if cls._active_spans[i] is span:
-                    cls._active_spans.pop(i)
-                    break
+            with cls._lock:
+                stack = cls._spans_by_name.get(name)
+                if not stack:
+                    return
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i] is span:
+                        stack.pop(i)
+                        break
+                if not stack:
+                    cls._spans_by_name.pop(name, None)
+                for i in range(len(cls._active_spans) - 1, -1, -1):
+                    if cls._active_spans[i] is span:
+                        cls._active_spans.pop(i)
+                        break
         except Exception:
             logger.exception("Failed to unregister span '%s'", name)
 
@@ -131,10 +140,11 @@ class SessionManager:
         Returns:
             The most recently registered span with the given name, or None if not found
         """
-        stack = cls._spans_by_name.get(name)
-        if stack:
-            return stack[-1]
-        return None
+        with cls._lock:
+            stack = cls._spans_by_name.get(name)
+            if stack:
+                return stack[-1]
+            return None
 
     @classmethod
     def push_entity(cls, entity_type: str, entity_name: str) -> None:
@@ -145,14 +155,15 @@ class SessionManager:
             entity_type: Type of entity (workflow, task, agent, span)
             entity_name: Name of the entity
         """
-        if entity_type == "workflow":
-            cls._workflow_stack.append(entity_name)
-        elif entity_type == "task":
-            cls._task_stack.append(entity_name)
-        elif entity_type == "agent":
-            cls._agent_stack.append(entity_name)
-        elif entity_type == "span":
-            cls._span_stack.append(entity_name)
+        with cls._lock:
+            if entity_type == "workflow":
+                cls._workflow_stack.append(entity_name)
+            elif entity_type == "task":
+                cls._task_stack.append(entity_name)
+            elif entity_type == "agent":
+                cls._agent_stack.append(entity_name)
+            elif entity_type == "span":
+                cls._span_stack.append(entity_name)
 
     @classmethod
     def pop_entity(cls, entity_type: str) -> Optional[str]:
@@ -165,15 +176,16 @@ class SessionManager:
         Returns:
             Entity name or None if stack is empty
         """
-        if entity_type == "workflow" and cls._workflow_stack:
-            return cls._workflow_stack.pop()
-        elif entity_type == "task" and cls._task_stack:
-            return cls._task_stack.pop()
-        elif entity_type == "agent" and cls._agent_stack:
-            return cls._agent_stack.pop()
-        elif entity_type == "span" and cls._span_stack:
-            return cls._span_stack.pop()
-        return None
+        with cls._lock:
+            if entity_type == "workflow" and cls._workflow_stack:
+                return cls._workflow_stack.pop()
+            elif entity_type == "task" and cls._task_stack:
+                return cls._task_stack.pop()
+            elif entity_type == "agent" and cls._agent_stack:
+                return cls._agent_stack.pop()
+            elif entity_type == "span" and cls._span_stack:
+                return cls._span_stack.pop()
+            return None
 
     @classmethod
     def get_current_entity_attributes(cls) -> Dict[str, str]:
@@ -183,33 +195,31 @@ class SessionManager:
         Returns:
             Dictionary of entity attributes to add to spans
         """
-        attributes = {}
+        with cls._lock:
+            attributes = {}
 
-        # Add current workflow if exists
-        if cls._workflow_stack:
-            attributes[f"{Config.LIBRARY_NAME}.workflow.name"] = cls._workflow_stack[-1]
+            if cls._workflow_stack:
+                attributes[f"{Config.LIBRARY_NAME}.workflow.name"] = cls._workflow_stack[-1]
 
-        # Add current task if exists
-        if cls._task_stack:
-            attributes[f"{Config.LIBRARY_NAME}.task.name"] = cls._task_stack[-1]
+            if cls._task_stack:
+                attributes[f"{Config.LIBRARY_NAME}.task.name"] = cls._task_stack[-1]
 
-        # Add current agent if exists
-        if cls._agent_stack:
-            attributes[f"{Config.LIBRARY_NAME}.agent.name"] = cls._agent_stack[-1]
+            if cls._agent_stack:
+                attributes[f"{Config.LIBRARY_NAME}.agent.name"] = cls._agent_stack[-1]
 
-        # Add current span if exists
-        if cls._span_stack:
-            attributes[f"{Config.LIBRARY_NAME}.span.name"] = cls._span_stack[-1]
+            if cls._span_stack:
+                attributes[f"{Config.LIBRARY_NAME}.span.name"] = cls._span_stack[-1]
 
-        return attributes
+            return attributes
 
     @classmethod
     def clear_entity_stacks(cls) -> None:
         """Clear all entity stacks."""
-        cls._workflow_stack.clear()
-        cls._task_stack.clear()
-        cls._agent_stack.clear()
-        cls._span_stack.clear()
+        with cls._lock:
+            cls._workflow_stack.clear()
+            cls._task_stack.clear()
+            cls._agent_stack.clear()
+            cls._span_stack.clear()
 
     @classmethod
     def get_stack_info(cls) -> Dict[str, List[str]]:
@@ -219,12 +229,13 @@ class SessionManager:
         Returns:
             Dictionary containing all stack contents
         """
-        return {
-            "workflows": cls._workflow_stack.copy(),
-            "tasks": cls._task_stack.copy(),
-            "agents": cls._agent_stack.copy(),
-            "spans": cls._span_stack.copy(),
-        }
+        with cls._lock:
+            return {
+                "workflows": cls._workflow_stack.copy(),
+                "tasks": cls._task_stack.copy(),
+                "agents": cls._agent_stack.copy(),
+                "spans": cls._span_stack.copy(),
+            }
 
     @staticmethod
     def set_session_context(
@@ -318,13 +329,15 @@ class SessionManager:
             span = trace.get_current_span()
             if not (span and getattr(span, "is_recording", lambda: False)()):
                 # Fallback: use the most recent active span from SessionManager
-                if not cls._active_spans:
+                with cls._lock:
+                    active_snapshot = list(cls._active_spans)
+
+                if not active_snapshot:
                     logger.warning("No active span to add conversation attribute.")
                     return
 
-                # Find the most recent *recording* span (the last item can be a finished span)
                 recording_span: Optional[trace.Span] = None
-                for span in reversed(cls._active_spans):
+                for span in reversed(active_snapshot):
                     try:
                         if span and getattr(span, "is_recording", lambda: False)():
                             recording_span = span
