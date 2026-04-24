@@ -10,28 +10,44 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.google_adk.version import __version__
 from netra.instrumentation.google_adk.wrappers import (
     NoOpTracer,
-    adk_trace_call_llm_wrapper,
-    adk_trace_send_data_wrapper,
-    adk_trace_tool_call_wrapper,
-    adk_trace_tool_response_wrapper,
     base_agent_run_async_wrapper,
     base_llm_flow_call_llm_async_wrapper,
     call_tool_async_wrapper,
-    finalize_model_response_event_wrapper,
 )
 
 logger = logging.getLogger(__name__)
 
 _instruments = ("google-adk >= 0.1.0",)
 
+_ADK_TRACER_MODULES = (
+    "google.adk.agents.base_agent",
+    "google.adk.flows.llm_flows.base_llm_flow",
+    "google.adk.flows.llm_flows.functions",
+    "google.adk.models.gemini_context_cache_manager",
+    "google.adk.models.google_llm",
+    "google.adk.plugins.bigquery_agent_analytics_plugin",
+    "google.adk.runners",
+    "google.adk.telemetry",
+    "google.adk.telemetry.tracing",
+    "google.cloud.bigquery.opentelemetry_tracing",
+    "google.cloud.pubsub_v1.open_telemetry.publish_message_wrapper",
+    "google.cloud.pubsub_v1.open_telemetry.subscribe_opentelemetry",
+    "google.cloud.pubsub_v1.publisher._batch.thread",
+    "google.cloud.spanner_v1._opentelemetry_tracing",
+    "google.cloud.sqlalchemy_spanner._opentelemetry_tracing",
+    "google.cloud.storage._opentelemetry_tracing",
+)
+
 
 class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """Custom Google ADK instrumentor for Netra SDK."""
 
     def instrumentation_dependencies(self) -> Collection[str]:
+        """Return the package requirements for this instrumentor."""
         return _instruments
 
     def _instrument(self, **kwargs) -> Any:  # type: ignore[no-untyped-def]
+        """Patch ADK with Netra spans and replace ADK's own tracers with NoOps to avoid duplicates."""
         try:
             tracer_provider = kwargs.get("tracer_provider")
             tracer = get_tracer(__name__, __version__, tracer_provider)
@@ -39,20 +55,8 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to initialize tracer: {e}")
             return
 
-        # Set ADK tracer to NoOpTracer to prevent ADK from creating its own spans
-        try:
-            import google.adk.telemetry as adk_telemetry
-
-            adk_telemetry.tracer = NoOpTracer()
-        except Exception as e:
-            logger.debug(f"Unable to replace ADK tracer: {e}")
-
-        for module_name in (
-            "google.adk.runners",
-            "google.adk.agents.base_agent",
-            "google.adk.flows.llm_flows.base_llm_flow",
-            "google.adk.flows.llm_flows.functions",
-        ):
+        # Replace ADK's own tracers with NoOp to prevent duplicate spans
+        for module_name in _ADK_TRACER_MODULES:
             try:
                 if module_name in sys.modules:
                     module = sys.modules[module_name]
@@ -71,28 +75,13 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to instrument BaseAgent.run_async: {e}")
 
         try:
-            wrap_function_wrapper("google.adk.telemetry", "trace_tool_call", adk_trace_tool_call_wrapper(tracer))
-            wrap_function_wrapper(
-                "google.adk.telemetry", "trace_tool_response", adk_trace_tool_response_wrapper(tracer)
-            )
-            wrap_function_wrapper("google.adk.telemetry", "trace_call_llm", adk_trace_call_llm_wrapper(tracer))
-            wrap_function_wrapper("google.adk.telemetry", "trace_send_data", adk_trace_send_data_wrapper(tracer))
-        except Exception as e:
-            logger.error(f"Failed to instrument ADK telemetry functions: {e}")
-
-        try:
             wrap_function_wrapper(
                 "google.adk.flows.llm_flows.base_llm_flow",
                 "BaseLlmFlow._call_llm_async",
                 base_llm_flow_call_llm_async_wrapper(tracer),
             )
-            wrap_function_wrapper(
-                "google.adk.flows.llm_flows.base_llm_flow",
-                "BaseLlmFlow._finalize_model_response_event",
-                finalize_model_response_event_wrapper(tracer),
-            )
         except Exception as e:
-            logger.error(f"Failed to instrument BaseLlmFlow methods: {e}")
+            logger.error(f"Failed to instrument BaseLlmFlow._call_llm_async: {e}")
 
         try:
             wrap_function_wrapper(
@@ -104,44 +93,21 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to instrument __call_tool_async: {e}")
 
     def _uninstrument(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
-        # Unwrap in reverse order
+        """Remove Netra wrappers. Note: replaced ADK tracers are intentionally left as NoOps."""
         try:
             unwrap("google.adk.flows.llm_flows.functions", "__call_tool_async")
         except (AttributeError, ModuleNotFoundError):
             logger.debug("Failed to uninstrument __call_tool_async")
 
         try:
-            unwrap(
-                "google.adk.flows.llm_flows.base_llm_flow",
-                "BaseLlmFlow._finalize_model_response_event",
-            )
-            unwrap(
-                "google.adk.flows.llm_flows.base_llm_flow",
-                "BaseLlmFlow._call_llm_async",
-            )
+            unwrap("google.adk.flows.llm_flows.base_llm_flow", "BaseLlmFlow._call_llm_async")
         except (AttributeError, ModuleNotFoundError):
-            logger.debug("Failed to uninstrument BaseLlmFlow methods")
-
-        try:
-            unwrap("google.adk.telemetry", "trace_send_data")
-            unwrap("google.adk.telemetry", "trace_call_llm")
-            unwrap("google.adk.telemetry", "trace_tool_response")
-            unwrap("google.adk.telemetry", "trace_tool_call")
-        except (AttributeError, ModuleNotFoundError):
-            logger.debug("Failed to uninstrument ADK telemetry functions")
+            logger.debug("Failed to uninstrument BaseLlmFlow._call_llm_async")
 
         try:
             unwrap("google.adk.agents.base_agent", "BaseAgent.run_async")
         except (AttributeError, ModuleNotFoundError):
             logger.debug("Failed to uninstrument BaseAgent.run_async")
-
-        try:
-            import google.adk.telemetry as adk_telemetry
-            from opentelemetry import trace as otel_trace
-
-            adk_telemetry.tracer = otel_trace.get_tracer("gcp.vertex.agent")
-        except Exception:
-            pass
 
 
 __all__ = ["NetraGoogleADKInstrumentor"]

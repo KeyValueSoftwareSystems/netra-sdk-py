@@ -1,25 +1,54 @@
 import json
-from typing import Any, Dict
+import logging
+from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
+logger = logging.getLogger(__name__)
 
-def _build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
+NETRA_SPAN_TYPE = "netra.span.type"
+
+
+def build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
+    """Serialize an ADK LlmRequest into a plain dict suitable for tracing, stripping binary/schema fields.
+
+    Args:
+        llm_request: The ADK LlmRequest object to serialize.
+
+    Returns:
+        A dictionary with model, config, and contents fields suitable for tracing.
+    """
     from google.genai import types
 
+    model = getattr(llm_request, "model", None)
+    request_config = getattr(llm_request, "config", None)
+    try:
+        if request_config:
+            request_config = request_config.model_dump(exclude_none=True, exclude={"response_schema"})
+    except Exception as e:
+        logger.warning("Failed to model dump LLM request config: %s", e)
+
     result: Dict[str, Any] = {
-        "model": llm_request.model,
-        "config": llm_request.config.model_dump(exclude_none=True, exclude="response_schema"),
+        "model": model,
+        "config": request_config,
         "contents": [],
     }
 
-    for content in llm_request.contents:
+    for content in llm_request.contents or []:
         parts = [part for part in content.parts if not hasattr(part, "inline_data") or not part.inline_data]
         result["contents"].append(types.Content(role=content.role, parts=parts).model_dump(exclude_none=True))
     return result
 
 
-def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any) -> Dict[str, Any]:
+def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str, Any]:
+    """Convert a serialized LLM request dict into OpenTelemetry span attributes.
+
+    Args:
+        llm_request_dict: Serialized LLM request dict from build_llm_request_for_trace.
+
+    Returns:
+        A dictionary of OpenTelemetry span attributes for the LLM request.
+    """
     attributes: Dict[str, Any] = {}
 
     if "model" in llm_request_dict:
@@ -50,17 +79,22 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
             attributes["gen_ai.request.response_mime_type"] = config["response_mime_type"]
 
         if "tools" in config:
-            for i, tool in enumerate(config["tools"]):
+            func_index = 0
+            for tool in config["tools"]:
                 if "function_declarations" in tool:
-                    for j, func in enumerate(tool["function_declarations"]):
-                        attributes[f"gen_ai.request.tools.{j}.name"] = func.get("name", "")
-                        attributes[f"gen_ai.request.tools.{j}.description"] = func.get("description", "")
+                    for func in tool["function_declarations"]:
+                        attributes[f"gen_ai.request.tools.{func_index}.name"] = func.get("name", "")
+                        attributes[f"gen_ai.request.tools.{func_index}.description"] = func.get("description", "")
+                        func_index += 1
 
     message_index = 0
+    all_inputs: List[Dict[str, Any]] = []
+
     if "config" in llm_request_dict and "system_instruction" in llm_request_dict["config"]:
         system_instruction = llm_request_dict["config"]["system_instruction"]
         attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role"] = "system"
         attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content"] = system_instruction
+        all_inputs.append({"role": "system", "content": system_instruction})
         message_index += 1
 
     if "contents" in llm_request_dict:
@@ -71,7 +105,10 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
 
             attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role"] = role
 
-            text_parts = []
+            text_parts: List[str] = []
+            func_calls: List[Dict[str, Any]] = []
+            func_responses: List[Dict[str, Any]] = []
+
             for part in parts:
                 if "text" in part and part.get("text") is not None:
                     text_parts.append(str(part["text"]))
@@ -83,6 +120,10 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
                     )
                     if "id" in func_call:
                         attributes[f"gen_ai.prompt.{message_index}.function_call.id"] = func_call["id"]
+                    entry: Dict[str, Any] = {"name": func_call.get("name", ""), "args": func_call.get("args", {})}
+                    if "id" in func_call:
+                        entry["id"] = func_call["id"]
+                    func_calls.append(entry)
                 elif "function_response" in part:
                     func_resp = part["function_response"]
                     attributes[f"gen_ai.prompt.{message_index}.function_response.name"] = func_resp.get("name", "")
@@ -91,63 +132,175 @@ def _extract_llm_attributes(llm_request_dict: Dict[str, Any], llm_response: Any)
                     )
                     if "id" in func_resp:
                         attributes[f"gen_ai.prompt.{message_index}.function_response.id"] = func_resp["id"]
+                    resp_entry: Dict[str, Any] = {
+                        "name": func_resp.get("name", ""),
+                        "result": func_resp.get("response", {}),
+                    }
+                    if "id" in func_resp:
+                        resp_entry["id"] = func_resp["id"]
+                    func_responses.append(resp_entry)
 
+            msg: Dict[str, Any] = {"role": role}
             if text_parts:
-                attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content"] = "\n".join(text_parts)
+                content_str = "\n".join(text_parts)
+                attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content"] = content_str
+                msg["content"] = content_str
+            if func_calls:
+                msg["function_calls"] = func_calls
+            if func_responses:
+                msg["function_responses"] = func_responses
+            all_inputs.append(msg)
 
             message_index += 1
 
-    if llm_response:
+    try:
+        attributes["input"] = json.dumps(all_inputs)
+    except Exception:
+        logger.exception("Failed to serialize LLM request inputs to JSON")
+        attributes["input"] = str(all_inputs)
+
+    return attributes
+
+
+def _extract_event_attributes(event: Any) -> Dict[str, Any]:
+    """Extract non-content attributes from an ADK event.
+
+    Args:
+        event: The event object to extract attributes from.
+
+    Returns:
+        A dictionary of attributes.
+    """
+    attributes: Dict[str, Any] = {}
+
+    if model_version := getattr(event, "model_version", None):
+        attributes[SpanAttributes.LLM_REQUEST_MODEL] = model_version
+
+    if author := getattr(event, "author", None):
+        attributes["gen_ai.event.author"] = author
+
+    if invocation_id := getattr(event, "invocation_id", None):
+        attributes["gen_ai.invocation.id"] = invocation_id
+
+    if (timestamp := getattr(event, "timestamp", None)) is not None:
+        attributes["gen_ai.event.timestamp"] = timestamp
+
+    if (finish_reason := getattr(event, "finish_reason", None)) is not None:
+        attributes[SpanAttributes.LLM_RESPONSE_FINISH_REASON] = (
+            finish_reason.value if hasattr(finish_reason, "value") else str(finish_reason)
+        )
+
+    if (error_code := getattr(event, "error_code", None)) is not None:
+        attributes["gen_ai.error.code"] = error_code
+
+    if error_message := getattr(event, "error_message", None):
+        attributes["gen_ai.error.message"] = error_message
+
+    if usage := getattr(event, "usage_metadata", None):
+        if (v := getattr(usage, "prompt_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = v
+
+        # Calculate completion tokens
+        output = 0
+        if isinstance(ct := getattr(usage, "candidates_token_count", None), int):
+            output += ct
+        if isinstance(tt := getattr(usage, "thoughts_token_count", None), int):
+            output += tt
+        if output > 0:
+            attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = output
+
+        if (v := getattr(usage, "total_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = v
+        if (v := getattr(usage, "cached_content_token_count", None)) is not None:
+            attributes[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] = v
+
+    if (avg_logprobs := getattr(event, "avg_logprobs", None)) is not None:
+        attributes["gen_ai.response.avg_logprobs"] = avg_logprobs
+
+    if actions := getattr(event, "actions", None):
+        if v := getattr(actions, "transfer_to_agent", None):
+            attributes["gen_ai.actions.transfer_to_agent"] = v
+        if v := getattr(actions, "state_delta", None):
+            attributes["gen_ai.actions.state_delta"] = json.dumps(v)
+        if (v := getattr(actions, "escalate", None)) is not None:
+            attributes["gen_ai.actions.escalate"] = v
+
+    return attributes
+
+
+def extract_llm_response_attributes(last_response: Any, accumulated_text: List[str]) -> Dict[str, Any]:
+    """Build span attributes from the final LLM response event and accumulated streamed text.
+
+    Args:
+        last_response: The last ADK event from the LLM response stream.
+        accumulated_text: List of text strings accumulated during streaming.
+
+    Returns:
+        A dictionary of OpenTelemetry span attributes for the LLM response.
+    """
+    attributes: Dict[str, Any] = {}
+    attributes.update(_extract_event_attributes(last_response))
+
+    content = getattr(last_response, "content", None)
+    parts = (content.parts or []) if content else []
+
+    text_parts: List[str] = accumulated_text if accumulated_text else []
+    tool_calls: List[Dict[str, Any]] = []
+    tool_call_index = 0
+
+    for part in parts:
+        if func_call := getattr(part, "function_call", None):
+            entry: Dict[str, Any] = {}
+            if call_id := getattr(func_call, "id", None):
+                entry["id"] = call_id
+                attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.id"] = call_id
+            if call_name := getattr(func_call, "name", None):
+                entry["name"] = call_name
+                attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.name"] = call_name
+            args = getattr(func_call, "args", {})
+            entry["arguments"] = args
+            attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.arguments"] = json.dumps(args)
+            tool_calls.append(entry)
+            tool_call_index += 1
+        elif not accumulated_text and (text := getattr(part, "text", None)) is not None:
+            text_parts.append(str(text))
+
+    attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] = "assistant"
+
+    output: Dict[str, Any] = {"role": "assistant"}
+    if text_parts:
+        full_text = "\n".join(text_parts)
+        attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] = full_text
+        output["content"] = full_text
+    if tool_calls:
+        output["tool_calls"] = tool_calls
+
+    if len(output) > 1:
         try:
-            response_dict = json.loads(llm_response) if isinstance(llm_response, str) else llm_response
-
-            if "model" in response_dict:
-                attributes[SpanAttributes.LLM_RESPONSE_MODEL] = response_dict["model"]
-
-            if "content" in response_dict and "parts" in response_dict["content"]:
-                parts = response_dict["content"]["parts"]
-                attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] = "assistant"
-
-                text_parts = []
-                tool_call_index = 0
-                for part in parts:
-                    if "text" in part and part.get("text") is not None:
-                        text_parts.append(str(part["text"]))
-                    elif "function_call" in part:
-                        func_call = part["function_call"]
-                        attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.name"] = func_call.get(
-                            "name", ""
-                        )
-                        attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.arguments"] = json.dumps(
-                            func_call.get("args", {})
-                        )
-                        if "id" in func_call:
-                            attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.id"] = func_call["id"]
-                        tool_call_index += 1
-
-                if text_parts:
-                    attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] = "\n".join(text_parts)
-
-            if "finish_reason" in response_dict:
-                attributes[SpanAttributes.LLM_RESPONSE_FINISH_REASON] = response_dict["finish_reason"]
-
-            if "id" in response_dict:
-                attributes[SpanAttributes.LLM_RESPONSE_ID] = response_dict["id"]
-
+            attributes["output"] = json.dumps(output)
         except Exception:
-            pass
+            logger.exception("Failed to serialize LLM response output to JSON")
+            attributes["output"] = str(output)
 
     return attributes
 
 
 def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
+    """Extract agent metadata attributes from a BaseAgent instance, including nested sub-agents.
+
+    Args:
+        instance: The BaseAgent instance to extract attributes from.
+
+    Returns:
+        A dictionary of agent metadata attributes for tracing.
+    """
     attributes: Dict[str, Any] = {}
     attributes["gen_ai.agent.name"] = getattr(instance, "name", "unknown")
-    if hasattr(instance, "description"):
+    if hasattr(instance, "description") and instance.description:
         attributes["gen_ai.agent.description"] = instance.description
-    if hasattr(instance, "model"):
+    if hasattr(instance, "model") and instance.model:
         attributes["gen_ai.agent.model"] = instance.model
-    if hasattr(instance, "instruction"):
+    if hasattr(instance, "instruction") and instance.instruction:
         attributes["gen_ai.agent.instruction"] = instance.instruction
     if hasattr(instance, "tools"):
         for idx, tool in enumerate(instance.tools):
@@ -155,11 +308,12 @@ def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
                 attributes[f"gen_ai.agent.tools.{idx}.name"] = tool.name
             if hasattr(tool, "description"):
                 attributes[f"gen_ai.agent.tools.{idx}.description"] = tool.description
-    if hasattr(instance, "output_key"):
+    if hasattr(instance, "output_key") and instance.output_key:
         attributes["gen_ai.agent.output_key"] = instance.output_key
     if hasattr(instance, "sub_agents"):
         for i, sub_agent in enumerate(instance.sub_agents):
             sub_attrs = extract_agent_attributes(sub_agent)
             for key, value in sub_attrs.items():
-                attributes[f"gen_ai.agent.sub_agents.{i}.{key}"] = value
+                if value:
+                    attributes[f"gen_ai.agent.sub_agents.{i}.{key}"] = value
     return attributes

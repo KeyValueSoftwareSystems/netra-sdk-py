@@ -46,10 +46,12 @@ def record_span_timing(
     attribute: str,
     event_time: Optional[float] = None,
     use_root_span: bool = False,
+    reference_time: Optional[float] = None,
 ) -> bool:
     """Compute elapsed time for an event and set it as a span attribute.
 
     Elapsed time is measured from:
+      - ``reference_time`` (seconds since epoch) if provided explicitly.
       - ``use_root_span=False`` (default): the start time of the given span.
       - ``use_root_span=True``: the start time of the root span of the given span.
 
@@ -59,13 +61,21 @@ def record_span_timing(
         event_time: The event timestamp in seconds since epoch. Defaults to
             ``time.time()`` if not provided.
         use_root_span: If True, elapsed time is measured from the root span's
-            start time instead of the given span's start time.
+            start time instead of the given span's start time. Ignored when
+            ``reference_time`` is provided.
+        reference_time: Optional explicit reference timestamp in seconds since
+            epoch. When provided, elapsed is computed as
+            ``event_time - reference_time``, bypassing span start-time lookup.
 
     Returns:
         True if the timing attribute was successfully set, False if the elapsed
         time could not be computed (e.g. missing start time or root span).
     """
     t = event_time if event_time is not None else time.time()
+
+    if reference_time is not None:
+        return _safe_set_attribute(span, attribute, t - reference_time)
+
     start_time = None
 
     if not use_root_span:
