@@ -444,8 +444,8 @@ def _async_stream_start(
         logger.error("netra.instrumentation.agno: failed to attach span context for %s: %s", span_name, e)
         try:
             span.end()
-        except Exception:
-            logger.error("netra.instrumentation.agno: failed to end span for %s: %s", span_name, e)
+        except Exception as end_err:
+            logger.error("netra.instrumentation.agno: failed to end span for %s: %s", span_name, end_err)
         return wrapped(*args, **kwargs)
 
     try:
