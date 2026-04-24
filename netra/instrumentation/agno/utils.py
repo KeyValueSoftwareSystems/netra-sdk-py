@@ -688,7 +688,8 @@ def set_request_attributes(
     if entity_type == "agent":
         input_content = build_agent_input(instance, input_content)
 
-    span.set_attribute("input", input_content)
+    if input_content is not None:
+        span.set_attribute("input", input_content)
 
 
 def set_response_attributes(span: Span, response: Any) -> None:
