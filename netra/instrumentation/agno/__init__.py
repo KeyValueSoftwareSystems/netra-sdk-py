@@ -163,16 +163,16 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             wrap_function_wrapper(
                 "agno.workflow.workflow",
-                "Workflow.run_workflow",
+                "Workflow.run",
                 workflow_run_wrapper(tracer),
             )
             wrap_function_wrapper(
                 "agno.workflow.workflow",
-                "Workflow.arun_workflow",
+                "Workflow.arun",
                 workflow_arun_wrapper(tracer),
             )
         except Exception as e:
-            logger.error("Failed to instrument Workflow.run_workflow/arun_workflow: %s", e)
+            logger.error("Failed to instrument Workflow.run/arun: %s", e)
 
         try:
             wrap_function_wrapper(
