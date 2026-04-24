@@ -1,120 +1,48 @@
 import logging
-import os
-from typing import Any, Dict, Optional
+from typing import Any, Dict
 
-import httpx
-
+from netra.client import BaseNetraClient
 from netra.config import Config
 
 logger = logging.getLogger(__name__)
 
+_LOG_PREFIX = "netra.prompts"
 
-class PromptsHttpClient:
-    """
-    Internal HTTP client for prompts APIs.
-    """
+
+class PromptsHttpClient(BaseNetraClient):
+    """Internal HTTP client for prompts APIs."""
 
     def __init__(self, config: Config) -> None:
         """
         Initialize the prompts HTTP client.
 
         Args:
-            config: Configuration object containing API key and base URL
+            config: Configuration object containing API key and base URL.
         """
-        self._client: Optional[httpx.Client] = self._create_client(config)
-
-    def _create_client(self, config: Config) -> Optional[httpx.Client]:
-        """
-        Create and configure the HTTP client.
-
-        Args:
-            config: Configuration object containing API key and base URL
-
-        Returns:
-            Configured HTTP client or None if initialization fails
-        """
-        endpoint = (config.otlp_endpoint or "").strip()
-        if not endpoint:
-            logger.error("netra.prompts: NETRA_OTLP_ENDPOINT is required for prompts APIs")
-            return None
-
-        base_url = self._resolve_base_url(endpoint)
-        headers = self._build_headers(config)
-        timeout = self._get_timeout()
-
-        try:
-            return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("netra.prompts: Failed to initialize prompts HTTP client: %s", exc)
-            return None
-
-    def _resolve_base_url(self, endpoint: str) -> str:
-        """
-        Resolve the base URL by removing /telemetry suffix if present.
-
-        Args:
-            endpoint: The endpoint URL
-
-        Returns:
-            Resolved base URL
-        """
-        base_url = endpoint.rstrip("/")
-        if base_url.endswith("/telemetry"):
-            base_url = base_url[: -len("/telemetry")]
-        return base_url
-
-    def _build_headers(self, config: Config) -> Dict[str, str]:
-        """
-        Build HTTP headers for API requests.
-
-        Args:
-            config: Configuration object containing API key and base URL
-
-        Returns:
-            Dictionary of HTTP headers
-        """
-        headers: Dict[str, str] = dict(config.headers or {})
-        api_key = config.api_key
-        if api_key:
-            headers["x-api-key"] = api_key
-        return headers
-
-    def _get_timeout(self) -> float:
-        """
-        Get the timeout value from environment variable or use default.
-
-        Returns:
-            Timeout value in seconds
-        """
-        timeout_env = os.getenv("NETRA_PROMPTS_TIMEOUT")
-        if not timeout_env:
-            return 10.0
-        try:
-            return float(timeout_env)
-        except ValueError:
-            logger.warning(
-                "netra.prompts: Invalid NETRA_PROMPTS_TIMEOUT value '%s', using default 10.0",
-                timeout_env,
-            )
-            return 10.0
+        super().__init__(
+            config,
+            log_prefix=_LOG_PREFIX,
+            timeout_env_var="NETRA_PROMPTS_TIMEOUT",
+        )
 
     def get_prompt_version(self, prompt_name: str, label: str) -> Any:
         """
         Fetch a prompt version by name and label.
 
         Args:
-            prompt_name: Name of the prompt
-            label: Label of the prompt version
+            prompt_name: Name of the prompt.
+            label: Label of the prompt version.
 
         Returns:
-            Prompt version data or empty dict if not found
+            Prompt version data or None if not found.
         """
         if not self._client:
             logger.error(
-                "netra.prompts: Prompts client is not initialized; cannot fetch prompt version for '%s'",
+                "%s: Client is not initialized; cannot fetch prompt version for '%s'",
+                _LOG_PREFIX,
                 prompt_name,
             )
-            return {}
+            return None
 
         try:
             url = "/sdk/prompts/version"
@@ -127,9 +55,10 @@ class PromptsHttpClient:
             return data
         except Exception as exc:
             logger.error(
-                "netra.prompts: Failed to fetch prompt version for '%s' (label=%s): %s",
+                "%s: Failed to fetch prompt version for '%s' (label=%s): %s",
+                _LOG_PREFIX,
                 prompt_name,
                 label,
-                exc,
+                self._extract_error_message(exc),
             )
-            return {}
+            return None
