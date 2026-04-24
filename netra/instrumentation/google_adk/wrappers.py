@@ -127,6 +127,9 @@ class _SpanScope:
         """Detach the span from the active context and end it."""
         try:
             opentelemetry_context.detach(self._token)
+        except Exception as e:
+            logger.warning("Failed to detach span context: %s", e)
+        try:
             self.span.end()
         except Exception as e:
             logger.warning("Failed to end span: %s", e)
@@ -197,8 +200,8 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                         texts = [str(getattr(p, "text", "")) for p in parts if getattr(p, "text", None) is not None]
                         if texts:
                             last_text_output = texts
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Failed to extract agent event text: %s", e)
                     yield event
             except Exception as e:
                 scope.record_error(e)
@@ -291,15 +294,13 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                         record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
                         first_token_recorded = True
                     last_response = item
-                    if getattr(item, "usage_metadata", None) is not None:
-                        pass
                     try:
                         parts = item.content.parts if item.content and item.content.parts else []
                         for part in parts:
                             if (text := getattr(part, "text", None)) is not None:
                                 accumulated_text.append(str(text))
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        logger.warning("Failed to extract LLM response text: %s", e)
                     if prev_item is not None:
                         yield prev_item
                     prev_item = item

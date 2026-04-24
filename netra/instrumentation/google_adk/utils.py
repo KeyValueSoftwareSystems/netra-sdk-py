@@ -20,9 +20,17 @@ def build_llm_request_for_trace(llm_request: Any) -> Dict[str, Any]:
     """
     from google.genai import types
 
+    model = getattr(llm_request, "model", None)
+    request_config = getattr(llm_request, "config", None)
+    try:
+        if request_config:
+            request_config = request_config.model_dump(exclude_none=True, exclude={"response_schema"})
+    except Exception as e:
+        logger.warning("Failed to model dump LLM request config: %s", e)
+
     result: Dict[str, Any] = {
-        "model": llm_request.model,
-        "config": llm_request.config.model_dump(exclude_none=True, exclude={"response_schema"}),
+        "model": model,
+        "config": request_config,
         "contents": [],
     }
 
