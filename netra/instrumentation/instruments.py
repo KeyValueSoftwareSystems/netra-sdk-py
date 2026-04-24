@@ -83,7 +83,7 @@ class InstrumentSet(Enum):
         member.origin = origin
         return member
 
-    ADK = ("adk", CustomInstruments)
+    ADK = ("google_adk", CustomInstruments)
     AIOHTTP = ("aiohttp", CustomInstruments)
     AIOHTTP_SERVER = ("aiohttp_server", CustomInstruments)
     AIO_PIKA = ("aio_pika", CustomInstruments)
