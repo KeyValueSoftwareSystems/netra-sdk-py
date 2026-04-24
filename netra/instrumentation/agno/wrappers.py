@@ -553,6 +553,9 @@ def team_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
             return wrapped(*args, **kwargs)
 
         span_name = _get_span_name(instance, TEAM_RUN_SPAN)
+
+        if kwargs.get("stream"):
+            return _sync_stream_start(tracer, wrapped, instance, args, kwargs, span_name, "team")
         return _sync_non_stream(tracer, wrapped, instance, args, kwargs, span_name, "team")
 
     return wrapper
@@ -569,6 +572,9 @@ def team_arun_wrapper(tracer: Tracer) -> Callable[..., Any]:
             return wrapped(*args, **kwargs)
 
         span_name = _get_span_name(instance, TEAM_RUN_SPAN)
+
+        if kwargs.get("stream"):
+            return _async_stream_start(tracer, wrapped, instance, args, kwargs, span_name, "team")
         return _async_non_stream(tracer, wrapped, instance, args, kwargs, span_name, "team")
 
     return wrapper
