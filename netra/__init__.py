@@ -23,13 +23,6 @@ from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
 
-__all__ = [
-    "Netra",
-    "UsageModel",
-    "ActionModel",
-    "Prompts",
-]
-
 logger = logging.getLogger(__name__)
 
 
@@ -431,7 +424,7 @@ class Netra:
         cls,
         name: str,
         attributes: Optional[Dict[str, str]] = None,
-        module_name: str = "combat_sdk",
+        module_name: str = Config.SDK_NAME,
         as_type: Optional[SpanType] = SpanType.SPAN,
     ) -> SpanWrapper:
         """
@@ -459,4 +452,4 @@ class Netra:
         return SessionManager.get_trace_id()
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts", "ConversationType"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "Prompts", "ConversationType"]
