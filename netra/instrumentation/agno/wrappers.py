@@ -16,6 +16,7 @@ from netra.instrumentation.agno.utils import (
     NETRA_SPAN_TYPE,
     extract_knowledge_attributes,
     extract_memory_attributes,
+    extract_token_usage,
     extract_vectordb_attributes,
     format_messages_as_input,
     format_response_as_output,
@@ -46,6 +47,8 @@ MEMORY_SEARCH_SPAN = "agno.memory.search"
 KNOWLEDGE_SEARCH_SPAN = "agno.knowledge.search"
 LLM_CALL_SPAN = "agno.llm.call"
 LLM_RESPONSE_DURATION = "llm.response.duration"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 
 def _start_span(
@@ -117,6 +120,7 @@ class _BaseStreamWrapper:
         self._content_chunks: List[str] = []
         self._last_response: Any = None
         self._finalized = False
+        self._first_token_recorded = False
 
     def _set_output_on_success(self) -> None:
         """Override to write output attributes before the span closes."""
@@ -161,12 +165,17 @@ class _LlmStreamOutputMixin:
     """Output strategy for LLM model streams."""
 
     _content_chunks: List[str]
+    _last_response: Any
     _span: Span
 
     def _set_output_on_success(self) -> None:
         if self._content_chunks:
             content = "".join(self._content_chunks)
             self._span.set_attribute("output", json.dumps([{"role": "assistant", "content": content}]))
+        if self._last_response is not None:
+            usage = extract_token_usage(self._last_response)
+            if usage:
+                self._span.set_attributes(usage)
 
 
 class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
@@ -268,6 +277,13 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
                     if content:
+                        if not self._first_token_recorded:
+                            self._first_token_recorded = True
+                            first_token_time = time.time()
+                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                            record_span_timing(
+                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                            )
                         self._content_chunks.append(str(content))
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate llm stream content: %s", e)
@@ -293,6 +309,13 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
                     if content:
+                        if not self._first_token_recorded:
+                            self._first_token_recorded = True
+                            first_token_time = time.time()
+                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                            record_span_timing(
+                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                            )
                         self._content_chunks.append(str(content))
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate async llm stream content: %s", e)
@@ -753,12 +776,14 @@ knowledge_search_wrapper = _make_simple_sync_wrapper(
 
 def _start_llm_span(tracer: Tracer, instance: Any) -> Optional[Span]:
     model_id = getattr(instance, "id", None) or getattr(instance, "name", None) or type(instance).__name__
-    span_name = f"{LLM_CALL_SPAN}.{model_id}" if model_id else LLM_CALL_SPAN
+    span_name = model_id if model_id else "unknown"
     try:
         span = tracer.start_span(span_name, kind=SpanKind.CLIENT, attributes={"llm.request.type": "llm"})
         span.set_attribute(SpanAttributes.LLM_SYSTEM, LLM_SYSTEM_AGNO)
         span.set_attribute(ATTR_ENTITY, "llm")
         span.set_attribute(NETRA_SPAN_TYPE, _ENTITY_SPAN_TYPE_MAP.get("llm", SpanType.SPAN))
+        if model_id:
+            span.set_attribute(SpanAttributes.LLM_REQUEST_MODEL, model_id)
         return span
     except Exception as e:
         logger.error("netra.instrumentation.agno: failed to start LLM span: %s", e)
@@ -802,6 +827,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
         kwargs: Dict[str, Any],
     ) -> Any:
         messages = args[0] if args else kwargs.get("messages")
+        assistant_message = args[1] if len(args) > 1 else kwargs.get("assistant_message")
         span, ctx_token = _setup_llm_span_with_input(tracer, instance, messages)
         if span is None:
             return wrapped(*args, **kwargs)
@@ -810,10 +836,15 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             response = wrapped(*args, **kwargs)
             end_time = time.time()
             try:
-                output_str = format_response_as_output(response)
+                output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                usage = extract_token_usage(assistant_message)
+                if usage:
+                    span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning("netra.instrumentation.agno: failed to set LLM response attributes: %s", e)
@@ -878,6 +909,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
         kwargs: Dict[str, Any],
     ) -> Any:
         messages = args[0] if args else kwargs.get("messages")
+        assistant_message = args[1] if len(args) > 1 else kwargs.get("assistant_message")
         span, ctx_token = _setup_llm_span_with_input(tracer, instance, messages)
         if span is None:
             return await wrapped(*args, **kwargs)
@@ -886,10 +918,15 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             response = await wrapped(*args, **kwargs)
             end_time = time.time()
             try:
-                output_str = format_response_as_output(response)
+                output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                usage = extract_token_usage(assistant_message)
+                if usage:
+                    span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning("netra.instrumentation.agno: failed to set async LLM response attributes: %s", e)

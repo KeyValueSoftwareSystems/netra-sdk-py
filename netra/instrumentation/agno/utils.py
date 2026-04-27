@@ -46,8 +46,6 @@ ATTR_KNOWLEDGE_DATASOURCE_ID = "gen_ai.data_source.id"
 ATTR_VECTORDB_DATASOURCE_ID = "gen_ai.data_source.id"
 ATTR_VECTORDB_OPERATION = "gen_ai.agno.vectordb.operation"
 
-ATTR_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
-ATTR_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
 
 ATTR_RESPONSE_ID = "gen_ai.response.id"
 ATTR_OUTPUT_TYPE = "gen_ai.output.type"
@@ -289,9 +287,9 @@ def update_active_span_with_system_prompt(messages: Any) -> None:
     The function updates the ``input`` attribute on the currently active OTel
     span (expected to be the enclosing agent/team span).
     """
-    from opentelemetry.trace import get_current_span
-
     try:
+        from opentelemetry.trace import get_current_span
+
         span = get_current_span()
         if not span.is_recording():
             return
@@ -576,14 +574,20 @@ def extract_token_usage(response: Any) -> Dict[str, Any]:
     if isinstance(metrics, dict):
         input_tokens = metrics.get("input_tokens", 0)
         output_tokens = metrics.get("output_tokens", 0)
+        reasoning_tokens = metrics.get("reasoning_tokens", 0)
+        total_tokens = metrics.get("total_tokens", 0)
     else:
         input_tokens = _safe_getattr(metrics, "input_tokens", 0)
         output_tokens = _safe_getattr(metrics, "output_tokens", 0)
+        reasoning_tokens = _safe_getattr(metrics, "reasoning_tokens", 0)
+        total_tokens = _safe_getattr(metrics, "total_tokens", 0)
 
     if input_tokens:
-        attributes[ATTR_USAGE_INPUT_TOKENS] = input_tokens
-    if output_tokens:
-        attributes[ATTR_USAGE_OUTPUT_TOKENS] = output_tokens
+        attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = input_tokens
+    if completetion_tokens := output_tokens + reasoning_tokens:
+        attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = completetion_tokens
+    if total_tokens:
+        attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = total_tokens
 
     return attributes
 

@@ -181,22 +181,22 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             wrap_function_wrapper(
                 "agno.models.base",
-                "Model.response",
+                "Model._process_model_response",
                 model_response_capture_wrapper(tracer),
             )
             wrap_function_wrapper(
                 "agno.models.base",
-                "Model.response_stream",
+                "Model.process_response_stream",
                 model_response_stream_capture_wrapper(tracer),
             )
             wrap_function_wrapper(
                 "agno.models.base",
-                "Model.aresponse",
+                "Model._aprocess_model_response",
                 model_aresponse_capture_wrapper(tracer),
             )
             wrap_function_wrapper(
                 "agno.models.base",
-                "Model.aresponse_stream",
+                "Model.aprocess_response_stream",
                 model_aresponse_stream_capture_wrapper(tracer),
             )
         except Exception as e:
