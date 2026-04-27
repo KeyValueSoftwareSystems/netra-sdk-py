@@ -1,7 +1,8 @@
 import json
 import logging
+import threading
 from contextlib import contextmanager
-from typing import List, Optional, Sequence
+from typing import Any, Dict, List, Optional, Sequence
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -15,9 +16,43 @@ _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
 # Attribute key to copy resolved local blocked patterns onto each span
 _LOCAL_BLOCKED_SPANS_ATTR_KEY = "netra.local_blocked_spans"
 
-# Registry of locally blocked spans: span_id -> parent_context
-# This lets exporters reparent children reliably even when children export before parents
-BLOCKED_LOCAL_PARENT_MAP: dict[object, object] = {}
+# Registry of locally blocked spans: span_id -> parent_context.
+# This lets exporters reparent children reliably even when children export
+# before parents.  All access must go through the accessor functions below
+# to ensure thread-safety.
+_blocked_local_parent_map: Dict[Any, Any] = {}
+_blocked_local_parent_lock = threading.Lock()
+
+
+def blocked_local_parent_map_put(span_id: Any, parent_context: Any) -> None:
+    """Register a locally-blocked span's parent context.
+
+    Args:
+        span_id: The span ID of the blocked span.
+        parent_context: The parent ``SpanContext`` to reparent children to.
+    """
+    with _blocked_local_parent_lock:
+        _blocked_local_parent_map[span_id] = parent_context
+
+
+def blocked_local_parent_map_pop(span_id: Any) -> None:
+    """Remove a span entry from the blocked-parent registry.
+
+    Args:
+        span_id: The span ID to remove.
+    """
+    with _blocked_local_parent_lock:
+        _blocked_local_parent_map.pop(span_id, None)
+
+
+def blocked_local_parent_map_snapshot() -> Dict[Any, Any]:
+    """Return a shallow copy of the blocked-parent registry.
+
+    Returns:
+        A dict copy safe to iterate without holding the lock.
+    """
+    with _blocked_local_parent_lock:
+        return dict(_blocked_local_parent_map)
 
 
 class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
@@ -62,7 +97,7 @@ class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
                             parent_span.get_span_context() if hasattr(parent_span, "get_span_context") else None
                         )
                         if span_id is not None and parent_span_context is not None:
-                            BLOCKED_LOCAL_PARENT_MAP[span_id] = parent_span_context
+                            blocked_local_parent_map_put(span_id, parent_span_context)
                             # Mark on the span for visibility/debugging
                             try:
                                 span.set_attribute("netra.local_blocked", True)
@@ -87,7 +122,7 @@ class LocalFilteringSpanProcessor(SpanProcessor):  # type: ignore[misc]
             ctx = getattr(span, "context", None)
             span_id = getattr(ctx, "span_id", None) if ctx else None
             if span_id is not None:
-                BLOCKED_LOCAL_PARENT_MAP.pop(span_id, None)
+                blocked_local_parent_map_pop(span_id)
         except Exception:
             pass
         return

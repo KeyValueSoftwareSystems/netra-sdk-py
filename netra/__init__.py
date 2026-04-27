@@ -23,13 +23,6 @@ from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
 
-__all__ = [
-    "Netra",
-    "UsageModel",
-    "ActionModel",
-    "Prompts",
-]
-
 logger = logging.getLogger(__name__)
 
 
@@ -45,6 +38,12 @@ class Netra:
     _root_span = None
     _root_ctx_token = None
     _metrics_enabled = False
+
+    evaluation: Optional["Evaluation"] = None
+    usage: Optional["Usage"] = None
+    dashboard: Optional["Dashboard"] = None
+    prompts: Optional["Prompts"] = None
+    simulation: Optional["Simulation"] = None
 
     @classmethod
     def is_initialized(cls) -> bool:
@@ -153,38 +152,38 @@ class Netra:
 
             # Initialize evaluation client and expose as class attribute
             try:
-                cls.evaluation = Evaluation(cfg)  # type:ignore[attr-defined]
+                cls.evaluation = Evaluation(cfg)
             except Exception as e:
                 logger.warning("Failed to initialize evaluation client: %s", e, exc_info=True)
-                cls.evaluation = None  # type:ignore[attr-defined]
+                cls.evaluation = None
 
             # Initialize usage client and expose as class attribute
             try:
-                cls.usage = Usage(cfg)  # type:ignore[attr-defined]
+                cls.usage = Usage(cfg)
             except Exception as e:
                 logger.warning("Failed to initialize usage client: %s", e, exc_info=True)
-                cls.usage = None  # type:ignore[attr-defined]
+                cls.usage = None
 
             # Initialize dashboard client and expose as class attribute
             try:
-                cls.dashboard = Dashboard(cfg)  # type:ignore[attr-defined]
+                cls.dashboard = Dashboard(cfg)
             except Exception as e:
                 logger.warning("Failed to initialize dashboard client: %s", e, exc_info=True)
-                cls.dashboard = None  # type:ignore[attr-defined]
+                cls.dashboard = None
 
             # Initialize prompts client and expose as class attribute
             try:
-                cls.prompts = Prompts(cfg)  # type:ignore[attr-defined]
+                cls.prompts = Prompts(cfg)
             except Exception as e:
                 logger.warning("Failed to initialize prompts client: %s", e, exc_info=True)
-                cls.prompts = None  # type:ignore[attr-defined]
+                cls.prompts = None
 
             # Initialize simulation client and expose as class attribute
             try:
-                cls.simulation = Simulation(cfg)  # type:ignore[attr-defined]
+                cls.simulation = Simulation(cfg)
             except Exception as e:
                 logger.warning("Failed to initialize simulation client: %s", e, exc_info=True)
-                cls.simulation = None  # type:ignore[attr-defined]
+                cls.simulation = None
 
             # Instrument all supported modules
             init_instrumentations(
@@ -254,6 +253,33 @@ class Netra:
                         meter_provider.force_flush()
                     if hasattr(meter_provider, "shutdown"):
                         meter_provider.shutdown()
+                except Exception:
+                    pass
+
+            # Close HTTP clients to release connection-pool resources
+            if cls.evaluation is not None:
+                try:
+                    cls.evaluation._client.close()
+                except Exception:
+                    pass
+            if cls.usage is not None:
+                try:
+                    cls.usage._client.close()
+                except Exception:
+                    pass
+            if cls.dashboard is not None:
+                try:
+                    cls.dashboard._client.close()
+                except Exception:
+                    pass
+            if cls.prompts is not None:
+                try:
+                    cls.prompts._client.close()
+                except Exception:
+                    pass
+            if cls.simulation is not None:
+                try:
+                    cls.simulation._client.close()
                 except Exception:
                     pass
 
@@ -431,7 +457,7 @@ class Netra:
         cls,
         name: str,
         attributes: Optional[Dict[str, str]] = None,
-        module_name: str = "combat_sdk",
+        module_name: str = Config.SDK_NAME,
         as_type: Optional[SpanType] = SpanType.SPAN,
     ) -> SpanWrapper:
         """
@@ -459,4 +485,4 @@ class Netra:
         return SessionManager.get_trace_id()
 
 
-__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "EvaluationScore", "Prompts", "ConversationType"]
+__all__ = ["Netra", "UsageModel", "ActionModel", "SpanType", "Prompts", "ConversationType"]
