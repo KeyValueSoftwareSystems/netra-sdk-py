@@ -195,8 +195,7 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
                 self._response.__exit__(exc_type, exc_val, exc_tb)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: error in stream __exit__: %s", e)
-        if exc_type is not None:
-            self._finalize(error=exc_val)
+        self._finalize(error=exc_val if exc_type is not None else None)
 
     def __iter__(self) -> "SpanStreamingWrapper":
         return self
@@ -238,8 +237,7 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
                 await self._response.__aexit__(exc_type, exc_val, exc_tb)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: error in async stream __aexit__: %s", e)
-        if exc_type is not None:
-            self._finalize(error=exc_val)
+        self._finalize(error=exc_val if exc_type is not None else None)
 
     def __aiter__(self) -> "AsyncSpanStreamingWrapper":
         return self
