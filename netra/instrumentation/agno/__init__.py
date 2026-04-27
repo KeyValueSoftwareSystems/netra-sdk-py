@@ -278,12 +278,12 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error("netra.instrumentation.agno: failed to uninstrument Workflow.run/arun: %s", e)
 
         try:
-            unwrap("agno.models.base", "Model.response")
-            unwrap("agno.models.base", "Model.response_stream")
-            unwrap("agno.models.base", "Model.aresponse")
-            unwrap("agno.models.base", "Model.aresponse_stream")
+            unwrap("agno.models.base", "Model._process_model_response")
+            unwrap("agno.models.base", "Model.process_response_stream")
+            unwrap("agno.models.base", "Model._aprocess_model_response")
+            unwrap("agno.models.base", "Model.aprocess_response_stream")
         except (AttributeError, ModuleNotFoundError) as e:
-            logger.error("netra.instrumentation.agno: failed to uninstrument Model.response/aresponse: %s", e)
+            logger.error("netra.instrumentation.agno: failed to uninstrument Agno models: %s", e)
 
         try:
             unwrap("agno.vectordb.base", "VectorDb.search")

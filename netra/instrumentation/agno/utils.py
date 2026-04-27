@@ -584,8 +584,8 @@ def extract_token_usage(response: Any) -> Dict[str, Any]:
 
     if input_tokens:
         attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = input_tokens
-    if completetion_tokens := output_tokens + reasoning_tokens:
-        attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = completetion_tokens
+    if completion_tokens := output_tokens + reasoning_tokens:
+        attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = completion_tokens
     if total_tokens:
         attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = total_tokens
 
