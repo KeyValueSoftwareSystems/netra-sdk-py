@@ -190,16 +190,16 @@ def serialize_value(data: Any, clean: bool = False) -> Optional[str]:
 
 
 def is_run_content(event: Any) -> bool:
-    """
-    Return True if the event represents a "run_content" event.
-    Falls back to checking event.value == "RunContent" if import fails.
+    """Return True if the event represents a ``run_content`` event.
+
+    Falls back to a string comparison with ``"RunContent"`` if the agno
+    import fails.
 
     Args:
-        event: The event object to evaluate. May be None or any arbitrary type.
+        event: The event object to evaluate.
 
     Returns:
-        True if the event corresponds to "run_content", otherwise False.
-
+        True if the event corresponds to ``RunEvent.run_content``, False otherwise.
     """
     if event is None or (event_type := getattr(event, "event", None)) is None:
         return False
@@ -207,9 +207,32 @@ def is_run_content(event: Any) -> bool:
     try:
         from agno.agent import RunEvent
 
-        return bool(event_type == RunEvent.run_content)
+        return bool(event_type == RunEvent.run_content.value)
     except Exception:
-        return bool(getattr(event_type, "value", None) == "RunContent")
+        return bool(event_type == "RunContent")
+
+
+def is_assistant_response(event: Any) -> bool:
+    """Return True if the event represents an ``assistant_response`` event.
+
+    Falls back to a string comparison with ``"AssistantResponse"`` if the
+    agno import fails.
+
+    Args:
+        event: The event object to evaluate.
+
+    Returns:
+        True if the event corresponds to ``ModelResponseEvent.assistant_response``, False otherwise.
+    """
+    if event is None or (event_type := getattr(event, "event", None)) is None:
+        return False
+
+    try:
+        from agno.models.response import ModelResponseEvent
+
+        return bool(event_type == ModelResponseEvent.assistant_response.value)
+    except Exception:
+        return bool(event_type == "AssistantResponse")
 
 
 def parse_input_message_item(input_content: Dict[str, Any]) -> Dict[str, Any]:

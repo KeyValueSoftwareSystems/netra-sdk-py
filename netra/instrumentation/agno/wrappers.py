@@ -21,6 +21,7 @@ from netra.instrumentation.agno.utils import (
     format_response_as_output,
     get_tool_arguments,
     get_tool_name,
+    is_assistant_response,
     is_run_content,
     serialize_value,
     set_request_attributes,
@@ -263,9 +264,13 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
     def __next__(self) -> Any:
         try:
             chunk = next(self._response)
-            content = getattr(chunk, "content", None)
-            if content:
-                self._content_chunks.append(str(content))
+            try:
+                if is_assistant_response(chunk):
+                    content = getattr(chunk, "content", None)
+                    if content:
+                        self._content_chunks.append(str(content))
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to accumulate llm stream content: %s", e)
             return chunk
         except StopIteration:
             self._finalize()
@@ -284,9 +289,13 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
     async def __anext__(self) -> Any:
         try:
             chunk = await self._response.__anext__()
-            content = getattr(chunk, "content", None)
-            if content:
-                self._content_chunks.append(str(content))
+            try:
+                if is_assistant_response(chunk):
+                    content = getattr(chunk, "content", None)
+                    if content:
+                        self._content_chunks.append(str(content))
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to accumulate async llm stream content: %s", e)
             return chunk
         except StopAsyncIteration:
             self._finalize()
