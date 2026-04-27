@@ -531,8 +531,6 @@ def _wrap_class_methods(
     """
     class_name = name if name is not None else cls.__name__
     for attr_name in list(cls.__dict__):
-        if attr_name.startswith("_"):
-            continue
         raw = cls.__dict__[attr_name]
         method_span_name = f"{class_name}.{attr_name}"
 
