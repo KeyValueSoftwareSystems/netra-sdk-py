@@ -62,6 +62,7 @@ _ENTITY_SPAN_TYPE_MAP: Dict[str, SpanType] = {
     "vectordb": SpanType.SPAN,
     "memory": SpanType.SPAN,
     "knowledge": SpanType.SPAN,
+    "llm": SpanType.GENERATION,
 }
 
 # Maps entity type to an attribute extractor with unified signature (instance, kwargs).
@@ -220,58 +221,85 @@ def parse_input_message_item(input_content: Dict[str, Any]) -> Dict[str, Any]:
         return {"role": "user", "content": input_content}
 
 
-def build_agent_input(agent: Any, input_content: Any) -> str:
+def build_agent_input(input_content: Any) -> str:
     """
-    Normalize and assemble agent input.
+    Normalize agent input into a message list.
+
+    The system prompt is intentionally omitted here — it is captured from the
+    actual assembled messages passed to ``Model.response()`` by
+    ``update_active_span_with_system_prompt`` and written back onto the span
+    at that point, replacing this initial value.
 
     Args:
-        agent: Agno agent that may contain system messages.
-        input_content: Input payload.
+        input_content: Input payload from the ``run()`` call.
 
     Returns:
-        - raw string if no system messages and input_content not list or dict
-        - JSON-serialized string of list of messages otherwise
+        - JSON-serialized list of user messages
     """
-
-    # --- Build system context first ---
-    system_messages = []
-
-    if instructions := getattr(agent, "instructions", None):
-        system_messages.append({"role": "system", "content": instructions})
-
-    if system_message := getattr(agent, "system_message", None):
-        system_messages.append({"role": "system", "content": system_message})
-
     try:
         input_content = json.loads(input_content)
     except Exception as e:
         logger.warning("netra.instrumentation.agno: failed to parse input_content as JSON: %s", e)
-
-    # --- Fast path: return raw string if no system context ---
-    if not system_messages and not isinstance(input_content, (list, dict)):
-        return str(input_content)
-
-    # --- Normalize input_content into message list when system_messages are present ---
-    if isinstance(input_content, str):
-        messages = [{"role": "user", "content": input_content}]
-
-    elif isinstance(input_content, dict):
+    if isinstance(input_content, dict):
         messages = [parse_input_message_item(input_content)]
-
     elif isinstance(input_content, list):
         messages = [parse_input_message_item(item) for item in input_content if isinstance(item, dict)]
-
     else:
         messages = [{"role": "user", "content": str(input_content)}]
 
-    # --- Combine system + messages ---
-    total_messages = [*system_messages, *messages] if system_messages else messages
-
     try:
-        return json.dumps(total_messages)
+        return json.dumps(messages)
     except Exception as e:
         logger.warning("netra.instrumentation.agno: failed to convert input messages to JSON string: %s", e)
-        return str(total_messages)
+        return str(messages)
+
+
+def update_active_span_with_system_prompt(messages: Any) -> None:
+    """Extract the actual system prompt from the model's assembled message list.
+
+    Called from the ``Model.response`` / ``Model.aresponse`` wrappers where
+    ``messages`` is the fully-assembled list that agno passes to the underlying
+    LLM adapter.  The system message at position 0 is the real prompt — built
+    from ``description``, ``role``, ``instructions``, ``additional_information``,
+    tool schemas, memories, etc. — so we use it directly instead of guessing.
+
+    The function updates the ``input`` attribute on the currently active OTel
+    span (expected to be the enclosing agent/team span).
+    """
+    from opentelemetry.trace import get_current_span
+
+    try:
+        span = get_current_span()
+        if not span.is_recording():
+            return
+
+        if not messages:
+            return
+
+        system_content: Optional[str] = None
+        first_user_content: Optional[str] = None
+
+        for msg in messages:
+            role = getattr(msg, "role", None)
+            if role == "system" and system_content is None:
+                raw = getattr(msg, "content", None)
+                if raw is not None:
+                    system_content = raw if isinstance(raw, str) else json.dumps(raw)
+            elif role == "user" and first_user_content is None:
+                raw = getattr(msg, "content", None)
+                if raw is not None:
+                    first_user_content = raw if isinstance(raw, str) else json.dumps(raw)
+
+        if system_content is None:
+            return
+
+        msg_list: List[Dict[str, Any]] = [{"role": "system", "content": system_content}]
+        if first_user_content is not None:
+            msg_list.append({"role": "user", "content": first_user_content})
+
+        span.set_attribute("input", json.dumps(msg_list))
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to update span with system prompt: %s", e)
 
 
 def extract_agent_attributes(instance: Any, run_kwargs: Optional[Dict[str, Any]] = None) -> Dict[str, Any]:
@@ -564,30 +592,116 @@ def extract_input_content(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Opti
 def extract_output_content(response: Any) -> Optional[str]:
     """Extract output content from an Agno response object.
 
-    Checks ``content``, ``message``, and ``result`` attributes in order,
-    handling Pydantic models with ``model_dump_json``.
+    Returns output as a JSON-encoded list ``[{"role": "assistant", "content": "..."}]``.
 
     Args:
         response: An Agno RunResponse or similar result object.
 
     Returns:
-        The output as a string, or ``None`` if not available.
+        JSON string ``[{"role": "assistant", "content": "..."}]``, or ``None`` if unavailable.
     """
+    content: Optional[str] = None
+
     for attr in ("content", "message", "result"):
         value = _safe_getattr(response, attr)
         if not value:
             continue
         if hasattr(value, "model_dump_json"):
             try:
-                return str(value.model_dump_json())
+                content = str(value.model_dump_json())
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to serialize Pydantic output: %s", e)
-        return _safe_str(value)
+                content = _safe_str(value)
+        else:
+            content = _safe_str(value)
+        break
 
-    if isinstance(response, str):
-        return response
+    if content is None and isinstance(response, str):
+        content = response
 
-    return None
+    if content is None:
+        return None
+
+    try:
+        return json.dumps([{"role": "assistant", "content": content}])
+    except Exception:
+        return content
+
+
+def format_messages_as_input(messages: Any) -> Optional[str]:
+    """Format an agno message list as a JSON ``[{"role": "...", "content": "..."}]`` string.
+
+    Args:
+        messages: List of agno message objects, each with ``role`` and ``content`` attributes.
+
+    Returns:
+        JSON-encoded list string, or ``None`` if no valid messages found.
+    """
+    if not messages:
+        return None
+
+    msg_list: List[Dict[str, Any]] = []
+    for msg in messages:
+        role = getattr(msg, "role", None)
+        if role is None:
+            continue
+        raw = getattr(msg, "content", None)
+        if raw is None:
+            content: Any = ""
+        elif isinstance(raw, str):
+            content = raw
+        else:
+            try:
+                content = json.dumps(_normalize(raw, clean=False))
+            except Exception:
+                content = _safe_str(raw)
+        msg_list.append({"role": str(role), "content": content})
+
+    if not msg_list:
+        return None
+
+    try:
+        return json.dumps(msg_list)
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to format messages as input: %s", e)
+        return None
+
+
+def format_response_as_output(response: Any) -> Optional[str]:
+    """Format a model response as JSON ``[{"role": "assistant", "content": "..."}]``.
+
+    Args:
+        response: An agno ModelResponse or similar object.
+
+    Returns:
+        JSON-encoded assistant message list, or ``None`` if no content found.
+    """
+    content: Optional[str] = None
+
+    for attr in ("content", "message", "result"):
+        value = _safe_getattr(response, attr)
+        if not value:
+            continue
+        if hasattr(value, "model_dump_json"):
+            try:
+                content = str(value.model_dump_json())
+            except Exception:
+                content = _safe_str(value)
+        else:
+            content = _safe_str(value)
+        break
+
+    if content is None and isinstance(response, str):
+        content = response
+
+    if content is None:
+        return None
+
+    try:
+        return json.dumps([{"role": "assistant", "content": content}])
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to format response as output: %s", e)
+        return None
 
 
 def extract_response_id(response: Any) -> Optional[str]:
@@ -686,7 +800,7 @@ def set_request_attributes(
 
     input_content = extract_input_content(args, kwargs)
     if entity_type == "agent":
-        input_content = build_agent_input(instance, input_content)
+        input_content = build_agent_input(input_content)
 
     if input_content is not None:
         span.set_attribute("input", input_content)

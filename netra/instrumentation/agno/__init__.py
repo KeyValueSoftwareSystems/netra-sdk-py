@@ -15,6 +15,10 @@ from netra.instrumentation.agno.wrappers import (
     knowledge_search_wrapper,
     memory_add_wrapper,
     memory_search_wrapper,
+    model_aresponse_capture_wrapper,
+    model_aresponse_stream_capture_wrapper,
+    model_response_capture_wrapper,
+    model_response_stream_capture_wrapper,
     team_arun_wrapper,
     team_run_wrapper,
     tool_aexecute_wrapper,
@@ -176,6 +180,30 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
 
         try:
             wrap_function_wrapper(
+                "agno.models.base",
+                "Model.response",
+                model_response_capture_wrapper(tracer),
+            )
+            wrap_function_wrapper(
+                "agno.models.base",
+                "Model.response_stream",
+                model_response_stream_capture_wrapper(tracer),
+            )
+            wrap_function_wrapper(
+                "agno.models.base",
+                "Model.aresponse",
+                model_aresponse_capture_wrapper(tracer),
+            )
+            wrap_function_wrapper(
+                "agno.models.base",
+                "Model.aresponse_stream",
+                model_aresponse_stream_capture_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error("Failed to instrument Model.response/aresponse: %s", e)
+
+        try:
+            wrap_function_wrapper(
                 "agno.vectordb.base",
                 "VectorDb.search",
                 vectordb_search_wrapper(tracer),
@@ -248,6 +276,14 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             unwrap("agno.workflow.workflow", "Workflow.arun")
         except (AttributeError, ModuleNotFoundError) as e:
             logger.error("netra.instrumentation.agno: failed to uninstrument Workflow.run/arun: %s", e)
+
+        try:
+            unwrap("agno.models.base", "Model.response")
+            unwrap("agno.models.base", "Model.response_stream")
+            unwrap("agno.models.base", "Model.aresponse")
+            unwrap("agno.models.base", "Model.aresponse_stream")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument Model.response/aresponse: %s", e)
 
         try:
             unwrap("agno.vectordb.base", "VectorDb.search")
