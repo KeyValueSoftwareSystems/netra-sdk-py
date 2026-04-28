@@ -1,12 +1,13 @@
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Callable, Dict, List, Tuple, cast
+from contextlib import contextmanager
+from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Tuple, cast
 
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
 from opentelemetry.semconv_ai import SpanAttributes
-from opentelemetry.trace import SpanKind, StatusCode, Tracer
+from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 
 from netra.config import Config
 from netra.instrumentation.google_adk.utils import (
@@ -71,14 +72,18 @@ class NoOpSpan:
 
 
 class NoOpTracer:
-    """Tracer that returns NoOpSpans, injected into ADK modules to prevent duplicate span emission."""
+    """Tracer that suppresses ADK's own span emission to avoid duplicates with Netra spans."""
 
-    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
-        """Start a span as the current span (no-op).
+    @contextmanager
+    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> Generator[Span, None, None]:
+        """Yield the current real span without creating a new one or modifying context.
 
-        Returns: A NoOpSpan instance.
+        ADK captures the yielded span and later calls ``trace.use_span(span)`` to rebind
+        context for after-model callbacks.  Returning a NoOpSpan here would corrupt that
+        context (the NoOpSpan carries no trace info), so we yield the live span instead,
+        which lets ``trace.use_span`` restore the correct parent context.
         """
-        return NoOpSpan()
+        yield opentelemetry_api_trace.get_current_span()
 
     def start_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
         """Start a new span (no-op).
@@ -177,7 +182,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 span.set_attribute(NETRA_SPAN_TYPE, SpanType.AGENT)
                 span.set_attributes(extract_agent_attributes(instance))
 
-                invocation_context = args[0] if args else None
+                invocation_context = args[0] if args else kwargs.get("invocation_context")
                 if invocation_context:
                     if hasattr(invocation_context, "invocation_id"):
                         span.set_attribute("adk.invocation_id", invocation_context.invocation_id)
@@ -219,33 +224,34 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
     return cast(Callable[..., Any], wrapper)
 
 
-def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
-    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._call_llm_async.
+def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
+    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._run_and_handle_error.
 
     Args:
         tracer: The OpenTelemetry tracer used to create LLM generation spans.
 
     Returns:
-        A wrapt-compatible wrapper function for BaseLlmFlow._call_llm_async.
+        A wrapt-compatible wrapper function for _run_and_handle_error.
     """
 
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
-        """Wrap a single _call_llm_async call, creating and closing an LLM span.
+        """Wrap a single _run_and_handle_error call, creating and closing an LLM span.
 
         Args:
-            wrapped: The original _call_llm_async coroutine.
+            wrapped: The original _run_and_handle_error coroutine.
             _instance: The BaseLlmFlow instance.
-            args: Positional arguments passed to _call_llm_async.
-            kwargs: Keyword arguments passed to _call_llm_async.
+            args: Positional arguments passed to _run_and_handle_error.
+            kwargs: Keyword arguments passed to _run_and_handle_error.
 
         Returns:
             An async generator that yields ADK events with LLM span instrumentation.
         """
 
         async def new_function() -> AsyncIterator[Any]:
-            llm_request = args[1] if len(args) > 1 else None
+            invocation_context = args[1] if len(args) > 1 else kwargs.get("invocation_context")
+            llm_request = args[2] if len(args) > 2 else kwargs.get("llm_request")
             model_name = getattr(llm_request, "model", "unknown") if llm_request else "unknown"
 
             try:
@@ -261,6 +267,13 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
                 span.set_attribute("gen_ai.entity", "request")
                 span.set_attribute(NETRA_SPAN_TYPE, SpanType.GENERATION)
+
+                if invocation_context:
+                    if hasattr(invocation_context, "invocation_id"):
+                        span.set_attribute("adk.invocation_id", invocation_context.invocation_id)
+                    agent = getattr(invocation_context, "agent", None)
+                    if agent and hasattr(agent, "name"):
+                        span.set_attribute("gen_ai.agent.name", agent.name)
 
                 if llm_request:
                     llm_request_dict = build_llm_request_for_trace(llm_request)
