@@ -77,11 +77,11 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             wrap_function_wrapper(
                 "google.adk.flows.llm_flows.base_llm_flow",
-                "_run_and_handle_error",
+                "BaseLlmFlow._run_and_handle_error",
                 run_and_handle_error_wrapper(tracer),
             )
         except Exception as e:
-            logger.error(f"Failed to instrument _run_and_handle_error: {e}")
+            logger.error(f"Failed to instrument BaseLlmFlow._run_and_handle_error: {e}")
 
         try:
             wrap_function_wrapper(
@@ -100,9 +100,9 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.debug("Failed to uninstrument __call_tool_async")
 
         try:
-            unwrap("google.adk.flows.llm_flows.base_llm_flow", "_run_and_handle_error")
+            unwrap("google.adk.flows.llm_flows.base_llm_flow", "BaseLlmFlow._run_and_handle_error")
         except (AttributeError, ModuleNotFoundError):
-            logger.debug("Failed to uninstrument _run_and_handle_error")
+            logger.debug("Failed to uninstrument BaseLlmFlow._run_and_handle_error")
 
         try:
             unwrap("google.adk.agents.base_agent", "BaseAgent.run_async")
