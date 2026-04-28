@@ -7,7 +7,7 @@ from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Tuple, c
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
 from opentelemetry.semconv_ai import SpanAttributes
-from opentelemetry.trace import SpanKind, StatusCode, Tracer
+from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 
 from netra.config import Config
 from netra.instrumentation.google_adk.utils import (
@@ -75,7 +75,7 @@ class NoOpTracer:
     """Tracer that suppresses ADK's own span emission to avoid duplicates with Netra spans."""
 
     @contextmanager
-    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> Generator[Any, None, None]:
+    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> Generator[Span, None, None]:
         """Yield the current real span without creating a new one or modifying context.
 
         ADK captures the yielded span and later calls ``trace.use_span(span)`` to rebind
