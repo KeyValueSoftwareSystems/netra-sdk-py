@@ -1,7 +1,8 @@
 import json
 import logging
 import time
-from typing import Any, AsyncIterator, Callable, Dict, List, Tuple, cast
+from contextlib import contextmanager
+from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Tuple, cast
 
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
@@ -71,14 +72,18 @@ class NoOpSpan:
 
 
 class NoOpTracer:
-    """Tracer that returns NoOpSpans, injected into ADK modules to prevent duplicate span emission."""
+    """Tracer that suppresses ADK's own span emission to avoid duplicates with Netra spans."""
 
-    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
-        """Start a span as the current span (no-op).
+    @contextmanager
+    def start_as_current_span(self, *_args: Any, **_kwargs: Any) -> Generator[Any, None, None]:
+        """Yield the current real span without creating a new one or modifying context.
 
-        Returns: A NoOpSpan instance.
+        ADK captures the yielded span and later calls ``trace.use_span(span)`` to rebind
+        context for after-model callbacks.  Returning a NoOpSpan here would corrupt that
+        context (the NoOpSpan carries no trace info), so we yield the live span instead,
+        which lets ``trace.use_span`` restore the correct parent context.
         """
-        return NoOpSpan()
+        yield opentelemetry_api_trace.get_current_span()
 
     def start_span(self, *_args: Any, **_kwargs: Any) -> NoOpSpan:
         """Start a new span (no-op).
