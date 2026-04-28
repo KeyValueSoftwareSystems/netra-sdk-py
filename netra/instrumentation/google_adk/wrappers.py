@@ -182,7 +182,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 span.set_attribute(NETRA_SPAN_TYPE, SpanType.AGENT)
                 span.set_attributes(extract_agent_attributes(instance))
 
-                invocation_context = args[0] if args else None
+                invocation_context = args[0] if args else kwargs.get("invocation_context")
                 if invocation_context:
                     if hasattr(invocation_context, "invocation_id"):
                         span.set_attribute("adk.invocation_id", invocation_context.invocation_id)
@@ -231,27 +231,27 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
         tracer: The OpenTelemetry tracer used to create LLM generation spans.
 
     Returns:
-        A wrapt-compatible wrapper function for BaseLlmFlow._call_llm_async.
+        A wrapt-compatible wrapper function for _run_and_handle_error.
     """
 
     def wrapper(
         wrapped: Callable[..., AsyncIterator[Any]], _instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
     ) -> Any:
-        """Wrap a single _call_llm_async call, creating and closing an LLM span.
+        """Wrap a single _run_and_handle_error call, creating and closing an LLM span.
 
         Args:
-            wrapped: The original _call_llm_async coroutine.
+            wrapped: The original _run_and_handle_error coroutine.
             _instance: The BaseLlmFlow instance.
-            args: Positional arguments passed to _call_llm_async.
-            kwargs: Keyword arguments passed to _call_llm_async.
+            args: Positional arguments passed to _run_and_handle_error.
+            kwargs: Keyword arguments passed to _run_and_handle_error.
 
         Returns:
             An async generator that yields ADK events with LLM span instrumentation.
         """
 
         async def new_function() -> AsyncIterator[Any]:
-            invocation_context = args[1] if len(args) > 1 else None
-            llm_request = args[2] if len(args) > 2 else None
+            invocation_context = args[1] if len(args) > 1 else kwargs.get("invocation_context")
+            llm_request = args[2] if len(args) > 2 else kwargs.get("llm_request")
             model_name = getattr(llm_request, "model", "unknown") if llm_request else "unknown"
 
             try:

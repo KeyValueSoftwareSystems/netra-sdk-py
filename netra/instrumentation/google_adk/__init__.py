@@ -81,7 +81,7 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
                 run_and_handle_error_wrapper(tracer),
             )
         except Exception as e:
-            logger.error(f"Failed to instrument BaseLlmFlow._call_llm_async: {e}")
+            logger.error(f"Failed to instrument _run_and_handle_error: {e}")
 
         try:
             wrap_function_wrapper(
