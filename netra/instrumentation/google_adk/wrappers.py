@@ -245,7 +245,8 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
         """
 
         async def new_function() -> AsyncIterator[Any]:
-            llm_request = args[1] if len(args) > 1 else None
+            invocation_context = args[1] if len(args) > 1 else None
+            llm_request = args[2] if len(args) > 2 else None
             model_name = getattr(llm_request, "model", "unknown") if llm_request else "unknown"
 
             try:
@@ -261,6 +262,13 @@ def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncI
                 span.set_attribute(SpanAttributes.LLM_SYSTEM, "gcp.vertex.agent")
                 span.set_attribute("gen_ai.entity", "request")
                 span.set_attribute(NETRA_SPAN_TYPE, SpanType.GENERATION)
+
+                if invocation_context:
+                    if hasattr(invocation_context, "invocation_id"):
+                        span.set_attribute("adk.invocation_id", invocation_context.invocation_id)
+                    agent = getattr(invocation_context, "agent", None)
+                    if agent and hasattr(agent, "name"):
+                        span.set_attribute("gen_ai.agent.name", agent.name)
 
                 if llm_request:
                     llm_request_dict = build_llm_request_for_trace(llm_request)
