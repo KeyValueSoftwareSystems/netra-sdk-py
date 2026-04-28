@@ -11,8 +11,8 @@ from netra.instrumentation.google_adk.version import __version__
 from netra.instrumentation.google_adk.wrappers import (
     NoOpTracer,
     base_agent_run_async_wrapper,
-    base_llm_flow_call_llm_async_wrapper,
     call_tool_async_wrapper,
+    run_and_handle_error_wrapper,
 )
 
 logger = logging.getLogger(__name__)
@@ -78,7 +78,7 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             wrap_function_wrapper(
                 "google.adk.flows.llm_flows.base_llm_flow",
                 "_run_and_handle_error",
-                base_llm_flow_call_llm_async_wrapper(tracer),
+                run_and_handle_error_wrapper(tracer),
             )
         except Exception as e:
             logger.error(f"Failed to instrument BaseLlmFlow._call_llm_async: {e}")

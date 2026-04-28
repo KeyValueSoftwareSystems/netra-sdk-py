@@ -224,8 +224,8 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
     return cast(Callable[..., Any], wrapper)
 
 
-def base_llm_flow_call_llm_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
-    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._call_llm_async.
+def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
+    """Return a wrapt wrapper that creates an LLM generation span around BaseLlmFlow._run_and_handle_error.
 
     Args:
         tracer: The OpenTelemetry tracer used to create LLM generation spans.
