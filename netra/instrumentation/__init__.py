@@ -103,10 +103,6 @@ def init_instrumentations(
     if CustomInstruments.HTTPX in netra_custom_instruments:
         init_httpx_instrumentation()
 
-    # Initialize AIOHTTP instrumentation.
-    if CustomInstruments.AIOHTTP in netra_custom_instruments:
-        init_aiohttp_instrumentation()
-
     # Initialize Cohere instrumentation.
     if CustomInstruments.COHEREAI in netra_custom_instruments:
         init_cohere_instrumentation()
