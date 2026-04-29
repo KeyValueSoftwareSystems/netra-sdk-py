@@ -55,16 +55,6 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error(f"Failed to initialize tracer: {e}")
             return
 
-        # Replace ADK's own tracers with NoOp to prevent duplicate spans
-        for module_name in _ADK_TRACER_MODULES:
-            try:
-                if module_name in sys.modules:
-                    module = sys.modules[module_name]
-                    if hasattr(module, "tracer"):
-                        setattr(module, "tracer", NoOpTracer())
-            except Exception as e:
-                logger.debug(f"Unable to replace tracer in {module_name}: {e}")
-
         try:
             wrap_function_wrapper(
                 "google.adk.agents.base_agent",
@@ -91,6 +81,21 @@ class NetraGoogleADKInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             )
         except Exception as e:
             logger.error(f"Failed to instrument __call_tool_async: {e}")
+
+        # Replace ADK's own tracers with NoOp AFTER wrap_function_wrapper calls, because
+        # those calls import the ADK modules as a side effect. The modules use
+        # `from .telemetry.tracing import tracer` which creates a local name binding in
+        # each module. We must patch every such module individually; patching only
+        # tracing.py is not enough. Running this loop before the wraps means the modules
+        # aren't in sys.modules yet, so the replacements are silently skipped.
+        for module_name in _ADK_TRACER_MODULES:
+            try:
+                if module_name in sys.modules:
+                    module = sys.modules[module_name]
+                    if hasattr(module, "tracer"):
+                        setattr(module, "tracer", NoOpTracer())
+            except Exception as e:
+                logger.debug(f"Unable to replace tracer in {module_name}: {e}")
 
     def _uninstrument(self, **kwargs) -> None:  # type: ignore[no-untyped-def]
         """Remove Netra wrappers. Note: replaced ADK tracers are intentionally left as NoOps."""
