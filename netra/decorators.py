@@ -511,11 +511,28 @@ def _create_function_wrapper(
         return cast(Callable[P, R], sync_wrapper)
 
 
+def _is_internal_method(method_name: str) -> bool:
+    """Check whether a method name is internal (private or dunder).
+
+    A method is considered internal if its name starts with an underscore,
+    which covers single-underscore private (``_helper``), name-mangled
+    (``__private``), and dunder/magic (``__init__``) methods.
+
+    Args:
+        method_name: The name of the method to check.
+
+    Returns:
+        True if the method is internal, False otherwise.
+    """
+    return method_name.startswith("_")
+
+
 def _wrap_class_methods(
     cls: C,
     entity_type: str,
     name: Optional[str] = None,
     as_type: Optional[SpanType] = SpanType.SPAN,
+    capture_internal_methods: bool = False,
 ) -> C:
     """
     Wrap all callable methods of a class with a span.
@@ -525,12 +542,17 @@ def _wrap_class_methods(
         entity_type: The entity type.
         name: Optional custom name for the span.
         as_type: The type of span (SPAN, AGENT, TOOL, etc.).
+        capture_internal_methods: If True, private and dunder methods (those
+            starting with ``_``) are also wrapped. Defaults to False.
 
     Returns:
         The wrapped class.
     """
     class_name = name if name is not None else cls.__name__
     for attr_name in list(cls.__dict__):
+        if not capture_internal_methods and _is_internal_method(attr_name):
+            continue
+
         raw = cls.__dict__[attr_name]
         method_span_name = f"{class_name}.{attr_name}"
 
@@ -549,7 +571,10 @@ def _wrap_class_methods(
 
 
 def workflow(
-    target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
+    target: Union[Callable[P, R], C, None] = None,
+    *,
+    name: Optional[str] = None,
+    capture_internal_methods: bool = False,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     """
     Workflow decorator to wrap a function or class with a span.
@@ -557,6 +582,9 @@ def workflow(
     Args:
         target: The function or class to wrap.
         name: Optional custom name for the span.
+        capture_internal_methods: If True, private and dunder methods (those
+            starting with ``_``) within a decorated class are also captured.
+            Defaults to False. Has no effect when decorating a function.
 
     Returns:
         The wrapped function or class.
@@ -564,7 +592,9 @@ def workflow(
 
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "workflow", name)
+            return _wrap_class_methods(
+                cast(C, obj), "workflow", name, capture_internal_methods=capture_internal_methods
+            )
         else:
             return _create_function_wrapper(cast(Callable[P, R], obj), "workflow", name)
 
@@ -574,7 +604,10 @@ def workflow(
 
 
 def agent(
-    target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
+    target: Union[Callable[P, R], C, None] = None,
+    *,
+    name: Optional[str] = None,
+    capture_internal_methods: bool = False,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     """
     Agent decorator to wrap a function or class with a span.
@@ -582,6 +615,9 @@ def agent(
     Args:
         target: The function or class to wrap.
         name: Optional custom name for the span.
+        capture_internal_methods: If True, private and dunder methods (those
+            starting with ``_``) within a decorated class are also captured.
+            Defaults to False. Has no effect when decorating a function.
 
     Returns:
         The wrapped function or class.
@@ -589,7 +625,13 @@ def agent(
 
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "agent", name, as_type=SpanType.AGENT)
+            return _wrap_class_methods(
+                cast(C, obj),
+                "agent",
+                name,
+                as_type=SpanType.AGENT,
+                capture_internal_methods=capture_internal_methods,
+            )
         else:
             return _create_function_wrapper(cast(Callable[P, R], obj), "agent", name, as_type=SpanType.AGENT)
 
@@ -599,7 +641,10 @@ def agent(
 
 
 def task(
-    target: Union[Callable[P, R], C, None] = None, *, name: Optional[str] = None
+    target: Union[Callable[P, R], C, None] = None,
+    *,
+    name: Optional[str] = None,
+    capture_internal_methods: bool = False,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     """
     Task decorator to wrap a function or class with a span.
@@ -607,6 +652,9 @@ def task(
     Args:
         target: The function or class to wrap.
         name: Optional custom name for the span.
+        capture_internal_methods: If True, private and dunder methods (those
+            starting with ``_``) within a decorated class are also captured.
+            Defaults to False. Has no effect when decorating a function.
 
     Returns:
         The wrapped function or class.
@@ -614,9 +662,14 @@ def task(
 
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "task", name, as_type=SpanType.TOOL)
+            return _wrap_class_methods(
+                cast(C, obj),
+                "task",
+                name,
+                as_type=SpanType.TOOL,
+                capture_internal_methods=capture_internal_methods,
+            )
         else:
-            # When obj is a function, it should be type Callable[P, R]
             return _create_function_wrapper(cast(Callable[P, R], obj), "task", name, as_type=SpanType.TOOL)
 
     if target is not None:
@@ -629,6 +682,7 @@ def span(
     *,
     name: Optional[str] = None,
     as_type: Optional[SpanType] = SpanType.SPAN,
+    capture_internal_methods: bool = False,
 ) -> Union[Callable[P, R], C, Callable[[Callable[P, R]], Callable[P, R]]]:
     """
     Span decorator to wrap a function or class with a span.
@@ -637,6 +691,9 @@ def span(
         target: The function or class to wrap.
         name: Optional custom name for the span.
         as_type: The type of span (SPAN, AGENT, TOOL, etc.).
+        capture_internal_methods: If True, private and dunder methods (those
+            starting with ``_``) within a decorated class are also captured.
+            Defaults to False. Has no effect when decorating a function.
 
     Returns:
         The wrapped function or class.
@@ -644,9 +701,14 @@ def span(
 
     def decorator(obj: Union[Callable[P, R], C]) -> Union[Callable[P, R], C]:
         if inspect.isclass(obj):
-            return _wrap_class_methods(cast(C, obj), "span", name, as_type=as_type)
+            return _wrap_class_methods(
+                cast(C, obj),
+                "span",
+                name,
+                as_type=as_type,
+                capture_internal_methods=capture_internal_methods,
+            )
         else:
-            # When obj is a function, it should be type Callable[P, R]
             return _create_function_wrapper(cast(Callable[P, R], obj), "span", name, as_type=as_type)
 
     if target is not None:
