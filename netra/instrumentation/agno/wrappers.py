@@ -1,8 +1,9 @@
 import json
 import logging
+import re
 import time
 from collections.abc import Awaitable
-from typing import Any, Callable, Dict, List, Optional, Tuple
+from typing import Any, Callable, Dict, List, Optional, Tuple, cast
 
 from opentelemetry import context as context_api
 from opentelemetry.semconv_ai import SpanAttributes
@@ -11,9 +12,13 @@ from opentelemetry.trace.status import Status, StatusCode
 
 from netra.instrumentation.agno.utils import (
     _ENTITY_SPAN_TYPE_MAP,
+    ATTR_AGENT_CONVERSATION_ID,
+    ATTR_AGENT_USER_ID,
     ATTR_ENTITY,
     LLM_SYSTEM_AGNO,
     NETRA_SPAN_TYPE,
+    build_agent_input,
+    extract_agentos_attributes,
     extract_knowledge_attributes,
     extract_memory_attributes,
     extract_token_usage,
@@ -46,9 +51,13 @@ MEMORY_ADD_SPAN = "agno.memory.add"
 MEMORY_SEARCH_SPAN = "agno.memory.search"
 KNOWLEDGE_SEARCH_SPAN = "agno.knowledge.search"
 LLM_CALL_SPAN = "agno.llm.call"
+AGENTOS_RUN_SPAN = "agno.agentos.run"
 LLM_RESPONSE_DURATION = "llm.response.duration"
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
+
+_AGENTOS_RUN_PATH_RE = re.compile(r"^/(agents|teams|workflows)/([^/]+)/runs$")
+_AGENTOS_ENTITY_TYPE_MAP = {"agents": "agent", "teams": "team", "workflows": "workflow"}
 
 
 def _start_span(
@@ -78,9 +87,8 @@ def _start_span(
 
 
 def _close_span(span: Span, ctx_token: Any, error: Optional[Exception] = None) -> None:
-    """Record timing, set status, detach context, end span."""
+    """Set status, detach context, end span."""
     try:
-        record_span_timing(span, LLM_RESPONSE_DURATION)
         if error is not None:
             span.set_status(Status(StatusCode.ERROR, str(error)))
             span.record_exception(error)
@@ -176,6 +184,7 @@ class _LlmStreamOutputMixin:
             usage = extract_token_usage(self._last_response)
             if usage:
                 self._span.set_attributes(usage)
+        record_span_timing(self._span, LLM_RESPONSE_DURATION)
 
 
 class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
@@ -346,10 +355,8 @@ def _sync_non_stream(
 
     try:
         response = wrapped(*args, **kwargs)
-        end_time = time.time()
         try:
             set_response_attributes(span, response)
-            record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
             span.set_status(Status(StatusCode.OK))
         except Exception as e:
             logger.warning("netra.instrumentation.agno: failed to set response attributes for %s: %s", span_name, e)
@@ -423,10 +430,8 @@ async def _async_non_stream(
 
     try:
         response = await wrapped(*args, **kwargs)
-        end_time = time.time()
         try:
             set_response_attributes(span, response)
-            record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
             span.set_status(Status(StatusCode.OK))
         except Exception as e:
             logger.warning("netra.instrumentation.agno: failed to set response attributes for %s: %s", span_name, e)
@@ -581,11 +586,9 @@ def tool_execute_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
         try:
             response = wrapped(*args, **kwargs)
-            end_time = time.time()
             try:
                 if response is not None:
                     span.set_attribute("output", serialize_value(response, clean=True))
-                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning("netra.instrumentation.agno: failed to set response attributes for %s: %s", tool_name, e)
@@ -627,11 +630,9 @@ def tool_aexecute_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
 
         try:
             response = await wrapped(*args, **kwargs)
-            end_time = time.time()
             try:
                 if response is not None:
                     span.set_attribute("output", serialize_value(response, clean=True))
-                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning("netra.instrumentation.agno: failed to set response attributes for %s: %s", tool_name, e)
@@ -683,9 +684,7 @@ def _make_simple_sync_wrapper(
 
             try:
                 response = wrapped(*args, **kwargs)
-                end_time = time.time()
                 try:
-                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                     span.set_status(Status(StatusCode.OK))
                 except Exception as e:
                     logger.warning(
@@ -983,5 +982,171 @@ def model_aresponse_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]
             raise
 
         return AsyncLlmSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
+
+    return wrapper
+
+
+class AgentOSTracingMiddleware:
+    """ASGI middleware that creates a root span for each AgentOS run request.
+
+    Only intercepts POST ``/agents/{id}/runs``, ``/teams/{id}/runs``, and
+    ``/workflows/{id}/runs`` endpoints. All other paths pass through unchanged.
+    """
+
+    def __init__(self, app: Any, agent_os: Any, tracer: Tracer) -> None:
+        self._app = app
+        self._agent_os = agent_os
+        self._tracer = tracer
+
+    async def __call__(self, scope: Dict[str, Any], receive: Any, send: Any) -> None:
+        if scope.get("type") != "http":
+            await self._app(scope, receive, send)
+            return
+
+        path: str = scope.get("path", "")
+        method: str = scope.get("method", "")
+
+        if method != "POST":
+            await self._app(scope, receive, send)
+            return
+
+        match = _AGENTOS_RUN_PATH_RE.match(path)
+        if not match:
+            await self._app(scope, receive, send)
+            return
+
+        entity_type = _AGENTOS_ENTITY_TYPE_MAP.get(match.group(1), match.group(1))
+        entity_id = match.group(2)
+        span_name = f"{AGENTOS_RUN_SPAN}.{entity_type}"
+
+        span, ctx_token = _start_span(self._tracer, span_name, "agentos")
+        if span is None:
+            await self._app(scope, receive, send)
+            return
+
+        try:
+            _set_common_span_attributes(span, "agentos")
+            attrs = extract_agentos_attributes(self._agent_os, entity_type, entity_id)
+            span.set_attributes(attrs)
+        except Exception as e:
+            logger.warning("netra.instrumentation.agno: failed to set AgentOS span attributes: %s", e)
+
+        # Buffer the request body to extract run attributes, then replay it for the inner app
+        body_parts: List[bytes] = []
+        try:
+            while True:
+                message = await receive()
+                if message.get("type") == "http.request":
+                    chunk = message.get("body", b"")
+                    if chunk:
+                        body_parts.append(chunk)
+                    if not message.get("more_body", False):
+                        break
+                elif message.get("type") == "http.disconnect":
+                    break
+        except Exception as e:
+            logger.debug("netra.instrumentation.agno: failed to buffer request body: %s", e)
+
+        body = b"".join(body_parts)
+        try:
+            if body:
+                payload = json.loads(body)
+                msg = payload.get("message") or payload.get("input")
+                if msg:
+                    span.set_attribute("input", build_agent_input(msg))
+                session_id = payload.get("session_id")
+                if session_id:
+                    span.set_attribute(ATTR_AGENT_CONVERSATION_ID, str(session_id))
+                user_id = payload.get("user_id")
+                if user_id:
+                    span.set_attribute(ATTR_AGENT_USER_ID, str(user_id))
+        except Exception as e:
+            logger.debug("netra.instrumentation.agno: failed to parse AgentOS request body: %s", e)
+
+        body_consumed = False
+
+        async def _buffered_receive() -> Dict[str, Any]:
+            nonlocal body_consumed
+            if not body_consumed:
+                body_consumed = True
+                return {"type": "http.request", "body": body, "more_body": False}
+            return cast(Dict[str, Any], await receive())
+
+        error: Optional[Exception] = None
+        try:
+            await self._app(scope, _buffered_receive, send)
+        except Exception as e:
+            error = e
+            raise
+        finally:
+            try:
+                if error is not None:
+                    span.set_status(Status(StatusCode.ERROR, str(error)))
+                    span.record_exception(error)
+                else:
+                    span.set_status(Status(StatusCode.OK))
+            except Exception as e:
+                logger.error("netra.instrumentation.agno: failed to finalise AgentOS span: %s", e)
+            try:
+                if ctx_token is not None:
+                    context_api.detach(ctx_token)
+            except Exception:
+                pass
+            try:
+                span.end()
+            except Exception as e:
+                logger.error("netra.instrumentation.agno: failed to end AgentOS span: %s", e)
+
+
+def agentos_get_app_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Wrap ``AgentOS.get_app()`` to inject the AgentOS tracing middleware.
+
+    Guards against double-injection when ``get_app()`` is called multiple times
+    on the same ``AgentOS`` instance.
+
+    Also ensures FastAPI instrumentation is applied to the AgentOS app even when
+    ``agno.os.app`` was imported before ``FastAPIInstrumentor._instrument()`` ran
+    (i.e. before ``fastapi.FastAPI`` was replaced with ``_InstrumentedFastAPI``).
+    In that case ``_make_app()`` uses the original class and the app is plain, so
+    we call ``FastAPIInstrumentor.instrument_app`` here explicitly.
+    """
+
+    def wrapper(
+        wrapped: Callable[..., Any],
+        instance: Any,
+        args: Tuple[Any, ...],
+        kwargs: Dict[str, Any],
+    ) -> Any:
+        app = wrapped(*args, **kwargs)
+        if app is None:
+            return app
+
+        if getattr(instance, "_netra_agentos_middleware_injected", False):
+            return app
+
+        # Apply FastAPI (OTel HTTP) instrumentation if it hasn't been applied yet.
+        # This handles the case where agno.os.app was imported before netra.init()
+        # so AgentOS._make_app() created a plain fastapi.FastAPI instance instead
+        # of the patched _InstrumentedFastAPI subclass.
+        if not getattr(app, "_is_instrumented_by_opentelemetry", False):
+            try:
+                from netra.instrumentation.fastapi import FastAPIInstrumentor
+
+                FastAPIInstrumentor.instrument_app(app)
+            except Exception as e:
+                logger.debug(
+                    "netra.instrumentation.agno: could not apply FastAPI instrumentation to AgentOS app: %s", e
+                )
+
+        try:
+            app.add_middleware(AgentOSTracingMiddleware, agent_os=instance, tracer=tracer)
+            try:
+                instance._netra_agentos_middleware_injected = True
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning("netra.instrumentation.agno: failed to inject AgentOS tracing middleware: %s", e)
+
+        return app
 
     return wrapper

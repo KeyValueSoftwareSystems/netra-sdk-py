@@ -12,6 +12,7 @@ from netra.instrumentation.agno.wrappers import (
     agent_arun_wrapper,
     agent_continue_run_wrapper,
     agent_run_wrapper,
+    agentos_get_app_wrapper,
     knowledge_search_wrapper,
     memory_add_wrapper,
     memory_search_wrapper,
@@ -245,6 +246,15 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             except Exception as e:
                 logger.error("Failed to instrument %s.search: %s", know_class, e)
 
+        try:
+            wrap_function_wrapper(
+                "agno.os.app",
+                "AgentOS.get_app",
+                agentos_get_app_wrapper(tracer),
+            )
+        except Exception as e:
+            logger.error("Failed to instrument AgentOS.get_app: %s", e)
+
     def _uninstrument(self, **_kwargs: Any) -> None:
         """Remove Netra wrappers from Agno classes."""
         try:
@@ -305,6 +315,11 @@ class NetraAgnoInstrumentor(BaseInstrumentor):  # type: ignore[misc]
                 unwrap(know_module, f"{know_class}.search")
             except (AttributeError, ModuleNotFoundError) as e:
                 logger.error("netra.instrumentation.agno: failed to uninstrument %s.search: %s", know_class, e)
+
+        try:
+            unwrap("agno.os.app", "AgentOS.get_app")
+        except (AttributeError, ModuleNotFoundError) as e:
+            logger.error("netra.instrumentation.agno: failed to uninstrument AgentOS.get_app: %s", e)
 
 
 __all__ = ["NetraAgnoInstrumentor"]

@@ -1,3 +1,4 @@
+import inspect
 import json
 import logging
 from typing import Any, Dict, List, Optional, Tuple
@@ -46,6 +47,15 @@ ATTR_KNOWLEDGE_DATASOURCE_ID = "gen_ai.data_source.id"
 ATTR_VECTORDB_DATASOURCE_ID = "gen_ai.data_source.id"
 ATTR_VECTORDB_OPERATION = "gen_ai.agno.vectordb.operation"
 
+ATTR_AGENTOS_ID = "gen_ai.agno.agentos.id"
+ATTR_AGENTOS_NAME = "gen_ai.agno.agentos.name"
+ATTR_AGENTOS_DESCRIPTION = "gen_ai.agno.agentos.description"
+ATTR_AGENTOS_VERSION = "gen_ai.agno.agentos.version"
+ATTR_AGENTOS_AGENTS = "gen_ai.agno.agentos.agents"
+ATTR_AGENTOS_TEAMS = "gen_ai.agno.agentos.teams"
+ATTR_AGENTOS_WORKFLOWS = "gen_ai.agno.agentos.workflows"
+ATTR_AGENTOS_ENTITY_TYPE = "gen_ai.agno.agentos.entity_type"
+ATTR_AGENTOS_ENTITY_ID = "gen_ai.agno.agentos.entity_id"
 
 ATTR_RESPONSE_ID = "gen_ai.response.id"
 ATTR_OUTPUT_TYPE = "gen_ai.output.type"
@@ -61,6 +71,7 @@ _ENTITY_SPAN_TYPE_MAP: Dict[str, SpanType] = {
     "memory": SpanType.SPAN,
     "knowledge": SpanType.SPAN,
     "llm": SpanType.GENERATION,
+    "agentos": SpanType.SPAN,
 }
 
 # Maps entity type to an attribute extractor with unified signature (instance, kwargs).
@@ -114,6 +125,22 @@ def _safe_str(value: Any) -> str:
         return repr(value)
 
 
+def _is_lazy_iterable(value: Any) -> bool:
+    """Return True if ``value`` is a coroutine, generator, or async generator.
+
+    These types cannot be safely serialized: consuming a generator or awaiting
+    a coroutine would mutate state (or execute side effects) in the instrumented
+    code. Callers should treat them as opaque rather than attempting traversal.
+
+    Args:
+        value: Any Python object to inspect.
+
+    Returns:
+        True if ``value`` is a coroutine, generator, or async generator; False otherwise.
+    """
+    return inspect.isasyncgen(value) or inspect.iscoroutine(value) or inspect.isgenerator(value)
+
+
 def _normalize(value: Any, *, clean: bool) -> Any:
     """Convert ``value`` into a JSON-serializable structure.
 
@@ -131,6 +158,9 @@ def _normalize(value: Any, *, clean: bool) -> Any:
     """
     if value is None:
         return None
+
+    if _is_lazy_iterable(value):
+        return f"<{type(value).__name__}>"
 
     if hasattr(value, "model_dump"):
         return _normalize(value.model_dump(), clean=clean)
@@ -176,6 +206,9 @@ def serialize_value(data: Any, clean: bool = False) -> Optional[str]:
 
     try:
         result = _normalize(data, clean=clean)
+
+        if result is None:
+            return None
 
         if isinstance(result, str):
             return result
@@ -257,10 +290,13 @@ def build_agent_input(input_content: Any) -> str:
     Returns:
         - JSON-serialized list of user messages
     """
-    try:
-        input_content = json.loads(input_content)
-    except Exception as e:
-        logger.warning("netra.instrumentation.agno: failed to parse input_content as JSON: %s", e)
+    if not input_content:
+        return json.dumps([{"role": "user", "content": ""}])
+    if isinstance(input_content, str):
+        try:
+            input_content = json.loads(input_content)
+        except (json.JSONDecodeError, ValueError):
+            pass  # Plain string input (e.g. from AgentOS HTTP requests) — not an error
     if isinstance(input_content, dict):
         messages = [parse_input_message_item(input_content)]
     elif isinstance(input_content, list):
@@ -606,7 +642,8 @@ def extract_input_content(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Opti
         The extracted input as a string, or ``None`` if not found.
     """
     if args and (first_arg := args[0]):
-        return serialize_value(first_arg, clean=True)
+        if not (inspect.isasyncgen(first_arg) or inspect.iscoroutine(first_arg) or inspect.isgenerator(first_arg)):
+            return serialize_value(first_arg, clean=True)
 
     for key in ("input", "input_message", "message"):
         value = kwargs.get(key)
@@ -856,3 +893,63 @@ def set_response_attributes(span: Span, response: Any) -> None:
     response_id = extract_response_id(response)
     if response_id:
         span.set_attribute(ATTR_RESPONSE_ID, response_id)
+
+
+def extract_agentos_attributes(
+    instance: Any,
+    entity_type: str,
+    entity_id: str,
+) -> Dict[str, Any]:
+    """Extract span attributes from an AgentOS instance.
+
+    Captures AgentOS identity, registered entities, and which entity is being
+    invoked. HTTP-level attributes (method, path, status) are omitted here
+    because they are already captured by FastAPI instrumentation.
+
+    Args:
+        instance: The AgentOS object.
+        entity_type: The entity type being run (``"agent"``, ``"team"``, ``"workflow"``).
+        entity_id: The ID of the entity being invoked.
+
+    Returns:
+        Dict of span attribute key-value pairs for the AgentOS request.
+    """
+    attributes: Dict[str, Any] = {}
+
+    os_id = _safe_getattr(instance, "id")
+    if os_id:
+        attributes[ATTR_AGENTOS_ID] = _safe_str(os_id)
+
+    name = _safe_getattr(instance, "name")
+    if name:
+        attributes[ATTR_AGENTOS_NAME] = name
+
+    description = _safe_getattr(instance, "description")
+    if description:
+        attributes[ATTR_AGENTOS_DESCRIPTION] = description
+
+    version = _safe_getattr(instance, "version")
+    if version:
+        attributes[ATTR_AGENTOS_VERSION] = _safe_str(version)
+
+    agents = _safe_getattr(instance, "agents")
+    if agents:
+        agent_ids = [_safe_getattr(a, "name") or _safe_getattr(a, "id") or "unknown" for a in agents]
+        attributes[ATTR_AGENTOS_AGENTS] = serialize_value(agent_ids)
+
+    teams = _safe_getattr(instance, "teams")
+    if teams:
+        team_ids = [_safe_getattr(t, "name") or _safe_getattr(t, "id") or "unknown" for t in teams]
+        attributes[ATTR_AGENTOS_TEAMS] = serialize_value(team_ids)
+
+    workflows = _safe_getattr(instance, "workflows")
+    if workflows:
+        workflow_ids = [_safe_getattr(w, "name") or _safe_getattr(w, "id") or "unknown" for w in workflows]
+        attributes[ATTR_AGENTOS_WORKFLOWS] = serialize_value(workflow_ids)
+
+    if entity_type:
+        attributes[ATTR_AGENTOS_ENTITY_TYPE] = entity_type
+    if entity_id:
+        attributes[ATTR_AGENTOS_ENTITY_ID] = entity_id
+
+    return attributes
