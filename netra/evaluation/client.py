@@ -343,6 +343,37 @@ class EvaluationHttpClient:
             )
             return {"success": False}
 
+    def get_run_results(self, run_id: str) -> Any:
+        """
+        Fetch test run results by run ID.
+
+        Args:
+            run_id: The id of the run to fetch.
+
+        Returns:
+            A JSON response containing run results.
+        """
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch run")
+            return None
+        try:
+            url = f"/evaluations/run/{run_id}"
+            response = self._client.get(url)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Run fetched successfully")
+                return data.get("data", {})
+            return data
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to fetch run results for run '%s': %s",
+                run_id,
+                response_json.get("error").get("message", ""),
+            )
+            return None
+
     def get_span_by_id(self, span_id: str) -> Any:
         """
         Check if a span exists in the backend.
