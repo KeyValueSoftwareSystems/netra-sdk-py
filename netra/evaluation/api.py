@@ -187,6 +187,22 @@ class Evaluation:
         run_id = response.get("id", None)
         return run_id
 
+    def get_run_results(self, run_id: str) -> Any:
+        """
+        Fetch test run results based on run ID.
+
+        Args:
+            run_id: The id of the run to fetch.
+
+        Returns:
+            The JSON response containing run results.
+        """
+        if not run_id:
+            logger.error("netra.evaluation: Failed to get run: run_id is required")
+            return None
+        response = self._client.get_run_results(run_id)
+        return response
+
     def run_test_suite(
         self,
         name: str,
