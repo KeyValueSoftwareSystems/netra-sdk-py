@@ -180,6 +180,17 @@ def _normalize(value: Any, *, clean: bool) -> Any:
             if not (clean and v is None)
         }
 
+    if hasattr(value, "__slots__"):
+        slot_attrs = {}
+        for slot in getattr(value, "__slots__", ()):
+            if not slot.startswith("_"):
+                try:
+                    slot_attrs[slot] = _normalize(getattr(value, slot), clean=clean)
+                except AttributeError:
+                    pass
+        result = {k: v for k, v in slot_attrs.items() if not (clean and v is None)}
+        if result:
+            return result
     return value
 
 
@@ -300,7 +311,12 @@ def build_agent_input(input_content: Any) -> str:
     if isinstance(input_content, dict):
         messages = [parse_input_message_item(input_content)]
     elif isinstance(input_content, list):
-        messages = [parse_input_message_item(item) for item in input_content if isinstance(item, dict)]
+        messages = []
+        for item in input_content:
+            if isinstance(item, dict):
+                messages.append(parse_input_message_item(item))
+            elif item is not None:
+                messages.append({"role": "user", "content": str(item)})
     else:
         messages = [{"role": "user", "content": str(input_content)}]
 
@@ -716,7 +732,7 @@ def format_messages_as_input(messages: Any) -> Optional[str]:
             content = raw
         else:
             try:
-                content = json.dumps(_normalize(raw, clean=False))
+                content = _normalize(raw, clean=False)
             except Exception:
                 content = _safe_str(raw)
         msg_list.append({"role": str(role), "content": content})
