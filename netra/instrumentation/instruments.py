@@ -85,6 +85,7 @@ class InstrumentSet(Enum):
         return member
 
     ADK = ("google_adk", CustomInstruments)
+    AGNO = ("agno", CustomInstruments)
     AIOHTTP = ("aiohttp", CustomInstruments)
     AIOHTTP_SERVER = ("aiohttp_server", CustomInstruments)
     AIO_PIKA = ("aio_pika", CustomInstruments)
@@ -188,6 +189,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT = {
     InstrumentSet.ELEVENLABS,
     InstrumentSet.GOOGLE_GENERATIVEAI,
     InstrumentSet.ADK,
+    InstrumentSet.AGNO,
     InstrumentSet.GROQ,
     InstrumentSet.LANGCHAIN,
     InstrumentSet.LITELLM,
