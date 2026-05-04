@@ -86,8 +86,8 @@ def _start_span(
         logger.error("netra.instrumentation.agno: failed to attach context for %s: %s", span_name, e)
         try:
             span.end()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("netra.instrumentation.agno: failed to end span during context attach cleanup: %s", e)
         return None, None
 
 
@@ -156,8 +156,8 @@ class _BaseStreamWrapper:
         try:
             if not self._finalized:
                 self._finalize()
-        except Exception:
-            pass
+        except Exception as e:
+            logger.debug("netra.instrumentation.agno: error finalizing stream: %s", e)
 
 
 class _AgentStreamOutputMixin:
@@ -855,8 +855,8 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error("netra.instrumentation.agno: failed to record error on LLM span: %s", span_err)
             raise
         finally:
             try:
@@ -892,8 +892,8 @@ def model_response_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if ctx_token is not None:
                     context_api.detach(ctx_token)
                 span.end()
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error("netra.instrumentation.agno: failed to finalize LLM stream span on error: %s", span_err)
             raise
 
         return LlmSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
@@ -937,8 +937,8 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 span.set_status(Status(StatusCode.ERROR, str(e)))
                 span.record_exception(e)
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error("netra.instrumentation.agno: failed to record error on async LLM span: %s", span_err)
             raise
         finally:
             try:
@@ -982,8 +982,10 @@ def model_aresponse_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]
                 if ctx_token is not None:
                     context_api.detach(ctx_token)
                 span.end()
-            except Exception:
-                pass
+            except Exception as span_err:
+                logger.error(
+                    "netra.instrumentation.agno: failed to finalize async LLM stream span on error: %s", span_err
+                )
             raise
 
         return AsyncLlmSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
@@ -1069,8 +1071,10 @@ class AgentOSTracingMiddleware:
         if body:
             try:
                 payload = json.loads(body)
-            except (json.JSONDecodeError, ValueError):
-                pass
+            except (json.JSONDecodeError, ValueError) as e:
+                logger.debug(
+                    "netra.instrumentation.agno: request body is not valid JSON, skipping payload extraction: %s", e
+                )
         if payload:
             try:
                 if session_id := payload.get("session_id"):
@@ -1150,8 +1154,8 @@ class AgentOSTracingMiddleware:
             try:
                 if ctx_token is not None:
                     context_api.detach(ctx_token)
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to detach AgentOS span context: %s", e)
             try:
                 span.end()
             except Exception as e:
@@ -1202,8 +1206,8 @@ def agentos_get_app_wrapper(tracer: Tracer) -> Callable[..., Any]:
             app.add_middleware(AgentOSTracingMiddleware, agent_os=instance, tracer=tracer)
             try:
                 instance._netra_agentos_middleware_injected = True
-            except Exception:
-                pass
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to set middleware injected flag: %s", e)
         except Exception as e:
             logger.warning("netra.instrumentation.agno: failed to inject AgentOS tracing middleware: %s", e)
 

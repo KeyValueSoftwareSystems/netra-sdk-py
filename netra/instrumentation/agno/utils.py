@@ -210,8 +210,10 @@ def _normalize(value: Any, *, clean: bool) -> Any:
             if not slot.startswith("_"):
                 try:
                     slot_attrs[slot] = _normalize(getattr(value, slot), clean=clean)
-                except AttributeError:
-                    pass
+                except AttributeError as e:
+                    logger.debug(
+                        "netra.instrumentation.agno: skipping unset slot %r on %s: %s", slot, type(value).__name__, e
+                    )
         result = {k: v for k, v in slot_attrs.items() if not (clean and v is None)}
         if result:
             return result
