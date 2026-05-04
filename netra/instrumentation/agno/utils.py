@@ -1,7 +1,7 @@
 import inspect
 import json
 import logging
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
@@ -61,6 +61,30 @@ ATTR_RESPONSE_ID = "gen_ai.response.id"
 ATTR_OUTPUT_TYPE = "gen_ai.output.type"
 
 ATTR_ENTITY = "gen_ai.entity"
+
+ATTR_HTTP_METHOD = "http.method"
+ATTR_HTTP_URL = "http.url"
+ATTR_HTTP_TARGET = "http.target"
+ATTR_HTTP_SCHEME = "http.scheme"
+ATTR_HTTP_FLAVOR = "http.flavor"
+ATTR_HTTP_USER_AGENT = "http.user_agent"
+ATTR_HTTP_STATUS_CODE = "http.status_code"
+ATTR_NET_PEER_IP = "net.peer.ip"
+ATTR_NET_PEER_PORT = "net.peer.port"
+ATTR_NET_HOST_PORT = "net.host.port"
+ATTR_AGENTOS_STREAM = "gen_ai.agno.agentos.stream"
+
+_SENSITIVE_HEADERS: FrozenSet[str] = frozenset(
+    {
+        "authorization",
+        "cookie",
+        "set-cookie",
+        "x-api-key",
+        "api-key",
+        "x-auth-token",
+        "proxy-authorization",
+    }
+)
 
 _ENTITY_SPAN_TYPE_MAP: Dict[str, SpanType] = {
     "agent": SpanType.AGENT,
@@ -909,6 +933,133 @@ def set_response_attributes(span: Span, response: Any) -> None:
     response_id = extract_response_id(response)
     if response_id:
         span.set_attribute(ATTR_RESPONSE_ID, response_id)
+
+
+def sanitize_headers(raw_headers: List[Tuple[bytes, bytes]]) -> Dict[str, str]:
+    """Convert ASGI raw header pairs to a dict with sensitive values redacted."""
+    result: Dict[str, str] = {}
+    for name_bytes, value_bytes in raw_headers:
+        name = name_bytes.decode("latin-1").lower()
+        result[name] = "[REDACTED]" if name in _SENSITIVE_HEADERS else value_bytes.decode("latin-1")
+    return result
+
+
+def build_scope_url(scope: Dict[str, Any]) -> str:
+    """Reconstruct the full request URL from an ASGI scope."""
+    scheme = scope.get("scheme", "http")
+    server = scope.get("server")
+    path = scope.get("path", "/")
+    query_string = scope.get("query_string", b"")
+
+    if server:
+        host, port = server
+        if ":" in host:
+            host = f"[{host}]"
+        default_port = 443 if scheme == "https" else 80
+        url = f"{scheme}://{host}{path}" if port == default_port else f"{scheme}://{host}:{port}{path}"
+    else:
+        url = path
+
+    if query_string:
+        url = f"{url}?{query_string.decode('latin-1')}"
+    return url
+
+
+def extract_http_request_attributes(scope: Dict[str, Any]) -> Dict[str, Any]:
+    """Extract OTel-standard HTTP attributes from an ASGI scope."""
+    attrs: Dict[str, Any] = {}
+
+    method = scope.get("method", "")
+    if method:
+        attrs[ATTR_HTTP_METHOD] = method
+
+    url = build_scope_url(scope)
+    if url:
+        attrs[ATTR_HTTP_URL] = url
+
+    scheme = scope.get("scheme", "")
+    if scheme:
+        attrs[ATTR_HTTP_SCHEME] = scheme
+
+    path = scope.get("path", "")
+    if path:
+        attrs[ATTR_HTTP_TARGET] = path
+
+    flavor = scope.get("http_version", "")
+    if flavor:
+        attrs[ATTR_HTTP_FLAVOR] = flavor
+
+    server = scope.get("server")
+    if server:
+        _, port = server
+        attrs[ATTR_NET_HOST_PORT] = str(port)
+
+    client = scope.get("client")
+    if client:
+        peer_ip, peer_port = client
+        attrs[ATTR_NET_PEER_IP] = str(peer_ip)
+        attrs[ATTR_NET_PEER_PORT] = str(peer_port)
+
+    for name_bytes, value_bytes in scope.get("headers", []):
+        if name_bytes.lower() == b"user-agent":
+            attrs[ATTR_HTTP_USER_AGENT] = value_bytes.decode("latin-1")
+            break
+
+    return attrs
+
+
+def set_agentos_request_input(
+    span: Span,
+    scope: Dict[str, Any],
+    body: bytes,
+) -> None:
+    """Serialize the AgentOS HTTP request and set it as the span ``input`` attribute."""
+    if not span.is_recording():
+        return
+    try:
+        input_data: Dict[str, Any] = {
+            "method": scope.get("method", ""),
+            "url": build_scope_url(scope),
+            "headers": sanitize_headers(scope.get("headers", [])),
+        }
+        if body:
+            try:
+                input_data["body"] = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                try:
+                    input_data["body"] = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    input_data["body"] = f"<binary: {len(body)} bytes>"
+        span.set_attribute("input", json.dumps(input_data))
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set agentos request input: %s", e)
+
+
+def set_agentos_response_output(
+    span: Span,
+    status_code: int,
+    raw_headers: List[Tuple[bytes, bytes]],
+    body: bytes,
+) -> None:
+    """Serialize the AgentOS HTTP response and set it as the span ``output`` attribute."""
+    if not span.is_recording():
+        return
+    try:
+        output_data: Dict[str, Any] = {
+            "status_code": status_code,
+            "headers": sanitize_headers(raw_headers),
+        }
+        if body:
+            try:
+                output_data["body"] = json.loads(body)
+            except (json.JSONDecodeError, UnicodeDecodeError):
+                try:
+                    output_data["body"] = body.decode("utf-8")
+                except UnicodeDecodeError:
+                    output_data["body"] = f"<binary: {len(body)} bytes>"
+        span.set_attribute("output", json.dumps(output_data))
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set agentos response output: %s", e)
 
 
 def extract_agentos_attributes(

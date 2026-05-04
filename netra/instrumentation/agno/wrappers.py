@@ -14,11 +14,13 @@ from netra.instrumentation.agno.utils import (
     _ENTITY_SPAN_TYPE_MAP,
     ATTR_AGENT_CONVERSATION_ID,
     ATTR_AGENT_USER_ID,
+    ATTR_AGENTOS_STREAM,
     ATTR_ENTITY,
+    ATTR_HTTP_STATUS_CODE,
     LLM_SYSTEM_AGNO,
     NETRA_SPAN_TYPE,
-    build_agent_input,
     extract_agentos_attributes,
+    extract_http_request_attributes,
     extract_knowledge_attributes,
     extract_memory_attributes,
     extract_token_usage,
@@ -29,7 +31,10 @@ from netra.instrumentation.agno.utils import (
     get_tool_name,
     is_assistant_response,
     is_run_content,
+    sanitize_headers,
     serialize_value,
+    set_agentos_request_input,
+    set_agentos_response_output,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
@@ -711,7 +716,7 @@ def _make_simple_sync_wrapper(
     return outer
 
 
-def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:
+def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
     _set_common_span_attributes(span, "vectordb")
     span.set_attributes(extract_vectordb_attributes(instance, "search"))
     if args:
@@ -1031,6 +1036,13 @@ class AgentOSTracingMiddleware:
         except Exception as e:
             logger.warning("netra.instrumentation.agno: failed to set AgentOS span attributes: %s", e)
 
+        try:
+            http_attrs = extract_http_request_attributes(scope)
+            if http_attrs:
+                span.set_attributes(http_attrs)
+        except Exception as e:
+            logger.warning("netra.instrumentation.agno: failed to set HTTP request attributes: %s", e)
+
         # Buffer the request body to extract run attributes, then replay it for the inner app
         body_parts: List[bytes] = []
         try:
@@ -1048,20 +1060,47 @@ class AgentOSTracingMiddleware:
             logger.debug("netra.instrumentation.agno: failed to buffer request body: %s", e)
 
         body = b"".join(body_parts)
+        is_streaming = False
         try:
-            if body:
-                payload = json.loads(body)
-                msg = payload.get("message") or payload.get("input")
-                if msg:
-                    span.set_attribute("input", build_agent_input(msg))
-                session_id = payload.get("session_id")
-                if session_id:
-                    span.set_attribute(ATTR_AGENT_CONVERSATION_ID, str(session_id))
-                user_id = payload.get("user_id")
-                if user_id:
-                    span.set_attribute(ATTR_AGENT_USER_ID, str(user_id))
+            set_agentos_request_input(span, scope, body)
         except Exception as e:
-            logger.debug("netra.instrumentation.agno: failed to parse AgentOS request body: %s", e)
+            logger.warning("netra.instrumentation.agno: failed to set AgentOS request input: %s", e)
+        payload: Optional[Dict[str, Any]] = None
+        if body:
+            try:
+                payload = json.loads(body)
+            except (json.JSONDecodeError, ValueError):
+                pass
+        if payload:
+            try:
+                if session_id := payload.get("session_id"):
+                    span.set_attribute(ATTR_AGENT_CONVERSATION_ID, str(session_id))
+                if user_id := payload.get("user_id"):
+                    span.set_attribute(ATTR_AGENT_USER_ID, str(user_id))
+                if (stream := payload.get("stream")) is not None:
+                    is_streaming = bool(stream)
+                    span.set_attribute(ATTR_AGENTOS_STREAM, is_streaming)
+                if context := payload.get("context"):
+                    span.set_attribute(
+                        "gen_ai.agno.agentos.context",
+                        json.dumps(context) if not isinstance(context, str) else context,
+                    )
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to extract AgentOS request attributes: %s", e)
+
+        response_status: List[int] = []
+        response_headers: List[List[Any]] = [[]]
+        response_body_parts: List[bytes] = []
+
+        async def _capturing_send(message: Dict[str, Any]) -> None:
+            if message.get("type") == "http.response.start":
+                response_status.append(message.get("status", 0))
+                response_headers[0] = list(message.get("headers", []))
+            elif message.get("type") == "http.response.body":
+                chunk = message.get("body", b"")
+                if chunk and not is_streaming:
+                    response_body_parts.append(chunk)
+            await send(message)
 
         body_consumed = False
 
@@ -1074,11 +1113,32 @@ class AgentOSTracingMiddleware:
 
         error: Optional[Exception] = None
         try:
-            await self._app(scope, _buffered_receive, send)
+            await self._app(scope, _buffered_receive, _capturing_send)
         except Exception as e:
             error = e
             raise
         finally:
+            try:
+                if response_status:
+                    status_code = response_status[0]
+                    span.set_attribute(ATTR_HTTP_STATUS_CODE, status_code)
+                    if not is_streaming:
+                        set_agentos_response_output(
+                            span, status_code, response_headers[0], b"".join(response_body_parts)
+                        )
+                    else:
+                        span.set_attribute(
+                            "output",
+                            json.dumps(
+                                {
+                                    "status_code": status_code,
+                                    "headers": sanitize_headers(response_headers[0]),
+                                    "body": "<streaming>",
+                                }
+                            ),
+                        )
+            except Exception as e:
+                logger.warning("netra.instrumentation.agno: failed to set AgentOS response attributes: %s", e)
             try:
                 if error is not None:
                     span.set_status(Status(StatusCode.ERROR, str(error)))
