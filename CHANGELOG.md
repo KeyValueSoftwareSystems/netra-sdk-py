@@ -5,6 +5,11 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.83] - 2026-05-04
+
+- Implement custom instrumentation for Agno.
+
+
 ## [0.1.82] - 2026-04-21
 
 - Refine custom ADK instrumentation to produce a cleaner trace hierarchy, include sufficient metadata, and eliminate duplicate spans.
@@ -244,4 +249,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.82]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.83]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
