@@ -18,6 +18,7 @@ class CustomInstruments(Enum):
     GOOGLE_GENERATIVEAI = "google_genai"
     FASTAPI = "fastapi"
     ADK = "google_adk"
+    AGNO = "agno"
     AIO_PIKA = "aio_pika"
     AIOHTTP_SERVER = "aiohttp_server"
     AIOKAFKA = "aiokafka"

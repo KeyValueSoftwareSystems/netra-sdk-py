@@ -128,6 +128,10 @@ def init_instrumentations(
     if CustomInstruments.ADK in netra_custom_instruments:
         init_adk_instrumentation()
 
+    # Initialize Agno instrumentation.
+    if CustomInstruments.AGNO in netra_custom_instruments:
+        init_agno_instrumentation()
+
     # Initialize Pydantic AI instrumentation.
     if CustomInstruments.PYDANTIC_AI in netra_custom_instruments:
         init_pydantic_ai_instrumentation()
@@ -365,6 +369,27 @@ def init_adk_instrumentation() -> bool:
         return True
     except Exception as e:
         logging.error(f"Error initializing ADK instrumentor: {e}")
+        Telemetry().log_exception(e)
+        return False
+
+
+def init_agno_instrumentation() -> bool:
+    """Initialize Agno framework instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("agno"):
+            Telemetry().capture("instrumentation:agno:init")
+            from netra.instrumentation.agno import NetraAgnoInstrumentor
+
+            instrumentor = NetraAgnoInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing Agno instrumentor: {e}")
         Telemetry().log_exception(e)
         return False
 
