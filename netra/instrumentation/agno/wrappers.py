@@ -35,6 +35,8 @@ from netra.instrumentation.agno.utils import (
     serialize_value,
     set_agentos_request_input,
     set_agentos_response_output,
+    set_llm_completion_attributes,
+    set_llm_prompt_attributes,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
@@ -72,7 +74,14 @@ def _start_span(
 ) -> Tuple[Optional[Span], Any]:
     """Start a span and attach it to the current context.
 
-    Returns (span, ctx_token) on success, or (None, None) if either step fails.
+    Args:
+        tracer: OTel tracer instance.
+        span_name: Name for the new span.
+        request_type: Value written to ``llm.request.type`` on the span.
+
+    Returns:
+        ``(span, ctx_token)`` on success; ``(None, None)`` if span creation or
+        context attachment fails.
     """
     try:
         span = tracer.start_span(span_name, kind=SpanKind.CLIENT, attributes={"llm.request.type": request_type})
@@ -92,7 +101,13 @@ def _start_span(
 
 
 def _close_span(span: Span, ctx_token: Any, error: Optional[Exception] = None) -> None:
-    """Set status, detach context, end span."""
+    """Set final status, detach context, and end the span.
+
+    Args:
+        span: The span to close.
+        ctx_token: Context token from ``context_api.attach``; may be ``None``.
+        error: If provided, marks the span ERROR and records the exception.
+    """
     try:
         if error is not None:
             span.set_status(Status(StatusCode.ERROR, str(error)))
@@ -113,11 +128,27 @@ def _close_span(span: Span, ctx_token: Any, error: Optional[Exception] = None) -
 
 
 def _get_span_name(instance: Any, prefix: str, default: Optional[str] = None) -> str:
+    """Build a dotted span name from the entity's ``name`` attribute.
+
+    Args:
+        instance: The Agno entity object.
+        prefix: Span name prefix (e.g. ``"agno.agent.run"``).
+        default: Fallback label when ``instance.name`` is absent.
+
+    Returns:
+        ``"{prefix}.{name}"`` if a name is available, otherwise ``prefix``.
+    """
     name = getattr(instance, "name", None) or default or "unknown"
     return f"{prefix}.{name}" if name else prefix
 
 
 def _set_common_span_attributes(span: Span, entity_type: str) -> None:
+    """Set ``llm.system``, entity type, and span-type attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        entity_type: Entity type string (e.g. ``"agent"``, ``"tool"``, ``"llm"``).
+    """
     span.set_attribute(SpanAttributes.LLM_SYSTEM, LLM_SYSTEM_AGNO)
     span.set_attribute(ATTR_ENTITY, entity_type)
     span.set_attribute(NETRA_SPAN_TYPE, _ENTITY_SPAN_TYPE_MAP.get(entity_type, SpanType.SPAN))
@@ -127,6 +158,13 @@ class _BaseStreamWrapper:
     """Shared base for all span streaming wrappers."""
 
     def __init__(self, span: Span, response: Any, ctx_token: Any = None) -> None:
+        """Initialise the streaming wrapper.
+
+        Args:
+            span: The active OpenTelemetry span to close when streaming ends.
+            response: The underlying iterable or async-iterable from the wrapped call.
+            ctx_token: Context token from ``context_api.attach``; detached on finalization.
+        """
         self._span = span
         self._response = response
         self._ctx_token = ctx_token
@@ -139,6 +177,11 @@ class _BaseStreamWrapper:
         """Override to write output attributes before the span closes."""
 
     def _finalize(self, error: Optional[Exception] = None) -> None:
+        """Close the span once, writing output attributes on success.
+
+        Args:
+            error: If provided, marks the span ERROR and records the exception.
+        """
         if self._finalized:
             return
         self._finalized = True
@@ -150,9 +193,18 @@ class _BaseStreamWrapper:
         _close_span(self._span, self._ctx_token, error)
 
     def __getattr__(self, name: str) -> Any:
+        """Proxy attribute access to the underlying response object.
+
+        Args:
+            name: Attribute name to look up on the wrapped response.
+
+        Returns:
+            The attribute value from the wrapped response.
+        """
         return getattr(self._response, name)
 
     def __del__(self) -> None:
+        """Finalize the span if the wrapper is garbage-collected before iteration ends."""
         try:
             if not self._finalized:
                 self._finalize()
@@ -168,6 +220,7 @@ class _AgentStreamOutputMixin:
     _content_chunks: List[str]
 
     def _set_output_on_success(self) -> None:
+        """Write accumulated run content and token usage to the span before it closes."""
         if self._last_response is not None:
             set_response_attributes(self._span, self._last_response)
         if self._content_chunks:
@@ -182,9 +235,12 @@ class _LlmStreamOutputMixin:
     _span: Span
 
     def _set_output_on_success(self) -> None:
+        """Write accumulated LLM content, token usage, and timing metrics to the span."""
         if self._content_chunks:
             content = "".join(self._content_chunks)
-            self._span.set_attribute("output", json.dumps([{"role": "assistant", "content": content}]))
+            output_str = json.dumps([{"role": "assistant", "content": content}])
+            self._span.set_attribute("output", output_str)
+            set_llm_completion_attributes(self._span, output_str)
         if self._last_response is not None:
             usage = extract_token_usage(self._last_response)
             if usage:
@@ -196,6 +252,11 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
     """Sync streaming wrapper for agent/team/workflow spans."""
 
     def __enter__(self) -> "SpanStreamingWrapper":
+        """Enter the sync context manager, delegating to the underlying response.
+
+        Returns:
+            Self.
+        """
         if hasattr(self._response, "__enter__"):
             try:
                 self._response.__enter__()
@@ -204,6 +265,13 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         return self
 
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit the sync context manager and finalize the span.
+
+        Args:
+            exc_type: Exception type, or ``None``.
+            exc_val: Exception instance, or ``None``.
+            exc_tb: Traceback, or ``None``.
+        """
         if hasattr(self._response, "__exit__"):
             try:
                 self._response.__exit__(exc_type, exc_val, exc_tb)
@@ -212,9 +280,22 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         self._finalize(error=exc_val if exc_type is not None else None)
 
     def __iter__(self) -> "SpanStreamingWrapper":
+        """Return self as the sync iterator.
+
+        Returns:
+            Self.
+        """
         return self
 
     def __next__(self) -> Any:
+        """Yield the next event and accumulate run content chunks.
+
+        Returns:
+            The next event from the underlying response.
+
+        Raises:
+            StopIteration: When the stream is exhausted.
+        """
         try:
             event = next(self._response)
             self._last_response = event
@@ -238,6 +319,11 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
     """Async streaming wrapper for agent/team/workflow spans."""
 
     async def __aenter__(self) -> "AsyncSpanStreamingWrapper":
+        """Enter the async context manager, delegating to the underlying response.
+
+        Returns:
+            Self.
+        """
         if hasattr(self._response, "__aenter__"):
             try:
                 await self._response.__aenter__()
@@ -246,6 +332,13 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         return self
 
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
+        """Exit the async context manager and finalize the span.
+
+        Args:
+            exc_type: Exception type, or ``None``.
+            exc_val: Exception instance, or ``None``.
+            exc_tb: Traceback, or ``None``.
+        """
         if hasattr(self._response, "__aexit__"):
             try:
                 await self._response.__aexit__(exc_type, exc_val, exc_tb)
@@ -254,9 +347,22 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         self._finalize(error=exc_val if exc_type is not None else None)
 
     def __aiter__(self) -> "AsyncSpanStreamingWrapper":
+        """Return self as the async iterator.
+
+        Returns:
+            Self.
+        """
         return self
 
     async def __anext__(self) -> Any:
+        """Yield the next event and accumulate run content chunks.
+
+        Returns:
+            The next event from the underlying async response.
+
+        Raises:
+            StopAsyncIteration: When the stream is exhausted.
+        """
         try:
             event = await self._response.__anext__()
             self._last_response = event
@@ -280,9 +386,22 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
     """Sync streaming wrapper for LLM model spans."""
 
     def __iter__(self) -> "LlmSpanStreamingWrapper":
+        """Return self as the sync iterator.
+
+        Returns:
+            Self.
+        """
         return self
 
     def __next__(self) -> Any:
+        """Yield the next LLM chunk, accumulate content, and record timing.
+
+        Returns:
+            The next chunk from the underlying response.
+
+        Raises:
+            StopIteration: When the stream is exhausted.
+        """
         try:
             chunk = next(self._response)
             try:
@@ -312,9 +431,22 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
     """Async streaming wrapper for LLM model spans."""
 
     def __aiter__(self) -> "AsyncLlmSpanStreamingWrapper":
+        """Return self as the async iterator.
+
+        Returns:
+            Self.
+        """
         return self
 
     async def __anext__(self) -> Any:
+        """Yield the next LLM chunk, accumulate content, and record timing.
+
+        Returns:
+            The next chunk from the underlying async response.
+
+        Raises:
+            StopAsyncIteration: When the stream is exhausted.
+        """
         try:
             chunk = await self._response.__anext__()
             try:
@@ -349,6 +481,20 @@ def _sync_non_stream(
     span_name: str,
     request_type: str,
 ) -> Any:
+    """Execute a synchronous non-streaming wrapped call inside a span.
+
+    Args:
+        tracer: OTel tracer instance.
+        wrapped: The original callable being instrumented.
+        instance: The Agno object (Agent, Team, etc.).
+        args: Positional arguments for ``wrapped``.
+        kwargs: Keyword arguments for ``wrapped``.
+        span_name: Name for the created span.
+        request_type: Entity type string written to the span (e.g. ``"agent"``).
+
+    Returns:
+        The return value of ``wrapped(*args, **kwargs)``.
+    """
     span, ctx_token = _start_span(tracer, span_name, request_type)
     if span is None:
         return wrapped(*args, **kwargs)
@@ -391,6 +537,20 @@ def _sync_stream_start(
     span_name: str,
     request_type: str,
 ) -> Any:
+    """Start a synchronous streaming call, returning a SpanStreamingWrapper.
+
+    Args:
+        tracer: OTel tracer instance.
+        wrapped: The original callable being instrumented.
+        instance: The Agno object (Agent, Team, etc.).
+        args: Positional arguments for ``wrapped``.
+        kwargs: Keyword arguments for ``wrapped``.
+        span_name: Name for the created span.
+        request_type: Entity type string written to the span.
+
+    Returns:
+        A ``SpanStreamingWrapper`` that closes the span when iteration completes.
+    """
     span, ctx_token = _start_span(tracer, span_name, request_type)
     if span is None:
         return wrapped(*args, **kwargs)
@@ -424,6 +584,20 @@ async def _async_non_stream(
     span_name: str,
     request_type: str,
 ) -> Any:
+    """Execute an async non-streaming wrapped call inside a span.
+
+    Args:
+        tracer: OTel tracer instance.
+        wrapped: The original async callable being instrumented.
+        instance: The Agno object (Agent, Team, etc.).
+        args: Positional arguments for ``wrapped``.
+        kwargs: Keyword arguments for ``wrapped``.
+        span_name: Name for the created span.
+        request_type: Entity type string written to the span.
+
+    Returns:
+        The return value of ``await wrapped(*args, **kwargs)``.
+    """
     span, ctx_token = _start_span(tracer, span_name, request_type)
     if span is None:
         return await wrapped(*args, **kwargs)
@@ -466,6 +640,20 @@ def _async_stream_start(
     span_name: str,
     request_type: str,
 ) -> Any:
+    """Start an async streaming call, returning an AsyncSpanStreamingWrapper.
+
+    Args:
+        tracer: OTel tracer instance.
+        wrapped: The original callable being instrumented.
+        instance: The Agno object (Agent, Team, etc.).
+        args: Positional arguments for ``wrapped``.
+        kwargs: Keyword arguments for ``wrapped``.
+        span_name: Name for the created span.
+        request_type: Entity type string written to the span.
+
+    Returns:
+        An ``AsyncSpanStreamingWrapper`` that closes the span when iteration completes.
+    """
     span, ctx_token = _start_span(tracer, span_name, request_type)
     if span is None:
         return wrapped(*args, **kwargs)
@@ -491,7 +679,16 @@ def _async_stream_start(
 
 
 def _make_run_wrapper(span_prefix: str, entity_type: str, is_async: bool = False) -> Callable[..., Any]:
-    """Factory producing run/arun wrappers for agent, team, and workflow."""
+    """Factory producing run/arun wrappers for agent, team, and workflow.
+
+    Args:
+        span_prefix: Span name prefix (e.g. ``"agno.agent.run"``).
+        entity_type: Entity type string written to the span (e.g. ``"agent"``).
+        is_async: If ``True``, returns an async-capable wrapper.
+
+    Returns:
+        A callable that accepts a ``Tracer`` and returns a ``wrapt``-compatible wrapper.
+    """
 
     def outer(tracer: Tracer) -> Callable[..., Any]:
         stream_fn = _async_stream_start if is_async else _sync_stream_start
@@ -524,6 +721,15 @@ workflow_arun_wrapper = _make_run_wrapper(WORKFLOW_RUN_SPAN, "workflow", is_asyn
 
 
 def agent_continue_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Return a sync wrapper for ``Agent.continue_run``.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function.
+    """
+
     def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
@@ -539,6 +745,15 @@ def agent_continue_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 def agent_acontinue_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Return an async wrapper for ``Agent.acontinue_run``.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function.
+    """
+
     def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
@@ -560,6 +775,15 @@ def _set_tool_span_attrs(
     kwargs: Dict[str, Any],
     tool_name: str,
 ) -> None:
+    """Set request attributes and tool call arguments on a tool span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno FunctionCall object.
+        args: Positional arguments from the wrapped call.
+        kwargs: Keyword arguments from the wrapped call.
+        tool_name: Tool name used in warning log messages.
+    """
     try:
         set_request_attributes(span, instance, args, kwargs, "tool")
     except Exception as e:
@@ -573,6 +797,15 @@ def _set_tool_span_attrs(
 
 
 def tool_execute_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Return a sync wrapper for ``FunctionCall.execute``.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function that creates a tool span per invocation.
+    """
+
     def wrapper(
         wrapped: Callable[..., Any],
         instance: Any,
@@ -617,6 +850,15 @@ def tool_execute_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 def tool_aexecute_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """Return an async wrapper for ``FunctionCall.aexecute``.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible async wrapper function that creates a tool span per invocation.
+    """
+
     async def wrapper(
         wrapped: Callable[..., Awaitable[Any]],
         instance: Any,
@@ -665,7 +907,16 @@ def _make_simple_sync_wrapper(
     request_type: str,
     set_attrs_fn: Callable[[Span, Any, Tuple[Any, ...], Dict[str, Any]], None],
 ) -> Callable[..., Any]:
-    """Factory for non-streaming span wrappers with custom attribute setup."""
+    """Factory for non-streaming synchronous span wrappers with custom attribute setup.
+
+    Args:
+        get_span_name_fn: Callable that derives the span name from the entity instance.
+        request_type: Entity type string written to the span (e.g. ``"vectordb"``).
+        set_attrs_fn: Callable ``(span, instance, args, kwargs)`` that sets entity-specific attributes.
+
+    Returns:
+        A callable that accepts a ``Tracer`` and returns a ``wrapt``-compatible wrapper.
+    """
 
     def outer(tracer: Tracer) -> Callable[..., Any]:
         def wrapper(
@@ -717,6 +968,14 @@ def _make_simple_sync_wrapper(
 
 
 def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+    """Set common and VectorDB search attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno VectorDb object.
+        args: Positional arguments; ``args[0]`` is the search query.
+        _kwargs: Keyword arguments (unused).
+    """
     _set_common_span_attributes(span, "vectordb")
     span.set_attributes(extract_vectordb_attributes(instance, "search"))
     if args:
@@ -724,21 +983,53 @@ def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kw
 
 
 def _vectordb_upsert_attrs(span: Span, instance: Any, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+    """Set common and VectorDB upsert attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno VectorDb object.
+        _args: Positional arguments (unused).
+        _kwargs: Keyword arguments (unused).
+    """
     _set_common_span_attributes(span, "vectordb")
     span.set_attributes(extract_vectordb_attributes(instance, "upsert"))
 
 
 def _memory_add_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+    """Set common and memory add attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno Memory or MemoryManager object.
+        args: Positional arguments passed to ``add_user_memory``.
+        _kwargs: Keyword arguments (unused).
+    """
     _set_common_span_attributes(span, "memory")
     span.set_attributes(extract_memory_attributes(instance, args, "add_user_memory"))
 
 
 def _memory_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+    """Set common and memory search attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno Memory or MemoryManager object.
+        args: Positional arguments passed to ``search_user_memories``.
+        _kwargs: Keyword arguments (unused).
+    """
     _set_common_span_attributes(span, "memory")
     span.set_attributes(extract_memory_attributes(instance, args, "search_user_memories"))
 
 
 def _knowledge_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
+    """Set common and knowledge search attributes on a span.
+
+    Args:
+        span: The active OpenTelemetry span.
+        instance: The Agno Knowledge or AgentKnowledge object.
+        args: Positional arguments; ``args[0]`` is the search query.
+        _kwargs: Keyword arguments (unused).
+    """
     _set_common_span_attributes(span, "knowledge")
     span.set_attributes(extract_knowledge_attributes(instance))
     if args:
@@ -777,6 +1068,15 @@ knowledge_search_wrapper = _make_simple_sync_wrapper(
 
 
 def _start_llm_span(tracer: Tracer, instance: Any) -> Optional[Span]:
+    """Start and configure an LLM child span for the given model instance.
+
+    Args:
+        tracer: OTel tracer instance.
+        instance: The Agno Model object.
+
+    Returns:
+        The started span with LLM attributes set, or ``None`` if span creation fails.
+    """
     model_id = getattr(instance, "id", None) or getattr(instance, "name", None) or type(instance).__name__
     span_name = model_id if model_id else "unknown"
     try:
@@ -797,7 +1097,16 @@ def _setup_llm_span_with_input(
     instance: Any,
     messages: Any,
 ) -> Tuple[Optional[Span], Any]:
-    """Start LLM span, update system prompt on parent span, attach context, set input."""
+    """Start an LLM span, update the parent span's system prompt, and set input attributes.
+
+    Args:
+        tracer: OTel tracer instance.
+        instance: The Agno Model object.
+        messages: The message list passed to the model; used to extract the system prompt.
+
+    Returns:
+        ``(span, ctx_token)`` on success; ``(None, None)`` if span creation fails.
+    """
     if messages:
         update_active_span_with_system_prompt(messages)
 
@@ -815,12 +1124,20 @@ def _setup_llm_span_with_input(
         input_str = format_messages_as_input(messages)
         if input_str:
             span.set_attribute("input", input_str)
+        set_llm_prompt_attributes(span, messages)
 
     return span, ctx_token
 
 
 def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Wrapper for Model.response — creates a child LLM span."""
+    """Return a wrapper for ``Model._process_model_response`` that creates a child LLM span.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function.
+    """
 
     def wrapper(
         wrapped: Callable[..., Any],
@@ -841,6 +1158,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                    set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
                 if usage:
                     span.set_attributes(usage)
@@ -870,7 +1188,14 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 def model_response_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Wrapper for Model.response_stream — LLM span closes when the stream ends."""
+    """Return a wrapper for ``Model.process_response_stream`` that closes the LLM span on stream end.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function.
+    """
 
     def wrapper(
         wrapped: Callable[..., Any],
@@ -902,7 +1227,14 @@ def model_response_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Wrapper for Model.aresponse — creates a child LLM span (async)."""
+    """Return an async wrapper for ``Model._aprocess_model_response`` that creates a child LLM span.
+
+    Args:
+        tracer: OTel tracer instance.
+
+    Returns:
+        A ``wrapt``-compatible wrapper function.
+    """
 
     async def _capture(
         wrapped: Callable[..., Any],
@@ -923,6 +1255,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                    set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
                 if usage:
                     span.set_attributes(usage)
