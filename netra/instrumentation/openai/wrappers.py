@@ -355,6 +355,21 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     )
                     self._complete_response["choices"][index]["message"]["content"] += content_piece
 
+                if isinstance(delta, dict) and delta.get("tool_calls"):
+                    msg = self._complete_response["choices"][index].setdefault(
+                        "message", {"role": "assistant", "content": ""}
+                    )
+                    tc_acc = msg.setdefault("tool_calls", {})
+                    for tc_delta in delta["tool_calls"]:
+                        tc_index = tc_delta.get("index", 0)
+                        if tc_index not in tc_acc:
+                            tc_acc[tc_index] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        if tc_delta.get("id"):
+                            tc_acc[tc_index]["id"] = tc_delta["id"]
+                        if func := tc_delta.get("function"):
+                            tc_acc[tc_index]["function"]["name"] += func.get("name") or ""
+                            tc_acc[tc_index]["function"]["arguments"] += func.get("arguments") or ""
+
                 if choice.get("finish_reason"):
                     self._complete_response["choices"][index]["finish_reason"] = choice.get("finish_reason")
 
@@ -370,11 +385,14 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
-                response_output = response.get("output", {})
+                response_output = response.get("output") or []
                 for output in response_output:
-                    content = output.get("content")
-                    for index, chunk in enumerate(content):
-                        assistant_text = chunk.get("text", "")
+                    if output.get("type") == "function_call":
+                        self._complete_response.setdefault("output", []).append(output)
+                    else:
+                        assistant_text = ""
+                        for content_chunk in output.get("content") or []:
+                            assistant_text += content_chunk.get("text", "")
                         self._complete_response["choices"] = [
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
@@ -386,6 +404,10 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
+        for choice in self._complete_response.get("choices", []):
+            msg = choice.get("message", {})
+            if isinstance(msg.get("tool_calls"), dict):
+                msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
         self._span.set_status(Status(StatusCode.OK))
@@ -469,6 +491,21 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     )
                     self._complete_response["choices"][index]["message"]["content"] += content_piece
 
+                if isinstance(delta, dict) and delta.get("tool_calls"):
+                    msg = self._complete_response["choices"][index].setdefault(
+                        "message", {"role": "assistant", "content": ""}
+                    )
+                    tc_acc = msg.setdefault("tool_calls", {})
+                    for tc_delta in delta["tool_calls"]:
+                        tc_index = tc_delta.get("index", 0)
+                        if tc_index not in tc_acc:
+                            tc_acc[tc_index] = {"id": "", "type": "function", "function": {"name": "", "arguments": ""}}
+                        if tc_delta.get("id"):
+                            tc_acc[tc_index]["id"] = tc_delta["id"]
+                        if func := tc_delta.get("function"):
+                            tc_acc[tc_index]["function"]["name"] += func.get("name") or ""
+                            tc_acc[tc_index]["function"]["arguments"] += func.get("arguments") or ""
+
                 if choice.get("finish_reason"):
                     self._complete_response["choices"][index]["finish_reason"] = choice.get("finish_reason")
 
@@ -484,11 +521,14 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
             if response.get("status") == "completed":
-                response_output = response.get("output", {})
+                response_output = response.get("output") or []
                 for output in response_output:
-                    content = output.get("content")
-                    for index, chunk in enumerate(content):
-                        assistant_text = chunk.get("text", "")
+                    if output.get("type") == "function_call":
+                        self._complete_response.setdefault("output", []).append(output)
+                    else:
+                        assistant_text = ""
+                        for content_chunk in output.get("content") or []:
+                            assistant_text += content_chunk.get("text", "")
                         self._complete_response["choices"] = [
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
@@ -500,6 +540,10 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
+        for choice in self._complete_response.get("choices", []):
+            msg = choice.get("message", {})
+            if isinstance(msg.get("tool_calls"), dict):
+                msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
         self._span.set_status(Status(StatusCode.OK))
