@@ -172,6 +172,7 @@ class _BaseStreamWrapper:
         self._last_response: Any = None
         self._finalized = False
         self._first_token_recorded = False
+        self._tool_calls: List[Any] = []
 
     def _set_output_on_success(self) -> None:
         """Override to write output attributes before the span closes."""
@@ -233,12 +234,28 @@ class _LlmStreamOutputMixin:
     _content_chunks: List[str]
     _last_response: Any
     _span: Span
+    _tool_calls: List[Any]
 
     def _set_output_on_success(self) -> None:
         """Write accumulated LLM content, token usage, and timing metrics to the span."""
+        output_str = None
         if self._content_chunks:
             content = "".join(self._content_chunks)
             output_str = json.dumps([{"role": "assistant", "content": content}])
+        elif self._tool_calls:
+            try:
+                tc_serialized = serialize_value(self._tool_calls, clean=True)
+                if tc_serialized:
+                    try:
+                        tc_data = json.loads(tc_serialized)
+                    except (json.JSONDecodeError, ValueError):
+                        tc_data = tc_serialized
+                    output_str = json.dumps([{"role": "assistant", "tool_calls": tc_data}])
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to serialize tool_calls for LLM output: %s", e)
+        elif self._last_response is not None:
+            output_str = format_response_as_output(self._last_response)
+        if output_str:
             self._span.set_attribute("output", output_str)
             set_llm_completion_attributes(self._span, output_str)
         if self._last_response is not None:
@@ -404,6 +421,7 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         """
         try:
             chunk = next(self._response)
+            self._last_response = chunk
             try:
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
@@ -416,6 +434,10 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                                 self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                             )
                         self._content_chunks.append(str(content))
+                tool_calls = getattr(chunk, "tool_calls", None)
+                if tool_calls:
+                    tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+                    self._tool_calls.extend(tc_list)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate llm stream content: %s", e)
             return chunk
@@ -449,6 +471,7 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         """
         try:
             chunk = await self._response.__anext__()
+            self._last_response = chunk
             try:
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
@@ -461,6 +484,10 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                                 self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                             )
                         self._content_chunks.append(str(content))
+                tool_calls = getattr(chunk, "tool_calls", None)
+                if tool_calls:
+                    tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+                    self._tool_calls.extend(tc_list)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate async llm stream content: %s", e)
             return chunk
@@ -1156,10 +1183,14 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             end_time = time.time()
             try:
                 output_str = format_response_as_output(assistant_message)
+                if not output_str and response is not None:
+                    output_str = format_response_as_output(response)
                 if output_str:
                     span.set_attribute("output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
+                if not usage and response is not None:
+                    usage = extract_token_usage(response)
                 if usage:
                     span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
@@ -1253,10 +1284,14 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
             end_time = time.time()
             try:
                 output_str = format_response_as_output(assistant_message)
+                if not output_str and response is not None:
+                    output_str = format_response_as_output(response)
                 if output_str:
                     span.set_attribute("output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
+                if not usage and response is not None:
+                    usage = extract_token_usage(response)
                 if usage:
                     span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
