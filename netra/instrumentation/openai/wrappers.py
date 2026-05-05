@@ -390,11 +390,12 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if output.get("type") == "function_call":
                         self._complete_response.setdefault("output", []).append(output)
                     else:
+                        assistant_text = ""
                         for content_chunk in output.get("content") or []:
-                            assistant_text = content_chunk.get("text", "")
-                            self._complete_response["choices"] = [
-                                {"message": {"role": "assistant", "content": assistant_text}}
-                            ]
+                            assistant_text += content_chunk.get("text", "")
+                        self._complete_response["choices"] = [
+                            {"message": {"role": "assistant", "content": assistant_text}}
+                        ]
 
                 usage = response.get("usage", {})
                 self._complete_response["usage"] = usage
@@ -525,11 +526,12 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if output.get("type") == "function_call":
                         self._complete_response.setdefault("output", []).append(output)
                     else:
+                        assistant_text = ""
                         for content_chunk in output.get("content") or []:
-                            assistant_text = content_chunk.get("text", "")
-                            self._complete_response["choices"] = [
-                                {"message": {"role": "assistant", "content": assistant_text}}
-                            ]
+                            assistant_text += content_chunk.get("text", "")
+                        self._complete_response["choices"] = [
+                            {"message": {"role": "assistant", "content": assistant_text}}
+                        ]
 
                 usage = response.get("usage", {})
                 self._complete_response["usage"] = usage
