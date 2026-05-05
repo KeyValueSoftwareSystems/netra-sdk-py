@@ -1169,8 +1169,8 @@ def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None
         for index, msg in enumerate(completions):
             role = msg.get("role", "assistant")
             content = msg.get("content") or msg.get("tool_calls", "")
-            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", str(role))
             if content:
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", str(role))
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content",
                     content if isinstance(content, str) else json.dumps(content),
