@@ -99,10 +99,26 @@ def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
         elif isinstance(input_data, list) and input_data:
             for message in input_data:
                 if isinstance(message, dict):
-                    role = message.get("role", "user")
-                    content = str(message.get("content", ""))
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
-                    span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", content)
+                    msg_type = message.get("type", "")
+                    if msg_type == "function_call":
+                        name = message.get("name", "")
+                        arguments = message.get("arguments", "")
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "assistant")
+                        span.set_attribute(
+                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
+                            json.dumps({"name": name, "arguments": arguments}),
+                        )
+                    elif msg_type == "function_call_output":
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "tool")
+                        span.set_attribute(
+                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
+                            str(message.get("output", "")),
+                        )
+                    else:
+                        role = message.get("role", "user")
+                        content = str(message.get("content", ""))
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
+                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", content)
                     message_index += 1
 
 
@@ -155,7 +171,16 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
 
     if output := response_dict.get("output"):
         for element in output:
-            if content := element.get("content"):
+            if element.get("type") == "function_call":
+                name = element.get("name", "")
+                arguments = element.get("arguments", "")
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
+                    json.dumps({"name": name, "arguments": arguments}),
+                )
+                message_index += 1
+            elif content := element.get("content"):
                 for chunk in content:
                     if text := chunk.get("text"):
                         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
