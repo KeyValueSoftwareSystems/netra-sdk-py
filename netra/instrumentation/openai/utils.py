@@ -194,17 +194,37 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
                 )
                 span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content") or ""
                 )
                 message_index += 1
+                for tc in message.get("tool_calls") or []:
+                    func = tc.get("function", {})
+                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
+                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
+                    )
+                    if tc_id := tc.get("id"):
+                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
+                    message_index += 1
             elif delta := choice.get("delta"):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
                 )
                 span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content", "")
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content") or ""
                 )
                 message_index += 1
+                for tc in delta.get("tool_calls") or []:
+                    func = tc.get("function", {})
+                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
+                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
+                    )
+                    if tc_id := tc.get("id"):
+                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
+                    message_index += 1
 
             if finish_reason := choice.get("finish_reason"):
                 span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
