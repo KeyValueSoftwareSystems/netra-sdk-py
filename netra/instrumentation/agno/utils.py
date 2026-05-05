@@ -1141,7 +1141,14 @@ def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
                 continue
             raw = getattr(msg, "content", None)
             if raw is None:
-                content: Any = ""
+                tool_calls = getattr(msg, "tool_calls", None)
+                if tool_calls:
+                    try:
+                        content = json.dumps(_normalize(tool_calls, clean=True))
+                    except Exception:
+                        content = _safe_str(tool_calls)
+                else:
+                    content = ""
             elif isinstance(raw, str):
                 content = raw
             else:
