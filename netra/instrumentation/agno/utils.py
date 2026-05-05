@@ -304,6 +304,15 @@ def is_assistant_response(event: Any) -> bool:
 
 
 def parse_input_message_item(input_content: Dict[str, Any]) -> Dict[str, Any]:
+    """Normalize a single input message dict into a ``{role, content}`` pair.
+
+    Args:
+        input_content: A dict expected to contain ``role`` and ``content`` keys.
+
+    Returns:
+        ``{"role": role, "content": content}`` when both keys are present;
+        otherwise ``{"role": "user", "content": input_content}``.
+    """
     role = input_content.get("role")
     content = input_content.get("content")
     if role and content:
@@ -955,7 +964,15 @@ def set_response_attributes(span: Span, response: Any) -> None:
 
 
 def sanitize_headers(raw_headers: List[Tuple[bytes, bytes]]) -> Dict[str, str]:
-    """Convert ASGI raw header pairs to a dict with sensitive values redacted."""
+    """Convert ASGI raw header pairs to a dict with sensitive values redacted.
+
+    Args:
+        raw_headers: List of ``(name_bytes, value_bytes)`` tuples from the ASGI scope.
+
+    Returns:
+        Dict mapping lower-cased header names to values, with sensitive headers
+        replaced by ``"[REDACTED]"``.
+    """
     result: Dict[str, str] = {}
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1").lower()
@@ -964,7 +981,14 @@ def sanitize_headers(raw_headers: List[Tuple[bytes, bytes]]) -> Dict[str, str]:
 
 
 def build_scope_url(scope: Dict[str, Any]) -> str:
-    """Reconstruct the full request URL from an ASGI scope."""
+    """Reconstruct the full request URL from an ASGI scope.
+
+    Args:
+        scope: ASGI connection scope dict.
+
+    Returns:
+        Full URL string including scheme, host, port, path, and query string.
+    """
     scheme = scope.get("scheme", "http")
     server = scope.get("server")
     path = scope.get("path", "/")
@@ -985,7 +1009,14 @@ def build_scope_url(scope: Dict[str, Any]) -> str:
 
 
 def extract_http_request_attributes(scope: Dict[str, Any]) -> Dict[str, Any]:
-    """Extract OTel-standard HTTP attributes from an ASGI scope."""
+    """Extract OTel-standard HTTP attributes from an ASGI scope.
+
+    Args:
+        scope: ASGI connection scope dict.
+
+    Returns:
+        Dict of OTel HTTP attribute key-value pairs (method, url, scheme, etc.).
+    """
     attrs: Dict[str, Any] = {}
 
     method = scope.get("method", "")
@@ -1032,7 +1063,13 @@ def set_agentos_request_input(
     scope: Dict[str, Any],
     body: bytes,
 ) -> None:
-    """Serialize the AgentOS HTTP request and set it as the span ``input`` attribute."""
+    """Serialize the AgentOS HTTP request and set it as the span ``input`` attribute.
+
+    Args:
+        span: The active OpenTelemetry span.
+        scope: ASGI connection scope dict.
+        body: Raw request body bytes.
+    """
     if not span.is_recording():
         return
     try:
@@ -1060,7 +1097,14 @@ def set_agentos_response_output(
     raw_headers: List[Tuple[bytes, bytes]],
     body: bytes,
 ) -> None:
-    """Serialize the AgentOS HTTP response and set it as the span ``output`` attribute."""
+    """Serialize the AgentOS HTTP response and set it as the span ``output`` attribute.
+
+    Args:
+        span: The active OpenTelemetry span.
+        status_code: HTTP response status code.
+        raw_headers: List of ``(name_bytes, value_bytes)`` response header tuples.
+        body: Raw response body bytes.
+    """
     if not span.is_recording():
         return
     try:
@@ -1079,6 +1123,60 @@ def set_agentos_response_output(
         span.set_attribute("output", json.dumps(output_data))
     except Exception as e:
         logger.debug("netra.instrumentation.agno: failed to set agentos response output: %s", e)
+
+
+def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
+    """Set ``gen_ai.prompt.N.role`` and ``gen_ai.prompt.N.content`` attributes from agno message objects.
+
+    Args:
+        span: The active OpenTelemetry span.
+        messages: Iterable of agno message objects with ``role`` and ``content`` attributes.
+    """
+    if not messages or not span.is_recording():
+        return
+    try:
+        for index, msg in enumerate(messages):
+            role = getattr(msg, "role", None)
+            if role is None:
+                continue
+            raw = getattr(msg, "content", None)
+            if raw is None:
+                content: Any = ""
+            elif isinstance(raw, str):
+                content = raw
+            else:
+                try:
+                    content = json.dumps(_normalize(raw, clean=False))
+                except Exception:
+                    content = _safe_str(raw)
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", str(role))
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", content)
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set prompt attributes: %s", e)
+
+
+def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None:
+    """Set ``gen_ai.completion.N.role`` and ``gen_ai.completion.N.content`` from a JSON output string.
+
+    Args:
+        span: The active OpenTelemetry span.
+        output_str: JSON string of the form ``[{"role": "...", "content": "..."}]``.
+    """
+    if not output_str or not span.is_recording():
+        return
+    try:
+        completions = json.loads(output_str)
+        for index, msg in enumerate(completions):
+            role = msg.get("role", "assistant")
+            content = msg.get("content") or msg.get("tool_calls", "")
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", str(role))
+            if content:
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content",
+                    content if isinstance(content, str) else json.dumps(content),
+                )
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set completion attributes: %s", e)
 
 
 def extract_agentos_attributes(
