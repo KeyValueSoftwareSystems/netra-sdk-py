@@ -207,6 +207,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT = {
     InstrumentSet.REPLICATE,
     InstrumentSet.ALEPHALPHA,
     InstrumentSet.WATSONX,
+    InstrumentSet.FASTAPI,
 }
 
 # Broader default instrument set used for the ``instruments`` parameter when
