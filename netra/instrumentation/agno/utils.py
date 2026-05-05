@@ -761,6 +761,15 @@ def format_messages_as_input(messages: Any) -> Optional[str]:
                 content = _normalize(raw, clean=False)
             except Exception:
                 content = _safe_str(raw)
+        if not content and str(role) == "assistant":
+            tool_calls = getattr(msg, "tool_calls", None)
+            if tool_calls:
+                try:
+                    msg_list.append({"role": str(role), "tool_calls": _normalize(tool_calls, clean=True)})
+                    continue
+                except Exception as e:
+                    logger.debug("netra.instrumentation.agno: failed to normalize tool_calls in message: %s", e)
+
         msg_list.append({"role": str(role), "content": content})
 
     if not msg_list:
@@ -799,6 +808,14 @@ def format_response_as_output(response: Any) -> Optional[str]:
 
     if content is None and isinstance(response, str):
         content = response
+
+    if content is None:
+        tool_calls = _safe_getattr(response, "tool_calls")
+        if tool_calls:
+            try:
+                return json.dumps([{"role": "assistant", "tool_calls": _normalize(tool_calls, clean=True)}])
+            except Exception as e:
+                logger.debug("netra.instrumentation.agno: failed to serialize tool_calls as output: %s", e)
 
     if content is None:
         return None
