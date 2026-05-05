@@ -1081,6 +1081,50 @@ def set_agentos_response_output(
         logger.debug("netra.instrumentation.agno: failed to set agentos response output: %s", e)
 
 
+def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
+    """Set gen_ai.prompt.N.role and gen_ai.prompt.N.content attributes from agno message objects."""
+    if not messages or not span.is_recording():
+        return
+    try:
+        for index, msg in enumerate(messages):
+            role = getattr(msg, "role", None)
+            if role is None:
+                continue
+            raw = getattr(msg, "content", None)
+            if raw is None:
+                content: Any = ""
+            elif isinstance(raw, str):
+                content = raw
+            else:
+                try:
+                    content = json.dumps(_normalize(raw, clean=False))
+                except Exception:
+                    content = _safe_str(raw)
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", str(role))
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", content)
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set prompt attributes: %s", e)
+
+
+def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None:
+    """Set gen_ai.completion.N.role and gen_ai.completion.N.content from a JSON output string."""
+    if not output_str or not span.is_recording():
+        return
+    try:
+        completions = json.loads(output_str)
+        for index, msg in enumerate(completions):
+            role = msg.get("role", "assistant")
+            content = msg.get("content") or msg.get("tool_calls", "")
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", str(role))
+            if content:
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content",
+                    content if isinstance(content, str) else json.dumps(content),
+                )
+    except Exception as e:
+        logger.debug("netra.instrumentation.agno: failed to set completion attributes: %s", e)
+
+
 def extract_agentos_attributes(
     instance: Any,
     entity_type: str,

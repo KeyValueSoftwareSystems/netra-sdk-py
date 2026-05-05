@@ -35,6 +35,8 @@ from netra.instrumentation.agno.utils import (
     serialize_value,
     set_agentos_request_input,
     set_agentos_response_output,
+    set_llm_completion_attributes,
+    set_llm_prompt_attributes,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
@@ -184,7 +186,9 @@ class _LlmStreamOutputMixin:
     def _set_output_on_success(self) -> None:
         if self._content_chunks:
             content = "".join(self._content_chunks)
-            self._span.set_attribute("output", json.dumps([{"role": "assistant", "content": content}]))
+            output_str = json.dumps([{"role": "assistant", "content": content}])
+            self._span.set_attribute("output", output_str)
+            set_llm_completion_attributes(self._span, output_str)
         if self._last_response is not None:
             usage = extract_token_usage(self._last_response)
             if usage:
@@ -815,6 +819,7 @@ def _setup_llm_span_with_input(
         input_str = format_messages_as_input(messages)
         if input_str:
             span.set_attribute("input", input_str)
+        set_llm_prompt_attributes(span, messages)
 
     return span, ctx_token
 
@@ -841,6 +846,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                    set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
                 if usage:
                     span.set_attributes(usage)
@@ -923,6 +929,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 output_str = format_response_as_output(assistant_message)
                 if output_str:
                     span.set_attribute("output", output_str)
+                    set_llm_completion_attributes(span, output_str)
                 usage = extract_token_usage(assistant_message)
                 if usage:
                     span.set_attributes(usage)
