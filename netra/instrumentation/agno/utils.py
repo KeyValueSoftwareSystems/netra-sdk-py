@@ -656,7 +656,10 @@ def extract_token_usage(response: Any) -> Dict[str, Any]:
 
     metrics = _safe_getattr(response, "metrics")
     if metrics is None:
-        return attributes
+        # Fallback: ModelResponse stream chunks carry usage in response_usage
+        metrics = _safe_getattr(response, "response_usage")
+        if metrics is None:
+            return attributes
 
     if isinstance(metrics, dict):
         input_tokens = metrics.get("input_tokens", 0)
