@@ -183,6 +183,7 @@ def _start_tool_call_span(
     Returns:
         None
     """
+    tool_span = None
     try:
         tool_span = tracer.start_span(block.name, context=parent_ctx, kind=SpanKind.CLIENT)
         tool_ctx = trace.set_span_in_context(tool_span)
@@ -204,6 +205,8 @@ def _start_tool_call_span(
         with _tool_call_registry_lock:
             _tool_call_registry[block.id] = {"name": block.name, "span": tool_span, "ctx": tool_ctx}
     except Exception as e:
+        if tool_span is not None:
+            tool_span.end()
         logger.error(f"Error creating tool call span for tool={block.name}: {e}")
 
 
@@ -291,7 +294,8 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
                 span.set_attribute(ATTR_CLAUDE_CODE_CWD, str(options.cwd))
             if options.session_id:
                 span.set_attribute(ATTR_SESSION_ID, options.session_id)
-            span.set_attribute(ATTR_CLAUDE_CODE_CONTINUE_CONVERSATION, options.continue_conversation)
+            if options.continue_conversation is not None:
+                span.set_attribute(ATTR_CLAUDE_CODE_CONTINUE_CONVERSATION, options.continue_conversation)
     except Exception as e:
         logger.error(f"Cannot extract options from request: {e}")
 
@@ -458,8 +462,10 @@ def set_result_message_attributes(span: Span, message: ResultMessage) -> None:
         span.set_attribute("output", _build_message_array("assistant", message.result))
 
     try:
-        span.set_attribute(ATTR_CLAUDE_CODE_NUM_TURNS, message.num_turns)
-        span.set_attribute(ATTR_SESSION_ID, message.session_id)
+        if message.num_turns is not None:
+            span.set_attribute(ATTR_CLAUDE_CODE_NUM_TURNS, message.num_turns)
+        if message.session_id:
+            span.set_attribute(ATTR_SESSION_ID, message.session_id)
 
         if message.stop_reason:
             span.set_attribute(SpanAttributes.LLM_RESPONSE_STOP_REASON, message.stop_reason)

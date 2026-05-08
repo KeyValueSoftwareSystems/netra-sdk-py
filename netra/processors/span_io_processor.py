@@ -150,14 +150,7 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         _gen_ai_owns_output = [False]
 
         def _is_empty(v: Any) -> bool:
-            if not v:
-                return True
-            if isinstance(v, str):
-                try:
-                    return not json.loads(v)
-                except Exception:
-                    return False
-            return False
+            return v is None or v == ""
 
         def _input_is_empty() -> bool:
             return _is_empty((span.attributes or {}).get("input"))
