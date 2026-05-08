@@ -1,7 +1,7 @@
 import json
 import logging
 import threading
-from typing import Any, Dict
+from typing import Any
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -278,7 +278,7 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
                 if isinstance(system_prompt, str):
                     prompt_index = _set_input_conversation(span, "system", system_prompt, prompt_index)
                     input_messages.append({"role": "system", "content": system_prompt})
-                elif isinstance(system_prompt, Dict):
+                elif isinstance(system_prompt, dict):
                     try:
                         serialized = json.dumps(system_prompt)
                     except Exception:
