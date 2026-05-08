@@ -2,49 +2,109 @@ import logging
 import os
 from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
-from typing import Any, Callable, Optional, Set
+from typing import AbstractSet, Any, Callable, Optional
 
 from traceloop.sdk import Instruments, Telemetry
 from traceloop.sdk.utils.package_check import is_package_installed
 
-from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS, CustomInstruments, NetraInstruments
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS, CustomInstruments, InstrumentSet, NetraInstruments
+
+_ALL_SENTINEL = InstrumentSet.ALL
+
+
+def _contains_all(instrument_set: Optional[AbstractSet[NetraInstruments]]) -> bool:
+    """Return ``True`` if the set contains the ``InstrumentSet.ALL`` sentinel.
+
+    Args:
+        instrument_set: The set of instruments to check.
+
+    Returns:
+        True if the set contains ``InstrumentSet.ALL``, False otherwise.
+    """
+    return instrument_set is not None and _ALL_SENTINEL in instrument_set
 
 
 def init_instrumentations(
     should_enrich_metrics: bool,
     base64_image_uploader: Optional[Callable[[str, str, str], str]],
-    instruments: Optional[Set[NetraInstruments]] = None,
-    block_instruments: Optional[Set[NetraInstruments]] = None,
+    instruments: Optional[AbstractSet[NetraInstruments]] = None,
+    block_instruments: Optional[AbstractSet[NetraInstruments]] = None,
 ) -> None:
+    """Initialize all requested instrumentations.
+
+    When ``InstrumentSet.ALL`` is present in *instruments*, the curated
+    default list is bypassed and every instrumentation available in the
+    user's environment is enabled — matching the legacy behaviour before
+    default instrument lists were introduced.
+
+    Args:
+        should_enrich_metrics: Whether to enrich metrics.
+        base64_image_uploader: Optional callback for image uploads.
+        instruments: Set of instruments to enable. ``None`` falls back to the
+            curated default; a set containing ``InstrumentSet.ALL`` enables
+            everything available.
+        block_instruments: Set of instruments to explicitly block.  A set
+            containing ``InstrumentSet.ALL`` blocks every instrumentation.
+    """
     from traceloop.sdk.tracing.tracing import init_instrumentations
 
-    # When the user does not pass instruments, fall back to the curated default set.
-    resolved_instruments = instruments if instruments is not None else DEFAULT_INSTRUMENTS
+    enable_all = _contains_all(instruments)
+    block_all = _contains_all(block_instruments)
+
+    if enable_all:
+        resolved_instruments = None
+    else:
+        resolved_instruments = instruments if instruments is not None else DEFAULT_INSTRUMENTS
 
     traceloop_instruments = set()
     traceloop_block_instruments = set()
     netra_custom_instruments = set()
     netra_custom_block_instruments = set()
-    if resolved_instruments:
-        for instrument in resolved_instruments:
-            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
-                netra_custom_instruments.add(getattr(CustomInstruments, instrument.name))
-            else:
-                traceloop_instruments.add(getattr(Instruments, instrument.name))
-    if block_instruments:
-        for instrument in block_instruments:
-            if instrument.origin == CustomInstruments:  # type: ignore[attr-defined]
-                netra_custom_block_instruments.add(getattr(CustomInstruments, instrument.name))
-            else:
-                traceloop_block_instruments.add(getattr(Instruments, instrument.name))
 
-    # If no instruments in traceloop are provided for instrumentation
-    if resolved_instruments and not traceloop_instruments and not traceloop_block_instruments:
+    if block_all:
         traceloop_block_instruments = set(Instruments)
-
-    # If no custom instruments in netra are provided for instrumentation
-    if resolved_instruments and not netra_custom_instruments and not netra_custom_block_instruments:
         netra_custom_block_instruments = set(CustomInstruments)
+    else:
+        if resolved_instruments:
+            for instrument in resolved_instruments:
+                if instrument is _ALL_SENTINEL:
+                    continue
+                if instrument.origin == CustomInstruments:
+                    member = getattr(CustomInstruments, instrument.name, None)
+                    if member is not None:
+                        netra_custom_instruments.add(member)
+                    else:
+                        logging.warning("Unknown custom instrument: %s", instrument.name)
+                else:
+                    member = getattr(Instruments, instrument.name, None)
+                    if member is not None:
+                        traceloop_instruments.add(member)
+                    else:
+                        logging.warning("Unknown traceloop instrument: %s", instrument.name)
+        if block_instruments:
+            for instrument in block_instruments:
+                if instrument is _ALL_SENTINEL:
+                    continue
+                if instrument.origin == CustomInstruments:
+                    member = getattr(CustomInstruments, instrument.name, None)
+                    if member is not None:
+                        netra_custom_block_instruments.add(member)
+                    else:
+                        logging.warning("Unknown custom instrument to block: %s", instrument.name)
+                else:
+                    member = getattr(Instruments, instrument.name, None)
+                    if member is not None:
+                        traceloop_block_instruments.add(member)
+                    else:
+                        logging.warning("Unknown traceloop instrument to block: %s", instrument.name)
+
+        # If no instruments in traceloop are provided for instrumentation
+        if resolved_instruments and not traceloop_instruments and not traceloop_block_instruments:
+            traceloop_block_instruments = set(Instruments)
+
+        # If no custom instruments in netra are provided for instrumentation
+        if resolved_instruments and not netra_custom_instruments and not netra_custom_block_instruments:
+            netra_custom_block_instruments = set(CustomInstruments)
 
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
     traceloop_instruments = traceloop_instruments - traceloop_block_instruments
@@ -74,7 +134,8 @@ def init_instrumentations(
             block_instruments=traceloop_block_instruments,
         )
 
-    netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
+    if enable_all:
+        netra_custom_instruments = netra_custom_instruments or set(CustomInstruments)
     netra_custom_instruments = netra_custom_instruments - netra_custom_block_instruments
 
     # Initialize Groq instrumentation.

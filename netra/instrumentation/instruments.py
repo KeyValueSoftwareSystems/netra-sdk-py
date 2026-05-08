@@ -1,5 +1,5 @@
 from enum import Enum
-from typing import Any
+from typing import Any, Optional, Type
 
 from traceloop.sdk import Instruments
 
@@ -76,13 +76,26 @@ class CustomInstruments(Enum):
 
 
 class InstrumentSet(Enum):
-    """Custom enum that stores the original enum class in an 'origin' attribute."""
+    """Custom enum that stores the original enum class in an 'origin' attribute.
 
-    def __new__(cls: Any, value: Any, origin: Any = None) -> Any:
+    Every member carries an ``origin`` attribute that identifies which
+    underlying enum (``CustomInstruments`` or ``Instruments``) provides the
+    actual instrumentor.  The special ``ALL`` member has ``origin=None`` and
+    acts as a sentinel: when included in the ``instruments`` or
+    ``root_instruments`` sets passed to ``Netra.init()``, it restores the
+    legacy behaviour where **every** instrumentation available in the user's
+    environment is enabled automatically — no curated default list is applied.
+    """
+
+    origin: Optional[Type[Enum]]
+
+    def __new__(cls, value: Any, origin: Optional[Type[Enum]] = None) -> "InstrumentSet":
         member = object.__new__(cls)
         member._value_ = value
         member.origin = origin
         return member
+
+    ALL = ("__all__", None)
 
     ADK = ("google_adk", CustomInstruments)
     AGNO = ("agno", CustomInstruments)
@@ -176,46 +189,53 @@ class InstrumentSet(Enum):
     WSGI = ("wsgi", CustomInstruments)
 
 
+# Public alias — same class, not a copy, so identity/membership checks
+# (e.g. ``InstrumentSet.ALL in some_set``) work correctly.
 NetraInstruments = InstrumentSet
 
 
 # Curated default instrument set used for root_instruments when the user does
 # not pass an explicit value. Covers core LLM/AI providers and frameworks.
-DEFAULT_INSTRUMENTS_FOR_ROOT = {
-    InstrumentSet.ANTHROPIC,
-    InstrumentSet.CARTESIA,
-    InstrumentSet.COHEREAI,
-    InstrumentSet.CREW,
-    InstrumentSet.DEEPGRAM,
-    InstrumentSet.ELEVENLABS,
-    InstrumentSet.GOOGLE_GENERATIVEAI,
-    InstrumentSet.ADK,
-    InstrumentSet.AGNO,
-    InstrumentSet.GROQ,
-    InstrumentSet.LANGCHAIN,
-    InstrumentSet.LITELLM,
-    InstrumentSet.CEREBRAS,
-    InstrumentSet.MISTRALAI,
-    InstrumentSet.OPENAI,
-    InstrumentSet.OLLAMA,
-    InstrumentSet.VERTEXAI,
-    InstrumentSet.LLAMA_INDEX,
-    InstrumentSet.PYDANTIC_AI,
-    InstrumentSet.DSPY,
-    InstrumentSet.HAYSTACK,
-    InstrumentSet.BEDROCK,
-    InstrumentSet.TOGETHER,
-    InstrumentSet.REPLICATE,
-    InstrumentSet.ALEPHALPHA,
-    InstrumentSet.WATSONX,
-    InstrumentSet.FASTAPI,
-    InstrumentSet.CLAUDE_AGENT_SDK,
+# Exposed as a frozenset so it is safe to use as a default argument value.
+DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
+    {
+        InstrumentSet.ANTHROPIC,
+        InstrumentSet.CARTESIA,
+        InstrumentSet.COHEREAI,
+        InstrumentSet.CREW,
+        InstrumentSet.DEEPGRAM,
+        InstrumentSet.ELEVENLABS,
+        InstrumentSet.GOOGLE_GENERATIVEAI,
+        InstrumentSet.ADK,
+        InstrumentSet.AGNO,
+        InstrumentSet.GROQ,
+        InstrumentSet.LANGCHAIN,
+        InstrumentSet.LITELLM,
+        InstrumentSet.CEREBRAS,
+        InstrumentSet.MISTRALAI,
+        InstrumentSet.OPENAI,
+        InstrumentSet.OLLAMA,
+        InstrumentSet.VERTEXAI,
+        InstrumentSet.LLAMA_INDEX,
+        InstrumentSet.PYDANTIC_AI,
+        InstrumentSet.DSPY,
+        InstrumentSet.HAYSTACK,
+        InstrumentSet.BEDROCK,
+        InstrumentSet.TOGETHER,
+        InstrumentSet.REPLICATE,
+        InstrumentSet.ALEPHALPHA,
+        InstrumentSet.WATSONX,
+        InstrumentSet.FASTAPI,
+        InstrumentSet.MCP,
+        InstrumentSet.CLAUDE_AGENT_SDK,
 }
+)
 
 # Broader default instrument set used for the ``instruments`` parameter when
 # the user does not pass an explicit value. Includes the root defaults plus
 # common vector DBs, HTTP client/server, and database ORM/client libraries.
-DEFAULT_INSTRUMENTS = DEFAULT_INSTRUMENTS_FOR_ROOT.union(
+# Exposed as a frozenset so it is safe to use as a default argument value.
+DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = DEFAULT_INSTRUMENTS_FOR_ROOT | frozenset(
     {
         InstrumentSet.PINECONE,
         InstrumentSet.CHROMA,
