@@ -61,8 +61,8 @@ def _get_blocked_url_patterns() -> frozenset[str]:
     return _BLOCKED_URL_PATTERNS
 
 
-# Pre-computed allowed instrumentation names
-_ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet}
+# Pre-computed allowed instrumentation names (excludes the ALL sentinel)
+_ALLOWED_INSTRUMENTATION_NAMES: Set[str] = {member.value for member in InstrumentSet if member is not InstrumentSet.ALL}
 
 
 class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
