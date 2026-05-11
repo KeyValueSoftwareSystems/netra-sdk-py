@@ -228,7 +228,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.FASTAPI,
         InstrumentSet.MCP,
         InstrumentSet.CLAUDE_AGENT_SDK,
-}
+    }
 )
 
 # Broader default instrument set used for the ``instruments`` parameter when
