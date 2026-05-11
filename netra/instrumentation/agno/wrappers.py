@@ -425,19 +425,19 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
             try:
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
+                    tool_calls = getattr(chunk, "tool_calls", None)
+                    if not self._first_token_recorded and (content or tool_calls):
+                        self._first_token_recorded = True
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                        )
                     if content:
-                        if not self._first_token_recorded:
-                            self._first_token_recorded = True
-                            first_token_time = time.time()
-                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
-                            record_span_timing(
-                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
-                            )
                         self._content_chunks.append(str(content))
-                tool_calls = getattr(chunk, "tool_calls", None)
-                if tool_calls:
-                    tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
-                    self._tool_calls.extend(tc_list)
+                    if tool_calls:
+                        tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+                        self._tool_calls.extend(tc_list)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate llm stream content: %s", e)
             return chunk
@@ -475,19 +475,19 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
             try:
                 if is_assistant_response(chunk):
                     content = getattr(chunk, "content", None)
+                    tool_calls = getattr(chunk, "tool_calls", None)
+                    if not self._first_token_recorded and (content or tool_calls):
+                        self._first_token_recorded = True
+                        first_token_time = time.time()
+                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
+                        )
                     if content:
-                        if not self._first_token_recorded:
-                            self._first_token_recorded = True
-                            first_token_time = time.time()
-                            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
-                            record_span_timing(
-                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
-                            )
                         self._content_chunks.append(str(content))
-                tool_calls = getattr(chunk, "tool_calls", None)
-                if tool_calls:
-                    tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
-                    self._tool_calls.extend(tc_list)
+                    if tool_calls:
+                        tc_list = tool_calls if isinstance(tool_calls, list) else [tool_calls]
+                        self._tool_calls.extend(tc_list)
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to accumulate async llm stream content: %s", e)
             return chunk
