@@ -107,6 +107,7 @@ class InstrumentSet(Enum):
     CEREBRAS = ("cerebras", CustomInstruments)
     CELERY = ("celery", CustomInstruments)
     CHROMA = ("chroma", Instruments)
+    CLAUDE_AGENT_SDK = ("claude_agent_sdk", CustomInstruments)
     CLICK = ("click", CustomInstruments)
     COHEREAI = ("cohere_ai", CustomInstruments)
     CONFLUENT_KAFKA = ("confluent_kafka", CustomInstruments)
@@ -208,6 +209,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT = {
     InstrumentSet.ALEPHALPHA,
     InstrumentSet.WATSONX,
     InstrumentSet.FASTAPI,
+    InstrumentSet.CLAUDE_AGENT_SDK,
 }
 
 # Broader default instrument set used for the ``instruments`` parameter when
@@ -255,6 +257,7 @@ class InstrumentSet(Enum):
     CELERY = "celery"
     CHROMA = "chroma"
     CLICK = "click"
+    CLAUDE_AGENT_SDK = "claude_agent_sdk"
     COHEREAI = "cohere_ai"
     CONFLUENT_KAFKA = "confluent_kafka"
     CREW = "crew"

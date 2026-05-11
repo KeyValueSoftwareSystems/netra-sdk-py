@@ -144,6 +144,20 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         prompts: Dict[int, Dict[str, str]] = {}
         completions: Dict[int, Dict[str, str]] = {}
 
+        # Track whether gen_ai is the owner of input/output so successive prompt/completion
+        # entries can keep accumulating into the same attribute without being blocked.
+        _gen_ai_owns_input = [False]
+        _gen_ai_owns_output = [False]
+
+        def _is_empty(v: Any) -> bool:
+            return v is None or v == ""
+
+        def _input_is_empty() -> bool:
+            return _is_empty((span.attributes or {}).get("input"))
+
+        def _output_is_empty() -> bool:
+            return _is_empty((span.attributes or {}).get("output"))
+
         def patched_set_attribute(key: str, value: Any) -> None:  # noqa: C901
             try:
                 # 1. gen_ai.prompts.* / gen_ai.prompt.* → keep original + update input
@@ -153,7 +167,9 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     idx = int(prompt_match.group(1))
                     field = prompt_match.group(2)
                     prompts.setdefault(idx, {})[field] = str(value)
-                    original("input", _build_messages(prompts))
+                    if _input_is_empty() or _gen_ai_owns_input[0]:
+                        original("input", _build_messages(prompts))
+                        _gen_ai_owns_input[0] = True
                     return
 
                 # 2. gen_ai.completions.* / gen_ai.completion.* → keep original + update output
@@ -163,17 +179,21 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     idx = int(completion_match.group(1))
                     field = completion_match.group(2)
                     completions.setdefault(idx, {})[field] = str(value)
-                    original("output", _build_messages(completions))
+                    if _output_is_empty() or _gen_ai_owns_output[0]:
+                        original("output", _build_messages(completions))
+                        _gen_ai_owns_output[0] = True
                     return
 
                 # 3. traceloop.entity.input → input  (no traceloop key written)
                 if key == "traceloop.entity.input":
-                    original("input", _extract_traceloop_input(value))
+                    if _input_is_empty():
+                        original("input", _extract_traceloop_input(value))
                     return
 
                 # 4. traceloop.entity.output → output  (no traceloop key written)
                 if key == "traceloop.entity.output":
-                    original("output", _extract_traceloop_output(value))
+                    if _output_is_empty():
+                        original("output", _extract_traceloop_output(value))
                     return
 
                 # 5. Other traceloop.* → netra.*  (no traceloop key written)
