@@ -26,7 +26,6 @@ async def _dispatch_messages(
     root_span: Span,
     root_ctx: Context,
     aiterator: AsyncIterator[Any],
-    prompt_index: int,
 ) -> AsyncIterator[Any]:
     """
     Dispatch each incoming SDK message to its span attribute handler and yield it.
@@ -36,7 +35,6 @@ async def _dispatch_messages(
         root_span (Span): The root span to attach message attributes to.
         root_ctx (Context): The root span context for child span parenting.
         aiterator (AsyncIterator): The async iterator of SDK messages to process.
-        prompt_index (int): The current prompt index passed to the result message attribute setter.
 
     Returns:
         AsyncIterator: Yields each SDK message after processing its span attributes.
@@ -51,7 +49,7 @@ async def _dispatch_messages(
             if isinstance(message, SystemMessage):
                 set_system_message_attributes(root_span, message)
             elif isinstance(message, ResultMessage):
-                set_result_message_attributes(root_span, message, prompt_index)
+                set_result_message_attributes(root_span, message)
             elif isinstance(message, AssistantMessage):
                 set_assistant_message_attributes(tracer, root_ctx, message)
             elif isinstance(message, UserMessage):
@@ -96,29 +94,33 @@ def query_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
         root_span = tracer.start_span(QUERY_SPAN_NAME, kind=SpanKind.CLIENT)
         root_ctx = trace.set_span_in_context(root_span)
-        prompt_index = 0
 
         try:
             try:
                 with trace.use_span(root_span, end_on_exit=False):
-                    prompt_index = set_request_attributes(root_span, prompt, options)
+                    set_request_attributes(root_span, prompt, options)
             except Exception as e:
                 logger.error("Instrumentation setup failed: %s", e)
 
-            aiterator = aiter(wrapped(*args, **kwargs))
-            async for message in _dispatch_messages(tracer, root_span, root_ctx, aiterator, prompt_index):
-                yield message
-
-        except GeneratorExit:
-            raise
-        except Exception as e:
-            logger.error("netra.instrumentation.claude-agent-sdk: %s", e)
             try:
+                aiterator = aiter(wrapped(*args, **kwargs))
+            except Exception as e:
+                logger.error("netra.instrumentation.claude-agent-sdk client call failed: %s", e)
                 root_span.record_exception(e)
                 root_span.set_status(Status(StatusCode.ERROR, str(e)))
-            except Exception as span_err:
-                logger.error("Failed to record exception on span: %s", span_err)
-            raise
+                raise
+
+            try:
+                async for message in _dispatch_messages(tracer, root_span, root_ctx, aiterator):
+                    yield message
+            except GeneratorExit:
+                raise
+            except Exception as e:
+                logger.error("netra.instrumentation.claude-agent-sdk response error: %s", e)
+                root_span.record_exception(e)
+                root_span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+
         finally:
             try:
                 root_span.end()
@@ -197,29 +199,33 @@ def client_response_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
         root_span = tracer.start_span(AGENT_CONVERSATION_SPAN_NAME, kind=SpanKind.CLIENT)
         root_ctx = trace.set_span_in_context(root_span)
-        prompt_index = 0
 
         try:
             try:
                 with trace.use_span(root_span, end_on_exit=False):
-                    prompt_index = set_request_attributes(root_span, prompt, options)
+                    set_request_attributes(root_span, prompt, options)
             except Exception as e:
                 logger.error("Instrumentation setup failed: %s", e)
 
-            aiterator = aiter(wrapped(*args, **kwargs))
-            async for message in _dispatch_messages(tracer, root_span, root_ctx, aiterator, prompt_index):
-                yield message
-
-        except GeneratorExit:
-            raise
-        except Exception as e:
-            logger.error("netra.instrumentation.claude-agent-sdk: %s", e)
             try:
+                aiterator = aiter(wrapped(*args, **kwargs))
+            except Exception as e:
+                logger.error("netra.instrumentation.claude-agent-sdk client call failed: %s", e)
                 root_span.record_exception(e)
                 root_span.set_status(Status(StatusCode.ERROR, str(e)))
-            except Exception as span_err:
-                logger.error("Failed to record exception on span: %s", span_err)
-            raise
+                raise
+
+            try:
+                async for message in _dispatch_messages(tracer, root_span, root_ctx, aiterator):
+                    yield message
+            except GeneratorExit:
+                raise
+            except Exception as e:
+                logger.error("netra.instrumentation.claude-agent-sdk response error: %s", e)
+                root_span.record_exception(e)
+                root_span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+
         finally:
             try:
                 root_span.end()
