@@ -105,11 +105,25 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         """
         Processes the start of a span.
 
+        A span is considered a child (non-root) if **either** the
+        ``parent_context`` carries a valid span **or** the span object
+        itself records a valid ``parent_span_id``.  This two-pronged check
+        is necessary because some instrumentations (e.g. HTTPX, OpenAI)
+        create child spans in a context where the active span has already
+        been detached, yet the span still carries the correct parent link
+        internally.
+
         Args:
             span: The span that is being started.
             parent_context: The parent context of the span.
         """
         parent_span_id = self._resolve_parent_span_id(parent_context)
+
+        # Also check the span's own parent link — some instrumentations
+        # set the parent on the span directly without propagating it
+        # through the active context.
+        if parent_span_id is None or parent_span_id == INVALID_SPAN_ID:
+            parent_span_id = self._get_parent_span_id_from_span(span)
 
         if parent_span_id is not None and parent_span_id != INVALID_SPAN_ID:
             # This is a child span – inherit blocked status from parent.
@@ -157,6 +171,30 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         if sc is None:
             return None
         return cast(Optional[int], sc.span_id)
+
+    @staticmethod
+    def _get_parent_span_id_from_span(span: Span) -> Optional[int]:
+        """
+        Extract the parent span ID directly from the span's internal state.
+
+        The OTel SDK ``Span`` object stores the parent ``SpanContext`` which
+        carries the parent's ``span_id``.  This is the authoritative parent
+        link and is set even when the active-context-based ``parent_context``
+        passed to ``on_start`` has no current span.
+
+        Args:
+            span: The span to extract the parent span ID from.
+
+        Returns:
+            The parent ``span_id`` or ``None``.
+        """
+        parent = getattr(span, "parent", None)
+        if parent is None:
+            return None
+        parent_id = getattr(parent, "span_id", None)
+        if parent_id is None or parent_id == INVALID_SPAN_ID:
+            return None
+        return cast(Optional[int], parent_id)
 
     @staticmethod
     def _get_span_id(span: object) -> Optional[int]:

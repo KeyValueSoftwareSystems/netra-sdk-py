@@ -5,7 +5,16 @@ This module centralizes common helpers that can be reused across the codebase.
 
 from __future__ import annotations
 
-from typing import Any
+import logging
+from typing import AbstractSet, Any, Optional, Set
+
+from netra.instrumentation.instruments import (
+    DEFAULT_INSTRUMENTS_FOR_ROOT,
+    InstrumentSet,
+    NetraInstruments,
+)
+
+logger = logging.getLogger(__name__)
 
 
 def truncate_string(value: str, max_len: int) -> str:
@@ -78,3 +87,61 @@ def process_content_for_max_len(content: Any, max_len: int) -> Any:
         return content
     except Exception:
         return content
+
+
+def resolve_root_instruments(
+    root_instruments: Optional[AbstractSet[NetraInstruments]],
+    block_instruments: Optional[AbstractSet[NetraInstruments]],
+) -> Optional[Set[str]]:
+    """Resolve the effective root instrument allow-list for the
+    ``RootInstrumentFilterProcessor``.
+
+    ``root_instruments`` is resolved independently of the non-root
+    ``instruments`` set.  ``block_instruments`` is subtracted from the
+    resolved root set.
+
+    Args:
+        root_instruments: User-supplied root instrument set.  ``None`` falls
+            back to ``DEFAULT_INSTRUMENTS_FOR_ROOT``.  A set containing
+            ``InstrumentSet.ALL`` enables all root instruments.
+        block_instruments: Instruments to block.  ``None`` means no
+            instruments are blocked.  Subtracted from the resolved root
+            set.  A set containing ``InstrumentSet.ALL`` blocks everything.
+
+    Returns:
+        A set of instrumentation-name strings to pass to the
+        ``RootInstrumentFilterProcessor``, or ``None`` when no filtering
+        should be applied (every instrumentation may create root spans).
+    """
+    all_sentinel = InstrumentSet.ALL
+    root_has_all = root_instruments is not None and all_sentinel in root_instruments
+    block_has_all = block_instruments is not None and all_sentinel in block_instruments
+
+    if block_has_all:
+        if root_has_all:
+            logger.error(
+                "root_instruments=ALL is contradicted by "
+                "block_instruments=ALL; all root instrumentation is disabled."
+            )
+        else:
+            logger.warning("block_instruments contains ALL; all instrumentation will be disabled.")
+
+    all_instrument_values: Set[str] = {m.value for m in NetraInstruments if m is not all_sentinel}
+
+    blocked_root_values: Set[str] = set()
+    if block_has_all:
+        blocked_root_values = all_instrument_values.copy()
+    elif block_instruments:
+        blocked_root_values = {m.value for m in block_instruments if m is not all_sentinel}
+
+    resolved_root: Optional[Set[str]] = None
+    if root_has_all:
+        if blocked_root_values:
+            resolved_root = all_instrument_values - blocked_root_values
+        else:
+            resolved_root = None
+    else:
+        effective_root = root_instruments if root_instruments is not None else DEFAULT_INSTRUMENTS_FOR_ROOT
+        resolved_root = {m.value for m in effective_root if m is not all_sentinel} - blocked_root_values
+
+    return resolved_root
