@@ -227,7 +227,7 @@ def validate_run_inputs(
     name: str,
     data: Any,
     task: Callable[[Any], Any],
-) -> bool:
+) -> None:
     """
     Validate required inputs for run_test_suite.
 
@@ -236,19 +236,15 @@ def validate_run_inputs(
         data: The dataset to be used for the test suite.
         task: The task to be executed for each item in the dataset.
 
-    Returns:
-        bool: True if all inputs are valid, False otherwise.
+    Raises:
+        ValueError: If any required input is missing or invalid.
     """
     if not name:
-        logger.error("netra.evaluation: run name is required")
-        return False
+        raise ValueError("netra.evaluation: run name is required")
     if not data:
-        logger.error("netra.evaluation: data is required")
-        return False
+        raise ValueError("netra.evaluation: data is required")
     if task is None:
-        logger.error("netra.evaluation: task function is required")
-        return False
-    return True
+        raise ValueError("netra.evaluation: task function is required")
 
 
 def extract_dataset_id(items: List[Any]) -> Optional[str]:  # noqa: E501

@@ -224,8 +224,7 @@ class Evaluation:
         Returns:
             A dictionary containing the run id and the results of the test suite.
         """
-        if not validate_run_inputs(name, data, task):
-            return None
+        validate_run_inputs(name, data, task)
 
         items = list(data.items)
         dataset_id = extract_dataset_id(items)
