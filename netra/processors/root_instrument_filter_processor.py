@@ -1,5 +1,7 @@
 import logging
 import threading
+import time
+from collections import OrderedDict
 from typing import Optional, Set, cast
 
 from opentelemetry import context as otel_context
@@ -9,41 +11,41 @@ from opentelemetry.trace import INVALID_SPAN_ID
 
 logger = logging.getLogger(__name__)
 
-# Attribute written on blocked spans so that the FilteringSpanExporter drops them.
 _LOCAL_BLOCKED_ATTR = "netra.local_blocked"
-
-# Scope-name prefixes that identify auto-instrumentation libraries.
 _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
+
+_MAX_BLOCKED_TRACES = 4096
+_BLOCKED_TRACE_TTL_SECONDS = 600.0
 
 
 class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
-    """Blocks root spans (and their entire subtree) from instrumentations not in
-    the allowed *root_instruments* set.
+    """Block root spans (and their entire subtree) whose instrumentation is
+    not in the allowed *root_instruments* set.
 
-    The set stores the **instrumentation name values** (e.g. ``"openai"``,
-    ``"adk"``, ``"google_genai"``) that are permitted to create root-level spans.
-    Any root span whose instrumentation name is *not* in this set is marked with
-    ``netra.local_blocked = True`` and its ``span_id`` is recorded.  Child spans
-    whose parent ``span_id`` appears in the blocked registry inherit the block.
+    When an auto-instrumentation root span (e.g. FastAPI, Flask) is not
+    permitted, this processor:
+
+    1. Marks it with ``netra.local_blocked = True``.
+    2. Records its **trace_id** in a bounded, TTL-evicted registry.
+    3. Marks every subsequent child span that shares the same trace ID.
+
+    Tracking by trace ID (rather than individual span IDs) guarantees that
+    the block propagates correctly even in async frameworks where a parent
+    span may end before all of its children have started.
+
+    Spans created directly through netra decorators or ``Netra.start_span``
+    are never filtered — only spans from recognised auto-instrumentation
+    libraries (scope prefix ``opentelemetry.instrumentation.*`` or
+    ``netra.instrumentation.*``) are subject to the allow-list.
 
     Args:
-        allowed_root_instrument_names: Set of instrumentation-name strings
-            (matching ``InstrumentSet`` member values) that are allowed to
-            produce root spans.
+        allowed_root_instrument_names: Instrumentation-name strings
+            (e.g. ``"openai"``, ``"fastapi"``) that may produce root spans.
     """
 
     def __init__(self, allowed_root_instrument_names: Set[str]) -> None:
-        """
-        Initialize the processor with a set of allowed root instrument names.
-
-        Args:
-            allowed_root_instrument_names: Set of instrumentation-name strings
-                (matching ``InstrumentSet`` member values) that are allowed to
-                produce root spans.
-        """
         self._allowed: frozenset[str] = frozenset(allowed_root_instrument_names)
-        # span_id -> True for every span that belongs to a blocked root tree.
-        self._blocked_span_ids: dict[int, bool] = {}
+        self._blocked_trace_ids: OrderedDict[int, float] = OrderedDict()
         self._lock = threading.Lock()
 
     def on_start(
@@ -51,8 +53,8 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         span: Span,
         parent_context: Optional[otel_context.Context] = None,
     ) -> None:
-        """
-        Called when a span is started.
+        """Evaluate whether *span* belongs to a blocked trace and mark it
+        accordingly.
 
         Args:
             span: The span that is being started.
@@ -64,103 +66,114 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
             logger.debug("RootInstrumentFilterProcessor.on_start failed", exc_info=True)
 
     def on_end(self, span: ReadableSpan) -> None:
-        """
-        Called when a span is ended.
+        """Prune expired entries from the blocked-trace registry.
+
+        The registry is **not** cleared on a per-span basis — entries
+        survive until they expire via TTL so that late-starting children
+        still see their trace as blocked.
 
         Args:
             span: The span that is being ended.
         """
         try:
-            span_id = self._get_span_id(span)
-            if span_id is not None:
-                with self._lock:
-                    self._blocked_span_ids.pop(span_id, None)
+            self._evict_stale_traces()
         except Exception:
             pass
 
     def shutdown(self) -> None:
-        """
-        Called when the processor is shut down.
-        """
+        """Release all resources held by the processor."""
         with self._lock:
-            self._blocked_span_ids.clear()
+            self._blocked_trace_ids.clear()
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
-        """
-        Called when the processor is forced to flush.
+        """No-op — this processor does not buffer data.
 
         Args:
-            timeout_millis: The timeout in milliseconds.
+            timeout_millis: Ignored.
 
         Returns:
-            True if the flush was successful, False otherwise.
+            Always ``True``.
         """
         return True
+
+    # ------------------------------------------------------------------
+    # Core logic
+    # ------------------------------------------------------------------
 
     def _process_span_start(
         self,
         span: Span,
         parent_context: Optional[otel_context.Context],
     ) -> None:
-        """
-        Processes the start of a span.
+        """Decide whether *span* should be blocked.
 
-        A span is considered a child (non-root) if **either** the
-        ``parent_context`` carries a valid span **or** the span object
-        itself records a valid ``parent_span_id``.  This two-pronged check
-        is necessary because some instrumentations (e.g. HTTPX, OpenAI)
-        create child spans in a context where the active span has already
-        been detached, yet the span still carries the correct parent link
-        internally.
+        A span is classified as a **child** (non-root) when either the
+        *parent_context* carries a valid span or the span object itself
+        records a valid ``parent_span_id``.  The two-pronged check handles
+        instrumentations (e.g. HTTPX, OpenAI) that set the parent link on
+        the span directly without propagating through the active context.
 
         Args:
             span: The span that is being started.
             parent_context: The parent context of the span.
         """
         parent_span_id = self._resolve_parent_span_id(parent_context)
-
-        # Also check the span's own parent link — some instrumentations
-        # set the parent on the span directly without propagating it
-        # through the active context.
         if parent_span_id is None or parent_span_id == INVALID_SPAN_ID:
             parent_span_id = self._get_parent_span_id_from_span(span)
 
-        if parent_span_id is not None and parent_span_id != INVALID_SPAN_ID:
-            # This is a child span – inherit blocked status from parent.
-            with self._lock:
-                if parent_span_id in self._blocked_span_ids:
-                    own_id = self._get_span_id(span)
-                    if own_id is not None:
-                        self._blocked_span_ids[own_id] = True
-                    self._mark_blocked(span)
-            return
+        is_child = parent_span_id is not None and parent_span_id != INVALID_SPAN_ID
 
-        # Root span – only apply the allow-list to auto-instrumentation spans.
-        # Spans created directly through netra (decorators / Netra.start_span)
-        # use arbitrary tracer names and must never be blocked.
+        if is_child:
+            self._maybe_block_child(span)
+        else:
+            self._maybe_block_root(span)
+
+    def _maybe_block_child(self, span: Span) -> None:
+        """Block *span* if its trace is in the blocked registry.
+
+        Args:
+            span: A child (non-root) span that is being started.
+        """
+        trace_id = self._get_trace_id(span)
+        if trace_id is None:
+            return
+        with self._lock:
+            if trace_id in self._blocked_trace_ids:
+                self._mark_blocked(span)
+
+    def _maybe_block_root(self, span: Span) -> None:
+        """Block *span* if it is an auto-instrumentation root whose name
+        is not in the allowed set.
+
+        Args:
+            span: A root span that is being started.
+        """
         if not self._is_from_instrumentation_library(span):
             return
 
         instr_name = self._extract_instrumentation_name(span)
-        if instr_name is not None and instr_name not in self._allowed:
-            own_id = self._get_span_id(span)
-            if own_id is not None:
-                with self._lock:
-                    self._blocked_span_ids[own_id] = True
-            self._mark_blocked(span)
+        if instr_name is None or instr_name in self._allowed:
+            return
+
+        trace_id = self._get_trace_id(span)
+        if trace_id is not None:
+            with self._lock:
+                self._blocked_trace_ids[trace_id] = time.monotonic()
+                self._blocked_trace_ids.move_to_end(trace_id)
+                self._evict_overflow()
+        self._mark_blocked(span)
 
     @staticmethod
     def _resolve_parent_span_id(
         parent_context: Optional[otel_context.Context],
     ) -> Optional[int]:
-        """
-        Return the parent span's ``span_id`` from the supplied context, or ``None``.
+        """Return the parent span's ``span_id`` from *parent_context*.
 
         Args:
-            parent_context: The parent context of the span.
+            parent_context: The context passed to ``on_start``.
 
         Returns:
-            The parent span's ``span_id`` or ``None``.
+            The parent ``span_id``, or ``None`` if unavailable.
         """
         if parent_context is None:
             return None
@@ -174,19 +187,17 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
 
     @staticmethod
     def _get_parent_span_id_from_span(span: Span) -> Optional[int]:
-        """
-        Extract the parent span ID directly from the span's internal state.
+        """Extract the parent ``span_id`` from the span's internal state.
 
-        The OTel SDK ``Span`` object stores the parent ``SpanContext`` which
-        carries the parent's ``span_id``.  This is the authoritative parent
-        link and is set even when the active-context-based ``parent_context``
-        passed to ``on_start`` has no current span.
+        The OTel SDK ``Span`` stores the parent ``SpanContext`` directly,
+        which is authoritative even when the active-context-based
+        *parent_context* has no current span.
 
         Args:
-            span: The span to extract the parent span ID from.
+            span: The span to inspect.
 
         Returns:
-            The parent ``span_id`` or ``None``.
+            The parent ``span_id``, or ``None`` if unavailable.
         """
         parent = getattr(span, "parent", None)
         if parent is None:
@@ -197,48 +208,35 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         return cast(Optional[int], parent_id)
 
     @staticmethod
-    def _get_span_id(span: object) -> Optional[int]:
-        """
-        Get the span ID from the span.
+    def _get_trace_id(span: object) -> Optional[int]:
+        """Return the ``trace_id`` carried by *span*.
 
         Args:
-            span: The span to get the ID from.
+            span: Any span-like object with a ``context`` or
+                ``get_span_context`` accessor.
 
         Returns:
-            The span ID or None.
+            The integer trace ID, or ``None``.
         """
         ctx = getattr(span, "context", None) or getattr(span, "get_span_context", lambda: None)()
         if ctx is None:
             return None
-        return cast(Optional[int], getattr(ctx, "span_id", None))
-
-    @staticmethod
-    def _mark_blocked(span: Span) -> None:
-        """
-        Mark the span as blocked.
-
-        Args:
-            span: The span to mark as blocked.
-        """
-        try:
-            span.set_attribute(_LOCAL_BLOCKED_ATTR, True)
-        except Exception:
-            pass
+        return cast(Optional[int], getattr(ctx, "trace_id", None))
 
     @staticmethod
     def _is_from_instrumentation_library(span: Span) -> bool:
-        """Return ``True`` if the span originates from a known auto-instrumentation library.
+        """Return ``True`` when *span* originates from a known
+        auto-instrumentation library.
 
-        Spans created by netra decorators or ``Netra.start_span`` use arbitrary
-        tracer names that do not match the instrumentation naming convention and
-        will return ``False``.
+        Spans created by netra decorators or ``Netra.start_span`` use
+        arbitrary tracer names that do not match the instrumentation
+        naming convention and will return ``False``.
 
         Args:
             span: The span to check.
 
         Returns:
-            ``True`` when the span's instrumentation scope starts with a known
-            instrumentation prefix, ``False`` otherwise.
+            Whether the span's scope starts with a recognised prefix.
         """
         scope = getattr(span, "instrumentation_scope", None)
         if scope is None:
@@ -250,16 +248,16 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
 
     @staticmethod
     def _extract_instrumentation_name(span: Span) -> Optional[str]:
-        """
-        Extract the short instrumentation name from the span's scope.
+        """Extract the short instrumentation name from *span*'s scope.
 
-        Mirrors the logic in ``InstrumentationSpanProcessor._extract_instrumentation_name``.
+        For a scope named ``netra.instrumentation.fastapi`` this returns
+        ``"fastapi"``.
 
         Args:
-            span: The span to extract the instrumentation name from.
+            span: The span to inspect.
 
         Returns:
-            The instrumentation name or None.
+            The short name, or ``None`` if extraction fails.
         """
         scope = getattr(span, "instrumentation_scope", None)
         if scope is None:
@@ -272,3 +270,33 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
                 base = name.rsplit(".", 1)[-1].strip()
                 return base if base else name
         return name
+
+    @staticmethod
+    def _mark_blocked(span: Span) -> None:
+        """Set the ``netra.local_blocked`` attribute on *span*.
+
+        Args:
+            span: The span to mark.
+        """
+        try:
+            span.set_attribute(_LOCAL_BLOCKED_ATTR, True)
+        except Exception:
+            pass
+
+    def _evict_stale_traces(self) -> None:
+        """Remove entries older than ``_BLOCKED_TRACE_TTL_SECONDS``."""
+        cutoff = time.monotonic() - _BLOCKED_TRACE_TTL_SECONDS
+        with self._lock:
+            while self._blocked_trace_ids:
+                _, ts = next(iter(self._blocked_trace_ids.items()))
+                if ts > cutoff:
+                    break
+                self._blocked_trace_ids.popitem(last=False)
+
+    def _evict_overflow(self) -> None:
+        """Trim the registry to ``_MAX_BLOCKED_TRACES``.
+
+        Must be called while holding ``self._lock``.
+        """
+        while len(self._blocked_trace_ids) > _MAX_BLOCKED_TRACES:
+            self._blocked_trace_ids.popitem(last=False)
