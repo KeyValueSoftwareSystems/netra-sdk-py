@@ -194,23 +194,12 @@ class InstrumentSet(Enum):
 NetraInstruments = InstrumentSet
 
 
-# ---------------------------------------------------------------------------
 # Default instrument sets
-# ---------------------------------------------------------------------------
-# Two independent sets control different concerns:
-#
-#   DEFAULT_INSTRUMENTS          – which instrumentations are **installed**
-#                                  (i.e. whether spans are created at all).
-#   DEFAULT_INSTRUMENTS_FOR_ROOT – which instrumentations are **allowed to
-#                                  produce root-level spans**.  A blocked
-#                                  root span and its entire subtree are
-#                                  discarded by RootInstrumentFilterProcessor.
-#
-# IMPORTANT: These sets are intentionally independent.  Removing an
+
+# These sets are intentionally independent.  Removing an
 # instrument from the root allow-list must NOT prevent it from being
 # installed — it should still create spans, but those spans will be
 # filtered when they appear at the root of a trace.
-# ---------------------------------------------------------------------------
 
 # Full set of instrumentations installed by default.
 DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
@@ -263,9 +252,6 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
 )
 
 # Subset of DEFAULT_INSTRUMENTS allowed to produce root-level spans.
-# Instrumentations present in DEFAULT_INSTRUMENTS but absent here will
-# still create spans — however, any trace whose root span comes from an
-# excluded instrumentation is discarded together with its entire subtree.
 DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
     {
         InstrumentSet.ANTHROPIC,
@@ -299,91 +285,3 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.CLAUDE_AGENT_SDK,
     }
 )
-
-
-#####################################################################################
-"""
-NetraInstruments follows the given structure. Refer this for usage within Netra SDK:
-
-class InstrumentSet(Enum):
-    ADK = "google_adk"
-    AIOHTTP = "aiohttp"
-    AIO_PIKA = "aio_pika"
-    AIOKAFKA = "aiokafka"
-    AIOPG = "aiopg"
-    ALEPHALPHA = "alephalpha"
-    ANTHROPIC = "anthropic"
-    ASYNCCLICK = "asyncclick"
-    ASYNCIO = "asyncio"
-    ASYNCPG = "asyncpg"
-    AWS_LAMBDA = "aws_lambda"
-    BEDROCK = "bedrock"
-    BOTO = "boto"
-    BOTO3SQS = "boto3sqs"
-    BOTOCORE = "botocore"
-    CARTESIA = "cartesia"
-    CASSANDRA = "cassandra"
-    CELERY = "celery"
-    CHROMA = "chroma"
-    CLICK = "click"
-    CLAUDE_AGENT_SDK = "claude_agent_sdk"
-    COHEREAI = "cohere_ai"
-    CONFLUENT_KAFKA = "confluent_kafka"
-    CREW = "crew"
-    DEEPGRAM = "deepgram"
-    DBAPI = "dbapi"
-    DJANGO = "django"
-    ELASTICSEARCH = "elasticsearch"
-    ELEVENLABS = "elevenlabs"
-    FALCON = "falcon"
-    FASTAPI = "fastapi"
-    FLASK = "flask"
-    GOOGLE_GENERATIVEAI = "google_genai"
-    GROQ = "groq"
-    GRPC = "grpc"
-    HAYSTACK = "haystack"
-    HTTPX = "httpx"
-    JINJA2 = "jinja2"
-    KAFKA_PYTHON = "kafka_python"
-    LANCEDB = "lancedb"
-    LANGCHAIN = "langchain"
-    LITELLM = "litellm"
-    LLAMA_INDEX = "llama_index"
-    LOGGING = "logging"
-    MARQO = "marqo"
-    MCP = "mcp"
-    MILVUS = "milvus"
-    MISTRALAI = "mistral_ai"
-    MYSQL = "mysql"
-    MYSQLCLIENT = "mysqlclient"
-    OLLAMA = "ollama"
-    OPENAI = "openai"
-    PIKA = "pika"
-    PINECONE = "pinecone"
-    PSYCOPG = "psycopg"
-    PSYCOPG2 = "psycopg2"
-    PYMEMCACHE = "pymemcache"
-    PYMONGO = "pymongo"
-    PYMSSQL = "pymssql"
-    PYMYSQL = "pymysql"
-    QDRANTDB = "qdrant_db"
-    REDIS = "redis"
-    REMOULADE = "remoulade"
-    REPLICATE = "replicate"
-    REQUESTS = "requests"
-    SAGEMAKER = "sagemaker"
-    SQLALCHEMY = "sqlalchemy"
-    SQLITE3 = "sqlite3"
-    STARLETTE = "starlette"
-    SYSTEM_METRICS = "system_metrics"
-    THREADING = "threading"
-    TOGETHER = "together"
-    TORNADO = "tornado"
-    TORTOISEORM = "tortoiseorm"
-    TRANSFORMERS = "transformers"
-    URLLIB = "urllib"
-    URLLIB3 = "urllib3"
-    VERTEXAI = "vertexai"
-    WATSONX = "watsonx"
-    WEAVIATEDB = "weaviate_db"
-"""
