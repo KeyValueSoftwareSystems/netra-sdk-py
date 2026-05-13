@@ -194,9 +194,64 @@ class InstrumentSet(Enum):
 NetraInstruments = InstrumentSet
 
 
-# Curated default instrument set used for root_instruments when the user does
-# not pass an explicit value. Covers core LLM/AI providers and frameworks.
-# Exposed as a frozenset so it is safe to use as a default argument value.
+# Default instrument sets
+
+# These sets are intentionally independent.  Removing an
+# instrument from the root allow-list must NOT prevent it from being
+# installed — it should still create spans, but those spans will be
+# filtered when they appear at the root of a trace.
+
+# Full set of instrumentations installed by default.
+DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
+    {
+        # LLM / AI providers and agent frameworks
+        InstrumentSet.ANTHROPIC,
+        InstrumentSet.CARTESIA,
+        InstrumentSet.COHEREAI,
+        InstrumentSet.CREW,
+        InstrumentSet.DEEPGRAM,
+        InstrumentSet.ELEVENLABS,
+        InstrumentSet.GOOGLE_GENERATIVEAI,
+        InstrumentSet.ADK,
+        InstrumentSet.AGNO,
+        InstrumentSet.GROQ,
+        InstrumentSet.LANGCHAIN,
+        InstrumentSet.LITELLM,
+        InstrumentSet.CEREBRAS,
+        InstrumentSet.MISTRALAI,
+        InstrumentSet.OPENAI,
+        InstrumentSet.OLLAMA,
+        InstrumentSet.VERTEXAI,
+        InstrumentSet.LLAMA_INDEX,
+        InstrumentSet.PYDANTIC_AI,
+        InstrumentSet.DSPY,
+        InstrumentSet.HAYSTACK,
+        InstrumentSet.BEDROCK,
+        InstrumentSet.TOGETHER,
+        InstrumentSet.REPLICATE,
+        InstrumentSet.ALEPHALPHA,
+        InstrumentSet.WATSONX,
+        InstrumentSet.MCP,
+        InstrumentSet.CLAUDE_AGENT_SDK,
+        # Web frameworks
+        InstrumentSet.FASTAPI,
+        # Vector DBs
+        InstrumentSet.PINECONE,
+        InstrumentSet.CHROMA,
+        InstrumentSet.WEAVIATEDB,
+        InstrumentSet.QDRANTDB,
+        InstrumentSet.MILVUS,
+        InstrumentSet.LANCEDB,
+        InstrumentSet.MARQO,
+        # HTTP clients and database libraries
+        InstrumentSet.HTTPX,
+        InstrumentSet.REQUESTS,
+        InstrumentSet.PYMYSQL,
+        InstrumentSet.SQLALCHEMY,
+    }
+)
+
+# Subset of DEFAULT_INSTRUMENTS allowed to produce root-level spans.
 DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
     {
         InstrumentSet.ANTHROPIC,
@@ -230,111 +285,3 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.CLAUDE_AGENT_SDK,
     }
 )
-
-# Broader default instrument set used for the ``instruments`` parameter when
-# the user does not pass an explicit value. Includes the root defaults plus
-# common vector DBs, HTTP client/server, and database ORM/client libraries.
-# Exposed as a frozenset so it is safe to use as a default argument value.
-DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = DEFAULT_INSTRUMENTS_FOR_ROOT | frozenset(
-    {
-        InstrumentSet.PINECONE,
-        InstrumentSet.CHROMA,
-        InstrumentSet.WEAVIATEDB,
-        InstrumentSet.QDRANTDB,
-        InstrumentSet.MILVUS,
-        InstrumentSet.LANCEDB,
-        InstrumentSet.MARQO,
-        InstrumentSet.PYMYSQL,
-        InstrumentSet.REQUESTS,
-        InstrumentSet.SQLALCHEMY,
-        InstrumentSet.HTTPX,
-    }
-)
-
-
-#####################################################################################
-"""
-NetraInstruments follows the given structure. Refer this for usage within Netra SDK:
-
-class InstrumentSet(Enum):
-    ADK = "google_adk"
-    AIOHTTP = "aiohttp"
-    AIO_PIKA = "aio_pika"
-    AIOKAFKA = "aiokafka"
-    AIOPG = "aiopg"
-    ALEPHALPHA = "alephalpha"
-    ANTHROPIC = "anthropic"
-    ASYNCCLICK = "asyncclick"
-    ASYNCIO = "asyncio"
-    ASYNCPG = "asyncpg"
-    AWS_LAMBDA = "aws_lambda"
-    BEDROCK = "bedrock"
-    BOTO = "boto"
-    BOTO3SQS = "boto3sqs"
-    BOTOCORE = "botocore"
-    CARTESIA = "cartesia"
-    CASSANDRA = "cassandra"
-    CELERY = "celery"
-    CHROMA = "chroma"
-    CLICK = "click"
-    CLAUDE_AGENT_SDK = "claude_agent_sdk"
-    COHEREAI = "cohere_ai"
-    CONFLUENT_KAFKA = "confluent_kafka"
-    CREW = "crew"
-    DEEPGRAM = "deepgram"
-    DBAPI = "dbapi"
-    DJANGO = "django"
-    ELASTICSEARCH = "elasticsearch"
-    ELEVENLABS = "elevenlabs"
-    FALCON = "falcon"
-    FASTAPI = "fastapi"
-    FLASK = "flask"
-    GOOGLE_GENERATIVEAI = "google_genai"
-    GROQ = "groq"
-    GRPC = "grpc"
-    HAYSTACK = "haystack"
-    HTTPX = "httpx"
-    JINJA2 = "jinja2"
-    KAFKA_PYTHON = "kafka_python"
-    LANCEDB = "lancedb"
-    LANGCHAIN = "langchain"
-    LITELLM = "litellm"
-    LLAMA_INDEX = "llama_index"
-    LOGGING = "logging"
-    MARQO = "marqo"
-    MCP = "mcp"
-    MILVUS = "milvus"
-    MISTRALAI = "mistral_ai"
-    MYSQL = "mysql"
-    MYSQLCLIENT = "mysqlclient"
-    OLLAMA = "ollama"
-    OPENAI = "openai"
-    PIKA = "pika"
-    PINECONE = "pinecone"
-    PSYCOPG = "psycopg"
-    PSYCOPG2 = "psycopg2"
-    PYMEMCACHE = "pymemcache"
-    PYMONGO = "pymongo"
-    PYMSSQL = "pymssql"
-    PYMYSQL = "pymysql"
-    QDRANTDB = "qdrant_db"
-    REDIS = "redis"
-    REMOULADE = "remoulade"
-    REPLICATE = "replicate"
-    REQUESTS = "requests"
-    SAGEMAKER = "sagemaker"
-    SQLALCHEMY = "sqlalchemy"
-    SQLITE3 = "sqlite3"
-    STARLETTE = "starlette"
-    SYSTEM_METRICS = "system_metrics"
-    THREADING = "threading"
-    TOGETHER = "together"
-    TORNADO = "tornado"
-    TORTOISEORM = "tortoiseorm"
-    TRANSFORMERS = "transformers"
-    URLLIB = "urllib"
-    URLLIB3 = "urllib3"
-    VERTEXAI = "vertexai"
-    WATSONX = "watsonx"
-    WEAVIATEDB = "weaviate_db"
-"""
