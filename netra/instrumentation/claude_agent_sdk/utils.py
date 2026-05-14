@@ -186,10 +186,11 @@ def _start_tool_call_span(
         block (ToolUseBlock): The tool use block describing the call (id, name, input).
         message (AssistantMessage): The assistant message that contains this block;
                                     used to copy model and session metadata onto the span.
-        first_token_time (Optional[float]): Wall-clock time when the containing AssistantMessage
-                                            was received. Used to record TTFT. Defaults to now.
-        start_time (Optional[float]): Wall-clock time when the dispatch loop started.
-                                      Used as reference for TIME_TO_FIRST_TOKEN.
+        first_token_time (Optional[float]): Time when the containing AssistantMessage was
+                                            received. Used to record TIME_TO_FIRST_TOKEN.
+                                            Defaults to now.
+        start_time (Optional[float]): Time when the dispatch loop started. Used as
+                                      reference for TIME_TO_FIRST_TOKEN.
 
     Returns:
         None
@@ -385,11 +386,10 @@ def set_assistant_message_attributes(
         parent_ctx (Context): The root span context; used as fallback parent when no
                               subagent tool call context is available.
         message (AssistantMessage): The assistant message containing one or more content blocks.
-        first_token_time (Optional[float]): Wall-clock time (seconds since epoch) when this
-                                            message was received. Defaults to ``time.time()``.
-        start_time (Optional[float]): Wall-clock time (seconds since epoch) when the dispatch
-                                      loop started. Used as the reference for TTFT so the value
-                                      is always positive (``first_token_time - start_time``).
+        first_token_time (Optional[float]): Time (seconds since epoch) when this message was
+                                            received. Defaults to ``time.time()``.
+        start_time (Optional[float]): Time (seconds since epoch) when the dispatch loop started.
+                                      Used as the reference for TTFT.
 
     Returns:
         None
