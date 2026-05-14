@@ -5,6 +5,13 @@ All notable changes to this project will be documented in this file.
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
 
+## [0.1.84] - 2026-05-14
+
+- Update agno instrumentation to capture token usage for streaming llm spans
+- Cleanup metadata for claude agent sdk spans
+- Add time_to_first_token and relative_time_to_first_token for claude agent sdk
+
+
 ## [0.1.83] - 2026-05-04
 
 - Implement custom instrumentation for Agno.
