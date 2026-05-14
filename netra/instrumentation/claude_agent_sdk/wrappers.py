@@ -1,4 +1,5 @@
 import logging
+import time
 from typing import Any, AsyncIterator, Callable, Tuple
 
 from claude_agent_sdk import AssistantMessage, ResultMessage, SystemMessage, UserMessage
@@ -14,11 +15,14 @@ from netra.instrumentation.claude_agent_sdk.utils import (
     set_system_message_attributes,
     set_user_message_attributes,
 )
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
 
 QUERY_SPAN_NAME = "claude-agent.query"
 AGENT_CONVERSATION_SPAN_NAME = "claude-agent.conversation"
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 
 async def _dispatch_messages(
@@ -39,6 +43,8 @@ async def _dispatch_messages(
     Returns:
         AsyncIterator: Yields each SDK message after processing its span attributes.
     """
+    first_assistant_seen = False
+    start_time = time.time()
     while True:
         try:
             message = await anext(aiterator)
@@ -51,7 +57,12 @@ async def _dispatch_messages(
             elif isinstance(message, ResultMessage):
                 set_result_message_attributes(root_span, message)
             elif isinstance(message, AssistantMessage):
-                set_assistant_message_attributes(tracer, root_ctx, message)
+                first_token_time = time.time()
+                if not first_assistant_seen:
+                    first_assistant_seen = True
+                    record_span_timing(root_span, TIME_TO_FIRST_TOKEN, first_token_time, reference_time=start_time)
+                    record_span_timing(root_span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
+                set_assistant_message_attributes(tracer, root_ctx, message, first_token_time, start_time)
             elif isinstance(message, UserMessage):
                 set_user_message_attributes(tracer, root_ctx, message)
         except Exception as e:
