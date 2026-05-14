@@ -1,7 +1,8 @@
 import json
 import logging
 import threading
-from typing import Any
+import time
+from typing import Any, Optional
 
 from claude_agent_sdk import (
     AssistantMessage,
@@ -21,8 +22,12 @@ from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 from opentelemetry.trace.status import Status
 
 from netra.config import Config
+from netra.instrumentation.utils import record_span_timing
 
 logger = logging.getLogger(__name__)
+
+TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
+RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
 # Registry correlating ToolUseBlocks with their open spans and ToolResultBlocks.
 # Each entry holds the open span (ended when the result arrives) and the span context
@@ -164,6 +169,8 @@ def _start_tool_call_span(
     parent_ctx: Context,
     block: ToolUseBlock,
     message: AssistantMessage,
+    first_token_time: Optional[float] = None,
+    start_time: Optional[float] = None,
 ) -> None:
     """
     Open a child span for a ToolUseBlock and store it in the registry for later correlation.
@@ -179,6 +186,10 @@ def _start_tool_call_span(
         block (ToolUseBlock): The tool use block describing the call (id, name, input).
         message (AssistantMessage): The assistant message that contains this block;
                                     used to copy model and session metadata onto the span.
+        first_token_time (Optional[float]): Wall-clock time when the containing AssistantMessage
+                                            was received. Used to record TTFT. Defaults to now.
+        start_time (Optional[float]): Wall-clock time when the dispatch loop started.
+                                      Used as reference for TIME_TO_FIRST_TOKEN.
 
     Returns:
         None
@@ -199,6 +210,9 @@ def _start_tool_call_span(
                 tool_span.set_attribute(ATTR_SESSION_ID, message.session_id)
             if message.parent_tool_use_id:
                 tool_span.set_attribute(ATTR_PARENT_TOOL_USE_ID, message.parent_tool_use_id)
+            token_time = first_token_time if first_token_time is not None else time.time()
+            record_span_timing(tool_span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time)
+            record_span_timing(tool_span, RELATIVE_TIME_TO_FIRST_TOKEN, token_time, use_root_span=True)
         except Exception as e:
             logger.error(f"Cannot set tool call span attributes for tool={block.name}: {e}")
 
@@ -343,7 +357,13 @@ def set_system_message_attributes(span: Span, message: SystemMessage) -> None:
         logger.error(f"Cannot extract attributes from SystemMessage: {e}")
 
 
-def set_assistant_message_attributes(tracer: Tracer, parent_ctx: Context, message: AssistantMessage) -> None:
+def set_assistant_message_attributes(
+    tracer: Tracer,
+    parent_ctx: Context,
+    message: AssistantMessage,
+    first_token_time: Optional[float] = None,
+    start_time: Optional[float] = None,
+) -> None:
     """
     Create child spans for each content block in an AssistantMessage.
 
@@ -365,6 +385,11 @@ def set_assistant_message_attributes(tracer: Tracer, parent_ctx: Context, messag
         parent_ctx (Context): The root span context; used as fallback parent when no
                               subagent tool call context is available.
         message (AssistantMessage): The assistant message containing one or more content blocks.
+        first_token_time (Optional[float]): Wall-clock time (seconds since epoch) when this
+                                            message was received. Defaults to ``time.time()``.
+        start_time (Optional[float]): Wall-clock time (seconds since epoch) when the dispatch
+                                      loop started. Used as the reference for TTFT so the value
+                                      is always positive (``first_token_time - start_time``).
 
     Returns:
         None
@@ -377,10 +402,12 @@ def set_assistant_message_attributes(tracer: Tracer, parent_ctx: Context, messag
         if tool_entry and "ctx" in tool_entry:
             effective_ctx = tool_entry["ctx"]
 
+    token_time = first_token_time if first_token_time is not None else time.time()
+
     for block in message.content:
         try:
             if isinstance(block, ToolUseBlock):
-                _start_tool_call_span(tracer, effective_ctx, block, message)
+                _start_tool_call_span(tracer, effective_ctx, block, message, token_time, start_time)
                 continue
 
             role, content, span_name = None, None, None
@@ -411,6 +438,8 @@ def set_assistant_message_attributes(tracer: Tracer, parent_ctx: Context, messag
                         _set_usage(span, message.usage)
                     _set_output_conversation(span, role, content)
                     span.set_attribute("output", _build_message_array(role, content))
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time)
+                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, token_time, use_root_span=True)
                 except Exception as e:
                     logger.error(f"Cannot set assistant span attributes: {e}")
         except Exception as e:
