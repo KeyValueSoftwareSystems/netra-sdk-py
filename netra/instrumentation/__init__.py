@@ -25,6 +25,8 @@ _TRACELOOP_ALWAYS_BLOCKED: frozenset[Instruments] = frozenset(
         Instruments.REDIS,
         Instruments.PYMYSQL,
         Instruments.REQUESTS,
+        Instruments.URLLIB3,
+        Instruments.COHERE,
     }
 )
 
