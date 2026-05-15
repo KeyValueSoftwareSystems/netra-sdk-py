@@ -111,7 +111,8 @@ def init_instrumentations(
     if resolved is not None:
         traceloop_instruments, netra_custom_instruments = _classify(resolved)
     else:
-        traceloop_instruments, netra_custom_instruments = set(), set()
+        all_members = frozenset(m for m in InstrumentSet if m is not _ALL_SENTINEL)
+        traceloop_instruments, netra_custom_instruments = _classify(all_members)
 
     # Classify blocked instruments
     if block_all:
