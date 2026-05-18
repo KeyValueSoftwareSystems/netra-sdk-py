@@ -230,7 +230,7 @@ class SpanWrapper:
             if status is not None:
                 return status.status_code == StatusCode.ERROR
         except Exception:
-            pass
+            logger.exception("Failed to check span status on span '%s'", self.name)
         return False
 
     def set_attribute(self, key: str, value: str) -> "SpanWrapper":

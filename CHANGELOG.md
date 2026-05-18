@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.87] - 2026-05-18
+
+- Add utility to explicitly set exception on the current active span
+
 ## [0.1.86] - 2026-05-15
 
 - Modify instrument resolution in traceloop to manual transfer of instruments
@@ -264,4 +268,4 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.86]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.87]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
