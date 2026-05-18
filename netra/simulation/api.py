@@ -8,7 +8,7 @@ from typing import Any, Optional
 
 from netra.config import Config
 from netra.simulation.client import SimulationHttpClient
-from netra.simulation.models import SimulationItem
+from netra.simulation.models import FileData, SimulationItem
 from netra.simulation.task import BaseTask
 from netra.simulation.utils import (
     execute_task,
@@ -197,6 +197,7 @@ class Simulation:
         run_item_id = run_item.run_item_id
         message = run_item.message
         turn_id = run_item.turn_id
+        raw_files: list[FileData] = run_item.files
         session_id: Optional[str] = None
 
         while True:
@@ -208,7 +209,9 @@ class Simulation:
                         span_context = otel_span.get_span_context()
                         trace_id = format_trace_id(span_context.trace_id)
 
-                    response_message, task_session_id = await execute_task(task, message, session_id)
+                    response_message, task_session_id = await execute_task(
+                        task, message, session_id, raw_files=raw_files
+                    )
                     if task_session_id:
                         session_id = task_session_id
 
@@ -243,6 +246,7 @@ class Simulation:
 
                 message = response.next_user_message  # type:ignore[assignment]
                 turn_id = response.next_turn_id  # type:ignore[assignment]
+                raw_files = response.next_files
 
             except Exception as exc:
                 error_msg = str(exc)

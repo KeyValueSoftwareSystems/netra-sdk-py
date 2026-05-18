@@ -7,7 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from netra.config import Config
-from netra.simulation.models import ConversationResponse, SimulationItem
+from netra.simulation.models import ConversationResponse, FileData, SimulationItem
 
 logger = logging.getLogger(__name__)
 
@@ -148,6 +148,7 @@ class SimulationHttpClient:
                     run_item_id=msg.get("testRunItemId", ""),
                     message=msg.get("userMessage", ""),
                     turn_id=msg.get("turnId", ""),
+                    files=self._parse_files(msg.get("files")),
                 )
                 for msg in user_messages
             ]
@@ -217,6 +218,7 @@ class SimulationHttpClient:
                 next_turn_id=next_msg.get("turnId", ""),
                 next_user_message=next_msg.get("userMessage", ""),
                 next_run_item_id=next_msg.get("testRunItemId", ""),
+                next_files=self._parse_files(next_msg.get("files")),
             )
 
         except Exception as exc:
@@ -276,6 +278,41 @@ class SimulationHttpClient:
             error_msg = self._extract_error_message(response, exc)
             logger.error("%s: Failed to post run status for run '%s': %s", _LOG_PREFIX, run_id, error_msg)
             return {"success": False}
+
+    @staticmethod
+    def _parse_files(raw_files: Any) -> list[FileData]:
+        """Parse raw file entries from the backend response into FileData objects.
+
+        Args:
+            raw_files: List of file dictionaries from the JSON response, or None.
+
+        Returns:
+            List of FileData objects. Malformed entries are skipped.
+        """
+        if not raw_files or not isinstance(raw_files, list):
+            return []
+
+        parsed: list[FileData] = []
+        for entry in raw_files:
+            if not isinstance(entry, dict):
+                continue
+            file_name = entry.get("fileName", "")
+            download_url = entry.get("downloadUrl", "")
+            if not file_name or not download_url:
+                logger.warning(
+                    "%s: Skipping file entry with missing fileName or downloadUrl",
+                    _LOG_PREFIX,
+                )
+                continue
+            parsed.append(
+                FileData(
+                    file_name=file_name,
+                    content_type=entry.get("contentType", ""),
+                    description=entry.get("description"),
+                    download_url=download_url,
+                )
+            )
+        return parsed
 
     def _extract_error_message(
         self,
