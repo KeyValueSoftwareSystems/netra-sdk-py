@@ -4,9 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.87] - 2026-05-18
+## [0.1.87] - 2026-05-19
 
 - Add utility to explicitly set exception on the current active span
+- Update SpanIOProcessor to prioritize input and output attributes explicitly set by user over attributes from instrumentation
 
 ## [0.1.86] - 2026-05-15
 
