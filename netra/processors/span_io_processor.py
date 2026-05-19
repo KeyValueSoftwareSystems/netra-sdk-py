@@ -134,10 +134,10 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                 return
 
             try:
-                user_input = attrs.get("netra.input")
+                user_input = attrs.get("netra.user.input")
                 if user_input:
                     attrs["input"] = user_input
-                    del attrs["netra.input"]
+                    del attrs["netra.user.input"]
             except Exception:
                 logger.warning(
                     "SpanIOProcessor.on_end: could not promote netra.input → input",
@@ -145,10 +145,10 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                 )
 
             try:
-                user_output = attrs.get("netra.output")
+                user_output = attrs.get("netra.user.output")
                 if user_output:
                     attrs["output"] = user_output
-                    del attrs["netra.output"]
+                    del attrs["netra.user.output"]
             except Exception:
                 logger.warning(
                     "SpanIOProcessor.on_end: could not promote netra.output → output",
