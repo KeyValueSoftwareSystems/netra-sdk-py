@@ -108,11 +108,54 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
             logger.exception("SpanIOProcessor.on_start failed")
 
     def on_end(self, span: ReadableSpan) -> None:
-        """No-op. All attribute normalisation is applied eagerly via the set_attribute wrapper installed in on_start.
+        """Promote ``netra.input``/``netra.output`` over ``input``/``output`` if present.
+
+        Called after all instrumentation has written its attributes, so user-set
+        values always win. Falls back gracefully if OTel internals change.
 
         Args:
             span: The span that has ended.
         """
+        try:
+            attrs = getattr(span, "_attributes", None)
+            if attrs is None:
+                logger.debug(
+                    "SpanIOProcessor.on_end: span._attributes not accessible; "
+                    "netra.input/netra.output promotion skipped (span_id=%s)",
+                    getattr(getattr(span, "context", None), "span_id", "unknown"),
+                )
+                return
+            if not hasattr(attrs, "__setitem__") or not hasattr(attrs, "__delitem__"):
+                logger.debug(
+                    "SpanIOProcessor.on_end: span._attributes is not mutable (%s); "
+                    "netra.input/netra.output promotion skipped",
+                    type(attrs).__name__,
+                )
+                return
+
+            try:
+                user_input = attrs.get("netra.user.input")
+                if user_input:
+                    attrs["input"] = user_input
+                    del attrs["netra.user.input"]
+            except Exception:
+                logger.warning(
+                    "SpanIOProcessor.on_end: could not promote netra.input → input",
+                    exc_info=True,
+                )
+
+            try:
+                user_output = attrs.get("netra.user.output")
+                if user_output:
+                    attrs["output"] = user_output
+                    del attrs["netra.user.output"]
+            except Exception:
+                logger.warning(
+                    "SpanIOProcessor.on_end: could not promote netra.output → output",
+                    exc_info=True,
+                )
+        except Exception:
+            logger.exception("SpanIOProcessor.on_end: unexpected error during netra.input/netra.output promotion")
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush.

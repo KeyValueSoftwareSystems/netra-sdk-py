@@ -403,7 +403,7 @@ class SessionManager:
                 serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
             else:
                 serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_active_span("input", serialized)
+            cls.set_attribute_on_active_span("netra.user.input", serialized)
         except Exception:
             logger.exception("SessionManager.set_input: failed to set input attribute")
 
@@ -423,7 +423,7 @@ class SessionManager:
                 serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
             else:
                 serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_active_span("output", serialized)
+            cls.set_attribute_on_active_span("netra.user.output", serialized)
         except Exception:
             logger.exception("SessionManager.set_output: failed to set output attribute")
 
@@ -442,7 +442,7 @@ class SessionManager:
                 serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
             else:
                 serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_root_span("input", serialized)
+            cls.set_attribute_on_root_span("netra.user.input", serialized)
         except Exception:
             logger.exception("SessionManager.set_root_input: failed to set input attribute")
 
@@ -461,7 +461,7 @@ class SessionManager:
                 serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
             else:
                 serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_root_span("output", serialized)
+            cls.set_attribute_on_root_span("netra.user.output", serialized)
         except Exception:
             logger.exception("SessionManager.set_root_output: failed to set output attribute")
 
