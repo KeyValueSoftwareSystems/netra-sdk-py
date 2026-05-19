@@ -148,7 +148,7 @@ class SimulationHttpClient:
                     run_item_id=msg.get("testRunItemId", ""),
                     message=msg.get("userMessage", ""),
                     turn_id=msg.get("turnId", ""),
-                    files=self._parse_files(msg.get("files")),
+                    files=self._parse_files(msg.get("attachments")),
                 )
                 for msg in user_messages
             ]
@@ -218,7 +218,7 @@ class SimulationHttpClient:
                 next_turn_id=next_msg.get("turnId", ""),
                 next_user_message=next_msg.get("userMessage", ""),
                 next_run_item_id=next_msg.get("testRunItemId", ""),
-                next_files=self._parse_files(next_msg.get("files")),
+                next_files=self._parse_files(next_msg.get("attachments")),
             )
 
         except Exception as exc:
