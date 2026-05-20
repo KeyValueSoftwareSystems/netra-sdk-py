@@ -68,19 +68,17 @@ class ConversationResponse:
     """Response from the conversation trigger API.
 
     Attributes:
-        decision: The decision to continue or stop the conversation.
+        decision: Whether to continue or stop the conversation.
         reason: Optional reason for stopping the conversation.
         next_turn_id: Identifier for the next turn if continuing.
         next_user_message: The next user message if continuing.
-        next_run_item_id: Identifier for the next run item if continuing.
         next_files: File metadata for the next turn if continuing.
     """
 
-    decision: str
+    decision: ConversationStatus
     reason: Optional[str] = None
     next_turn_id: Optional[str] = None
     next_user_message: Optional[str] = None
-    next_run_item_id: Optional[str] = None
     next_files: list[FileData] = field(default_factory=list)
 
 

@@ -6,9 +6,9 @@ should inherit from when implementing simulation tasks for run_simulation().
 """
 
 from abc import ABC, abstractmethod
-from typing import Any, Awaitable, Optional
+from typing import Awaitable, Optional
 
-from netra.simulation.models import TaskResult
+from netra.simulation.models import ProcessedFile, TaskResult
 
 
 class BaseTask(ABC):
@@ -18,14 +18,18 @@ class BaseTask(ABC):
     Subclasses must:
         - Implement run(): Executes the task logic and returns a TaskResult.
 
-    The base contract requires ``message`` and ``session_id``.  Subclasses that
-    need file attachments can add a ``files`` keyword argument — the framework
-    detects it via introspection and will pass downloaded files automatically.
+    The framework always passes ``message``, ``session_id``, and ``files``
+    to ``run()``.  Tasks that don't need file attachments can simply ignore
+    the ``files`` parameter.
 
     Example:
         class MyTask(BaseTask):
-            def run(self, message: str, session_id: Optional[str] = None) -> TaskResult:
-                # Call your LLM or agent here
+            def run(
+                self,
+                message: str,
+                session_id: Optional[str] = None,
+                files: Optional[list[ProcessedFile]] = None,
+            ) -> TaskResult:
                 response = my_agent.chat(message, session_id=session_id)
                 return TaskResult(
                     message=response.text,
@@ -46,7 +50,6 @@ class BaseTask(ABC):
                 session_id: Optional[str] = None,
                 files: Optional[list[ProcessedFile]] = None,
             ) -> TaskResult:
-                # Access base64-encoded file data
                 if files:
                     for f in files:
                         print(f.file_name, f.content_type, len(f.data))
@@ -58,8 +61,12 @@ class BaseTask(ABC):
 
     Async Example:
         class MyAsyncTask(BaseTask):
-            async def run(self, message: str, session_id: Optional[str] = None) -> TaskResult:
-                # Call your async LLM or agent here
+            async def run(
+                self,
+                message: str,
+                session_id: Optional[str] = None,
+                files: Optional[list[ProcessedFile]] = None,
+            ) -> TaskResult:
                 response = await my_async_agent.chat(message, session_id=session_id)
                 return TaskResult(
                     message=response.text,
@@ -72,7 +79,7 @@ class BaseTask(ABC):
         self,
         message: str,
         session_id: Optional[str] = None,
-        **kwargs: Any,
+        files: Optional[list[ProcessedFile]] = None,
     ) -> TaskResult | Awaitable[TaskResult]:
         """
         Execute the task logic.
@@ -80,17 +87,12 @@ class BaseTask(ABC):
         This method can be sync or async. If async, the framework will
         await the coroutine automatically.
 
-        The base signature requires only ``message`` and ``session_id``.
-        Subclasses that handle file attachments should declare an additional
-        ``files: Optional[list[ProcessedFile]] = None`` parameter — the
-        framework will supply it automatically when the dataset item includes
-        file attachments.
-
         Args:
             message: The input message from the simulation.
             session_id: Optional session identifier for conversation continuity.
                         Will be None for the first turn of a conversation.
-            **kwargs: Reserved for forward-compatible extensions (e.g. ``files``).
+            files: Optional list of base64-encoded file attachments from the
+                   dataset item.  Will be None when no files are attached.
 
         Returns:
             TaskResult: The task result containing:
