@@ -4,10 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.87] - 2026-05-19
+## [0.1.87] - 2026-05-20
 
-- Add utility to explicitly set exception on the current active span
-- Update SpanIOProcessor to prioritize input and output attributes explicitly set by user over attributes from instrumentation
+- **Prioritize input and output attributes explicitly set by user over attributes from instrumentation.**
+Users can be now overwrite the input and ouput attributes of spans created by instrumentations. The input and output values auto-captured by the instruments will be overwritten by values explicitly passed by users using the exposed utilities.
 
 ## [0.1.86] - 2026-05-15
 
