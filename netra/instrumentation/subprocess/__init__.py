@@ -31,13 +31,11 @@ class NetraSubprocessInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     def _instrument(self, **kwargs: Any) -> None:
         try:
             wrap_function_wrapper("subprocess", "Popen.__init__", _popen_init_wrapper)
-            logger.debug("subprocess.Popen patched for OTel context propagation.")
         except Exception as e:
             logger.error("Failed to instrument subprocess: %s", e)
 
     def _uninstrument(self, **kwargs: Any) -> None:
         try:
             unwrap("subprocess.Popen", "__init__")
-            logger.debug("subprocess.Popen patch removed.")
         except (AttributeError, ModuleNotFoundError) as e:
             logger.error("Failed to uninstrument subprocess: %s", e)
