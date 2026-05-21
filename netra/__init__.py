@@ -20,6 +20,7 @@ from netra.instrumentation.instruments import (
 from netra.logging_utils import configure_package_logging
 from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
+from netra.models import Models
 from netra.prompts import Prompts
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
@@ -198,6 +199,13 @@ class Netra:
             except Exception as e:
                 logger.warning("Failed to initialize simulation client: %s", e, exc_info=True)
                 cls.simulation = None  # type:ignore[attr-defined]
+
+            # Initialize models client and expose as class attribute
+            try:
+                cls.models = Models(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize models client: %s", e, exc_info=True)
+                cls.models = None  # type:ignore[attr-defined]
 
             # Instrument all supported modules
             init_instrumentations(
