@@ -13,9 +13,24 @@ class ModelsHttpClient:
     """Internal HTTP client for models APIs."""
 
     def __init__(self, config: Config) -> None:
+        """
+        Initialize the models HTTP client.
+
+        Args:
+            config: Configuration object with models settings
+        """
         self._client: Optional[httpx.Client] = self._create_client(config)
 
     def _create_client(self, config: Config) -> Optional[httpx.Client]:
+        """
+        Create the underlying httpx client.
+
+        Args:
+            config: Configuration object with models settings
+
+        Returns:
+            httpx.Client instance, or None if initialization fails
+        """
         endpoint = (config.otlp_endpoint or "").strip()
         if not endpoint:
             logger.error("netra.models: NETRA_OTLP_ENDPOINT is required for models APIs")
@@ -32,12 +47,30 @@ class ModelsHttpClient:
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
+        """
+        Strip the /telemetry suffix from the endpoint to derive the base URL.
+
+        Args:
+            endpoint: Raw OTLP endpoint string
+
+        Returns:
+            Base URL without /telemetry suffix
+        """
         base_url = endpoint.rstrip("/")
         if base_url.endswith("/telemetry"):
             base_url = base_url[: -len("/telemetry")]
         return base_url
 
     def _build_headers(self, config: Config) -> Dict[str, str]:
+        """
+        Build request headers including the API key.
+
+        Args:
+            config: Configuration object
+
+        Returns:
+            Dictionary of HTTP headers
+        """
         headers: Dict[str, str] = dict(config.headers or {})
         api_key = config.api_key
         if api_key:
@@ -45,6 +78,12 @@ class ModelsHttpClient:
         return headers
 
     def _get_timeout(self) -> float:
+        """
+        Resolve request timeout from environment variable or default.
+
+        Returns:
+            Timeout in seconds
+        """
         timeout_env = os.getenv("NETRA_MODELS_TIMEOUT")
         if not timeout_env:
             return 10.0
@@ -58,6 +97,12 @@ class ModelsHttpClient:
             return 10.0
 
     def list_models(self) -> Any:
+        """
+        Fetch models from the /evaluations/models endpoint.
+
+        Returns:
+            Raw JSON response dict, or empty dict on failure
+        """
         if not self._client:
             logger.error("netra.models: Models client is not initialized.")
             return {}
