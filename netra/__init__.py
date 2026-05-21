@@ -42,6 +42,7 @@ class Netra:
     _init_lock = threading.RLock()
     _root_span = None
     _root_ctx_token = None
+    _subprocess_ctx_token = None
     _metrics_enabled = False
 
     @classmethod
@@ -147,6 +148,14 @@ class Netra:
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg, root_instrument_names=resolved_root)
 
+            # Restore parent trace context when running as a subprocess.
+            try:
+                from netra.instrumentation.subprocess.utils import extract_subprocess_context
+
+                cls._subprocess_ctx_token = extract_subprocess_context()
+            except Exception as e:
+                logger.error("Failed to restore parent process trace context: %s", e)
+
             # Initialize metrics pipeline when explicitly enabled
             if cfg.enable_metrics:
                 try:
@@ -225,8 +234,15 @@ class Netra:
 
     @classmethod
     def shutdown(cls) -> None:
-        """Flush all pending telemetry and release SDK resources."""
+        """Flush all pending telemetry and release SDK resources.
+
+        Context tokens are detached in LIFO order (root first, subprocess
+        second) to match the attachment order in :meth:`init`.  All logging is
+        guarded against closed streams that may occur during ``atexit``
+        teardown.
+        """
         with cls._init_lock:
+            # Detach in LIFO order: root was attached last, so detach it first.
             if cls._root_ctx_token is not None:
                 try:
                     context_api.detach(cls._root_ctx_token)
@@ -234,6 +250,13 @@ class Netra:
                     pass
                 finally:
                     cls._root_ctx_token = None
+            if cls._subprocess_ctx_token is not None:
+                try:
+                    context_api.detach(cls._subprocess_ctx_token)
+                except Exception:
+                    pass
+                finally:
+                    cls._subprocess_ctx_token = None
             if cls._root_span is not None:
                 try:
                     cls._root_span.end()
