@@ -42,7 +42,7 @@ def content_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 end_time = time.time()
                 set_response_attributes(span, response)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
@@ -71,7 +71,7 @@ def acontent_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 end_time = time.time()
                 set_response_attributes(span, response)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
@@ -264,7 +264,7 @@ class StreamingWrapper:
             if text and not self._first_content_recorded:
                 self._first_content_recorded = True
                 first_token_time = time.time()
-                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True)
                 record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
@@ -305,7 +305,7 @@ class AsyncStreamingWrapper:
             if text and not self._first_content_recorded:
                 self._first_content_recorded = True
                 first_token_time = time.time()
-                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True)
                 record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
             self._buffer["content"] += text
         self._span.add_event("llm.content.completion.chunk")
