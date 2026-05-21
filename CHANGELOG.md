@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.88] - 2026-05-20
+
+- Auto instrument subprocess module to automatically set current context as traceparent in sub-process environment whenever a new sub-process is created.
+- Update `Netra.init` to automatically activate context from traceparent if traceparent is found in current environment.
+
+
 ## [0.1.87] - 2026-05-20
 
 - **Prioritize input and output attributes explicitly set by user over attributes from instrumentation.**

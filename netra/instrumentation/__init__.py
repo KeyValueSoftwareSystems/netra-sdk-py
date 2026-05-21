@@ -390,6 +390,10 @@ def init_instrumentations(
     if CustomInstruments.CLAUDE_AGENT_SDK in netra_custom_instruments:
         init_claude_agent_sdk_instrumentation()
 
+    # Subprocess instrumentation always enabled for
+    # context propagation in subprocess
+    init_subprocess_instrumentation()
+
 
 def init_groq_instrumentation() -> bool:
     """Initialize Groq instrumentation."""
@@ -1460,4 +1464,22 @@ def init_claude_agent_sdk_instrumentation() -> bool:
     except Exception as e:
         logging.error(f"Error initializing Claude Agent SDK instrumentor: {e}")
         Telemetry().log_exception(e)
+        return False
+
+
+def init_subprocess_instrumentation() -> bool:
+    """Initialize subprocess context propagation instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        from netra.instrumentation.subprocess import NetraSubprocessInstrumentor
+
+        instrumentor = NetraSubprocessInstrumentor()
+        if not instrumentor.is_instrumented_by_opentelemetry:
+            instrumentor.instrument()
+        return True
+    except Exception as e:
+        logging.error(f"Error initializing subprocess instrumentor: {e}")
         return False
