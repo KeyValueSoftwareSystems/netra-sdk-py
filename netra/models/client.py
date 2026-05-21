@@ -96,7 +96,7 @@ class ModelsHttpClient:
             )
             return 10.0
 
-    def list_models(self) -> Any:
+    def get_model_pricing(self) -> Any:
         """
         Fetch models from the /evaluations/models endpoint.
 

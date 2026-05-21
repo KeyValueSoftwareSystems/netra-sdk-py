@@ -20,14 +20,14 @@ class Models:
         self._config = config
         self._client = ModelsHttpClient(config)
 
-    def list_models(self) -> List[Any] | Any:
+    def get_model_pricing(self) -> List[Any] | Any:
         """
         Fetch models for the project associated with the configured API key.
 
         Returns:
             List of model dicts from the API response, or None on failure.
         """
-        result = self._client.list_models()
+        result = self._client.get_model_pricing()
 
         if not isinstance(result, dict):
             return result
