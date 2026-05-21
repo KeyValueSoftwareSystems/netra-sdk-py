@@ -212,7 +212,9 @@ def _start_tool_call_span(
             if message.parent_tool_use_id:
                 tool_span.set_attribute(ATTR_PARENT_TOOL_USE_ID, message.parent_tool_use_id)
             token_time = first_token_time if first_token_time is not None else time.time()
-            record_span_timing(tool_span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time)
+            record_span_timing(
+                tool_span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time, record_event_timestamp=True
+            )
             record_span_timing(tool_span, RELATIVE_TIME_TO_FIRST_TOKEN, token_time, use_root_span=True)
         except Exception as e:
             logger.error(f"Cannot set tool call span attributes for tool={block.name}: {e}")
@@ -438,7 +440,9 @@ def set_assistant_message_attributes(
                         _set_usage(span, message.usage)
                     _set_output_conversation(span, role, content)
                     span.set_attribute("output", _build_message_array(role, content))
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time)
+                    record_span_timing(
+                        span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time, record_event_timestamp=True
+                    )
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, token_time, use_root_span=True)
                 except Exception as e:
                     logger.error(f"Cannot set assistant span attributes: {e}")

@@ -1,5 +1,6 @@
 import logging
 import time
+from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
@@ -41,12 +42,16 @@ def _safe_set_attribute(span: Span, key: str, value: Any, max_length: Optional[i
     return True
 
 
+TIMESTAMP_ATTRIBUTE_SUFFIX = ".timestamp"
+
+
 def record_span_timing(
     span: Span,
     attribute: str,
     event_time: Optional[float] = None,
     use_root_span: bool = False,
     reference_time: Optional[float] = None,
+    record_event_timestamp: bool = False,
 ) -> bool:
     """Compute elapsed time for an event and set it as a span attribute.
 
@@ -66,6 +71,9 @@ def record_span_timing(
         reference_time: Optional explicit reference timestamp in seconds since
             epoch. When provided, elapsed is computed as
             ``event_time - reference_time``, bypassing span start-time lookup.
+        record_event_timestamp: If True and the timing attribute is successfully
+            set, also stores the event timestamp as a UTC ISO 8601 string
+            under ``{attribute}.timestamp``.
 
     Returns:
         True if the timing attribute was successfully set, False if the elapsed
@@ -74,20 +82,26 @@ def record_span_timing(
     t = event_time if event_time is not None else time.time()
 
     if reference_time is not None:
-        return _safe_set_attribute(span, attribute, t - reference_time)
-
-    start_time = None
-
-    if not use_root_span:
-        start_time = getattr(span, "start_time", None)
+        success = _safe_set_attribute(span, attribute, t - reference_time)
     else:
-        root_span = RootSpanProcessor.get_root_span(span)
-        if not root_span:
+        start_time = None
+
+        if not use_root_span:
+            start_time = getattr(span, "start_time", None)
+        else:
+            root_span = RootSpanProcessor.get_root_span(span)
+            if not root_span:
+                return False
+            start_time = getattr(root_span, "start_time", None)
+
+        if not start_time:
             return False
-        start_time = getattr(root_span, "start_time", None)
 
-    if not start_time:
-        return False
+        elapsed = t - start_time / 1e9  # Convert nanoseconds to seconds
+        success = _safe_set_attribute(span, attribute, elapsed)
 
-    elapsed = t - start_time / 1e9  # Convert nanoseconds to seconds
-    return _safe_set_attribute(span, attribute, elapsed)
+    if success and record_event_timestamp:
+        utc_timestamp = datetime.fromtimestamp(t, tz=timezone.utc).isoformat()
+        _safe_set_attribute(span, f"{attribute}{TIMESTAMP_ATTRIBUTE_SUFFIX}", utc_timestamp)
+
+    return success

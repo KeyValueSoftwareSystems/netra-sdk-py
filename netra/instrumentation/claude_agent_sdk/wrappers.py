@@ -60,7 +60,13 @@ async def _dispatch_messages(
                 first_token_time = time.time()
                 if not first_assistant_seen:
                     first_assistant_seen = True
-                    record_span_timing(root_span, TIME_TO_FIRST_TOKEN, first_token_time, reference_time=start_time)
+                    record_span_timing(
+                        root_span,
+                        TIME_TO_FIRST_TOKEN,
+                        first_token_time,
+                        reference_time=start_time,
+                        record_event_timestamp=True,
+                    )
                     record_span_timing(root_span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
                 set_assistant_message_attributes(tracer, root_ctx, message, first_token_time, start_time)
             elif isinstance(message, UserMessage):

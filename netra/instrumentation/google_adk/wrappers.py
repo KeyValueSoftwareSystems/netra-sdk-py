@@ -303,7 +303,13 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 async for item in wrapped(*args, **kwargs):
                     if not first_token_recorded:
                         first_token_time = time.time()
-                        record_span_timing(span, TIME_TO_FIRST_TOKEN, first_token_time, reference_time=llm_call_start)
+                        record_span_timing(
+                            span,
+                            TIME_TO_FIRST_TOKEN,
+                            first_token_time,
+                            reference_time=llm_call_start,
+                            record_event_timestamp=True,
+                        )
                         record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
                         first_token_recorded = True
                     last_response = item
