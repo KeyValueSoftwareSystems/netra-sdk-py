@@ -62,7 +62,7 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
                     record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
@@ -110,7 +110,7 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
                     record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
@@ -139,7 +139,7 @@ def embeddings_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
@@ -170,7 +170,7 @@ def aembeddings_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 response_dict = model_as_dict(response)
                 set_response_attributes(span, response_dict)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
                 return response
@@ -218,7 +218,7 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
                     record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
@@ -266,7 +266,7 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     response_dict = model_as_dict(response)
                     set_response_attributes(span, response_dict)
                     record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                     record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                     span.set_status(Status(StatusCode.OK))
                     return response
@@ -346,7 +346,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if content_piece and not self._first_content_recorded:
                         self._first_content_recorded = True
                         first_token_time = time.time()
-                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
+                        )
                         record_span_timing(
                             self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
@@ -380,7 +382,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         if chunk_dict.get("delta") and not self._first_content_recorded:
             self._first_content_recorded = True
             first_token_time = time.time()
-            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True)
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
@@ -482,7 +484,9 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                     if content_piece and not self._first_content_recorded:
                         self._first_content_recorded = True
                         first_token_time = time.time()
-                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
+                        )
                         record_span_timing(
                             self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
@@ -516,7 +520,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         if chunk_dict.get("delta") and not self._first_content_recorded:
             self._first_content_recorded = True
             first_token_time = time.time()
-            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+            record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True)
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})

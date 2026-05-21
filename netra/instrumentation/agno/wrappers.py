@@ -429,7 +429,9 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                     if not self._first_token_recorded and (content or tool_calls):
                         self._first_token_recorded = True
                         first_token_time = time.time()
-                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
+                        )
                         record_span_timing(
                             self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
@@ -479,7 +481,9 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
                     if not self._first_token_recorded and (content or tool_calls):
                         self._first_token_recorded = True
                         first_token_time = time.time()
-                        record_span_timing(self._span, TIME_TO_FIRST_TOKEN, first_token_time)
+                        record_span_timing(
+                            self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
+                        )
                         record_span_timing(
                             self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
                         )
@@ -1194,7 +1198,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if usage:
                     span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
@@ -1295,7 +1299,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if usage:
                     span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
