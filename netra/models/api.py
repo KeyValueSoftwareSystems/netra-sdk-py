@@ -1,5 +1,5 @@
 import logging
-from typing import Any, List
+from typing import Any, List, Optional
 
 from netra.config import Config
 from netra.models.client import ModelsHttpClient
@@ -20,14 +20,17 @@ class Models:
         self._config = config
         self._client = ModelsHttpClient(config)
 
-    def get_model_pricing(self) -> List[Any] | Any:
+    def get_model_pricing(self, name: Optional[str] = None) -> List[Any] | Any:
         """
         Fetch models for the project associated with the configured API key.
+
+        Args:
+            name: Optional model name to filter results.
 
         Returns:
             List of model dicts from the API response, or None on failure.
         """
-        result = self._client.get_model_pricing()
+        result = self._client.get_model_pricing(name=name)
 
         if not isinstance(result, dict):
             return result
