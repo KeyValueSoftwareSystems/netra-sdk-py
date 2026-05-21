@@ -6,9 +6,11 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.88] - 2026-05-20
 
-- Auto instrument subprocess module to automatically set current context as traceparent in sub-process environment whenever a new sub-process is created.
-- Update `Netra.init` to automatically activate context from traceparent if traceparent is found in current environment.
+- **Support for distributed tracing during sub-process invocation** - Auto instrument subprocess module to automatically set current context as traceparent in sub-process environment whenever a new sub-process is created. Update `Netra.init` to automatically activate context from traceparent if traceparent is found in current environment.
 
+- **Add new utility `models` to fetch model pricing from Netra** - Add SDK utility `get_model_pricing` to fetch model details and their pricing from Netra
+
+- **Add timestamp info of Time to First Token (TTFT) in LLM spans** - Add timestamp data of TTFT as a new attribute, `gen_ai.performance.time_to_first_token.timestamp`, in LLM spans from OpenAI, LiteLLM, Google GenAI, Cerebras, Claude Agent, Agno, ADK, and Groq
 
 ## [0.1.87] - 2026-05-20
 
