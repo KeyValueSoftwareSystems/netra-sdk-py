@@ -108,7 +108,7 @@ class ModelsHttpClient:
             return {}
 
         try:
-            response = self._client.get("/evaluations/models")
+            response = self._client.get("/sdk/models")
             response.raise_for_status()
             return response.json()
         except Exception as exc:
