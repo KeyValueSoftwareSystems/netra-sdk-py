@@ -234,30 +234,34 @@ class Netra:
 
     @classmethod
     def shutdown(cls) -> None:
-        """Flush all pending telemetry and release SDK resources."""
+        """Flush all pending telemetry and release SDK resources.
+
+        Context tokens are detached in LIFO order (root first, subprocess
+        second) to match the attachment order in :meth:`init`.  All logging is
+        guarded against closed streams that may occur during ``atexit``
+        teardown.
+        """
         with cls._init_lock:
-            if cls._subprocess_ctx_token is not None:
-                try:
-                    context_api.detach(cls._subprocess_ctx_token)
-                    logger.debug("Subprocess context token detached.")
-                except Exception as e:
-                    logger.warning("Failed to detach subprocess context token: %s", e)
-                finally:
-                    cls._subprocess_ctx_token = None
+            # Detach in LIFO order: root was attached last, so detach it first.
             if cls._root_ctx_token is not None:
                 try:
                     context_api.detach(cls._root_ctx_token)
-                    logger.debug("Root context token detached.")
-                except Exception as e:
-                    logger.warning("Failed to detach root context token: %s", e)
+                except Exception:
+                    pass
                 finally:
                     cls._root_ctx_token = None
+            if cls._subprocess_ctx_token is not None:
+                try:
+                    context_api.detach(cls._subprocess_ctx_token)
+                except Exception:
+                    pass
+                finally:
+                    cls._subprocess_ctx_token = None
             if cls._root_span is not None:
                 try:
                     cls._root_span.end()
-                    logger.debug("Root span ended.")
-                except Exception as e:
-                    logger.warning("Failed to end root span: %s", e)
+                except Exception:
+                    pass
                 finally:
                     cls._root_span = None
             # Flush and shutdown the tracer provider
@@ -267,9 +271,8 @@ class Netra:
                     provider.force_flush()
                 if hasattr(provider, "shutdown"):
                     provider.shutdown()
-                logger.debug("Tracer provider flushed and shut down.")
-            except Exception as e:
-                logger.warning("Failed to flush/shutdown tracer provider: %s", e)
+            except Exception:
+                pass
             # Flush and shutdown the metrics provider
             if cls._metrics_enabled:
                 try:
@@ -278,9 +281,8 @@ class Netra:
                         meter_provider.force_flush()
                     if hasattr(meter_provider, "shutdown"):
                         meter_provider.shutdown()
-                    logger.debug("Metrics provider flushed and shut down.")
-                except Exception as e:
-                    logger.warning("Failed to flush/shutdown metrics provider: %s", e)
+                except Exception:
+                    pass
 
     @classmethod
     def get_meter(cls, name: str = "netra", version: Optional[str] = None) -> otel_metrics.Meter:
