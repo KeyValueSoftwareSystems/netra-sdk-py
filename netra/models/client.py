@@ -96,9 +96,12 @@ class ModelsHttpClient:
             )
             return 10.0
 
-    def get_model_pricing(self) -> Any:
+    def get_model_pricing(self, name: Optional[str] = None) -> Any:
         """
         Fetch models from the /evaluations/models endpoint.
+
+        Args:
+            name: Optional model name to filter results
 
         Returns:
             Raw JSON response dict, or empty dict on failure
@@ -108,7 +111,10 @@ class ModelsHttpClient:
             return {}
 
         try:
-            response = self._client.get("/sdk/models")
+            params: Dict[str, str] = {}
+            if name:
+                params["name"] = name
+            response = self._client.get("/sdk/models", params=params or None)
             response.raise_for_status()
             return response.json()
         except Exception as exc:
