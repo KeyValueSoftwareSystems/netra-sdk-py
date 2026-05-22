@@ -291,10 +291,18 @@ class Netra:
                         meter_provider.shutdown()
                 except Exception:
                     pass
+
             # Close simulation HTTP client
             if hasattr(cls, "simulation") and cls.simulation is not None:
                 try:
                     cls.simulation.close()
+                except Exception:
+                    pass
+
+            # Close evaluation HTTP client
+            if hasattr(cls, "evaluation") and cls.evaluation is not None:
+                try:
+                    cls.evaluation.close()
                 except Exception:
                     pass
 

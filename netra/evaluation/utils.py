@@ -1,24 +1,53 @@
+"""Utility functions for the evaluation module."""
+
 import asyncio
 import logging
+import os
 import threading
-from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
+from typing import Any, Awaitable, Callable, Optional, TypeVar
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
 
+from netra.evaluation.constants import LOG_PREFIX
 from netra.evaluation.models import DatasetRecord, EvaluatorConfig, EvaluatorContext, ItemContext
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+_T = TypeVar("_T")
+
+
+def parse_env_float(env_var: str, default: float) -> float:
+    """Read an environment variable and parse it as a float.
+
+    Args:
+        env_var: Name of the environment variable.
+        default: Value to return when the variable is unset or invalid.
+
+    Returns:
+        The parsed float, or *default* on failure.
+    """
+    raw = os.getenv(env_var)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "%s: Invalid value '%s' for %s, using default %.1f",
+            LOG_PREFIX,
+            raw,
+            env_var,
+            default,
+        )
+        return default
 
 
 def get_session_id_from_baggage() -> Optional[str]:
-    """
-    Get the session ID from the OpenTelemetry baggage.
+    """Get the session ID from the OpenTelemetry baggage.
 
     Returns:
-        session_id: The session ID if found, None otherwise.
+        The session ID if found, None otherwise.
     """
     ctx = otel_context.get_current()
     session_id = baggage.get_baggage("session_id", ctx)
@@ -28,82 +57,80 @@ def get_session_id_from_baggage() -> Optional[str]:
 
 
 def format_trace_id(trace_id: int) -> str:
-    """
-    Format the trace ID as a 32-digit hexadecimal string.
+    """Format the trace ID as a 32-digit hexadecimal string.
 
-    Return:
-        trace_id: The formatted trace ID.
+    Args:
+        trace_id: The integer trace ID to format.
+
+    Returns:
+        The formatted trace ID.
     """
     return f"{trace_id:032x}"
 
 
 def format_span_id(span_id: int) -> str:
-    """
-    Format the span ID as a 16-digit hexadecimal string.
+    """Format the span ID as a 16-digit hexadecimal string.
 
-    Return:
-        span_id: The formatted span ID.
+    Args:
+        span_id: The integer span ID to format.
+
+    Returns:
+        The formatted span ID.
     """
     return f"{span_id:016x}"
 
 
-async def run_callable_maybe_async(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
-    """
-    Run callable
-    """
-    result = fn(*args, **kwargs)
-    if asyncio.iscoroutine(result):
-        return await result
-    return result
+def run_async_safely(coro: Awaitable[_T]) -> _T:
+    """Run an async coroutine from synchronous code.
 
-
-def run_async_safely(coroutine: Awaitable[T]) -> T:
-    """Run an async coroutine from sync code.
-
-    If there is already an event loop running in this thread, we execute in a
-    dedicated thread to avoid 'asyncio.run() cannot be called from a running event loop'.
+    When called from a context that already has a running event loop (e.g. a
+    Jupyter notebook, or an async framework like FastAPI), ``asyncio.run()``
+    would raise.  In that case we spin up a **new daemon thread** with its own
+    event loop so the caller's loop is never blocked or re-entered.
 
     Args:
-        coroutine: The coroutine to run.
+        coro: The coroutine to execute.
 
     Returns:
-        The result of the coroutine.
-    """
+        The result of the coroutine execution.
 
+    Raises:
+        Exception: Re-raises any exception from the coroutine.
+    """
     try:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         loop = None
 
     if loop and loop.is_running():
-        result_container: Dict[str, T] = {}
-        error_container: Dict[str, Exception] = {}
+        result_holder: dict[str, _T] = {}
+        error_holder: dict[str, BaseException] = {}
 
-        def _runner() -> None:
+        def runner() -> None:
             try:
-                result_container["result"] = asyncio.run(coroutine)  # type: ignore[arg-type]
-            except Exception as exc:  # pragma: no cover
-                error_container["error"] = exc
+                result_holder["value"] = asyncio.run(coro)  # type: ignore[arg-type]
+            except BaseException as exc:
+                error_holder["exc"] = exc
 
-        thread = threading.Thread(target=_runner, daemon=True)
+        thread = threading.Thread(target=runner, daemon=True)
         thread.start()
         thread.join()
-        if "error" in error_container:
-            raise error_container["error"]
-        return result_container.get("result")  # type: ignore[return-value]
 
-    return asyncio.run(coroutine)  # type: ignore[arg-type]
+        if "exc" in error_holder:
+            raise error_holder["exc"]
+        return result_holder.get("value")  # type: ignore[return-value]
+
+    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 def extract_evaluator_config(evaluator: Any) -> Optional[EvaluatorConfig]:
-    """
-    Extract evaluator configuration from an evaluator object.
+    """Extract evaluator configuration from an evaluator object.
 
     Args:
         evaluator: The evaluator object.
 
     Returns:
-        Optional[EvaluatorConfig]: The evaluator configuration if found, None otherwise.
+        The evaluator configuration if found, None otherwise.
     """
     if not hasattr(evaluator, "config"):
         return None
@@ -114,15 +141,14 @@ def extract_evaluator_config(evaluator: Any) -> Optional[EvaluatorConfig]:
 
 
 async def execute_task(task: Callable[[Any], Any], item_input: Any) -> tuple[Any, str]:
-    """
-    Execute a task function (sync or async) and return (output, status).
+    """Execute a task function (sync or async) and return (output, status).
 
     Args:
         task: The task function to execute.
         item_input: The input to the task function.
 
     Returns:
-        tuple[Any, str]: The output of the task function and the status of the execution.
+        A tuple of (task_output, status_string).
     """
     try:
         result = task(item_input)
@@ -138,10 +164,9 @@ async def run_single_evaluator(
     item_input: Any,
     task_output: Any,
     expected_output: Any,
-    metadata: Optional[Dict[str, Any]],
-) -> Optional[Dict[str, Any]]:
-    """
-    Run a single evaluator and return normalized result.
+    metadata: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
+    """Run a single evaluator and return normalized result.
 
     Args:
         evaluator: The evaluator object.
@@ -151,7 +176,7 @@ async def run_single_evaluator(
         metadata: Optional metadata to be passed to the evaluator.
 
     Returns:
-        Optional[Dict[str, Any]]: The normalized result of the evaluator if successful, None otherwise.
+        The normalized result dict if successful, None otherwise.
     """
     if not hasattr(evaluator, "evaluate"):
         return None
@@ -185,22 +210,21 @@ async def run_single_evaluator(
 
 
 def build_item_payload(
-    ctx: "ItemContext",
+    ctx: ItemContext,
     status: str,
     include_output: bool = False,
-) -> Dict[str, Any]:
-    """
-    Build a payload dict for posting item status.
+) -> dict[str, Any]:
+    """Build a payload dict for posting item status.
 
     Args:
         ctx: The item context.
-        status: The status of the item.
+        status: The status of the item (e.g. "completed", "failed").
         include_output: Whether to include the task output in the payload.
 
     Returns:
-        Dict[str, Any]: The payload dict.
+        The payload dict ready for HTTP submission.
     """
-    payload: Dict[str, Any] = {
+    payload: dict[str, Any] = {
         "traceId": ctx.trace_id,
         "sessionId": ctx.session_id,
     }
@@ -213,7 +237,7 @@ def build_item_payload(
         if ctx.metadata:
             payload["metadata"] = ctx.metadata
 
-    if ctx.status == "failed":
+    if status == "failed":
         payload["status"] = "failed"
         return payload
 
@@ -225,37 +249,35 @@ def build_item_payload(
 
 def validate_run_inputs(
     name: str,
-    data: Any,
+    dataset: Any,
     task: Callable[[Any], Any],
 ) -> None:
-    """
-    Validate required inputs for run_test_suite.
+    """Validate required inputs for run_test_suite.
 
     Args:
         name: The name of the run.
-        data: The dataset to be used for the test suite.
+        dataset: The dataset to be used for the test suite.
         task: The task to be executed for each item in the dataset.
 
     Raises:
         ValueError: If any required input is missing or invalid.
     """
     if not name:
-        raise ValueError("netra.evaluation: run name is required")
-    if not data:
-        raise ValueError("netra.evaluation: data is required")
+        raise ValueError(f"{LOG_PREFIX}: run name is required")
+    if not dataset:
+        raise ValueError(f"{LOG_PREFIX}: dataset is required")
     if task is None:
-        raise ValueError("netra.evaluation: task function is required")
+        raise ValueError(f"{LOG_PREFIX}: task function is required")
 
 
-def extract_dataset_id(items: List[Any]) -> Optional[str]:  # noqa: E501
-    """
-    Extract dataset_id from items if they are DatasetRecords.
+def extract_dataset_id(items: list[Any]) -> Optional[str]:
+    """Extract dataset_id from items if they are DatasetRecords.
 
     Args:
         items: List of items.
 
     Returns:
-        Optional[str]: The dataset_id if found, None otherwise.
+        The dataset_id if found, None otherwise.
     """
     if items and isinstance(items[0], DatasetRecord):
         dataset_id: str = items[0].dataset_id
@@ -264,18 +286,17 @@ def extract_dataset_id(items: List[Any]) -> Optional[str]:  # noqa: E501
 
 
 def build_evaluators_config(
-    evaluators: Optional[List[Any]],
-) -> List[EvaluatorConfig]:
-    """
-    Build evaluator configurations from evaluator objects.
+    evaluators: Optional[list[Any]],
+) -> list[EvaluatorConfig]:
+    """Build evaluator configurations from evaluator objects.
 
     Args:
         evaluators: List of evaluators.
 
     Returns:
-        List[EvaluatorConfig]: List of evaluator configurations.
+        List of evaluator configurations.
     """
-    configs: List[EvaluatorConfig] = []
+    configs: list[EvaluatorConfig] = []
     if not evaluators:
         return configs
 
@@ -285,6 +306,7 @@ def build_evaluators_config(
             continue
         try:
             configs.append(config)
-        except Exception:
+        except Exception as exc:
+            logger.warning("%s: Failed to extract evaluator config: %s", LOG_PREFIX, exc)
             continue
     return configs

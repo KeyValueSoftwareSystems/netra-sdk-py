@@ -31,6 +31,7 @@ class BaseEvaluator(ABC):
                 )
 
         # Usage:
+        dataset = ...
         result = Netra.evaluation.run_test_suite(
             name="Copywriting Assistant v1",
             data=dataset,

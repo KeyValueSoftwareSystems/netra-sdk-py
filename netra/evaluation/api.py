@@ -1,10 +1,11 @@
 import asyncio
 import concurrent.futures
 import logging
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Optional
 
 from netra.config import Config
 from netra.evaluation.client import EvaluationHttpClient
+from netra.evaluation.constants import DEFAULT_CONCURRENCY, LOG_PREFIX, MIN_CONCURRENCY, SPAN_NAME_PREFIX
 from netra.evaluation.models import (
     AddDatasetItemResponse,
     CreateDatasetResponse,
@@ -35,11 +36,17 @@ logger = logging.getLogger(__name__)
 
 
 class Evaluation:
-    """Public entry-point exposed as Netra.evaluation"""
+    """Public entry-point exposed as Netra.evaluation.
+
+    Attributes:
+        _config: The Netra configuration object.
+        _client: The HTTP client for evaluation API calls.
+    """
+
+    __slots__ = ("_config", "_client")
 
     def __init__(self, config: Config) -> None:
-        """
-        Initialize the evaluation client.
+        """Initialize the evaluation client.
 
         Args:
             config: The configuration object.
@@ -47,20 +54,28 @@ class Evaluation:
         self._config = config
         self._client = EvaluationHttpClient(config)
 
-    def create_dataset(self, name: str, tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE) -> Any:
-        """
-        Create an empty dataset and return its id on success, else None.
+    def close(self) -> None:
+        """Release resources held by the evaluation client."""
+        self._client.close()
+
+    def create_dataset(
+        self,
+        name: str,
+        tags: Optional[list[str]] = None,
+        turn_type: TurnType = TurnType.SINGLE,
+    ) -> Optional[CreateDatasetResponse]:
+        """Create an empty dataset and return its info on success, else None.
 
         Args:
             name: The name of the dataset.
             tags: Optional list of tags to associate with the dataset.
-            turn_type: The turn type of the dataset, either "single" or "multi". Defaults to "single".
+            turn_type: The turn type of the dataset. Defaults to "single".
 
         Returns:
-            A backend JSON response containing dataset info (id, name, tags, etc.) on success,
+            A CreateDatasetResponse on success, or None on failure.
         """
         if not name:
-            logger.error("netra.evaluation: Failed to create dataset: dataset name is required")
+            logger.error("%s: Failed to create dataset: dataset name is required", LOG_PREFIX)
             return None
         response = self._client.create_dataset(name=name, tags=tags, turn_type=turn_type)
 
@@ -84,22 +99,23 @@ class Evaluation:
         self,
         dataset_id: str,
         item: DatasetItem,
-    ) -> Any:
-        """
-        Add a single item to an existing dataset
+    ) -> Optional[AddDatasetItemResponse]:
+        """Add a single item to an existing dataset.
 
         Args:
             dataset_id: The id of the dataset to which the item will be added.
             item: The dataset item to add.
 
         Returns:
-            A backend JSON response containing dataset item info (id, input, expected_output, etc.) on success
+            An AddDatasetItemResponse on success, or None on failure.
         """
-
         if not item.input:
-            logger.error("netra.evaluation: Skipping dataset item without required 'input'")
+            logger.error("%s: Skipping dataset item without required 'input'", LOG_PREFIX)
             return None
         response = self._client.add_dataset_item(dataset_id=dataset_id, item=item)
+
+        if not response:
+            return None
 
         return AddDatasetItemResponse(
             dataset_id=response.get("datasetId", ""),
@@ -120,30 +136,29 @@ class Evaluation:
             deleted_at=response.get("deletedAt", None),
         )
 
-    def get_dataset(self, dataset_id: str) -> Any:
-        """
-        Get a dataset by ID.
+    def get_dataset(self, dataset_id: str) -> Optional[GetDatasetItemsResponse]:
+        """Get a dataset by ID.
 
         Args:
             dataset_id: The id of the dataset to retrieve.
 
         Returns:
-            A backend JSON response containing dataset info (id, input, expected_output etc.) on success,
+            A GetDatasetItemsResponse on success, or None on failure.
         """
         if not dataset_id:
-            logger.error("netra.evaluation: Failed to get dataset: dataset id is required")
+            logger.error("%s: Failed to get dataset: dataset id is required", LOG_PREFIX)
             return None
         response = self._client.get_dataset(dataset_id)
         if not response:
             return None
-        dataset_items: List[DatasetItem] = []
-        for item in response:
-            item_id = item.get("id")
-            item_input = item.get("input")
-            item_dataset_id = item.get("datasetId")
-            item_expected_output = item.get("expectedOutput", "")
+        dataset_items: list[DatasetRecord] = []
+        for raw_item in response:
+            item_id = raw_item.get("id")
+            item_input = raw_item.get("input")
+            item_dataset_id = raw_item.get("datasetId")
+            item_expected_output = raw_item.get("expectedOutput", "")
             if item_id is None or item_dataset_id is None or item_input is None:
-                logger.warning("netra.evaluation: Skipping dataset item with missing required fields: %s", item)
+                logger.warning("%s: Skipping dataset item with missing required fields: %s", LOG_PREFIX, raw_item)
                 continue
             try:
                 dataset_items.append(
@@ -155,17 +170,16 @@ class Evaluation:
                     )
                 )
             except Exception as exc:
-                logger.error("netra.evaluation: Failed to parse dataset item: %s", exc)
+                logger.error("%s: Failed to parse dataset item: %s", LOG_PREFIX, exc)
         return GetDatasetItemsResponse(items=dataset_items)
 
     def create_run(
         self,
         name: str,
         dataset_id: Optional[str] = None,
-        evaluators_config: Optional[List[EvaluatorConfig]] = None,
-    ) -> Any:
-        """
-        Create a new run for the given dataset and evaluators
+        evaluators_config: Optional[list[EvaluatorConfig]] = None,
+    ) -> Optional[str]:
+        """Create a new run for the given dataset and evaluators.
 
         Args:
             name: The name of the run.
@@ -173,46 +187,44 @@ class Evaluation:
             evaluators_config: Optional list of evaluators to be used for the run.
 
         Returns:
-            run_id: The id of the created run.
+            The id of the created run, or None on failure.
         """
-
         if not name:
-            logger.error("netra.evaluation: Failed to create run: run name is required")
+            logger.error("%s: Failed to create run: run name is required", LOG_PREFIX)
             return None
 
-        evaluators_config_dicts: Optional[List[Dict[str, Any]]] = None
+        evaluators_config_dicts: Optional[list[dict[str, Any]]] = None
         if evaluators_config:
             evaluators_config_dicts = [e.model_dump(by_alias=True) for e in evaluators_config]
         response = self._client.create_run(name=name, dataset_id=dataset_id, evaluators_config=evaluators_config_dicts)
-        run_id = response.get("id", None)
-        return run_id
+        if not response:
+            return None
+        run_id = response.get("id")
+        return str(run_id) if run_id is not None else None
 
-    def get_run_results(self, run_id: str) -> Any:
-        """
-        Fetch test run results based on run ID.
+    def get_run_results(self, run_id: str) -> Optional[dict[str, Any]]:
+        """Fetch test run results based on run ID.
 
         Args:
             run_id: The id of the run to fetch.
 
         Returns:
-            The JSON response containing run results.
+            The JSON response containing run results, or None on failure.
         """
         if not run_id:
-            logger.error("netra.evaluation: Failed to get run: run_id is required")
+            logger.error("%s: Failed to get run: run_id is required", LOG_PREFIX)
             return None
-        response = self._client.get_run_results(run_id)
-        return response
+        return self._client.get_run_results(run_id)
 
     def run_test_suite(
         self,
         name: str,
         data: Dataset,
         task: Callable[[Any], Any],
-        evaluators: Optional[List[Any]] = None,
-        max_concurrency: int = 50,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Netra evaluation function to initiate a test suite.
+        evaluators: Optional[list[Any]] = None,
+        max_concurrency: int = DEFAULT_CONCURRENCY,
+    ) -> Optional[dict[str, Any]]:
+        """Run a complete evaluation test suite.
 
         Args:
             name: The name of the run.
@@ -225,6 +237,7 @@ class Evaluation:
             A dictionary containing the run id and the results of the test suite.
         """
         validate_run_inputs(name, data, task)
+        max_concurrency = max(MIN_CONCURRENCY, max_concurrency)
 
         items = list(data.items)
         dataset_id = extract_dataset_id(items)
@@ -236,18 +249,15 @@ class Evaluation:
             evaluators_config=evaluators_config,
         )
         if not run_id:
-            logger.error("netra.evaluation: Failed to create run")
+            logger.error("%s: Failed to create run", LOG_PREFIX)
             return None
-        logger.info("netra.evaluation: Initiated test run")
+        logger.info("%s: Initiated test run", LOG_PREFIX)
 
         try:
             result = run_async_safely(
                 self._run_test_suite_async(name, data, task, evaluators, max_concurrency, run_id=run_id)
             )
             return result
-        except Exception:
-            self._client.post_run_status(run_id, "failed")
-            raise
         except BaseException:
             self._client.post_run_status(run_id, "failed")
             raise
@@ -257,12 +267,11 @@ class Evaluation:
         name: str,
         data: Dataset,
         task: Callable[[Any], Any],
-        evaluators: Optional[List[Any]],
+        evaluators: Optional[list[Any]],
         max_concurrency: int,
         run_id: Optional[str] = None,
-    ) -> Optional[Dict[str, Any]]:
-        """
-        Async implementation of run_test_suite.
+    ) -> Optional[dict[str, Any]]:
+        """Async implementation of run_test_suite.
 
         Args:
             name: The name of the run.
@@ -277,17 +286,15 @@ class Evaluation:
         """
         items = list(data.items)
         total_items = len(items)
-        max_workers = max(5, max_concurrency)
 
-        results: List[Dict[str, Any]] = []
-        bg_eval_tasks: List[asyncio.Task[None]] = []
+        results: list[dict[str, Any]] = []
+        background_evaluator_tasks: list[asyncio.Task[None]] = []
         completed_count = 0
         lock = asyncio.Lock()
         loop = asyncio.get_running_loop()
 
         async def on_item_completed(result: ItemProcessingResult) -> None:
-            """
-            Handle completion of a single item processing.
+            """Handle completion of a single item processing.
 
             Args:
                 result: The result of item processing.
@@ -297,42 +304,41 @@ class Evaluation:
                 results.append(result.item_entry)
                 if result.should_run_evaluators and run_id:
                     eval_task = asyncio.create_task(self._run_evaluators_for_item(run_id, result.ctx, evaluators or []))
-                    bg_eval_tasks.append(eval_task)
+                    background_evaluator_tasks.append(eval_task)
 
                 completed_count += 1
                 logger.info(
-                    "netra.evaluation: %d/%d items processed (status=%s)",
+                    "%s: %d/%d items processed (status=%s)",
+                    LOG_PREFIX,
                     completed_count,
                     total_items,
                     result.status,
                 )
 
-        def process_item_sync(idx: int, item: Any) -> ItemProcessingResult:
-            """
-            Synchronous wrapper for thread pool execution.
+        def process_item_sync(idx: int, dataset_item: Any) -> ItemProcessingResult:
+            """Synchronous wrapper for thread pool execution.
 
             Args:
                 idx: The index of the item.
-                item: The dataset item to process.
+                dataset_item: The dataset item to process.
             """
-            return run_async_safely(self._process_single_item(idx, item, run_id, name, task, evaluators))
+            return run_async_safely(self._process_single_item(idx, dataset_item, run_id, name, task, evaluators))
 
-        async def process_item(idx: int, item: Any) -> None:
-            """
-            Process a single item and handle its completion.
+        async def process_item(idx: int, dataset_item: Any) -> None:
+            """Process a single item and handle its completion.
 
             Args:
                 idx: The index of the item.
-                item: The dataset item to process.
+                dataset_item: The dataset item to process.
             """
-            result = await loop.run_in_executor(executor, process_item_sync, idx, item)
+            result = await loop.run_in_executor(executor, process_item_sync, idx, dataset_item)
             await on_item_completed(result)
 
-        with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as executor:
             await asyncio.gather(*[process_item(i, item) for i, item in enumerate(items)])
 
-        if bg_eval_tasks:
-            await asyncio.gather(*bg_eval_tasks, return_exceptions=True)
+        if background_evaluator_tasks:
+            await asyncio.gather(*background_evaluator_tasks, return_exceptions=True)
 
         self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
         return {"runId": run_id, "items": results}
@@ -344,10 +350,9 @@ class Evaluation:
         run_id: Optional[str],
         run_name: str,
         task: Callable[[Any], Any],
-        evaluators: Optional[List[Any]],
+        evaluators: Optional[list[Any]],
     ) -> ItemProcessingResult:
-        """
-        Process a single dataset item through the execution pipeline.
+        """Process a single dataset item through the execution pipeline.
 
         Args:
             idx: Index of the item in the dataset.
@@ -386,15 +391,14 @@ class Evaluation:
         )
 
     def _create_item_context(self, idx: int, item: Any) -> ItemContext:
-        """
-        Create an ItemContext from a dataset item.
+        """Create an ItemContext from a dataset item.
 
         Args:
             idx: The index of the item.
             item: The dataset item.
 
         Returns:
-            ItemContext: The created ItemContext.
+            The created ItemContext.
         """
         if isinstance(item, DatasetRecord):
             return ItemContext(
@@ -416,22 +420,21 @@ class Evaluation:
         run_name: str,
         ctx: ItemContext,
         task: Callable[[Any], Any],
-    ) -> Dict[str, Any]:
-        """
-        Execute the full pipeline for a single item.
+    ) -> dict[str, Any]:
+        """Execute the full pipeline for a single item.
 
         Args:
             run_id: The run ID.
             run_name: The name of the run.
             ctx: The item context.
             task: The task function to execute.
-            evaluators: Optional list of evaluators.
-            results: List to append results to.
-            bg_eval_tasks: List to append background evaluation tasks to.
-        """
-        span_name = f"TestRun.{run_name}"
 
-        with SpanWrapper(span_name, module_name="netra.evaluation") as span:
+        Returns:
+            A dict containing the item processing status.
+        """
+        span_name = f"{SPAN_NAME_PREFIX}.{run_name}"
+
+        with SpanWrapper(span_name, module_name=LOG_PREFIX) as span:
             otel_span = span.get_current_span()
             if otel_span:
                 span_context = otel_span.get_span_context()
@@ -446,55 +449,43 @@ class Evaluation:
                 "status": ctx.status,
             }
 
-    def _post_triggered_status(self, run_id: str, ctx: ItemContext) -> str:
-        """
-        Post agent_triggered status and return test_run_item_id.
+    def _post_completed_status(self, run_id: str, ctx: ItemContext) -> Optional[str]:
+        """Post completed/failed status with task output.
 
         Args:
             run_id: The run ID.
             ctx: The item context.
 
         Returns:
-            str: The test_run_item_id.
-        """
-        payload = build_item_payload(ctx, status="agent_triggered")
-        response = self._client.post_run_item(run_id, payload)
-
-        if isinstance(response, dict):
-            item_id = response.get("id") or response.get("testRunItemId")
-            if item_id:
-                return str(item_id)
-        return f"local-{ctx.index}"
-
-    def _post_completed_status(self, run_id: str, ctx: ItemContext) -> Any:
-        """
-        Post completed/failed status with task output.
-
-        Args:
-            run_id: The run ID.
-            ctx: The item context.
+            The run item id from the backend, or None.
         """
         payload = build_item_payload(ctx, status=ctx.status, include_output=True)
-        run_item_id = self._client.post_run_item(run_id, payload)
-        return run_item_id
+        return self._client.post_run_item(run_id, payload)
 
     async def _run_evaluators_for_item(
         self,
         run_id: str,
         ctx: ItemContext,
-        evaluators: List[Any],
+        evaluators: list[Any],
     ) -> None:
-        """
-        Run all evaluators for a single item after span ingestion.
+        """Run all evaluators for a single item after span ingestion.
 
         Args:
             run_id: The run ID.
             ctx: The item context.
             evaluators: List of evaluators.
         """
-        await self._client.wait_for_span_ingestion(ctx.span_id)
+        ingestion_ok = await self._client.wait_for_span_ingestion(ctx.span_id)
+        if not ingestion_ok:
+            logger.warning(
+                "%s: Span ingestion timed out for item %d (span_id=%s), skipping evaluator submission",
+                LOG_PREFIX,
+                ctx.index,
+                ctx.span_id,
+            )
+            return
 
-        evaluator_results: List[Dict[str, Any]] = []
+        evaluator_results: list[dict[str, Any]] = []
         for evaluator in evaluators:
             try:
                 result = await run_single_evaluator(
@@ -506,7 +497,14 @@ class Evaluation:
                 )
                 if result:
                     evaluator_results.append(result)
-            except Exception:
+            except Exception as exc:
+                logger.error(
+                    "%s: Evaluator '%s' failed for item %d: %s",
+                    LOG_PREFIX,
+                    getattr(getattr(evaluator, "config", None), "name", "unknown"),
+                    ctx.index,
+                    exc,
+                )
                 continue
 
         if evaluator_results and ctx.test_run_item_id:
