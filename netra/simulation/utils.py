@@ -1,16 +1,53 @@
 """Utility functions for the simulation module."""
 
 import asyncio
+import base64
+import concurrent.futures
 import logging
+import os
 import threading
-from typing import Awaitable, Optional, Tuple, TypeVar
+from typing import Awaitable, Optional, TypeVar
 
-from netra.simulation.models import TaskResult
+import httpx
+
+from netra.simulation.constants import (
+    DEFAULT_FILE_DOWNLOAD_TIMEOUT,
+    ENV_FILE_DOWNLOAD_TIMEOUT,
+    LOG_PREFIX,
+    MAX_FILE_DOWNLOAD_WORKERS,
+)
+from netra.simulation.models import FileData, ProcessedFile, TaskResult
 from netra.simulation.task import BaseTask
 
 logger = logging.getLogger(__name__)
 
-T = TypeVar("T")
+_T = TypeVar("_T")
+
+
+def parse_env_float(env_var: str, default: float) -> float:
+    """Read an environment variable and parse it as a float.
+
+    Args:
+        env_var: Name of the environment variable.
+        default: Value to return when the variable is unset or invalid.
+
+    Returns:
+        The parsed float, or *default* on failure.
+    """
+    raw = os.getenv(env_var)
+    if not raw:
+        return default
+    try:
+        return float(raw)
+    except ValueError:
+        logger.warning(
+            "%s: Invalid value '%s' for %s, using default %.1f",
+            LOG_PREFIX,
+            raw,
+            env_var,
+            default,
+        )
+        return default
 
 
 def format_trace_id(trace_id: int) -> str:
@@ -47,11 +84,14 @@ def validate_simulation_inputs(
     return True
 
 
-def run_async_safely(coro: Awaitable[T]) -> T:
-    """Run an async coroutine from sync code.
+def run_async_safely(coro: Awaitable[_T]) -> _T:
+    """Run an async coroutine from synchronous code.
 
-    If an event loop is already running, executes in a dedicated thread
-    to avoid 'asyncio.run() cannot be called from a running event loop'.
+    When called from a context that already has a running event loop (e.g. a
+    Jupyter notebook, or an async framework like FastAPI), ``asyncio.run()``
+    would raise.  In that case we spin up a **new daemon thread** with its own
+    event loop via ``asyncio.run()`` so the caller's loop is never blocked or
+    re-entered.
 
     Args:
         coro: The coroutine to execute.
@@ -68,7 +108,7 @@ def run_async_safely(coro: Awaitable[T]) -> T:
         loop = None
 
     if loop and loop.is_running():
-        result_holder: dict[str, T] = {}
+        result_holder: dict[str, _T] = {}
         error_holder: dict[str, BaseException] = {}
 
         def runner() -> None:
@@ -88,17 +128,76 @@ def run_async_safely(coro: Awaitable[T]) -> T:
     return asyncio.run(coro)  # type: ignore[arg-type]
 
 
+def _download_single_file(file_data: FileData, timeout: float) -> ProcessedFile:
+    """Download a single file and base64-encode its content.
+
+    Args:
+        file_data: Metadata for the file to download.
+        timeout: HTTP request timeout in seconds.
+
+    Returns:
+        A ProcessedFile with the base64-encoded content.
+
+    Raises:
+        RuntimeError: If the download or encoding fails.
+    """
+    try:
+        response = httpx.get(file_data.download_url, timeout=timeout)
+        response.raise_for_status()
+        encoded = base64.b64encode(response.content).decode("ascii")
+        return ProcessedFile(
+            file_name=file_data.file_name,
+            content_type=file_data.content_type,
+            description=file_data.description,
+            data=encoded,
+        )
+    except Exception as exc:
+        raise RuntimeError(f"Failed to download file '{file_data.file_name}': {exc}") from exc
+
+
+def process_files(files: list[FileData]) -> list[ProcessedFile]:
+    """Download files from pre-signed URLs and base64-encode their content.
+
+    Downloads run concurrently via a thread pool.  If any file fails, the
+    entire batch is aborted with a ``RuntimeError`` so that file-aware tasks
+    never receive a partial file list.
+
+    Args:
+        files: List of FileData objects containing download URLs.
+
+    Returns:
+        List of ProcessedFile objects with base64-encoded data.
+
+    Raises:
+        RuntimeError: If a file download or encoding fails.
+    """
+    if not files:
+        return []
+
+    timeout = parse_env_float(ENV_FILE_DOWNLOAD_TIMEOUT, DEFAULT_FILE_DOWNLOAD_TIMEOUT)
+
+    if len(files) == 1:
+        return [_download_single_file(files[0], timeout)]
+
+    max_workers = min(MAX_FILE_DOWNLOAD_WORKERS, len(files))
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = [pool.submit(_download_single_file, fd, timeout) for fd in files]
+        return [f.result() for f in futures]
+
+
 async def execute_task(
     task: BaseTask,
     message: str,
     session_id: Optional[str],
-) -> Tuple[str, Optional[str]]:
+    raw_files: Optional[list[FileData]] = None,
+) -> tuple[str, Optional[str]]:
     """Execute a task's run method (sync or async) and extract message and session_id.
 
     Args:
         task: The BaseTask instance to execute.
         message: The input message to pass to the task.
         session_id: The current session identifier.
+        raw_files: Raw file metadata from the backend.
 
     Returns:
         A tuple of (response_message, session_id).
@@ -106,7 +205,9 @@ async def execute_task(
     Raises:
         ValueError: If the task returns an unsupported type.
     """
-    result = task.run(message=message, session_id=session_id)
+    processed_files = process_files(raw_files) if raw_files else None
+
+    result = task.run(message=message, session_id=session_id, files=processed_files)
     if asyncio.iscoroutine(result):
         result = await result
 
