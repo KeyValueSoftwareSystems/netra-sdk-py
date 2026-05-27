@@ -628,7 +628,7 @@ def init_mistral_instrumentor() -> bool:
             from netra.instrumentation.mistralai import MistralAiInstrumentor
 
             instrumentor = MistralAiInstrumentor(
-                exception_logger=lambda e: logging.error("Error in Mistral instrumentor", exc_info=e),
+                exception_logger=lambda e: logging.exception("Error in Mistral instrumentor"),
             )
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
@@ -1417,6 +1417,6 @@ def init_subprocess_instrumentation() -> bool:
         if not instrumentor.is_instrumented_by_opentelemetry:
             instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing subprocess instrumentor: {e}")
+    except Exception:
+        logging.exception("Error initializing subprocess instrumentor")
         return False
