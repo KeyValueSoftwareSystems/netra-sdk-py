@@ -97,7 +97,7 @@ class Simulation:
             self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
             return result
         except Exception:
-            logger.error("%s: Run simulation failed", LOG_PREFIX, exc_info=True)
+            logger.exception("%s: Run simulation failed", LOG_PREFIX)
             self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
             return None
 
@@ -261,7 +261,7 @@ class Simulation:
 
             except Exception as exc:
                 error_msg = str(exc)
-                logger.error(
+                logger.exception(
                     "%s: Task failed run_item_id=%s, turn_id=%s: %s",
                     LOG_PREFIX,
                     run_item_id,

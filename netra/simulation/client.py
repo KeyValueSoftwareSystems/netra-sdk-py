@@ -77,8 +77,8 @@ class SimulationHttpClient:
 
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("%s: Failed to create HTTP client: %s", LOG_PREFIX, exc)
+        except Exception:
+            logger.exception("%s: Failed to create HTTP client", LOG_PREFIX)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -163,7 +163,7 @@ class SimulationHttpClient:
 
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: Failed to create simulation run: %s", LOG_PREFIX, error_msg)
+            logger.exception("%s: Failed to create simulation run: %s", LOG_PREFIX, error_msg)
             return None
 
     def trigger_conversation(
@@ -226,7 +226,7 @@ class SimulationHttpClient:
 
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg)
+            logger.exception("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg)
             raise
 
     def report_failure(self, run_id: str, run_item_id: str, error: str) -> None:
@@ -249,7 +249,7 @@ class SimulationHttpClient:
             logger.info("%s: Reported failure - %s", LOG_PREFIX, error)
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: Failed to report failure: %s", LOG_PREFIX, error_msg)
+            logger.exception("%s: Failed to report failure: %s", LOG_PREFIX, error_msg)
 
     def post_run_status(self, run_id: str, status: str) -> Any:
         """Submit the run status.
@@ -277,7 +277,7 @@ class SimulationHttpClient:
             return data
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: Failed to post run status for run '%s': %s", LOG_PREFIX, run_id, error_msg)
+            logger.exception("%s: Failed to post run status for run '%s': %s", LOG_PREFIX, run_id, error_msg)
             return {"success": False}
 
     @staticmethod

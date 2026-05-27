@@ -170,7 +170,7 @@ class Evaluation:
                     )
                 )
             except Exception as exc:
-                logger.error("%s: Failed to parse dataset item: %s", LOG_PREFIX, exc)
+                logger.exception("%s: Failed to parse dataset item: %s", LOG_PREFIX, exc)
         return GetDatasetItemsResponse(items=dataset_items)
 
     def create_run(
@@ -498,7 +498,7 @@ class Evaluation:
                 if result:
                     evaluator_results.append(result)
             except Exception as exc:
-                logger.error(
+                logger.exception(
                     "%s: Evaluator '%s' failed for item %d: %s",
                     LOG_PREFIX,
                     getattr(getattr(evaluator, "config", None), "name", "unknown"),

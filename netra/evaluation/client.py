@@ -84,8 +84,8 @@ class EvaluationHttpClient:
 
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("%s: Failed to initialize evaluation HTTP client: %s", LOG_PREFIX, exc)
+        except Exception:
+            logger.exception("%s: Failed to initialize evaluation HTTP client", LOG_PREFIX)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -173,7 +173,7 @@ class EvaluationHttpClient:
             return None
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: %s: %s", LOG_PREFIX, error_context, error_msg)
+            logger.exception("%s: %s: %s", LOG_PREFIX, error_context, error_msg)
             return None
 
     def _get_data(
@@ -204,7 +204,7 @@ class EvaluationHttpClient:
             return None
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: %s: %s", LOG_PREFIX, error_context, error_msg)
+            logger.exception("%s: %s: %s", LOG_PREFIX, error_context, error_msg)
             return None
 
     def create_dataset(
@@ -277,7 +277,7 @@ class EvaluationHttpClient:
             return None
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
-            logger.error("%s: Failed to fetch dataset '%s': %s", LOG_PREFIX, dataset_id, error_msg)
+            logger.exception("%s: Failed to fetch dataset '%s': %s", LOG_PREFIX, dataset_id, error_msg)
             return None
 
     def create_run(
