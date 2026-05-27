@@ -281,7 +281,7 @@ class SimulationHttpClient:
             return {"success": False}
 
     @staticmethod
-    def _parse_files(raw_files: Any) -> list[FileData]:
+    def _parse_files(raw_files: list[dict[str, str]] | None) -> list[FileData]:
         """Parse raw file entries from the backend response into FileData objects.
 
         Args:
