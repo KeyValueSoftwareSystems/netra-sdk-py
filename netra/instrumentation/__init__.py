@@ -4,30 +4,32 @@ from contextlib import redirect_stderr, redirect_stdout
 from io import StringIO
 from typing import AbstractSet, Any, Callable, Optional
 
-from traceloop.sdk import Instruments, Telemetry
+from traceloop.sdk import Instruments
 from traceloop.sdk.utils.package_check import is_package_installed
 
 from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS, CustomInstruments, InstrumentSet, NetraInstruments
 
 _ALL_SENTINEL = InstrumentSet.ALL
 
-# Traceloop instrumentors that Netra always replaces with its own custom
-# implementations.  These are unconditionally added to the traceloop block
-# list regardless of what the user passes.
+# Traceloop instrumentors that Netra always replaces with its own custom implementations
+# Built with getattr() so the SDK stays importable even when the installed
+# traceloop-sdk version lacks some of these enum members.
+_TRACELOOP_ALWAYS_BLOCKED_NAMES: tuple[str, ...] = (
+    "AGNO",
+    "WEAVIATE",
+    "QDRANT",
+    "GOOGLE_GENERATIVEAI",
+    "MISTRAL",
+    "OPENAI",
+    "GROQ",
+    "REDIS",
+    "PYMYSQL",
+    "REQUESTS",
+    "URLLIB3",
+    "COHERE",
+)
 _TRACELOOP_ALWAYS_BLOCKED: frozenset[Instruments] = frozenset(
-    {
-        Instruments.WEAVIATE,
-        Instruments.QDRANT,
-        Instruments.GOOGLE_GENERATIVEAI,
-        Instruments.MISTRAL,
-        Instruments.OPENAI,
-        Instruments.GROQ,
-        Instruments.REDIS,
-        Instruments.PYMYSQL,
-        Instruments.REQUESTS,
-        Instruments.URLLIB3,
-        Instruments.COHERE,
-    }
+    member for name in _TRACELOOP_ALWAYS_BLOCKED_NAMES if (member := getattr(Instruments, name, None)) is not None
 )
 
 
@@ -378,7 +380,7 @@ def init_instrumentations(
     if CustomInstruments.CEREBRAS in netra_custom_instruments:
         init_cerebras_instrumentation()
 
-    # Initialize cerebras instrumentation.
+    # Initialize cartesia instrumentation.
     if CustomInstruments.CARTESIA in netra_custom_instruments:
         init_cartesia_instrumentation()
 
@@ -399,15 +401,14 @@ def init_groq_instrumentation() -> bool:
     """Initialize Groq instrumentation."""
     try:
         if is_package_installed("groq"):
-            Telemetry().capture("instrumentation:groq:init")
             from netra.instrumentation.groq import NetraGroqInstrumentor
 
             instrumentor = NetraGroqInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Groq instrumentor")
         return False
 
 
@@ -420,9 +421,8 @@ def init_deepgram_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Deepgram instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Deepgram instrumentor")
         return False
 
 
@@ -434,16 +434,14 @@ def init_adk_instrumentation() -> bool:
     """
     try:
         if is_package_installed("google-adk"):
-            Telemetry().capture("instrumentation:adk:init")
             from netra.instrumentation.google_adk import NetraGoogleADKInstrumentor
 
             instrumentor = NetraGoogleADKInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing ADK instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing ADK instrumentor")
         return False
 
 
@@ -455,16 +453,14 @@ def init_agno_instrumentation() -> bool:
     """
     try:
         if is_package_installed("agno"):
-            Telemetry().capture("instrumentation:agno:init")
             from netra.instrumentation.agno import NetraAgnoInstrumentor
 
             instrumentor = NetraAgnoInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Agno instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Agno instrumentor")
         return False
 
 
@@ -476,16 +472,14 @@ def init_google_genai_instrumentation() -> bool:
     """
     try:
         if is_package_installed("google-genai"):
-            Telemetry().capture("instrumentation:genai:init")
             from netra.instrumentation.google_genai import NetraGoogleGenAiInstrumentor
 
             instrumentor = NetraGoogleGenAiInstrumentor()
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Google GenAI instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Google GenAI instrumentor")
         return False
 
 
@@ -503,9 +497,8 @@ def init_fastapi_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing FastAPI instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing FastAPI instrumentor")
         return False
 
 
@@ -523,9 +516,8 @@ def init_qdrant_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Qdrant instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Qdrant instrumentor")
         return False
 
 
@@ -543,9 +535,8 @@ def init_weviate_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Weaviate instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Weaviate instrumentor")
         return False
 
 
@@ -563,9 +554,8 @@ def init_httpx_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing HTTPX instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing HTTPX instrumentor")
         return False
 
 
@@ -583,9 +573,8 @@ def init_aiohttp_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing AIOHTTP instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing AIOHTTP instrumentor")
         return False
 
 
@@ -603,9 +592,8 @@ def init_cohere_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Cohere instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Cohere instrumentor")
         return False
 
 
@@ -624,9 +612,8 @@ def init_dspy_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing DSPy instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing DSPy instrumentor")
         return False
 
 
@@ -641,14 +628,13 @@ def init_mistral_instrumentor() -> bool:
             from netra.instrumentation.mistralai import MistralAiInstrumentor
 
             instrumentor = MistralAiInstrumentor(
-                exception_logger=lambda e: Telemetry().log_exception(e),
+                exception_logger=lambda e: logging.error("Error in Mistral instrumentor", exc_info=e),
             )
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"-----Error initializing Mistral instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Mistral instrumentor")
         return False
 
 
@@ -666,9 +652,8 @@ def init_litellm_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing LiteLLM instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing LiteLLM instrumentor")
         return False
 
 
@@ -686,9 +671,8 @@ def init_openai_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing OpenAI instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing OpenAI instrumentor")
         return False
 
 
@@ -702,9 +686,8 @@ def init_aio_pika_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing aio_pika instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing aio_pika instrumentor")
         return False
 
 
@@ -718,9 +701,8 @@ def init_aiokafka_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing aiokafka instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing aiokafka instrumentor")
         return False
 
 
@@ -734,9 +716,8 @@ def init_aiopg_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing aiopg instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing aiopg instrumentor")
         return False
 
 
@@ -750,9 +731,8 @@ def init_asyncclick_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing asyncclick instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing asyncclick instrumentor")
         return False
 
 
@@ -766,9 +746,8 @@ def init_asyncio_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing asyncio instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing asyncio instrumentor")
         return False
 
 
@@ -782,9 +761,8 @@ def init_asyncpg_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing asyncpg instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing asyncpg instrumentor")
         return False
 
 
@@ -798,9 +776,8 @@ def init_aws_lambda_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing aws_lambda instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing aws_lambda instrumentor")
         return False
 
 
@@ -814,9 +791,8 @@ def init_boto3sqs_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing boto3sqs instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing boto3sqs instrumentor")
         return False
 
 
@@ -830,9 +806,8 @@ def init_botocore_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing botocore instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing botocore instrumentor")
         return False
 
 
@@ -846,9 +821,8 @@ def init_cassandra_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing cassandra instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing cassandra instrumentor")
         return False
 
 
@@ -862,9 +836,8 @@ def init_celery_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing celery instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing celery instrumentor")
         return False
 
 
@@ -878,9 +851,8 @@ def init_click_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing click instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing click instrumentor")
         return False
 
 
@@ -894,9 +866,8 @@ def init_confluent_kafka_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing confluent_kafka instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing confluent_kafka instrumentor")
         return False
 
 
@@ -910,9 +881,8 @@ def init_django_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing django instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing django instrumentor")
         return False
 
 
@@ -926,9 +896,8 @@ def init_elasticsearch_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing elasticsearch instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing elasticsearch instrumentor")
         return False
 
 
@@ -942,9 +911,8 @@ def init_falcon_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing falcon instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing falcon instrumentor")
         return False
 
 
@@ -958,9 +926,8 @@ def init_flask_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing flask instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing flask instrumentor")
         return False
 
 
@@ -974,9 +941,8 @@ def init_grpc_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing grpc instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing grpc instrumentor")
         return False
 
 
@@ -990,9 +956,8 @@ def init_jinja2_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing jinja2 instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing jinja2 instrumentor")
         return False
 
 
@@ -1006,9 +971,8 @@ def init_kafka_python_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing kafka_python instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing kafka_python instrumentor")
         return False
 
 
@@ -1022,9 +986,8 @@ def init_logging_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing logging instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing logging instrumentor")
         return False
 
 
@@ -1038,9 +1001,8 @@ def init_mysql_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing mysql instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing mysql instrumentor")
         return False
 
 
@@ -1054,9 +1016,8 @@ def init_mysqlclient_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing mysqlclient instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing mysqlclient instrumentor")
         return False
 
 
@@ -1070,9 +1031,8 @@ def init_pika_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pika instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pika instrumentor")
         return False
 
 
@@ -1086,9 +1046,8 @@ def init_psycopg_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing psycopg instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing psycopg instrumentor")
         return False
 
 
@@ -1102,9 +1061,8 @@ def init_psycopg2_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing psycopg2 instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing psycopg2 instrumentor")
         return False
 
 
@@ -1118,9 +1076,8 @@ def init_pymemcache_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pymemcache instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pymemcache instrumentor")
         return False
 
 
@@ -1134,9 +1091,8 @@ def init_pymongo_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pymongo instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pymongo instrumentor")
         return False
 
 
@@ -1150,9 +1106,8 @@ def init_pymssql_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pymssql instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pymssql instrumentor")
         return False
 
 
@@ -1166,9 +1121,8 @@ def init_pymysql_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pymysql instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pymysql instrumentor")
         return False
 
 
@@ -1182,9 +1136,8 @@ def init_redis_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing redis instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing redis instrumentor")
         return False
 
 
@@ -1198,9 +1151,8 @@ def init_remoulade_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing remoulade instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing remoulade instrumentor")
         return False
 
 
@@ -1214,9 +1166,8 @@ def init_requests_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing requests instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing requests instrumentor")
         return False
 
 
@@ -1230,9 +1181,8 @@ def init_sqlalchemy_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing sqlalchemy instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing sqlalchemy instrumentor")
         return False
 
 
@@ -1246,9 +1196,8 @@ def init_sqlite3_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing sqlite3 instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing sqlite3 instrumentor")
         return False
 
 
@@ -1262,9 +1211,8 @@ def init_starlette_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing starlette instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing starlette instrumentor")
         return False
 
 
@@ -1278,9 +1226,8 @@ def init_system_metrics_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing system_metrics instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing system_metrics instrumentor")
         return False
 
 
@@ -1293,9 +1240,8 @@ def init_threading_instrumentation() -> bool:
         if not instrumentor.is_instrumented_by_opentelemetry:
             instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing threading instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing threading instrumentor")
         return False
 
 
@@ -1309,9 +1255,8 @@ def init_tornado_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing tornado instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing tornado instrumentor")
         return False
 
 
@@ -1325,9 +1270,8 @@ def init_tortoiseorm_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing tortoiseorm instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing tortoiseorm instrumentor")
         return False
 
 
@@ -1340,9 +1284,8 @@ def init_urllib_instrumentation() -> bool:
         if not instrumentor.is_instrumented_by_opentelemetry:
             instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing urllib instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing urllib instrumentor")
         return False
 
 
@@ -1356,9 +1299,8 @@ def init_urllib3_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing urllib3 instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing urllib3 instrumentor")
         return False
 
 
@@ -1381,9 +1323,8 @@ def init_pydantic_ai_instrumentation() -> bool:
         else:
             return False
         return True
-    except Exception as e:
-        logging.error(f"Error initializing pydantic-ai instrumentation: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing pydantic-ai instrumentation")
         return False
 
 
@@ -1401,9 +1342,8 @@ def init_cerebras_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Cerebras instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Cerebras instrumentor")
         return False
 
 
@@ -1421,9 +1361,8 @@ def init_cartesia_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Cartesia instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Cartesia instrumentor")
         return False
 
 
@@ -1441,9 +1380,8 @@ def init_elevenlabs_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Elevenlabs instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Elevenlabs instrumentor")
         return False
 
 
@@ -1461,9 +1399,8 @@ def init_claude_agent_sdk_instrumentation() -> bool:
             if not instrumentor.is_instrumented_by_opentelemetry:
                 instrumentor.instrument()
         return True
-    except Exception as e:
-        logging.error(f"Error initializing Claude Agent SDK instrumentor: {e}")
-        Telemetry().log_exception(e)
+    except Exception:
+        logging.exception("Error initializing Claude Agent SDK instrumentor")
         return False
 
 
