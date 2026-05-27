@@ -291,6 +291,12 @@ class Netra:
                         meter_provider.shutdown()
                 except Exception:
                     pass
+            # Close simulation HTTP client
+            if hasattr(cls, "simulation") and cls.simulation is not None:
+                try:
+                    cls.simulation.close()
+                except Exception:
+                    pass
 
     @classmethod
     def get_meter(cls, name: str = "netra", version: Optional[str] = None) -> otel_metrics.Meter:
