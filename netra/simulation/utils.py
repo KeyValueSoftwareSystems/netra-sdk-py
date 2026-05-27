@@ -193,6 +193,10 @@ async def execute_task(
 ) -> tuple[str, Optional[str]]:
     """Execute a task's run method (sync or async) and extract message and session_id.
 
+    Files are only downloaded and base64-encoded when the task's run() method
+    actually accepts a ``files`` parameter, avoiding unnecessary network I/O
+    for legacy tasks.
+
     Args:
         task: The BaseTask instance to execute.
         message: The input message to pass to the task.

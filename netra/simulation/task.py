@@ -87,6 +87,12 @@ class BaseTask(ABC):
         This method can be sync or async. If async, the framework will
         await the coroutine automatically.
 
+        The base signature requires only ``message`` and ``session_id``.
+        Subclasses that handle file attachments should declare an additional
+        ``files: Optional[list[ProcessedFile]] = None`` parameter — the
+        framework will supply it automatically when the dataset item includes
+        file attachments.
+
         Args:
             message: The input message from the simulation.
             session_id: Optional session identifier for conversation continuity.
