@@ -2,19 +2,19 @@
 Utilities for wrapping stream objects so that when iteration completes, the
 accumulated output is automatically set on the root span of the current trace.
 
-Two flows are supported:
+Three flows are supported:
 
-    Flow 1 — Netra-wrapped stream (``_netra_stream_wrapper = True``)
+    1. Netra-wrapped stream (``_netra_stream_wrapper = True``)
         The inner instrumentation wrapper has already accumulated the output
         in ``_netra_output``.  The outer tap simply delegates iteration and
         reads that attribute once the inner wrapper signals exhaustion.
 
-    Flow 3 — Generic / unknown stream
+    2. Generic / unknown stream
         Any iterable whose type Netra does not know about.  Chunks are
         converted to strings via ``str(chunk)`` and concatenated.
 
-Objects that carry no iterator protocol are returned unchanged with a
-warning log (Flow 4).
+    3. Objects that carry no iterator protocol are returned unchanged with a
+    warning log.
 """
 
 import logging

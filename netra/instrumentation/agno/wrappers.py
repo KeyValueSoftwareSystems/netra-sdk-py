@@ -224,6 +224,7 @@ class _AgentStreamOutputMixin:
 
     def _set_output_on_success(self) -> None:
         """Write accumulated run content and token usage to the span before it closes."""
+        self._netra_output = ""
         if self._last_response is not None:
             output = set_response_attributes(self._span, self._last_response)
             self._netra_output = output if output else ""
