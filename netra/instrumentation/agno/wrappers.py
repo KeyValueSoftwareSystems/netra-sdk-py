@@ -157,6 +157,8 @@ def _set_common_span_attributes(span: Span, entity_type: str) -> None:
 class _BaseStreamWrapper:
     """Shared base for all span streaming wrappers."""
 
+    _netra_stream_wrapper = True
+
     def __init__(self, span: Span, response: Any, ctx_token: Any = None) -> None:
         """Initialise the streaming wrapper.
 
@@ -225,7 +227,9 @@ class _AgentStreamOutputMixin:
         if self._last_response is not None:
             set_response_attributes(self._span, self._last_response)
         if self._content_chunks:
-            self._span.set_attribute("output", "".join(self._content_chunks))
+            output = "".join(self._content_chunks)
+            self._span.set_attribute("output", output)
+            self._netra_output = output
 
 
 class _LlmStreamOutputMixin:
@@ -258,6 +262,7 @@ class _LlmStreamOutputMixin:
         if output_str:
             self._span.set_attribute("output", output_str)
             set_llm_completion_attributes(self._span, output_str)
+            self._netra_output = output_str
         if self._last_response is not None:
             usage = extract_token_usage(self._last_response)
             if usage:

@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.89] - 2026-05-28
+
+- Add utility for adding streaming output on root span
+
+
 ## [0.1.88] - 2026-05-20
 
 - Auto instrument subprocess module to automatically set current context as traceparent in sub-process environment whenever a new sub-process is created.
@@ -275,4 +280,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.87]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.89]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
