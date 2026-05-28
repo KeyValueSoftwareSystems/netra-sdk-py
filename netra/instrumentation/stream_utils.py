@@ -18,7 +18,7 @@ warning log (Flow 4).
 """
 
 import logging
-from typing import Any, Callable, List
+from typing import Any, Callable, List, Union
 
 from opentelemetry.trace import Span
 
@@ -39,7 +39,7 @@ def _set_output_on_root(root_span: Span, output: Any) -> None:
 
 
 # Extractors — injected at construction time, kept stateless
-def _netra_extractor(wrapper: "RootOutputSyncStreamWrapper" | "RootOutputAsyncStreamWrapper") -> Any:
+def _netra_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutputAsyncStreamWrapper"]) -> Any:
     """Read accumulated output from the inner Netra wrapper."""
     inner = wrapper._stream
     output = getattr(inner, "_netra_output", None)
@@ -52,7 +52,7 @@ def _netra_extractor(wrapper: "RootOutputSyncStreamWrapper" | "RootOutputAsyncSt
     return None
 
 
-def _generic_extractor(wrapper: "RootOutputSyncStreamWrapper" | "RootOutputAsyncStreamWrapper") -> Any:
+def _generic_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutputAsyncStreamWrapper"]) -> Any:
     """Return the concatenated stringified chunks."""
     return "".join(wrapper._chunks)
 
@@ -184,7 +184,7 @@ def wrap_stream_for_root_output(stream: Any, root_span: Span) -> Any:
         original *stream* unchanged if it is not iterable.
     """
     is_netra = getattr(stream, "_netra_stream_wrapper", False)
-    extractor: Callable[["RootOutputSyncStreamWrapper" | "RootOutputAsyncStreamWrapper"], Any] = (
+    extractor: Callable[[Union["RootOutputSyncStreamWrapper", "RootOutputAsyncStreamWrapper"]], Any] = (
         _netra_extractor if is_netra else _generic_extractor
     )
 
