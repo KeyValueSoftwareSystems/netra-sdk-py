@@ -243,9 +243,11 @@ class _LlmStreamOutputMixin:
     def _set_output_on_success(self) -> None:
         """Write accumulated LLM content, token usage, and timing metrics to the span."""
         output_str = None
+        self._netra_output = ""
         if self._content_chunks:
             content = "".join(self._content_chunks)
             output_str = json.dumps([{"role": "assistant", "content": content}])
+            self._netra_output = content
         elif self._tool_calls:
             try:
                 tc_serialized = serialize_value(self._tool_calls, clean=True)
@@ -255,14 +257,15 @@ class _LlmStreamOutputMixin:
                     except (json.JSONDecodeError, ValueError):
                         tc_data = tc_serialized
                     output_str = json.dumps([{"role": "assistant", "tool_calls": tc_data}])
+                    self._netra_output = tc_serialized
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to serialize tool_calls for LLM output: %s", e)
         elif self._last_response is not None:
             output_str = format_response_as_output(self._last_response)
+            self._netra_output = output_str if output_str else ""
         if output_str:
             self._span.set_attribute("output", output_str)
             set_llm_completion_attributes(self._span, output_str)
-            self._netra_output = output_str
         if self._last_response is not None:
             usage = extract_token_usage(self._last_response)
             if usage:

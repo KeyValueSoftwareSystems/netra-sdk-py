@@ -35,7 +35,7 @@ def _set_output_on_root(root_span: Span, output: Any) -> None:
         if serialized:
             root_span.set_attribute(NETRA_USER_OUTPUT, serialized)
     except Exception:
-        logger.debug("root_output_stream: failed to set output on root span", exc_info=True)
+        logger.warning("root_output_stream: failed to set output on root span", exc_info=True)
 
 
 # Extractors — injected at construction time, kept stateless
@@ -45,10 +45,6 @@ def _netra_extractor(wrapper: "RootOutputSyncStreamWrapper" | "RootOutputAsyncSt
     output = getattr(inner, "_netra_output", None)
     if output is not None:
         return output
-    # Fallback for wrappers that store the accumulated dict under a different name
-    complete = getattr(inner, "_complete_response", None)
-    if complete is not None:
-        return complete
     # Nested wrapping: inner is another RootOutput* wrapper with _chunks
     chunks = getattr(inner, "_chunks", None)
     if chunks is not None:
@@ -72,6 +68,7 @@ class RootOutputSyncStreamWrapper:
         self._root_span = root_span
         self._extractor = extractor
         self._chunks: List[str] = []
+        self._track_chunks: bool = extractor is _generic_extractor
         self._committed = False
 
     def __iter__(self) -> "RootOutputSyncStreamWrapper":
@@ -80,7 +77,8 @@ class RootOutputSyncStreamWrapper:
     def __next__(self) -> Any:
         try:
             chunk = next(self._stream)
-            self._chunks.append(str(chunk))
+            if self._track_chunks:
+                self._chunks.append(str(chunk))
             return chunk
         except StopIteration:
             self._commit()
@@ -125,6 +123,7 @@ class RootOutputAsyncStreamWrapper:
         self._root_span = root_span
         self._extractor = extractor
         self._chunks: List[str] = []
+        self._track_chunks: bool = extractor is _generic_extractor
         self._committed = False
 
     def __aiter__(self) -> "RootOutputAsyncStreamWrapper":
@@ -133,7 +132,8 @@ class RootOutputAsyncStreamWrapper:
     async def __anext__(self) -> Any:
         try:
             chunk = await self._stream.__anext__()
-            self._chunks.append(str(chunk))
+            if self._track_chunks:
+                self._chunks.append(str(chunk))
             return chunk
         except StopAsyncIteration:
             self._commit()
