@@ -15,6 +15,11 @@ _COMPLETION_RE = re.compile(r"^gen_ai\.completions?\.(\d+)\.(role|content)$")
 _TRACELOOP_PREFIX = "traceloop."
 _NETRA_PREFIX = "netra."
 
+_USAGE_INPUT_TOKENS = "gen_ai.usage.input_tokens"
+_USAGE_PROMPT_TOKENS = "gen_ai.usage.prompt_tokens"
+_USAGE_OUTPUT_TOKENS = "gen_ai.usage.output_tokens"
+_USAGE_COMPLETION_TOKENS = "gen_ai.usage.completion_tokens"
+
 SetAttributeFunc = Callable[[str, Any], None]
 
 
@@ -245,7 +250,16 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     original(new_key, value)
                     return
 
-                # 6. Everything else — pass through unchanged
+                # 6. gen_ai.usage token aliasing
+                if key == _USAGE_INPUT_TOKENS:
+                    original(_USAGE_PROMPT_TOKENS, value)
+                    return
+
+                if key == _USAGE_OUTPUT_TOKENS:
+                    original(_USAGE_COMPLETION_TOKENS, value)
+                    return
+
+                # 7. Everything else — pass through unchanged
                 original(key, value)
 
             except Exception:
