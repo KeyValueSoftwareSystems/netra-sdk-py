@@ -941,7 +941,7 @@ def set_request_attributes(
         span.set_attribute("input", input_content)
 
 
-def set_response_attributes(span: Span, response: Any) -> None:
+def set_response_attributes(span: Span, response: Any) -> Optional[str]:
     """Set response-side span attributes from an Agno response object.
 
     Writes token usage, output content, response ID, and output type.
@@ -951,7 +951,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
         response: The Agno response object (RunResponse, TeamRunOutput, etc.).
     """
     if not span.is_recording():
-        return
+        return None
 
     usage = extract_token_usage(response)
     if usage:
@@ -964,6 +964,8 @@ def set_response_attributes(span: Span, response: Any) -> None:
     response_id = extract_response_id(response)
     if response_id:
         span.set_attribute(ATTR_RESPONSE_ID, response_id)
+
+    return output
 
 
 def sanitize_headers(raw_headers: List[Tuple[bytes, bytes]]) -> Dict[str, str]:
