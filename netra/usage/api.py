@@ -1,62 +1,70 @@
 import logging
-from typing import Any, Iterator, Literal, Optional
+from typing import Iterator, Literal, Optional
 
+from netra.client import parse_paginated_response
 from netra.config import Config
 from netra.usage.client import UsageHttpClient
+from netra.usage.constants import LOG_PREFIX
 from netra.usage.models import SessionUsageData, SpansPage, TenantUsageData, TracesPage, TraceSpan, TraceSummary
+from netra.usage.utils import parse_trace_spans, parse_trace_summaries
 
 logger = logging.getLogger(__name__)
 
 
 class Usage:
-    """Public entry-point exposed as Netra.usage"""
+    """Public entry-point exposed as Netra.usage."""
+
+    __slots__ = ("_config", "_client")
 
     def __init__(self, cfg: Config) -> None:
-        """
-        Initialize the usage client.
+        """Initialize the usage client.
 
         Args:
-            cfg: Configuration object with usage settings
+            cfg: Configuration object with usage settings.
         """
         self._config = cfg
         self._client = UsageHttpClient(cfg)
+
+    def close(self) -> None:
+        """Release resources held by the usage client."""
+        self._client.close()
 
     def get_session_usage(
         self,
         session_id: str,
         start_time: str,
         end_time: str,
-    ) -> SessionUsageData | Any:
-        """
-        Get session usage data.
+    ) -> Optional[SessionUsageData]:
+        """Get session usage data.
 
         Args:
-            session_id: Session identifier
-            start_time: Start time for the usage data (in ISO 8601 UTC format)
-            end_time: End time for the usage data (in ISO 8601 UTC format)
+            session_id: Session identifier.
+            start_time: Start time for the usage data (in ISO 8601 UTC format).
+            end_time: End time for the usage data (in ISO 8601 UTC format).
 
         Returns:
-            SessionUsageData: Session usage data
+            SessionUsageData on success, or None on failure.
         """
         if not session_id:
-            logger.error("netra.usage: session_id is required to fetch session usage")
+            logger.error("%s: session_id is required to fetch session usage", LOG_PREFIX)
             return None
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to fetch session usage")
+            logger.error("%s: start_time and end_time are required to fetch session usage", LOG_PREFIX)
             return None
+
         result = self._client.get_session_usage(session_id, start_time=start_time, end_time=end_time)
-        session_id = result.get("session_id", "")
-        if not session_id:
+        if result is None:
             return None
-        token_count = result.get("tokenCount", 0)
-        request_count = result.get("requestsCount", 0)
-        total_cost = result.get("totalCost", 0.0)
+
+        session_id_value = result.get("session_id", "")
+        if not session_id_value:
+            return None
 
         return SessionUsageData(
-            session_id=session_id,
-            token_count=token_count,
-            request_count=request_count,
-            total_cost=total_cost,
+            session_id=session_id_value,
+            token_count=result.get("tokenCount", 0),
+            request_count=result.get("requestsCount", 0),
+            total_cost=result.get("totalCost", 0.0),
         )
 
     def get_tenant_usage(
@@ -64,40 +72,39 @@ class Usage:
         tenant_id: str,
         start_time: str,
         end_time: str,
-    ) -> TenantUsageData | Any:
-        """
-        Get tenant usage data.
+    ) -> Optional[TenantUsageData]:
+        """Get tenant usage data.
 
         Args:
-            tenant_id: Tenant identifier
-            start_time: Start time for the usage data (in ISO 8601 UTC format)
-            end_time: End time for the usage data (in ISO 8601 UTC format)
+            tenant_id: Tenant identifier.
+            start_time: Start time for the usage data (in ISO 8601 UTC format).
+            end_time: End time for the usage data (in ISO 8601 UTC format).
 
         Returns:
-            TenantUsageData: Tenant usage data
+            TenantUsageData on success, or None on failure.
         """
         if not tenant_id:
-            logger.error("netra.usage: tenant_id is required to fetch tenant usage")
+            logger.error("%s: tenant_id is required to fetch tenant usage", LOG_PREFIX)
             return None
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to fetch tenant usage")
+            logger.error("%s: start_time and end_time are required to fetch tenant usage", LOG_PREFIX)
             return None
+
         result = self._client.get_tenant_usage(tenant_id, start_time=start_time, end_time=end_time)
-        tenant_id = result.get("tenant_id", "")
-        if not tenant_id:
+        if result is None:
             return None
-        organisation_id = result.get("organisation_id")
-        token_count = result.get("tokenCount", 0)
-        request_count = result.get("requestsCount", 0)
-        session_count = result.get("sessionsCount", 0)
-        total_cost = result.get("totalCost", 0.0)
+
+        tenant_id_value = result.get("tenant_id", "")
+        if not tenant_id_value:
+            return None
+
         return TenantUsageData(
-            tenant_id=tenant_id,
-            organisation_id=organisation_id,
-            token_count=token_count,
-            request_count=request_count,
-            session_count=session_count,
-            total_cost=total_cost,
+            tenant_id=tenant_id_value,
+            organisation_id=result.get("organisation_id"),
+            token_count=result.get("tokenCount", 0),
+            request_count=result.get("requestsCount", 0),
+            session_count=result.get("sessionsCount", 0),
+            total_cost=result.get("totalCost", 0.0),
         )
 
     def list_traces(
@@ -113,28 +120,27 @@ class Usage:
         direction: Optional[Literal["up", "down"]] = "down",
         sort_field: Optional[str] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
-    ) -> TracesPage | Any:
-        """
-        List all traces.
+    ) -> Optional[TracesPage]:
+        """List all traces.
 
         Args:
-            start_time: Start time for the traces (in ISO 8601 UTC format)
-            end_time: End time for the traces (in ISO 8601 UTC format)
-            trace_id: Search based on trace_id, if provided
-            session_id: Search based on session_id, if provided
-            user_id: Search based on user_id, if provided
-            tenant_id: Search based on tenant_id, if provided
-            limit: Maximum number of traces to return
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            sort_field: Field to sort by
-            sort_order: Order to sort by
+            start_time: Start time for the traces (in ISO 8601 UTC format).
+            end_time: End time for the traces (in ISO 8601 UTC format).
+            trace_id: Search based on trace_id, if provided.
+            session_id: Search based on session_id, if provided.
+            user_id: Search based on user_id, if provided.
+            tenant_id: Search based on tenant_id, if provided.
+            limit: Maximum number of traces to return.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            sort_field: Field to sort by.
+            sort_order: Order to sort by.
 
         Returns:
-            TracesPage: Traces page
+            TracesPage on success, or None on failure.
         """
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to list traces")
+            logger.error("%s: start_time and end_time are required to list traces", LOG_PREFIX)
             return None
 
         result = self._client.list_traces(
@@ -151,20 +157,11 @@ class Usage:
             sort_order=sort_order,
         )
 
-        if not isinstance(result, dict):
-            return result
+        if result is None:
+            return None
 
-        data_block = result.get("data", {}) or {}
-        items = data_block.get("data", []) or []
-        page_info = data_block.get("pageInfo", {}) or {}
-        has_next_page = bool(page_info.get("hasNextPage", False))
-        next_cursor: Optional[str] = None
-        if items:
-            last_item = items[-1]
-            if isinstance(last_item, dict):
-                next_cursor = last_item.get("cursor")
-
-        traces = [TraceSummary(**item) for item in items if isinstance(item, dict)]
+        items, has_next_page, next_cursor = parse_paginated_response(result, items_key="data")
+        traces = parse_trace_summaries(items)
         return TracesPage(traces=traces, has_next_page=has_next_page, next_cursor=next_cursor)
 
     def list_spans_by_trace_id(
@@ -174,22 +171,21 @@ class Usage:
         direction: Optional[Literal["up", "down"]] = "down",
         limit: Optional[int] = None,
         span_name: Optional[str] = None,
-    ) -> SpansPage | Any:
-        """
-        List all spans for a given trace.
+    ) -> Optional[SpansPage]:
+        """List all spans for a given trace.
 
         Args:
-            trace_id: Trace identifier
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            limit: Maximum number of spans to return
-            span_name: Search with span name or span kind name for the spans
+            trace_id: Trace identifier.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            limit: Maximum number of spans to return.
+            span_name: Search with span name or span kind name for the spans.
 
         Returns:
-            SpansPage: Spans page
+            SpansPage on success, or None on failure.
         """
         if not trace_id:
-            logger.error("netra.usage: trace_id is required to list spans")
+            logger.error("%s: trace_id is required to list spans", LOG_PREFIX)
             return None
 
         result = self._client.list_spans_by_trace_id(
@@ -200,20 +196,11 @@ class Usage:
             span_name=span_name,
         )
 
-        if not isinstance(result, dict):
-            return result
+        if result is None:
+            return None
 
-        data_block = result.get("data", {}) or {}
-        items = data_block.get("data", []) or []
-        page_info = data_block.get("pageInfo", {}) or {}
-        has_next_page = bool(page_info.get("hasNextPage", False))
-        next_cursor: Optional[str] = None
-        if items:
-            last_item = items[-1]
-            if isinstance(last_item, dict):
-                next_cursor = last_item.get("cursor")
-
-        spans = [TraceSpan(**item) for item in items if isinstance(item, dict)]
+        items, has_next_page, next_cursor = parse_paginated_response(result, items_key="data")
+        spans = parse_trace_spans(items)
         return SpansPage(spans=spans, has_next_page=has_next_page, next_cursor=next_cursor)
 
     def iter_traces(
@@ -230,30 +217,29 @@ class Usage:
         sort_field: Optional[str] = None,
         sort_order: Optional[Literal["asc", "desc"]] = None,
     ) -> Iterator[TraceSummary]:
-        """
-        Iterate over traces using cursor-based pagination.
+        """Iterate over traces using cursor-based pagination.
 
-        This is a thin convenience helper over list_traces that repeatedly
+        This is a convenience helper over list_traces that repeatedly
         fetches pages and yields individual TraceSummary items.
 
         Args:
-            start_time: Start time for the traces (in ISO 8601 UTC format)
-            end_time: End time for the traces (in ISO 8601 UTC format)
-            trace_id: Search based on trace_id, if provided
-            session_id: Search based on session_id, if provided
-            user_id: Search based on user_id, if provided
-            tenant_id: Search based on tenant_id, if provided
-            limit: Maximum number of traces to return
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            sort_field: Field to sort by
-            sort_order: Order to sort by
+            start_time: Start time for the traces (in ISO 8601 UTC format).
+            end_time: End time for the traces (in ISO 8601 UTC format).
+            trace_id: Search based on trace_id, if provided.
+            session_id: Search based on session_id, if provided.
+            user_id: Search based on user_id, if provided.
+            tenant_id: Search based on tenant_id, if provided.
+            limit: Maximum number of traces to return.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            sort_field: Field to sort by.
+            sort_order: Order to sort by.
 
-        Returns:
-            Iterator[TraceSummary]: Iterator over TraceSummary items
+        Yields:
+            TraceSummary items from all pages.
         """
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to iterate traces")
+            logger.error("%s: start_time and end_time are required to iterate traces", LOG_PREFIX)
             return
 
         current_cursor = cursor
@@ -272,9 +258,7 @@ class Usage:
                 sort_order=sort_order,
             )
 
-            if not isinstance(page, TracesPage):
-                # If backend or configuration error returns a non-page payload,
-                # stop iteration instead of raising.
+            if page is None:
                 break
 
             for trace in page.traces:
@@ -293,25 +277,23 @@ class Usage:
         limit: Optional[int] = None,
         span_name: Optional[str] = None,
     ) -> Iterator[TraceSpan]:
-        """
-        Iterate over spans for a given trace using cursor-based pagination.
+        """Iterate over spans for a given trace using cursor-based pagination.
 
-        This is a thin convenience helper over list_spans_by_trace_id that
+        This is a convenience helper over list_spans_by_trace_id that
         repeatedly fetches pages and yields individual TraceSpan items.
 
         Args:
-            trace_id: Trace identifier
-            cursor: Cursor for pagination
-            direction: Direction of pagination
-            limit: Maximum number of spans to return
-            span_name: Search with span name or span kind name for the spans
+            trace_id: Trace identifier.
+            cursor: Cursor for pagination.
+            direction: Direction of pagination.
+            limit: Maximum number of spans to return.
+            span_name: Search with span name or span kind name for the spans.
 
-        Returns:
-            Iterator[TraceSpan]: Iterator over TraceSpan items
+        Yields:
+            TraceSpan items from all pages.
         """
-
         if not trace_id:
-            logger.error("netra.usage: trace_id is required to iterate spans")
+            logger.error("%s: trace_id is required to iterate spans", LOG_PREFIX)
             return
 
         current_cursor = cursor
@@ -324,7 +306,7 @@ class Usage:
                 span_name=span_name,
             )
 
-            if not isinstance(page, SpansPage):
+            if page is None:
                 break
 
             for span in page.spans:

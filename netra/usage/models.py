@@ -12,7 +12,7 @@ class SessionUsageData(BaseModel):  # type:ignore[misc]
 
 class TenantUsageData(BaseModel):  # type:ignore[misc]
     tenant_id: str
-    organisation_id: str
+    organisation_id: Optional[str] = None
     token_count: int
     request_count: int
     session_count: int

@@ -1,8 +1,10 @@
 import logging
-from typing import Any, Iterator, List, Optional
+from typing import Any, Dict, Iterator, List, Optional
 
+from netra.client import parse_paginated_response
 from netra.config import Config
 from netra.dashboard.client import DashboardHttpClient
+from netra.dashboard.constants import LOG_PREFIX
 from netra.dashboard.models import (
     ChartType,
     Dimension,
@@ -11,7 +13,6 @@ from netra.dashboard.models import (
     Scope,
     SessionFilter,
     SessionFilterConfig,
-    SessionStatsData,
     SessionStatsResult,
     SortField,
     SortOrder,
@@ -21,17 +22,22 @@ logger = logging.getLogger(__name__)
 
 
 class Dashboard:
-    """Public entry-point exposed as Netra.dashboard"""
+    """Public entry-point exposed as Netra.dashboard."""
+
+    __slots__ = ("_config", "_client")
 
     def __init__(self, cfg: Config) -> None:
-        """
-        Initialize the dashboard client.
+        """Initialize the dashboard client.
 
         Args:
-            cfg: Configuration object with dashboard settings
+            cfg: Configuration object with dashboard settings.
         """
         self._config = cfg
         self._client = DashboardHttpClient(cfg)
+
+    def close(self) -> None:
+        """Release resources held by the dashboard client."""
+        self._client.close()
 
     def query_data(
         self,
@@ -40,12 +46,11 @@ class Dashboard:
         metrics: Metrics,
         filter: FilterConfig,
         dimension: Optional[Dimension] = None,
-    ) -> Any:
-        """
-        Execute a dynamic query for dashboards to retrieve metrics and time-series data.
+    ) -> Optional[Any]:
+        """Execute a dynamic query for dashboards to retrieve metrics and time-series data.
 
         Args:
-            scope: The scope of data to query (DashboardScope.SPANS or DashboardScope.TRACES).
+            scope: The scope of data to query (Scope.SPANS or Scope.TRACES).
             chart_type: The type of chart visualization.
             metrics: Metrics configuration with measure and aggregation.
             filter: Filter configuration with time range, groupBy, and optional filters.
@@ -54,7 +59,6 @@ class Dashboard:
         Returns:
             Dict containing timeRange and data, or None on error.
         """
-
         if not isinstance(scope, Scope):
             raise TypeError(f"scope must be a Scope, got {type(scope).__name__}")
         if not isinstance(chart_type, ChartType):
@@ -66,14 +70,13 @@ class Dashboard:
         if dimension is not None and not isinstance(dimension, Dimension):
             raise TypeError(f"dimension must be a Dimension or None, got {type(dimension).__name__}")
 
-        result = self._client.query_data(
+        return self._client.query_data(
             scope=scope,
             chart_type=chart_type,
             metrics=metrics,
             filter=filter,
             dimension=dimension,
         )
-        return result
 
     def get_session_stats(
         self,
@@ -84,9 +87,8 @@ class Dashboard:
         cursor: Optional[str] = None,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
-    ) -> SessionStatsResult | Any:
-        """
-        Get session statistics with pagination.
+    ) -> Optional[SessionStatsResult]:
+        """Get session statistics with pagination.
 
         Args:
             start_time: Start of the time window (ISO 8601 UTC timestamp).
@@ -98,10 +100,10 @@ class Dashboard:
             sort_order: Sort order (asc/desc).
 
         Returns:
-            SessionStatsResult containing session data and pagination info.
+            SessionStatsResult containing session data and pagination info, or None on error.
         """
         if not start_time or not end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to fetch session stats")
+            logger.error("%s: start_time and end_time are required to fetch session stats", LOG_PREFIX)
             return None
 
         result = self._client.get_session_stats(
@@ -114,20 +116,10 @@ class Dashboard:
             sort_order=sort_order,
         )
 
-        if not isinstance(result, dict):
-            return result
+        if result is None:
+            return None
 
-        data_block = result.get("data", {}) or {}
-        items = data_block.get("sessions", []) or []
-        page_info = data_block.get("pageInfo", {}) or {}
-
-        has_next_page = bool(page_info.get("hasNextPage", False))
-
-        next_cursor: Optional[str] = None
-        if items:
-            last_item = items[-1]
-            if isinstance(last_item, dict):
-                next_cursor = last_item.get("cursor")
+        items, has_next_page, next_cursor = parse_paginated_response(result, items_key="sessions")
 
         return SessionStatsResult(
             data=items,
@@ -140,14 +132,14 @@ class Dashboard:
         start_time: str,
         end_time: str,
         filters: Optional[List[SessionFilter]] = None,
+        limit: Optional[int] = 100,
         sort_field: Optional[SortField] = None,
         sort_order: Optional[SortOrder] = None,
-    ) -> Iterator[SessionStatsData | Any]:
-        """
-        Iterate over session statistics using cursor-based pagination.
+    ) -> Iterator[Dict[str, Any]]:
+        """Iterate over session statistics using cursor-based pagination.
 
         This is a convenience helper over get_session_stats that repeatedly
-        fetches cursor-based pages and yields individual SessionStatsData items.
+        fetches cursor-based pages and yields individual session data items.
 
         Args:
             start_time: Start of the time window (ISO 8601 UTC timestamp).
@@ -158,11 +150,11 @@ class Dashboard:
             sort_order: Sort order (asc/desc).
 
         Yields:
-            SessionStatsData items from all pages.
+            Individual session data dicts from all pages.
         """
         if not start_time or not end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to iterate session stats")
-            return None
+            logger.error("%s: start_time and end_time are required to iterate session stats", LOG_PREFIX)
+            return
 
         cursor: Optional[str] = None
 
@@ -171,10 +163,14 @@ class Dashboard:
                 start_time=start_time,
                 end_time=end_time,
                 filters=filters,
+                limit=limit,
                 cursor=cursor,
                 sort_field=sort_field,
                 sort_order=sort_order,
             )
+
+            if result is None:
+                break
 
             for session in result.data:
                 yield session
@@ -184,25 +180,32 @@ class Dashboard:
 
             cursor = result.next_cursor
 
-    def get_session_summary(self, filter: SessionFilterConfig) -> Any:
-        """
-        Get aggregated session metrics including total sessions, costs, latency, and cost breakdown by model.
+    def get_session_summary(
+        self,
+        filter: SessionFilterConfig,
+    ) -> Any:
+        """Get aggregated session metrics including total sessions, costs, latency, and cost breakdown by model.
 
         Args:
             filter: SessionFilterConfig containing start_time, end_time, and optional filters.
 
         Returns:
-            Dict containing aggregated session metrics.
+            Dict containing aggregated session metrics, or None on error.
         """
         if not isinstance(filter, SessionFilterConfig):
-            logger.error("netra.dashboard: filter must be a SessionFilterConfig")
+            logger.error("%s: filter must be a SessionFilterConfig", LOG_PREFIX)
             return None
         if not filter.start_time or not filter.end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to fetch session summary")
+            logger.error("%s: start_time and end_time are required to fetch session summary", LOG_PREFIX)
             return None
 
         result = self._client.get_session_summary(
-            start_time=filter.start_time, end_time=filter.end_time, filters=filter.filters
+            start_time=filter.start_time,
+            end_time=filter.end_time,
+            filters=filter.filters,
         )
-        data = result.get("data", {})
-        return data
+
+        if result is None:
+            return None
+
+        return result.get("data", {})

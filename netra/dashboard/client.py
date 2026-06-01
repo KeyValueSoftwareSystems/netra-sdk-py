@@ -1,14 +1,20 @@
 import logging
-import os
 from typing import Any, Dict, List, Optional
 
 import httpx
 
-from netra.config import Config
+from netra.client import BaseHttpClient
+from netra.dashboard.constants import (
+    DEFAULT_TIMEOUT,
+    ENV_TIMEOUT,
+    LOG_PREFIX,
+    URL_QUERY_DATA,
+    URL_SESSION_STATS,
+    URL_SESSION_SUMMARY,
+)
 from netra.dashboard.models import (
     ChartType,
     Dimension,
-    DimensionField,
     FilterConfig,
     Metrics,
     Scope,
@@ -16,97 +22,23 @@ from netra.dashboard.models import (
     SortField,
     SortOrder,
 )
+from netra.dashboard.utils import (
+    build_query_data_payload,
+    build_session_stats_payload,
+    build_session_summary_payload,
+)
 
 logger = logging.getLogger(__name__)
 
 
-class DashboardHttpClient:
+class DashboardHttpClient(BaseHttpClient):
     """Internal HTTP client for Dashboard APIs."""
 
-    def __init__(self, config: Config) -> None:
-        """
-        Initialize the dashboard HTTP client.
+    __slots__ = ()
 
-        Args:
-            config: Configuration object with dashboard settings
-        """
-        self._client: Optional[httpx.Client] = self._create_client(config)
-
-    def _create_client(self, config: Config) -> Optional[httpx.Client]:
-        """
-        Create an HTTP client for dashboard endpoints.
-
-        Args:
-            config: The configuration object.
-
-        Returns:
-            An HTTP client for dashboard endpoints, or None if creation fails.
-        """
-        endpoint = (config.otlp_endpoint or "").strip()
-        if not endpoint:
-            logger.error("netra.dashboard: NETRA_OTLP_ENDPOINT is required for dashboard APIs")
-            return None
-
-        base_url = self._resolve_base_url(endpoint)
-        headers = self._build_headers(config)
-        timeout = self._get_timeout()
-
-        try:
-            return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
-        except Exception as exc:
-            logger.error("netra.dashboard: Failed to initialize dashboard HTTP client: %s", exc)
-            return None
-
-    def _resolve_base_url(self, endpoint: str) -> str:
-        """
-        Resolve base URL from endpoint.
-
-        Args:
-            endpoint: The endpoint to resolve.
-
-        Returns:
-            The resolved base URL.
-        """
-        base_url = endpoint.rstrip("/")
-        if base_url.endswith("/telemetry"):
-            base_url = base_url[: -len("/telemetry")]
-        return base_url
-
-    def _build_headers(self, config: Config) -> Dict[str, str]:
-        """
-        Build Headers for Dashboard Client.
-
-        Args:
-            config: The configuration object.
-
-        Returns:
-            The headers for dashboard client.
-        """
-        headers: Dict[str, str] = dict(config.headers or {})
-        api_key = config.api_key
-        if api_key:
-            headers["x-api-key"] = api_key
-        headers["Content-Type"] = "application/json"
-        return headers
-
-    def _get_timeout(self) -> float:
-        """
-        Get timeout for dashboard client.
-
-        Returns:
-            The timeout for dashboard client.
-        """
-        timeout_env = os.getenv("NETRA_DASHBOARD_TIMEOUT")
-        if not timeout_env:
-            return 30.0
-        try:
-            return float(timeout_env)
-        except ValueError:
-            logger.warning(
-                "netra.dashboard: Invalid NETRA_DASHBOARD_TIMEOUT value '%s', using default 30.0",
-                timeout_env,
-            )
-            return 30.0
+    _LOG_PREFIX = LOG_PREFIX
+    _ENV_TIMEOUT = ENV_TIMEOUT
+    _DEFAULT_TIMEOUT = DEFAULT_TIMEOUT
 
     def query_data(
         self,
@@ -115,9 +47,8 @@ class DashboardHttpClient:
         metrics: Metrics,
         filter: FilterConfig,
         dimension: Optional[Dimension] = None,
-    ) -> Any:
-        """
-        Execute a dynamic query for dashboards.
+    ) -> Optional[Dict[str, Any]]:
+        """Execute a dynamic query for dashboards.
 
         Args:
             scope: The scope of data to query (Scope.SPANS or Scope.TRACES).
@@ -129,59 +60,29 @@ class DashboardHttpClient:
         Returns:
             The query response data or None on error.
         """
-        if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+        client = self._ensure_client()
+        if client is None:
             return None
 
+        response: Optional[httpx.Response] = None
         try:
-            url = "/public/dashboard/query-data"
-
-            payload: Dict[str, Any] = {
-                "scope": scope.value,
-                "chartType": chart_type.value,
-                "metrics": {
-                    "measure": metrics.measure.value,
-                    "aggregation": metrics.aggregation.value,
-                },
-            }
-
-            if metrics.metric_name:
-                payload["metrics"]["metricName"] = metrics.metric_name
-
-            if filter:
-                payload["filter"] = {
-                    "startTime": filter.start_time,
-                    "endTime": filter.end_time,
-                    "groupBy": filter.group_by.value,
-                }
-                if filter.filters:
-                    payload["filter"]["filters"] = [
-                        {
-                            "field": item.field.value if hasattr(item.field, "value") else item.field,
-                            "operator": item.operator.value,
-                            "type": item.type.value,
-                            "value": item.value,
-                            **({"key": item.key} if item.key else {}),
-                        }
-                        for item in filter.filters
-                    ]
-
-            if dimension:
-                if dimension.field.value == DimensionField.CUSTOM.value:
-                    payload["dimension"] = {"field": dimension.name}
-                else:
-                    payload["dimension"] = {"field": dimension.field.value}
-
-            response = self._client.post(url, json=payload)
+            payload = build_query_data_payload(
+                scope=scope,
+                chart_type=chart_type,
+                metrics=metrics,
+                filter=filter,
+                dimension=dimension,
+            )
+            response = client.post(URL_QUERY_DATA, json=payload)
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                logger.error("%s: Unexpected response type from query-data endpoint", LOG_PREFIX)
+                return None
             return data
-        except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.dashboard: Failed to execute dashboard query: %s",
-                response_json.get("error").get("message", ""),
-            )
+        except Exception as exc:
+            error_msg = self._extract_error_message(response, exc)
+            logger.exception("%s: Failed to execute dashboard query: %s", LOG_PREFIX, error_msg)
             return None
 
     def get_session_stats(
@@ -193,70 +94,56 @@ class DashboardHttpClient:
         cursor: Optional[str],
         sort_field: Optional[SortField],
         sort_order: Optional[SortOrder],
-    ) -> Any:
-        """
-        Get session statistics with pagination.
+    ) -> Optional[Dict[str, Any]]:
+        """Get session statistics with pagination.
 
         Args:
             start_time: Start time in ISO 8601 UTC format.
             end_time: End time in ISO 8601 UTC format.
             filters: Optional list of session filters.
             limit: Maximum number of results per page.
-            page: Page number for pagination.
+            cursor: Cursor for pagination.
             sort_field: Field to sort by.
             sort_order: Sort order (asc/desc).
 
         Returns:
             The session stats response data or None on error.
         """
-        if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session stats")
+        client = self._ensure_client()
+        if client is None:
             return None
 
+        response: Optional[httpx.Response] = None
         try:
-            url = "/public/dashboard/sessions/stats"
+            payload = build_session_stats_payload(
+                start_time=start_time,
+                end_time=end_time,
+                filters=filters,
+                limit=limit,
+                cursor=cursor,
+                sort_field=sort_field,
+                sort_order=sort_order,
+            )
 
-            payload: Dict[str, Any] = {
-                "startTime": start_time,
-                "endTime": end_time,
-            }
-
-            if filters:
-                payload["filters"] = [
-                    {
-                        "field": filter_item.field.value,
-                        "operator": filter_item.operator.value,
-                        "type": filter_item.type.value,
-                        "value": filter_item.value,
-                    }
-                    for filter_item in filters
-                ]
-            if limit or cursor:
-                payload["pagination"] = {}
-                if limit:
-                    payload["pagination"]["limit"] = limit
-                if cursor:
-                    payload["pagination"]["cursor"] = cursor
-            if sort_field:
-                payload["sortField"] = sort_field.value
-            if sort_order:
-                payload["sortOrder"] = sort_order.value
-
-            response = self._client.post(url, json=payload)
+            response = client.post(URL_SESSION_STATS, json=payload)
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                logger.warning("%s: Unexpected response type from session stats endpoint", LOG_PREFIX)
+                return None
             return data
-        except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.dashboard: Failed to fetch session stats: %s",
-                response_json.get("error").get("message", ""),
-            )
+        except Exception as exc:
+            error_msg = self._extract_error_message(response, exc)
+            logger.error("%s: Failed to fetch session stats: %s", LOG_PREFIX, error_msg)
             return None
 
-    def get_session_summary(self, start_time: str, end_time: str, filters: Optional[List[SessionFilter]]) -> Any:
-        """
-        Get aggregated session metrics including total sessions, costs, latency, and cost breakdown by model.
+    def get_session_summary(
+        self,
+        start_time: str,
+        end_time: str,
+        filters: Optional[List[SessionFilter]],
+    ) -> Optional[Dict[str, Any]]:
+        """Get aggregated session metrics.
 
         Args:
             start_time: Start time in ISO 8601 UTC format.
@@ -266,38 +153,26 @@ class DashboardHttpClient:
         Returns:
             The session summary response data or None on error.
         """
-        if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+        client = self._ensure_client()
+        if client is None:
             return None
 
+        response: Optional[httpx.Response] = None
         try:
-            url = "/public/dashboard/sessions/summary"
-            payload: Dict[str, Any] = {
-                "filter": {
-                    "startTime": start_time,
-                    "endTime": end_time,
-                }
-            }
+            payload = build_session_summary_payload(
+                start_time=start_time,
+                end_time=end_time,
+                filters=filters,
+            )
 
-            if filters:
-                payload["filter"]["filters"] = [
-                    {
-                        "field": filter_item.field.value,
-                        "operator": filter_item.operator.value,
-                        "type": filter_item.type.value,
-                        "value": filter_item.value,
-                    }
-                    for filter_item in filters
-                ]
-
-            response = self._client.post(url, json=payload)
+            response = client.post(URL_SESSION_SUMMARY, json=payload)
             response.raise_for_status()
             data = response.json()
+            if not isinstance(data, dict):
+                logger.warning("%s: Unexpected response type from session summary endpoint", LOG_PREFIX)
+                return None
             return data
-        except Exception:
-            response_json = response.json()
-            logger.error(
-                "netra.dashboard: Failed to fetch session summary: %s",
-                response_json.get("error").get("message", ""),
-            )
+        except Exception as exc:
+            error_msg = self._extract_error_message(response, exc)
+            logger.error("%s: Failed to fetch session summary: %s", LOG_PREFIX, error_msg)
             return None
