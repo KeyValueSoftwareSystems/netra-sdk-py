@@ -2,6 +2,8 @@ from netra.simulation.api import Simulation
 from netra.simulation.models import (
     ConversationResponse,
     ConversationStatus,
+    FileData,
+    ProcessedFile,
     SimulationItem,
     TaskResult,
 )
@@ -12,6 +14,8 @@ __all__ = [
     "BaseTask",
     "ConversationResponse",
     "ConversationStatus",
+    "FileData",
+    "ProcessedFile",
     "SimulationItem",
     "TaskResult",
 ]
