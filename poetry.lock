@@ -3466,6 +3466,26 @@ opentelemetry-instrumentation-dbapi = "0.60b1"
 instruments = ["pymssql (>=2.1.5,<3)"]
 
 [[package]]
+name = "opentelemetry-instrumentation-pymysql"
+version = "0.60b1"
+description = "OpenTelemetry PyMySQL instrumentation"
+optional = false
+python-versions = ">=3.9"
+groups = ["main"]
+files = [
+    {file = "opentelemetry_instrumentation_pymysql-0.60b1-py3-none-any.whl", hash = "sha256:3f3b237a7666600a5e9186053acb10df302c61dc7113430cb1b2f7d1f24f8971"},
+    {file = "opentelemetry_instrumentation_pymysql-0.60b1.tar.gz", hash = "sha256:bc62a5089a9f5216b027fc9a09253404e7dc325dbc776d49ab41fd2c787b4667"},
+]
+
+[package.dependencies]
+opentelemetry-api = ">=1.12,<2.0"
+opentelemetry-instrumentation = "0.60b1"
+opentelemetry-instrumentation-dbapi = "0.60b1"
+
+[package.extras]
+instruments = ["pymysql (<2)"]
+
+[[package]]
 name = "opentelemetry-instrumentation-qdrant"
 version = "0.60.0"
 description = "OpenTelemetry Qdrant instrumentation"
@@ -6005,4 +6025,4 @@ presidio = ["presidio-analyzer", "presidio-anonymizer", "stanza", "transformers"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "c9c7f9add2597858bbe3ff1a9528a772d2341116e1609250968f50a66da9d289"
+content-hash = "e3e8712b3e7fc95f4cfe59b27fca6ce7ac4e84e2d04ea419ffbce8540d0b48bd"

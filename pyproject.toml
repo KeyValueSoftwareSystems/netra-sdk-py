@@ -65,6 +65,7 @@ dependencies = [
     "opentelemetry-instrumentation-pymemcache>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-pymongo>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-pymssql>=0.55b1,<=0.62b1",
+    "opentelemetry-instrumentation-pymysql>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-redis>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-remoulade>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-requests>=0.55b1,<=0.62b1",
