@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.91] - 2026-06-08
+- **Expand SDK dependencies to include latest versions** - This sprovides support for new versions of OTel instrumentations and traceloop
+
+
 ## [0.1.90] - 2026-06-08
 - **Add missing dependency of "opentelemetry-instrumentation-pymysql"** - This enables tracing of PyMySQL workflows using Netra
 

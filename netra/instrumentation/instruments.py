@@ -183,6 +183,7 @@ class InstrumentSet(Enum):
     URLLIB = ("urllib", CustomInstruments)
     URLLIB3 = ("urllib3", CustomInstruments)
     VERTEXAI = ("vertexai", Instruments)
+    VOYAGEAI = ("voyageai", Instruments)
     WATSONX = ("watsonx", Instruments)
     WEAVIATEDB = ("weaviate_db", CustomInstruments)
     WRITER = ("writer", Instruments)
