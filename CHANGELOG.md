@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.90] - 2026-06-08
+- **Add missing dependency of "opentelemetry-instrumentation-pymysql"** - This enables tracing of PyMySQL workflows using Netra
+
+
 ## [0.1.89] - 2026-05-29
 - **Support for metadata alias for tokens in Anthropic instrumentation** - Capture various token alias for anthropic instrumentation
 
