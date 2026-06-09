@@ -482,8 +482,6 @@ def set_assistant_message_attributes(
                     if message.error:
                         span.set_status(Status(StatusCode.ERROR, str(message.error)))
                         span.set_attribute("gen_ai.error", str(message.error))
-                    if message.usage and isinstance(message.usage, dict):
-                        _set_usage(span, message.usage)
                     _set_output_conversation(span, role, content)
                     span.set_attribute("output", _build_message_array(role, content))
                     record_span_timing(
