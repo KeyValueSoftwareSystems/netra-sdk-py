@@ -6,7 +6,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.92] - 2026-06-09
 
-- **Improve multi-model usage tracking for the Claude Agent SDK** — Create separate spans for each model's usage to provide more accurate cost reporting. If separate spans cannot be created, usage is recorded on the main span as a fallback.
+- **Introduce synthetic usage spans to fix cost calculation in the Claude Agent SDK** — Create separate spans for each model's usage to provide more accurate cost reporting. If separate spans cannot be created, usage is recorded on the main span as a fallback.
 
 
 ## [0.1.91] - 2026-06-08
