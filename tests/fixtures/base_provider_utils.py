@@ -76,6 +76,7 @@ class BaseProviderUtils:
             yield data
 
     def test_set_usage_attributes(self):
+        """Tests _set_usage_attributes"""
         for dummy_data in self.__build_input_data():
             mock_span = MagicMock()
             self._set_usage_attributes_method(mock_span, dummy_data)
@@ -86,6 +87,7 @@ class BaseProviderUtils:
             mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS, self.P_DETAIL)
 
     def test_set_usage_attributes_no_prompt_tokens_details(self):
+        """Tests _set_usage_attributes without prompt token details"""
         for dummy_data in self.__build_no_details_data():
             mock_span = MagicMock()
             self._set_usage_attributes_method(mock_span, dummy_data)
@@ -95,6 +97,7 @@ class BaseProviderUtils:
             mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, self.T_TOKEN)
 
     def test_empty_dict(self):
+        """Tests _set_usage_attributes with empty dictionary"""
         mock_span = MagicMock()
         self._set_usage_attributes_method(mock_span, dict())
 
@@ -106,17 +109,23 @@ class BaseProviderUtils:
 
         self._set_chat_input_method(mock_span, messages, prompt)
 
-        for i, message in enumerate(messages):
-            if isinstance(message, MockMessageObject):
-                mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message.role)
-                mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.{i}.content", message.content)
-            else:
-                mock_span.set_attribute.assert_any_call(
-                    f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message["role"] if "role" in message else "user"
-                )
-                mock_span.set_attribute.assert_any_call(
-                    f"{SpanAttributes.LLM_PROMPTS}.{i}.content", str(message["content"])
-                )
+        if messages:
+            for i, message in enumerate(messages):
+                if isinstance(message, MockMessageObject):
+                    mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message.role)
+                    mock_span.set_attribute.assert_any_call(
+                        f"{SpanAttributes.LLM_PROMPTS}.{i}.content", message.content
+                    )
+                else:
+                    mock_span.set_attribute.assert_any_call(
+                        f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message["role"] if "role" in message else "user"
+                    )
+                    mock_span.set_attribute.assert_any_call(
+                        f"{SpanAttributes.LLM_PROMPTS}.{i}.content", str(message["content"])
+                    )
+        elif prompt:
+            mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
+            mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.content", prompt)
 
     def _set_response_message_attributes_check(self, response_dict: dict[str, Any]):
         mock_span = MagicMock()
@@ -149,12 +158,21 @@ class BaseProviderUtils:
                     )
 
     def test_set_response_attributes(self):
+        """Tests set_response_attributes"""
         mock_span_1 = MagicMock()
-        mock_span_1.is_recording = lambda: False
+        mock_span_1.is_recording.return_value = False
         self.set_response_attributes_method(mock_span_1, dict())
         self.assertEqual(0, mock_span_1.set_attribute.call_count)
 
         mock_span_2 = MagicMock()
-        mock_span_1.is_recording = lambda: True
-        self.set_response_attributes_method(mock_span_2, {"model": "test_model_name"})
+        mock_span_2.is_recording.return_value = True
+        full_data = {
+            "model": "test_model_name",
+            "usage": {"total_tokens": 100},
+            "choices": [{"message": {"role": "assistant", "content": "test"}}],
+        }
+        self.set_response_attributes_method(mock_span_2, full_data)
+
         mock_span_2.set_attribute.assert_any_call(SpanAttributes.LLM_RESPONSE_MODEL, "test_model_name")
+        mock_span_2.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, 100)
+        mock_span_2.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")

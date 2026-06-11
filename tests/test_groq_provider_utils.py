@@ -23,6 +23,7 @@ class TestGroqProviderUtils(unittest.TestCase, BaseProviderUtils):
     _set_usage_attributes_method = staticmethod(_set_usage_attributes)
 
     def test_set_chat_input_check(self):
+        """Tests _set_chat_input"""
         messages_object = [
             MockMessageObject(role="system", content="Initialize core instructions."),
             MockMessageObject(role="user", content="Explain quantum computing simply."),
@@ -47,7 +48,12 @@ class TestGroqProviderUtils(unittest.TestCase, BaseProviderUtils):
         prompt_dummy = None
         self._set_chat_input_check(messages_dict, prompt_dummy)
 
+        # Test branch where messages is empty/None and prompt is provided
+        prompt_only = "Legacy completion prompt"
+        self._set_chat_input_check(messages=[], prompt=prompt_only)
+
     def test_set_request_attributes(self):
+        """Tests set_request_attributes"""
         OP_TYPE = "OP_TYPE"
         mock_span = MagicMock()
         samples = random.sample(list(self.ATTRIBUTE_MAPPINGS.keys()), k=random.randint(1, len(self.ATTRIBUTE_MAPPINGS)))
@@ -69,6 +75,7 @@ class TestGroqProviderUtils(unittest.TestCase, BaseProviderUtils):
         self._set_chat_input_check(kwargs["messages"], kwargs["prompt"])
 
     def test_set_response_message_attributes(self):
+        """Tests _set_response_message_attributes"""
         # Test Case 1: Standard Complete Response (Unary Block)
         unary_success_data = {
             "choices": [
