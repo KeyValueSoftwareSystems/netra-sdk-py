@@ -54,6 +54,7 @@ class SpanType(str, Enum):
     TOOL = "TOOL"
     EMBEDDING = "EMBEDDING"
     AGENT = "AGENT"
+    USAGE = "USAGE"
 
 
 SPAN_TYPE_TO_ENTITY_TYPE: Dict[SpanType, str] = {
