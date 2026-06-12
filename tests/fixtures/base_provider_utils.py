@@ -79,4 +79,4 @@ class BaseProviderUtils:
         self._set_usage_attributes_method(mock_span, dict())
 
         called_keys = [call[0][0] for call in mock_span.set_attribute.call_args_list]
-        self.assertEqual(len(called_keys), 0)
+        assert len(called_keys) == 0
