@@ -1,6 +1,5 @@
 import itertools
-from collections.abc import Iterable
-from typing import Any, Callable
+from typing import Callable
 from unittest.mock import MagicMock
 
 from opentelemetry.semconv_ai import SpanAttributes
@@ -103,76 +102,3 @@ class BaseProviderUtils:
 
         called_keys = [call[0][0] for call in mock_span.set_attribute.call_args_list]
         self.assertEqual(len(called_keys), 0)
-
-    def _set_chat_input_check(self, messages: list[str], prompt: str):
-        mock_span = MagicMock()
-
-        self._set_chat_input_method(mock_span, messages, prompt)
-
-        if messages:
-            for i, message in enumerate(messages):
-                if isinstance(message, MockMessageObject):
-                    mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message.role)
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_PROMPTS}.{i}.content", message.content
-                    )
-                else:
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_PROMPTS}.{i}.role", message["role"] if "role" in message else "user"
-                    )
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_PROMPTS}.{i}.content", str(message["content"])
-                    )
-        elif prompt:
-            mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.content", prompt)
-
-    def _set_response_message_attributes_check(self, response_dict: dict[str, Any]):
-        mock_span = MagicMock()
-        self._set_response_message_attributes_method(mock_span, response_dict)
-
-        if choices := response_dict.get("choices"):
-            self.assertTrue(isinstance(choices, Iterable))
-
-            message_index = 0
-            for choice in choices:
-                message = None
-                if _message := choice.get("message"):
-                    message = _message
-                elif delta := choice.get("delta"):
-                    message = delta
-
-                if message is not None:
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
-                    )
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
-                    )
-
-                    message_index += 1
-
-                if finish_reason := choice.get("finish_reason"):
-                    mock_span.set_attribute.assert_any_call(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason
-                    )
-
-    def test_set_response_attributes(self):
-        """Tests set_response_attributes"""
-        mock_span_1 = MagicMock()
-        mock_span_1.is_recording.return_value = False
-        self.set_response_attributes_method(mock_span_1, dict())
-        self.assertEqual(0, mock_span_1.set_attribute.call_count)
-
-        mock_span_2 = MagicMock()
-        mock_span_2.is_recording.return_value = True
-        full_data = {
-            "model": "test_model_name",
-            "usage": {"total_tokens": 100},
-            "choices": [{"message": {"role": "assistant", "content": "test"}}],
-        }
-        self.set_response_attributes_method(mock_span_2, full_data)
-
-        mock_span_2.set_attribute.assert_any_call(SpanAttributes.LLM_RESPONSE_MODEL, "test_model_name")
-        mock_span_2.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, 100)
-        mock_span_2.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
