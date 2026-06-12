@@ -12,7 +12,7 @@ class TestSpanIOProcessor(unittest.TestCase):
     _USAGE_PROMPT_TOKENS = "gen_ai.usage.prompt_tokens"
     _USAGE_COMPLETION_TOKENS = "gen_ai.usage.completion_tokens"
 
-    def __get_mocks(self, original_value: str, desired_value: str):
+    def _get_mocks(self, original_value: str, desired_value: str):
         mock_span = MagicMock()
         mock_original_set_attribute = MagicMock()
         mock_span.set_attribute = mock_original_set_attribute
@@ -27,13 +27,13 @@ class TestSpanIOProcessor(unittest.TestCase):
         mock_original_set_attribute.assert_called_with(desired_value, 100)
 
     def test_alias_to_prompt_tokens(self):
-        self.__get_mocks(self._USAGE_INPUT_TOKENS, self._USAGE_PROMPT_TOKENS)
+        self._get_mocks(self._USAGE_INPUT_TOKENS, self._USAGE_PROMPT_TOKENS)
 
     def test_alias_to_completion_tokens(self):
-        self.__get_mocks(self._USAGE_OUTPUT_TOKENS, self._USAGE_COMPLETION_TOKENS)
+        self._get_mocks(self._USAGE_OUTPUT_TOKENS, self._USAGE_COMPLETION_TOKENS)
 
     def test_pass_through_prompt_tokens(self):
-        self.__get_mocks(self._USAGE_PROMPT_TOKENS, self._USAGE_PROMPT_TOKENS)
+        self._get_mocks(self._USAGE_PROMPT_TOKENS, self._USAGE_PROMPT_TOKENS)
 
     def test_pass_through_completion_tokens(self):
-        self.__get_mocks(self._USAGE_COMPLETION_TOKENS, self._USAGE_COMPLETION_TOKENS)
+        self._get_mocks(self._USAGE_COMPLETION_TOKENS, self._USAGE_COMPLETION_TOKENS)

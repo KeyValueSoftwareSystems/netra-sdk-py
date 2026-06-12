@@ -46,7 +46,7 @@ class BaseProviderUtils:
     _set_chat_input_method: Callable = None
     _set_response_message_attributes_method: Callable = None
 
-    def __build_input_data(self):
+    def _build_input_data(self):
         keys_groups = [
             self.ALIASES["prompt_tokens"],
             self.ALIASES["completion_tokens"],
@@ -63,7 +63,7 @@ class BaseProviderUtils:
 
             yield data
 
-    def __build_no_details_data(self):
+    def _build_no_details_data(self):
         keys_group = [self.ALIASES["prompt_tokens"], self.ALIASES["completion_tokens"]]
 
         for p_token, c_token in itertools.product(*keys_group):
@@ -77,7 +77,7 @@ class BaseProviderUtils:
 
     def test_set_usage_attributes(self):
         """Tests _set_usage_attributes"""
-        for dummy_data in self.__build_input_data():
+        for dummy_data in self._build_input_data():
             mock_span = MagicMock()
             self._set_usage_attributes_method(mock_span, dummy_data)
 
@@ -88,7 +88,7 @@ class BaseProviderUtils:
 
     def test_set_usage_attributes_no_prompt_tokens_details(self):
         """Tests _set_usage_attributes without prompt token details"""
-        for dummy_data in self.__build_no_details_data():
+        for dummy_data in self._build_no_details_data():
             mock_span = MagicMock()
             self._set_usage_attributes_method(mock_span, dummy_data)
 
