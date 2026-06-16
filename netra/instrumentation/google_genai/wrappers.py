@@ -235,6 +235,8 @@ def avideos_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
 
 class StreamingWrapper:
+    _netra_stream_wrapper = True
+
     def __init__(self, span: Span, response: Iterator[Any]) -> None:
         self._span = span
         self._buffer: dict[Any, Any] = {"chunk": None, "content": ""}
@@ -272,11 +274,14 @@ class StreamingWrapper:
     def _finalize_span(self) -> None:
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._buffer)
+        self._netra_output = self._buffer.get("content", "") if isinstance(self._buffer, dict) else ""
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
 
 class AsyncStreamingWrapper:
+    _netra_stream_wrapper = True
+
     def __init__(self, span: Span, response: AsyncIterator[Any]) -> None:
         self._span = span
         self._buffer: dict[Any, Any] = {"chunk": None, "content": ""}
@@ -313,5 +318,6 @@ class AsyncStreamingWrapper:
     def _finalize_span(self) -> None:
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._buffer)
+        self._netra_output = self._buffer.get("content", "") if isinstance(self._buffer, dict) else ""
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()

@@ -518,6 +518,28 @@ class Netra:
         SessionManager.set_root_output(value)
 
     @classmethod
+    def set_root_output_stream(cls, value: Any) -> Any:
+        """
+        Wrap a stream so the accumulated output is set on the root span when iteration ends.
+
+        The returned object is a transparent proxy — iterate over it instead of the original::
+
+            stream = Netra.set_root_output_stream(stream)
+            for chunk in stream:
+                ...
+
+        Supports both sync and async iterables.  Returns *value* unchanged if no active trace
+        context exists or if *value* is not iterable.
+
+        Args:
+            value: The stream to wrap (Netra-instrumented or any generic iterable).
+
+        Returns:
+            A wrapped stream proxy, or *value* unchanged if wrapping is not possible.
+        """
+        return SessionManager.set_root_output_stream(value)
+
+    @classmethod
     def start_span(
         cls,
         name: str,

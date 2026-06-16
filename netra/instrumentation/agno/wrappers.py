@@ -157,6 +157,8 @@ def _set_common_span_attributes(span: Span, entity_type: str) -> None:
 class _BaseStreamWrapper:
     """Shared base for all span streaming wrappers."""
 
+    _netra_stream_wrapper = True
+
     def __init__(self, span: Span, response: Any, ctx_token: Any = None) -> None:
         """Initialise the streaming wrapper.
 
@@ -222,10 +224,14 @@ class _AgentStreamOutputMixin:
 
     def _set_output_on_success(self) -> None:
         """Write accumulated run content and token usage to the span before it closes."""
+        self._netra_output = ""
         if self._last_response is not None:
-            set_response_attributes(self._span, self._last_response)
+            output = set_response_attributes(self._span, self._last_response)
+            self._netra_output = output if output else ""
         if self._content_chunks:
-            self._span.set_attribute("output", "".join(self._content_chunks))
+            output = "".join(self._content_chunks)
+            self._span.set_attribute("output", output)
+            self._netra_output = output
 
 
 class _LlmStreamOutputMixin:
@@ -239,9 +245,11 @@ class _LlmStreamOutputMixin:
     def _set_output_on_success(self) -> None:
         """Write accumulated LLM content, token usage, and timing metrics to the span."""
         output_str = None
+        self._netra_output = ""
         if self._content_chunks:
             content = "".join(self._content_chunks)
             output_str = json.dumps([{"role": "assistant", "content": content}])
+            self._netra_output = content
         elif self._tool_calls:
             try:
                 tc_serialized = serialize_value(self._tool_calls, clean=True)
@@ -251,10 +259,12 @@ class _LlmStreamOutputMixin:
                     except (json.JSONDecodeError, ValueError):
                         tc_data = tc_serialized
                     output_str = json.dumps([{"role": "assistant", "tool_calls": tc_data}])
+                    self._netra_output = tc_serialized
             except Exception as e:
                 logger.debug("netra.instrumentation.agno: failed to serialize tool_calls for LLM output: %s", e)
         elif self._last_response is not None:
             output_str = format_response_as_output(self._last_response)
+            self._netra_output = output_str if output_str else ""
         if output_str:
             self._span.set_attribute("output", output_str)
             set_llm_completion_attributes(self._span, output_str)
