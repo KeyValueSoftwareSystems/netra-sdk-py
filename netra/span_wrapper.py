@@ -161,9 +161,12 @@ class SpanWrapper:
 
         # Handle status and errors
         if exc_type is None and self.status == "pending":
-            self.status = "success"
-            if self.span:
-                self.span.set_status(Status(StatusCode.OK))
+            if self._span_has_error_status():
+                self.status = "error"
+            else:
+                self.status = "success"
+                if self.span:
+                    self.span.set_status(Status(StatusCode.OK))
         elif exc_type is not None:
             self.status = "error"
             self.error_message = str(exc_val)
@@ -209,6 +212,26 @@ class SpanWrapper:
             SessionManager.pop_entity(self._entity_type)
 
         # Don't suppress exceptions
+        return False
+
+    def _span_has_error_status(self) -> Any:
+        """Check whether the underlying OTel span has already been set to ERROR.
+
+        This handles the case where ``Netra.record_exception()`` (or any direct
+        OTel API call) marked the span as errored while the exception was caught
+        by user code, so ``__exit__`` receives ``exc_type is None``.
+
+        Returns:
+            True if the span's status code is ERROR, False otherwise.
+        """
+        if self.span is None:
+            return False
+        try:
+            status = getattr(self.span, "status", None)
+            if status is not None:
+                return status.status_code == StatusCode.ERROR
+        except Exception:
+            logger.exception("Failed to check span status on span '%s'", self.name)
         return False
 
     def set_attribute(self, key: str, value: str) -> "SpanWrapper":
