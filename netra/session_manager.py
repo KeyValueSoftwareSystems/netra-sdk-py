@@ -493,6 +493,35 @@ class SessionManager:
             logger.exception("Failed to set attribute '%s' on root span", attr_key)
 
     @staticmethod
+    def record_exception(
+        exception: BaseException,
+        attributes: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a caught exception on the currently active span.
+
+        Adds a standard OTel exception event to the span and marks its status
+        as ERROR.  Intended to be called from within user exception-handling
+        blocks where the exception would otherwise not propagate to the SDK's
+        automatic capture logic.
+
+        Args:
+            exception: The exception instance to record.
+            attributes: Optional extra attributes to attach to the exception
+                event.
+        """
+        try:
+            span = trace.get_current_span()
+            if not (span and getattr(span, "is_recording", lambda: False)()):
+                logger.warning("record_exception: no active recording span to record exception on")
+                return
+
+            span.record_exception(exception, attributes=attributes)
+            span.set_status(trace.Status(trace.StatusCode.ERROR, str(exception)))
+            span.set_attribute(f"{Config.LIBRARY_NAME}.error_message", str(exception))
+        except Exception:
+            logger.exception("Failed to record exception on active span")
+
+    @staticmethod
     def set_attribute_on_active_span(attr_key: str, attr_value: Any) -> None:
         """
         Set an attribute strictly on the currently active OpenTelemetry span.

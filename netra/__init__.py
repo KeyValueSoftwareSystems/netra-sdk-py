@@ -416,6 +416,47 @@ class Netra:
             logger.warning("Both event_name and attributes must be provided for custom events.")
 
     @classmethod
+    def record_exception(
+        cls,
+        exception: BaseException,
+        attributes: Optional[Dict[str, Any]] = None,
+    ) -> None:
+        """Record a caught exception on the currently active span.
+
+        Use this inside ``except`` blocks to attach exception details to the
+        current span when the exception is being handled and will not propagate
+        to the SDK's automatic capture logic.
+
+        The method adds a standard OpenTelemetry exception event (with type,
+        message, and stacktrace), sets the span status to ERROR, and records
+        the ``netra.error_message`` attribute for consistency with the rest of
+        the SDK.
+
+        Args:
+            exception: The exception instance to record.
+            attributes: Optional extra attributes to attach to the exception
+                event.
+
+        Example::
+
+            @workflow
+            def process_order(order_id: str) -> str:
+                try:
+                    result = call_payment_api(order_id)
+                except PaymentError as exc:
+                    Netra.record_exception(exc)
+                    return "fallback_result"
+                return result
+        """
+        if not isinstance(exception, BaseException):
+            logger.error(
+                "record_exception: exception must be a BaseException instance, got %s",
+                type(exception),
+            )
+            return
+        SessionManager.record_exception(exception, attributes=attributes)
+
+    @classmethod
     def add_conversation(cls, conversation_type: ConversationType, role: str, content: Any) -> None:
         """
         Append a conversation entry to the current active span.
