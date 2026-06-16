@@ -1,4 +1,3 @@
-import json
 import logging
 from datetime import datetime
 from enum import Enum
@@ -9,9 +8,13 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from netra.config import Config
-from netra.utils import process_content_for_max_len
+from netra.utils import process_content_for_max_len, serialize_value
 
 logger = logging.getLogger(__name__)
+
+
+NETRA_USER_INPUT = "netra.user.input"
+NETRA_USER_OUTPUT = "netra.user.output"
 
 
 class ConversationType(str, Enum):
@@ -399,11 +402,8 @@ class SessionManager:
             value: The input value to record.
         """
         try:
-            if isinstance(value, (dict, list)):
-                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
-            else:
-                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_active_span("netra.user.input", serialized)
+            serialized = serialize_value(value)
+            cls.set_attribute_on_active_span(NETRA_USER_INPUT, serialized)
         except Exception:
             logger.exception("SessionManager.set_input: failed to set input attribute")
 
@@ -419,11 +419,8 @@ class SessionManager:
             value: The output value to record.
         """
         try:
-            if isinstance(value, (dict, list)):
-                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
-            else:
-                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_active_span("netra.user.output", serialized)
+            serialized = serialize_value(value)
+            cls.set_attribute_on_active_span(NETRA_USER_OUTPUT, serialized)
         except Exception:
             logger.exception("SessionManager.set_output: failed to set output attribute")
 
@@ -438,11 +435,8 @@ class SessionManager:
             value: The input value to record.
         """
         try:
-            if isinstance(value, (dict, list)):
-                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
-            else:
-                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_root_span("netra.user.input", serialized)
+            serialized = serialize_value(value)
+            cls.set_attribute_on_root_span(NETRA_USER_INPUT, serialized)
         except Exception:
             logger.exception("SessionManager.set_root_input: failed to set input attribute")
 
@@ -457,13 +451,43 @@ class SessionManager:
             value: The output value to record.
         """
         try:
-            if isinstance(value, (dict, list)):
-                serialized = json.dumps(value, default=str)[: Config.ATTRIBUTE_MAX_LEN]
-            else:
-                serialized = str(value)[: Config.ATTRIBUTE_MAX_LEN]
-            cls.set_attribute_on_root_span("netra.user.output", serialized)
+            serialized = serialize_value(value)
+            cls.set_attribute_on_root_span(NETRA_USER_OUTPUT, serialized)
         except Exception:
             logger.exception("SessionManager.set_root_output: failed to set output attribute")
+
+    @classmethod
+    def set_root_output_stream(cls, value: Any) -> Any:
+        """Wrap a stream so that the accumulated output is set on the root span when iteration ends.
+
+        The stream is wrapped transparently — the user should iterate over the returned object
+        instead of the original stream.  On exhaustion (or garbage collection), the output is
+        automatically written to the ``netra.user.output`` attribute of the root span for the
+        current trace, which is then promoted to ``output`` by the export pipeline.
+
+        Supports both sync iterables and async iterables.
+
+        Args:
+            value: The stream to wrap.  May be a Netra-instrumented wrapper or any generic iterable.
+
+        Returns:
+            A wrapped stream proxy.  Returns *value* unchanged if no active trace context
+            exists or if *value* is not iterable, so callers can always reassign safely::
+
+                stream = Netra.set_root_output_stream(stream)
+        """
+        try:
+            from netra.instrumentation.stream_utils import wrap_stream_for_root_output
+            from netra.processors.root_span_processor import RootSpanProcessor
+
+            root_span = RootSpanProcessor.get_root_span(trace.get_current_span())
+            if not root_span:
+                logger.warning("SessionManager.set_root_output_stream: no root span found for current trace")
+                return value
+            return wrap_stream_for_root_output(value, root_span)
+        except Exception:
+            logger.exception("SessionManager.set_root_output_stream: failed to wrap stream")
+            return value
 
     @classmethod
     def set_attribute_on_root_span(cls, attr_key: str, attr_value: Any) -> None:
