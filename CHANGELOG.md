@@ -12,14 +12,17 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - **Add support for file handling in simulation workflow** - This provides support for passing files in simulation workflow to provide user context
 
 ## [0.1.91] - 2026-06-08
-- **Expand SDK dependencies to include latest versions** - This sprovides support for new versions of OTel instrumentations and traceloop
+
+- **Expand SDK dependencies to include latest versions** - This provides support for new versions of OTel instrumentations and traceloop
 
 
 ## [0.1.90] - 2026-06-08
+
 - **Add missing dependency of "opentelemetry-instrumentation-pymysql"** - This enables tracing of PyMySQL workflows using Netra
 
 
 ## [0.1.89] - 2026-05-29
+
 - **Support for metadata alias for tokens in Anthropic instrumentation** - Capture various token alias for anthropic instrumentation
 
 
