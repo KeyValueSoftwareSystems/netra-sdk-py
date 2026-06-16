@@ -23,6 +23,7 @@ from opentelemetry.trace.status import Status
 
 from netra.config import Config
 from netra.instrumentation.utils import record_span_timing
+from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
 
@@ -133,26 +134,71 @@ def _set_output_conversation(span: Span, role: str, content: str, completion_ind
     return completion_index
 
 
+_NETRA_SPAN_TYPE_ATTR = "netra.span.type"
+_MODEL_USAGE_SPAN_PREFIX = "claude-agent.usage"
+
+_USAGE_TOKEN_FIELDS: dict[str, str] = {
+    "input_tokens": SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
+    "output_tokens": SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
+    "total_tokens": SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
+    "cache_creation_input_tokens": SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS,
+    "cache_read_input_tokens": SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS,
+}
+
+_MODEL_USAGE_TOKEN_FIELDS: dict[str, str] = {
+    "inputTokens": SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
+    "outputTokens": SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
+    "cacheReadInputTokens": SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS,
+    "cacheCreationInputTokens": SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS,
+    "webSearchRequests": ATTR_CLAUDE_CODE_WEB_SEARCH_REQUESTS,
+}
+
+
+def _create_model_usage_spans(tracer: Tracer, root_span: Span, model_usage: dict[str, Any]) -> None:
+    """
+    Create one child span per model entry in the model_usage dict.
+
+    Args:
+        tracer: The OpenTelemetry tracer used to create the child spans.
+        root_span: The root span; usage spans are created as its direct children.
+        model_usage: A dict mapping model name to a per-model usage dict whose
+                     camelCase keys are mapped to span attributes via
+                     ``_MODEL_USAGE_TOKEN_FIELDS``.
+
+    Returns:
+        None
+    """
+    parent_ctx = trace.set_span_in_context(root_span)
+    for model_name, usage_dict in model_usage.items():
+        if not isinstance(usage_dict, dict):
+            continue
+        span = None
+        try:
+            span = tracer.start_span(f"{_MODEL_USAGE_SPAN_PREFIX}.{model_name}", context=parent_ctx)
+            span.set_attribute(SpanAttributes.LLM_REQUEST_MODEL, model_name)
+            span.set_attribute(_NETRA_SPAN_TYPE_ATTR, SpanType.USAGE)
+            for field, attr in _MODEL_USAGE_TOKEN_FIELDS.items():
+                if (value := usage_dict.get(field)) is not None:
+                    span.set_attribute(attr, value)
+        except Exception as e:
+            logger.error(f"Cannot create usage span for model={model_name}: {e}")
+        finally:
+            if span is not None:
+                span.end()
+
+
 def _set_usage(span: Span, usage: dict[str, Any]) -> None:
     """
     Write token usage attributes to the span.
 
     Args:
         span (Span): The span to write token counts to.
-        usage (dict): A dict containing token fields such as input_tokens, output_tokens,
-                      total_tokens, cache_creation_input_tokens, and cache_read_input_tokens.
+        usage (dict): A dict containing token fields such as input_tokens, output_tokens etc.
 
     Returns:
         None
     """
-    token_fields = {
-        "input_tokens": SpanAttributes.LLM_USAGE_PROMPT_TOKENS,
-        "output_tokens": SpanAttributes.LLM_USAGE_COMPLETION_TOKENS,
-        "total_tokens": SpanAttributes.LLM_USAGE_TOTAL_TOKENS,
-        "cache_creation_input_tokens": SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS,
-        "cache_read_input_tokens": SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS,
-    }
-    for key, attr in token_fields.items():
+    for key, attr in _USAGE_TOKEN_FIELDS.items():
         if (value := usage.get(key)) is not None:
             span.set_attribute(attr, value)
 
@@ -436,8 +482,6 @@ def set_assistant_message_attributes(
                     if message.error:
                         span.set_status(Status(StatusCode.ERROR, str(message.error)))
                         span.set_attribute("gen_ai.error", str(message.error))
-                    if message.usage and isinstance(message.usage, dict):
-                        _set_usage(span, message.usage)
                     _set_output_conversation(span, role, content)
                     span.set_attribute("output", _build_message_array(role, content))
                     record_span_timing(
@@ -473,14 +517,24 @@ def set_user_message_attributes(tracer: Tracer, parent_ctx: Context, message: Us
             _end_tool_call_span(block)
 
 
-def set_result_message_attributes(span: Span, message: ResultMessage) -> None:
+def set_result_message_attributes(
+    tracer: Tracer,
+    span: Span,
+    message: ResultMessage,
+) -> None:
     """
     Write the final result text and token usage to the root span.
 
+    When the message contains a ``model_usage`` dict, per-model usage child
+    spans are created via ``_create_model_usage_spans``.  Otherwise, aggregated
+    flat usage from ``message.usage`` is written directly to the root span as
+    a fallback.
+
     Args:
-        span (Span): The root OpenTelemetry span to write attributes to.
-        message (ResultMessage): The result message containing the final text,
-                                  structured output, usage data, and execution statistics.
+        tracer: The OpenTelemetry tracer used to create per-model usage child spans.
+        span: The root OpenTelemetry span to write result attributes to.
+        message: The result message containing the final text, structured output,
+                 usage data, and execution statistics.
 
     Returns:
         None
@@ -513,5 +567,7 @@ def set_result_message_attributes(span: Span, message: ResultMessage) -> None:
     except Exception as e:
         logger.error(f"Cannot set result message base attributes: {e}")
 
-    if usage := message.usage:
+    if model_usage := getattr(message, "model_usage", None):
+        _create_model_usage_spans(tracer, span, model_usage)
+    elif usage := getattr(message, "usage", None):
         _set_usage(span, usage)
