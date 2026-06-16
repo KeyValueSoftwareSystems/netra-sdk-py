@@ -8,6 +8,7 @@ from __future__ import annotations
 import logging
 from typing import AbstractSet, Any, Optional, Set
 
+from netra.config import Config
 from netra.instrumentation.instruments import (
     DEFAULT_INSTRUMENTS_FOR_ROOT,
     InstrumentSet,
@@ -87,6 +88,20 @@ def process_content_for_max_len(content: Any, max_len: int) -> Any:
         return content
     except Exception:
         return content
+
+
+def serialize_value(value: Any) -> str:
+    """Serialize *value* to a string capped at ``Config.ATTRIBUTE_MAX_LEN``."""
+    if value is None:
+        return ""
+    try:
+        import json
+
+        serialized = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
+        return truncate_string(serialized, Config.ATTRIBUTE_MAX_LEN)
+    except Exception:
+        logger.debug("utils: failed to serialize value", exc_info=True)
+        return ""
 
 
 def resolve_root_instruments(
