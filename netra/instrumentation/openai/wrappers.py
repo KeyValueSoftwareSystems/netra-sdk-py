@@ -281,6 +281,8 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
 class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Wrapper for streaming responses"""
 
+    _netra_stream_wrapper = True
+
     def __init__(self, span: Span, response: Iterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
         self._span = span
@@ -299,6 +301,15 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
             else:
                 self._complete_response["choices"].append({"text": ""})
+
+    def _extract_content_text(self) -> str:
+        """Extract the plain text content from the accumulated response."""
+        parts = []
+        for choice in self._complete_response.get("choices", []):
+            msg = choice.get("message", {})
+            if content := msg.get("content"):
+                parts.append(content)
+        return "".join(parts)
 
     def __enter__(self) -> "StreamingWrapper":
         if hasattr(self.__wrapped__, "__enter__"):
@@ -412,12 +423,15 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
+        self._netra_output = self._extract_content_text()
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
 
 
 class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     """Async wrapper for streaming responses"""
+
+    _netra_stream_wrapper = True
 
     def __init__(self, span: Span, response: AsyncIterator[Any], request_kwargs: Dict[str, Any]) -> None:
         super().__init__(response)
@@ -437,6 +451,15 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
             else:
                 self._complete_response["choices"].append({"text": ""})
+
+    def _extract_content_text(self) -> str:
+        """Extract the plain text content from the accumulated response."""
+        parts = []
+        for choice in self._complete_response.get("choices", []):
+            msg = choice.get("message", {})
+            if content := msg.get("content"):
+                parts.append(content)
+        return "".join(parts)
 
     async def __aenter__(self) -> "AsyncStreamingWrapper":
         if hasattr(self.__wrapped__, "__aenter__"):
@@ -550,5 +573,6 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                 msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
         set_response_attributes(self._span, self._complete_response)
+        self._netra_output = self._extract_content_text()
         self._span.set_status(Status(StatusCode.OK))
         self._span.end()
