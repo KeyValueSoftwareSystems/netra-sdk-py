@@ -109,6 +109,9 @@ class Tracer:
                 provider.add_span_processor(RootInstrumentFilterProcessor(self._root_instrument_names))
 
             provider.add_span_processor(LocalFilteringSpanProcessor())
+            # ORDER MATTERS: InstrumentationSpanProcessor must precede SpanIOProcessor
+            # because SpanIOProcessor chains its writes through InstrumentationSpanProcessor's
+            # wrapped set_attribute for truncation. See _wrap_set_attribute docstrings.
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
             provider.add_span_processor(SpanIOProcessor())
