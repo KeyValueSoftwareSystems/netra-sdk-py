@@ -1,7 +1,7 @@
 import json
 import logging
 import re
-from typing import Any, Callable, Dict, Optional
+from typing import Any, Callable, Dict, Mapping, Optional
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
@@ -178,22 +178,34 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
 
     @staticmethod
     def _wrap_set_attribute(span: Span) -> None:
-        """Replace ``span.set_attribute`` with a normalising closure.
+        """Replace ``span.set_attribute`` and ``span.set_attributes`` with normalising closures.
 
         Per-span accumulators for gen_ai prompts/completions are closure-scoped
         so each span owns its own independent state.
 
+        ``set_attributes`` (plural) in the OTel SDK writes directly to
+        ``_attributes`` without calling ``set_attribute``, so it must also be
+        wrapped to ensure every value passes through normalisation.
+
+        The terminal write chains through to the previously-installed
+        ``span.set_attribute`` rather than calling the class method directly.
+        This preserves the processor chain — for example,
+        ``InstrumentationSpanProcessor``'s truncation wrapper is called for
+        every value that passes through here.  Recursion is avoided because
+        ``InstrumentationSpanProcessor`` uses the class method
+        (``type(span).set_attributes``) for *its* terminal write, which
+        writes directly to ``_attributes`` without re-entering any instance
+        wrapper.
+
         Args:
-            span: The span whose ``set_attribute`` will be replaced.
+            span: The span whose ``set_attribute``/``set_attributes`` will be replaced.
         """
-        original: SetAttributeFunc = span.set_attribute
+        _prev_set_attribute: SetAttributeFunc = span.set_attribute
 
         # Per-span accumulators for gen_ai indexed attributes
         prompts: Dict[int, Dict[str, str]] = {}
         completions: Dict[int, Dict[str, str]] = {}
 
-        # Track whether gen_ai is the owner of input/output so successive prompt/completion
-        # entries can keep accumulating into the same attribute without being blocked.
         _gen_ai_owns_input = [False]
         _gen_ai_owns_output = [False]
 
@@ -211,62 +223,67 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                 # 1. gen_ai.prompts.* / gen_ai.prompt.* → keep original + update input
                 prompt_match = _PROMPT_RE.match(key)
                 if prompt_match:
-                    original(key, value)
+                    _prev_set_attribute(key, value)
                     idx = int(prompt_match.group(1))
                     field = prompt_match.group(2)
                     prompts.setdefault(idx, {})[field] = str(value)
                     if _input_is_empty() or _gen_ai_owns_input[0]:
-                        original("input", _build_messages(prompts))
+                        _prev_set_attribute("input", _build_messages(prompts))
                         _gen_ai_owns_input[0] = True
                     return
 
                 # 2. gen_ai.completions.* / gen_ai.completion.* → keep original + update output
                 completion_match = _COMPLETION_RE.match(key)
                 if completion_match:
-                    original(key, value)
+                    _prev_set_attribute(key, value)
                     idx = int(completion_match.group(1))
                     field = completion_match.group(2)
                     completions.setdefault(idx, {})[field] = str(value)
                     if _output_is_empty() or _gen_ai_owns_output[0]:
-                        original("output", _build_messages(completions))
+                        _prev_set_attribute("output", _build_messages(completions))
                         _gen_ai_owns_output[0] = True
                     return
 
                 # 3. traceloop.entity.input → input  (no traceloop key written)
                 if key == "traceloop.entity.input":
                     if _input_is_empty():
-                        original("input", _extract_traceloop_input(value))
+                        _prev_set_attribute("input", _extract_traceloop_input(value))
                     return
 
                 # 4. traceloop.entity.output → output  (no traceloop key written)
                 if key == "traceloop.entity.output":
                     if _output_is_empty():
-                        original("output", _extract_traceloop_output(value))
+                        _prev_set_attribute("output", _extract_traceloop_output(value))
                     return
 
                 # 5. Other traceloop.* → netra.*  (no traceloop key written)
                 if key.startswith(_TRACELOOP_PREFIX):
                     new_key = _NETRA_PREFIX + key[len(_TRACELOOP_PREFIX) :]
-                    original(new_key, value)
+                    _prev_set_attribute(new_key, value)
                     return
 
                 # 6. gen_ai.usage token aliasing
                 if key == _USAGE_INPUT_TOKENS:
-                    original(_USAGE_PROMPT_TOKENS, value)
+                    _prev_set_attribute(_USAGE_PROMPT_TOKENS, value)
                     return
 
                 if key == _USAGE_OUTPUT_TOKENS:
-                    original(_USAGE_COMPLETION_TOKENS, value)
+                    _prev_set_attribute(_USAGE_COMPLETION_TOKENS, value)
                     return
 
                 # 7. Everything else — pass through unchanged
-                original(key, value)
+                _prev_set_attribute(key, value)
 
             except Exception:
                 logger.debug("SpanIOProcessor: error processing key=%s", key, exc_info=True)
                 try:
-                    original(key, value)
+                    _prev_set_attribute(key, value)
                 except Exception:
                     logger.debug("SpanIOProcessor: error calling set_attribute key=%s", key, exc_info=True)
 
+        def patched_set_attributes(attributes: Mapping[str, Any]) -> None:
+            for key, value in attributes.items():
+                patched_set_attribute(key, value)
+
         setattr(span, "set_attribute", patched_set_attribute)
+        setattr(span, "set_attributes", patched_set_attributes)
