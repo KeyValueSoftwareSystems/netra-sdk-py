@@ -78,8 +78,11 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
     ) -> None:
         """Called when a span is started.
 
-        Wraps the span's `set_attribute` method to enable value truncation and
-        sets the instrumentation name attribute if applicable.
+        Wraps the span's `set_attribute` method to enable value truncation,
+        truncates any pre-existing attributes (those passed at span creation
+        time bypass the wrapper since they are written in ``__init__`` before
+        ``on_start`` fires), and sets the instrumentation name attribute if
+        applicable.
 
         Args:
             span: The span that was started.
@@ -87,6 +90,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         try:
             self._wrap_set_attribute(span)
+            self._truncate_existing_attributes(span)
             self._set_instrumentation_name_attribute(span)
         except Exception:
             logger.exception("Error in on_start processing")
@@ -144,11 +148,41 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             )
 
         def wrapped_set_attributes(attributes: Mapping[str, Any]) -> None:
+            if not attributes:
+                return
+            truncated_attrs: dict[str, Any] = {}
             for key, value in attributes.items():
-                wrapped_set_attribute(key, value)
+                try:
+                    if key in _URL_ATTRIBUTE_KEYS:
+                        self._mark_blocked_if_internal_url(_write_attribute, value)
+                    truncated_attrs[key] = self._truncate_value(value)
+                except Exception:
+                    truncated_attrs[key] = value
+            _cls_set_attributes(span, truncated_attrs)
 
         setattr(span, "set_attribute", wrapped_set_attribute)
         setattr(span, "set_attributes", wrapped_set_attributes)
+
+    def _truncate_existing_attributes(self, span: Span) -> None:
+        """Truncate attributes that were passed at span creation time.
+
+        Attributes supplied via ``tracer.start_span(attributes={...})`` are
+        written to ``span._attributes`` in the Span constructor before
+        ``on_start`` fires, so they bypass the ``set_attribute`` wrapper.
+        This method retroactively applies truncation to those values.
+
+        Args:
+            span: The span whose pre-existing attributes should be truncated.
+        """
+        attrs = getattr(span, "_attributes", None)
+        if not attrs or not hasattr(attrs, "__setitem__"):
+            return
+
+        for key in list(attrs.keys()):
+            value = attrs[key]
+            truncated = self._truncate_value(value)
+            if truncated is not value:
+                attrs[key] = truncated
 
     def _handle_set_attribute(
         self,

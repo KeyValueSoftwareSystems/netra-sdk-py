@@ -282,6 +282,8 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     logger.debug("SpanIOProcessor: error calling set_attribute key=%s", key, exc_info=True)
 
         def patched_set_attributes(attributes: Mapping[str, Any]) -> None:
+            if not attributes:
+                return
             for key, value in attributes.items():
                 patched_set_attribute(key, value)
 
