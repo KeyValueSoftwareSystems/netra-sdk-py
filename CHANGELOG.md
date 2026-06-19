@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.93] - 2026-06-19
+- **Fix the bypassing of attribute truncation in Google ADK and Agno instrumentations** - This enables universal truncation of attributes based on the default/env value provided by the user
+
+
 ## [0.1.92] - 2026-06-16
 - **Add support for file handling in simulation workflow** - This provides support for passing files in simulation workflow to provide user context
 
@@ -292,4 +296,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.92]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.93]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
