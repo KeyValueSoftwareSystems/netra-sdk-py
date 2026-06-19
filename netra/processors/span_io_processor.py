@@ -197,6 +197,10 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         writes directly to ``_attributes`` without re-entering any instance
         wrapper.
 
+        ``_prev_set_attribute`` calls ``type(span).set_attributes`` — the class method
+        installed by ``InstrumentationSpanProcessor`` — to write directly to
+        ``_attributes``.
+
         Args:
             span: The span whose ``set_attribute``/``set_attributes`` will be replaced.
         """
