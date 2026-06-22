@@ -55,7 +55,7 @@ async def _dispatch_messages(
             if isinstance(message, SystemMessage):
                 set_system_message_attributes(root_span, message)
             elif isinstance(message, ResultMessage):
-                set_result_message_attributes(root_span, message)
+                set_result_message_attributes(tracer, root_span, message)
             elif isinstance(message, AssistantMessage):
                 first_token_time = time.time()
                 if not first_assistant_seen:

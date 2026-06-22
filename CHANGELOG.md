@@ -4,6 +4,11 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.94] - 2026-06-22
+
+- **Introduce synthetic usage spans to fix cost calculation in the Claude Agent SDK** — Create separate spans for each model's usage to provide more accurate cost reporting. If separate spans cannot be created, usage is recorded on the main span as a fallback.
+
+
 ## [0.1.93] - 2026-06-19
 - **Fix the bypassing of attribute truncation in Google ADK and Agno instrumentations** - This enables universal truncation of attributes based on the default/env value provided by the user
 
@@ -11,15 +16,19 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [0.1.92] - 2026-06-16
 - **Add support for file handling in simulation workflow** - This provides support for passing files in simulation workflow to provide user context
 
+
 ## [0.1.91] - 2026-06-08
-- **Expand SDK dependencies to include latest versions** - This sprovides support for new versions of OTel instrumentations and traceloop
+
+- **Expand SDK dependencies to include latest versions** - This provides support for new versions of OTel instrumentations and traceloop
 
 
 ## [0.1.90] - 2026-06-08
+
 - **Add missing dependency of "opentelemetry-instrumentation-pymysql"** - This enables tracing of PyMySQL workflows using Netra
 
 
 ## [0.1.89] - 2026-05-29
+
 - **Support for metadata alias for tokens in Anthropic instrumentation** - Capture various token alias for anthropic instrumentation
 
 
@@ -296,4 +305,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.93]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.94]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
