@@ -136,12 +136,6 @@ class TurnType(str, Enum):
     MULTI = "multi"
 
 
-class DatasetType(str, Enum):
-    TEXT = "text"
-    IMAGE = "image"
-    VIDEO = "video"
-
-
 @dataclass
 class ItemProcessingResult:
     """Result of processing a single dataset item."""
