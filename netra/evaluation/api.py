@@ -12,6 +12,7 @@ from netra.evaluation.models import (
     DatasetItem,
     DatasetRecord,
     EvaluatorConfig,
+    GetAllDatasetsResponse,
     GetDatasetItemsResponse,
     ItemContext,
     ItemProcessingResult,
@@ -72,6 +73,8 @@ class Evaluation:
             organization_id=response.get("organizationId", ""),
             name=response.get("name", ""),
             tags=response.get("tags", []),
+            turn_type=response.get("turnType", None),
+            dataset_type=response.get("datasetType", None),
             created_by=response.get("createdBy", ""),
             updated_by=response.get("updatedBy", ""),
             updated_at=response.get("updatedAt", ""),
@@ -119,6 +122,43 @@ class Evaluation:
             created_at=response.get("createdAt", ""),
             deleted_at=response.get("deletedAt", None),
         )
+
+    def get_all_datasets(self, tag: Optional[str] = None) -> Any:
+        """
+        List all datasets, optionally filtered by a tag.
+
+        Args:
+            tag: Optional tag string to filter datasets by.
+
+        Returns:
+            A GetAllDatasetsResponse containing the list of datasets, or None on failure.
+        """
+        response = self._client.get_all_datasets(tag=tag)
+        if not response:
+            return None
+
+        datasets = []
+        for item in response:
+            try:
+                datasets.append(
+                    CreateDatasetResponse(
+                        project_id=item.get("projectId", ""),
+                        organization_id=item.get("organizationId", ""),
+                        name=item.get("name", ""),
+                        tags=item.get("tags", []),
+                        turn_type=item.get("turnType", None),
+                        dataset_type=item.get("datasetType", None),
+                        created_by=item.get("createdBy", ""),
+                        updated_by=item.get("updatedBy", ""),
+                        updated_at=item.get("updatedAt", ""),
+                        id=item.get("id", ""),
+                        created_at=item.get("createdAt", ""),
+                        deleted_at=item.get("deletedAt", None),
+                    )
+                )
+            except Exception as exc:
+                logger.error("netra.evaluation: Failed to parse dataset: %s", exc)
+        return GetAllDatasetsResponse(datasets=datasets)
 
     def get_dataset(self, dataset_id: str) -> Any:
         """

@@ -11,6 +11,8 @@ class CreateDatasetResponse(BaseModel):  # type:ignore[misc]
     organization_id: str
     name: str
     tags: Optional[List[str]] = []
+    turn_type: Optional[str] = None
+    dataset_type: Optional[str] = None
     created_by: str
     updated_by: str
     updated_at: str
@@ -36,6 +38,10 @@ class AddDatasetItemResponse(BaseModel):  # type:ignore[misc]
     id: str
     created_at: str
     deleted_at: Optional[str] = None
+
+
+class GetAllDatasetsResponse(BaseModel):  # type:ignore[misc]
+    datasets: List[CreateDatasetResponse]
 
 
 class DatasetRecord(BaseModel):  # type:ignore[misc]

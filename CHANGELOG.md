@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.95] - 2026-06-26
+
+- **Added get_all_datasets with tag as optional param** - If tag is provided, we get details of all the datasets with that particular tag attached.
+
 ## [0.1.94] - 2026-06-22
 
 - **Introduce synthetic usage spans to fix cost calculation in the Claude Agent SDK** — Create separate spans for each model's usage to provide more accurate cost reporting. If separate spans cannot be created, usage is recorded on the main span as a fallback.
@@ -305,4 +309,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.94]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.95]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
