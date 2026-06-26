@@ -11,6 +11,8 @@ class CreateDatasetResponse(BaseModel):  # type:ignore[misc]
     organization_id: str
     name: str
     tags: Optional[List[str]] = []
+    turn_type: Optional[str] = None
+    dataset_type: Optional[str] = None
     created_by: str
     updated_by: str
     updated_at: str
@@ -132,6 +134,12 @@ class LocalDataset(BaseModel):  # type:ignore[misc]
 class TurnType(str, Enum):
     SINGLE = "single"
     MULTI = "multi"
+
+
+class DatasetType(str, Enum):
+    TEXT = "text"
+    IMAGE = "image"
+    VIDEO = "video"
 
 
 @dataclass
