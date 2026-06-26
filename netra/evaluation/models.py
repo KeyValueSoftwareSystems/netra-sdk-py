@@ -38,6 +38,10 @@ class AddDatasetItemResponse(BaseModel):  # type:ignore[misc]
     deleted_at: Optional[str] = None
 
 
+class GetAllDatasetsResponse(BaseModel):  # type:ignore[misc]
+    datasets: List[CreateDatasetResponse]
+
+
 class DatasetRecord(BaseModel):  # type:ignore[misc]
     id: str
     input: Any
