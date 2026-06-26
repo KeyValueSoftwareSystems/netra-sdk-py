@@ -172,6 +172,38 @@ class EvaluationHttpClient:
             )
             return None
 
+    def get_all_datasets(self, tag: Optional[str] = None) -> Any:
+        """
+        Fetch all datasets, optionally filtered by tag.
+
+        Args:
+            tag: Optional tag to filter datasets by.
+
+        Returns:
+            A list of dataset objects on success, or None on failure.
+        """
+        if not self._client:
+            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch datasets")
+            return None
+        try:
+            url = "/evaluations/dataset"
+            params: Dict[str, str] = {}
+            if tag:
+                params["tag"] = tag
+            response = self._client.get(url, params=params)
+            response.raise_for_status()
+            data = response.json()
+            if isinstance(data, dict) and "data" in data:
+                logger.info("netra.evaluation: Datasets fetched successfully")
+                return data.get("data", [])
+        except Exception:
+            response_json = response.json()
+            logger.error(
+                "netra.evaluation: Failed to fetch datasets: %s",
+                response_json.get("error", {}).get("message", ""),
+            )
+            return None
+
     def get_dataset(self, dataset_id: str) -> Any:
         """
         Fetch dataset items for a dataset id.
