@@ -520,6 +520,7 @@ class SessionManager:
     def record_exception(
         exception: BaseException,
         attributes: Optional[Dict[str, Any]] = None,
+        escaped: Optional[bool] = False,
     ) -> None:
         """Record a caught exception on the currently active span.
 
@@ -539,7 +540,7 @@ class SessionManager:
                 logger.warning("record_exception: no active recording span to record exception on")
                 return
 
-            span.record_exception(exception, attributes=attributes)
+            span.record_exception(exception, attributes=attributes, escaped=escaped)
             span.set_status(trace.Status(trace.StatusCode.ERROR, str(exception)))
             span.set_attribute(f"{Config.LIBRARY_NAME}.error_message", str(exception))
         except Exception:
