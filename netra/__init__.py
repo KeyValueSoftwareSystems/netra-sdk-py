@@ -429,6 +429,7 @@ class Netra:
         cls,
         exception: BaseException,
         attributes: Optional[Dict[str, Any]] = None,
+        escaped: Optional[bool] = False,
     ) -> None:
         """Record a caught exception on the currently active span.
 
@@ -463,7 +464,7 @@ class Netra:
                 type(exception),
             )
             return
-        SessionManager.record_exception(exception, attributes=attributes)
+        SessionManager.record_exception(exception, attributes=attributes, escaped=escaped)
 
     @classmethod
     def add_conversation(cls, conversation_type: ConversationType, role: str, content: Any) -> None:
