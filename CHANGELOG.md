@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.96] - 2026-07-09
+
+- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Configure the default TTL via `cache_ttl_seconds` in `Netra.init()` or the `NETRA_CACHE_TTL_SECONDS` environment variable. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
+
 ## [0.1.95] - 2026-06-26
 
 - **Added get_all_datasets with tag as optional param** - If tag is provided, we get details of all the datasets with that particular tag attached.
@@ -309,4 +313,5 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
+[0.1.96]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
 [0.1.95]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
