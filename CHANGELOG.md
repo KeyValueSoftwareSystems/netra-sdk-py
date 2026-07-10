@@ -4,12 +4,16 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.97] - 
+
+- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Configure the default TTL via `cache_ttl_seconds` in `Netra.init()` or the `NETRA_CACHE_TTL_SECONDS` environment variable. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
 
 ## [0.1.96] - 2026-07-23
 
 - **Reparent children of blocked root instruments instead of dropping the subtree** - When an instrumentation is not allowed to emit root-level spans, its children are now re-parented onto the nearest valid ancestor rather than dropping the entire subtree, so downstream spans are preserved.
 
 - **Add utility to explicitly record exceptions on a span** - New `Netra.record_exception(exception, attributes=...)` utility to attach a caught exception to the currently active span from within an `except` block. It adds a standard OpenTelemetry exception event (type, message, stacktrace), sets the span status to ERROR, and records the `netra.error_message` attribute.
+
 
 ## [0.1.95] - 2026-06-26
 

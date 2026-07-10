@@ -116,6 +116,12 @@ class LiteLLMInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             logger.error("Failed to uninstrument LiteLLM completions")
 
         try:
+            unwrap("litellm", "responses")
+            unwrap("litellm", "aresponses")
+        except (AttributeError, ModuleNotFoundError):
+            logger.error("Failed to uninstrument LiteLLM responses")
+
+        try:
             unwrap("litellm", "embedding")
             unwrap("litellm", "aembedding")
         except (AttributeError, ModuleNotFoundError):
