@@ -9,7 +9,7 @@ from netra.prompts.api import Prompts
 
 @pytest.fixture
 def prompts() -> Prompts:
-    cfg = Config(cache_ttl_seconds=60)
+    cfg = Config()
     client = MagicMock()
     instance = Prompts(cfg)
     instance._client = client
@@ -122,7 +122,6 @@ class TestPromptsCacheShutdown:
         mock_init_instrumentations: MagicMock,
     ) -> None:
         mock_cfg = MagicMock()
-        mock_cfg.cache_ttl_seconds = 60
         mock_config.return_value = mock_cfg
 
         Netra.init()
