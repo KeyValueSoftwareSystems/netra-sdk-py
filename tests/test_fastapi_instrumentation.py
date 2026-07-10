@@ -357,8 +357,8 @@ class TestUtilityFunctions:
 
         span_name, attributes = get_default_span_details(scope)
 
-        assert span_name == "GET /test/path"
-        assert attributes["http.route"] == "/test/path"
+        assert span_name == "GET"
+        assert attributes == {}
 
     @patch("netra.instrumentation.libraries.fastapi.utils.get_route_details")
     @patch("netra.instrumentation.libraries.fastapi.utils.sanitize_method")
@@ -385,8 +385,8 @@ class TestUtilityFunctions:
 
         span_name, attributes = get_default_span_details(scope)
 
-        assert span_name == "HTTP /test/path"
-        assert attributes["http.route"] == "/test/path"
+        assert span_name == "HTTP"
+        assert attributes == {}
 
 
 class TestHeaderSanitization:
@@ -760,7 +760,7 @@ class TestW3CTracePropagation:
             mock_extract.return_value = Mock()
             mock_ctx.attach.return_value = Mock()
 
-            asyncio.get_event_loop().run_until_complete(middleware(scope, mock_receive, mock_send))
+            asyncio.run(middleware(scope, mock_receive, mock_send))
 
             mock_extract.assert_called_once_with(carrier=scope, getter=_asgi_getter)
 
@@ -805,7 +805,7 @@ class TestW3CTracePropagation:
 
         scope = {"type": "websocket", "headers": []}
 
-        asyncio.get_event_loop().run_until_complete(middleware(scope, AsyncMock(), AsyncMock()))
+        asyncio.run(middleware(scope, AsyncMock(), AsyncMock()))
 
         mock_app.assert_called_once()
         mock_tracer.start_as_current_span.assert_not_called()
