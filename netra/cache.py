@@ -26,6 +26,8 @@ class TTLCache(Generic[T]):
 
     def set(self, key: str, value: T, ttl: Optional[int] = None) -> None:
         ttl_seconds = self._default_ttl if ttl is None else ttl
+        if ttl_seconds <= 0:
+            return
         expires_at = time.monotonic() + ttl_seconds
         with self._lock:
             self._store[key] = (value, expires_at)
