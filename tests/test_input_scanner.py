@@ -172,16 +172,18 @@ class TestInputScannerGetScanner:
 
     def test_get_scanner_with_llm_guard_available(self) -> None:
         """Test _get_scanner when llm_guard is available."""
-        with patch("netra.scanner.PromptInjection") as mock_prompt_injection:
-            mock_scanner = Mock(spec=Scanner)
-            mock_prompt_injection.return_value = mock_scanner
+        mock_match_module = Mock()
+        mock_match_module.MatchType = Mock(FULL="full")
+        with patch.dict("sys.modules", {"llm_guard.input_scanners.prompt_injection": mock_match_module}):
+            with patch("netra.scanner.PromptInjection") as mock_prompt_injection:
+                mock_scanner = Mock(spec=Scanner)
+                mock_prompt_injection.return_value = mock_scanner
 
-            result = InputScanner._get_scanner(ScannerType.PROMPT_INJECTION, match_type="custom")
+                result = InputScanner._get_scanner(ScannerType.PROMPT_INJECTION, match_type="custom")
 
-            assert result == mock_scanner
-            # Check that custom match_type was passed
-            call_args = mock_prompt_injection.call_args
-            assert call_args.kwargs["match_type"] == "custom"
+                assert result == mock_scanner
+                call_args = mock_prompt_injection.call_args
+                assert call_args.kwargs["match_type"] == "custom"
 
     def test_get_scanner_with_llm_guard_unavailable(self) -> None:
         """Test _get_scanner when llm_guard is not available."""

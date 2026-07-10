@@ -2,6 +2,7 @@ from typing import Collection
 from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
+from opentelemetry.semconv_ai import SpanAttributes
 
 from netra.instrumentation.litellm import LiteLLMInstrumentor, should_suppress_instrumentation
 from netra.instrumentation.litellm.wrappers import (
@@ -38,40 +39,27 @@ class TestLiteLLMInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "litellm >= 1.0.0" in dependencies
 
+    @patch("netra.instrumentation.litellm.wrap_function_wrapper")
     @patch("netra.instrumentation.litellm.get_tracer")
     @patch("netra.instrumentation.litellm.logger")
-    def test_instrument_with_default_parameters(self, mock_logger, mock_get_tracer):
+    def test_instrument_with_default_parameters(self, mock_logger, mock_get_tracer, mock_wrap):
         """Test _instrument method with default parameters."""
         # Arrange
         instrumentor = LiteLLMInstrumentor()
         mock_tracer = Mock()
         mock_get_tracer.return_value = mock_tracer
 
-        # Mock litellm module
-        mock_litellm = Mock()
-        mock_litellm.completion = Mock()
-        mock_litellm.acompletion = AsyncMock()
-        mock_litellm.embedding = Mock()
-        mock_litellm.aembedding = AsyncMock()
-        mock_litellm.image_generation = Mock()
-        mock_litellm.aimage_generation = AsyncMock()
+        # Act
+        instrumentor._instrument()
 
-        with patch.dict("sys.modules", {"litellm": mock_litellm}):
-            # Act
-            instrumentor._instrument()
+        # Assert
+        mock_get_tracer.assert_called_once()
+        # completion, acompletion, responses, aresponses, embedding, aembedding, image_generation, aimage_generation
+        assert mock_wrap.call_count == 8
 
-            # Assert
-            mock_get_tracer.assert_called_once()
-            # Verify original functions are stored
-            assert hasattr(instrumentor, "_original_completion")
-            assert hasattr(instrumentor, "_original_acompletion")
-            assert hasattr(instrumentor, "_original_embedding")
-            assert hasattr(instrumentor, "_original_aembedding")
-            assert hasattr(instrumentor, "_original_image_generation")
-            assert hasattr(instrumentor, "_original_aimage_generation")
-
+    @patch("netra.instrumentation.litellm.wrap_function_wrapper")
     @patch("netra.instrumentation.litellm.get_tracer")
-    def test_instrument_with_custom_tracer_provider(self, mock_get_tracer):
+    def test_instrument_with_custom_tracer_provider(self, mock_get_tracer, mock_wrap):
         """Test _instrument method with custom tracer provider."""
         # Arrange
         instrumentor = LiteLLMInstrumentor()
@@ -79,85 +67,60 @@ class TestLiteLLMInstrumentor:
         mock_tracer = Mock()
         mock_get_tracer.return_value = mock_tracer
 
-        # Mock litellm module
-        mock_litellm = Mock()
-        mock_litellm.completion = Mock()
-        mock_litellm.acompletion = AsyncMock()
-        mock_litellm.embedding = Mock()
-        mock_litellm.aembedding = AsyncMock()
-        mock_litellm.image_generation = Mock()
-        mock_litellm.aimage_generation = AsyncMock()
+        # Act
+        instrumentor._instrument(tracer_provider=mock_tracer_provider)
 
-        with patch.dict("sys.modules", {"litellm": mock_litellm}):
-            # Act
-            instrumentor._instrument(tracer_provider=mock_tracer_provider)
+        # Assert
+        mock_get_tracer.assert_called_once_with(
+            "netra.instrumentation.litellm", mock_get_tracer.call_args[0][1], mock_tracer_provider
+        )
+        assert mock_wrap.call_count == 8
 
-            # Assert
-            mock_get_tracer.assert_called_once_with(
-                "netra.instrumentation.litellm", mock_get_tracer.call_args[0][1], mock_tracer_provider
-            )
-
+    @patch("netra.instrumentation.litellm.wrap_function_wrapper", side_effect=ImportError("No module named 'litellm'"))
     @patch("netra.instrumentation.litellm.logger")
-    def test_instrument_with_import_error(self, mock_logger):
+    def test_instrument_with_import_error(self, mock_logger, mock_wrap):
         """Test _instrument method handles import error gracefully."""
         # Arrange
         instrumentor = LiteLLMInstrumentor()
 
-        with patch("netra.instrumentation.litellm.get_tracer"), patch.dict("sys.modules", {"litellm": None}):
-            with patch("builtins.__import__", side_effect=ImportError("No module named 'litellm'")):
-                # Act
-                instrumentor._instrument()
-
-                # Assert
-                mock_logger.error.assert_called_once()
-
-    def test_uninstrument(self):
-        """Test _uninstrument method restores original functions."""
-        # Arrange
-        instrumentor = LiteLLMInstrumentor()
-        mock_litellm = Mock()
-        original_completion = Mock()
-        original_acompletion = AsyncMock()
-        original_embedding = Mock()
-        original_aembedding = AsyncMock()
-        original_image_generation = Mock()
-        original_aimage_generation = AsyncMock()
-
-        # Set up original functions
-        instrumentor._original_completion = original_completion
-        instrumentor._original_acompletion = original_acompletion
-        instrumentor._original_embedding = original_embedding
-        instrumentor._original_aembedding = original_aembedding
-        instrumentor._original_image_generation = original_image_generation
-        instrumentor._original_aimage_generation = original_aimage_generation
-
-        with patch.dict("sys.modules", {"litellm": mock_litellm}):
+        with patch("netra.instrumentation.litellm.get_tracer"):
             # Act
-            instrumentor._uninstrument()
+            instrumentor._instrument()
 
             # Assert
-            assert mock_litellm.completion == original_completion
-            assert mock_litellm.acompletion == original_acompletion
-            assert mock_litellm.embedding == original_embedding
-            assert mock_litellm.aembedding == original_aembedding
-            assert mock_litellm.image_generation == original_image_generation
-            assert mock_litellm.aimage_generation == original_aimage_generation
+            assert mock_logger.error.called
 
-    def test_uninstrument_with_import_error(self):
+    @patch("netra.instrumentation.litellm.unwrap")
+    def test_uninstrument(self, mock_unwrap):
+        """Test _uninstrument method unwraps LiteLLM functions."""
+        # Arrange
+        instrumentor = LiteLLMInstrumentor()
+
+        # Act
+        instrumentor._uninstrument()
+
+        # Assert — same eight methods that _instrument wraps
+        assert mock_unwrap.call_count == 8
+
+    @patch("netra.instrumentation.litellm.unwrap", side_effect=ModuleNotFoundError("litellm"))
+    @patch("netra.instrumentation.litellm.logger")
+    def test_uninstrument_with_import_error(self, mock_logger, mock_unwrap):
         """Test _uninstrument method handles import error gracefully."""
         # Arrange
         instrumentor = LiteLLMInstrumentor()
 
-        with patch.dict("sys.modules", {"litellm": None}):
-            with patch("builtins.__import__", side_effect=ImportError("No module named 'litellm'")):
-                # Act & Assert - should not raise exception
-                instrumentor._uninstrument()
+        # Act
+        instrumentor._uninstrument()
+
+        # Assert
+        assert mock_logger.error.called
 
 
 class TestWrappers:
     """Test wrapper functionality in the LiteLLM instrumentation module."""
 
-    def test_completion_wrapper_non_streaming(self):
+    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    def test_completion_wrapper_non_streaming(self, mock_record_timing):
         """Test completion_wrapper for non-streaming requests."""
         from netra.instrumentation.litellm.wrappers import completion_wrapper
 
@@ -269,7 +232,8 @@ class TestWrappers:
         # Verify wrapper creation doesn't call tracer methods yet
         mock_tracer.start_span.assert_not_called()
 
-    def test_embedding_wrapper(self):
+    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    def test_embedding_wrapper(self, mock_record_timing):
         """Test embedding_wrapper for embedding requests."""
         from netra.instrumentation.litellm.wrappers import embedding_wrapper
 
@@ -316,7 +280,8 @@ class TestWrappers:
         assert callable(wrapper)
         mock_tracer.start_as_current_span.assert_not_called()  # Should not be called until wrapper is invoked
 
-    def test_image_generation_wrapper(self):
+    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    def test_image_generation_wrapper(self, mock_record_timing):
         """Test image_generation_wrapper for image generation requests."""
         from netra.instrumentation.litellm.wrappers import image_generation_wrapper
 
@@ -414,7 +379,7 @@ class TestUtilityFunctions:
         assert is_streaming_response({"key": "value"}) is False
         assert is_streaming_response(b"bytes") is False
 
-    @patch("netra.instrumentation.litellm.context_api.get_value")
+    @patch("netra.instrumentation.litellm.utils.context_api.get_value")
     def test_should_suppress_instrumentation_true(self, mock_get_value):
         """Test should_suppress_instrumentation returns True when suppression is enabled."""
         # Arrange
@@ -426,7 +391,7 @@ class TestUtilityFunctions:
         # Assert
         assert result is True
 
-    @patch("netra.instrumentation.litellm.context_api.get_value")
+    @patch("netra.instrumentation.litellm.utils.context_api.get_value")
     def test_should_suppress_instrumentation_false(self, mock_get_value):
         """Test should_suppress_instrumentation returns False when suppression is disabled."""
         # Arrange
@@ -504,12 +469,13 @@ class TestUtilityFunctions:
         set_request_attributes(mock_span, kwargs, "chat")
 
         # Assert
-        mock_span.set_attribute.assert_any_call("llm.request.type", "chat")
-        mock_span.set_attribute.assert_any_call("gen_ai.system", "LiteLLM")
-        mock_span.set_attribute.assert_any_call("gen_ai.request.model", "gpt-4")
-        mock_span.set_attribute.assert_any_call("gen_ai.request.temperature", 0.7)
-        mock_span.set_attribute.assert_any_call("gen_ai.request.max_tokens", 100)
-        mock_span.set_attribute.assert_any_call("gen_ai.stream", False)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_TYPE, "chat")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_MODEL, "gpt-4")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_TEMPERATURE, 0.7)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_MAX_TOKENS, 100)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_IS_STREAMING, False)
+        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
+        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.content", "Hello")
 
     def test_set_request_attributes_embedding(self):
         """Test set_request_attributes for embedding."""
@@ -522,9 +488,8 @@ class TestUtilityFunctions:
         set_request_attributes(mock_span, kwargs, "embedding")
 
         # Assert
-        mock_span.set_attribute.assert_any_call("llm.request.type", "embedding")
-        mock_span.set_attribute.assert_any_call("gen_ai.system", "LiteLLM")
-        mock_span.set_attribute.assert_any_call("gen_ai.request.model", "text-embedding-ada-002")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_TYPE, "embedding")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_MODEL, "text-embedding-ada-002")
 
     def test_set_request_attributes_image_generation(self):
         """Test set_request_attributes for image generation."""
@@ -537,11 +502,8 @@ class TestUtilityFunctions:
         set_request_attributes(mock_span, kwargs, "image_generation")
 
         # Assert
-        mock_span.set_attribute.assert_any_call("llm.request.type", "image_generation")
-        mock_span.set_attribute.assert_any_call("gen_ai.prompt", "A sunset")
-        mock_span.set_attribute.assert_any_call("gen_ai.request.n", 1)
-        mock_span.set_attribute.assert_any_call("gen_ai.request.size", "1024x1024")
-        mock_span.set_attribute.assert_any_call("gen_ai.request.quality", "hd")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_TYPE, "image_generation")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_MODEL, "dall-e-3")
 
     def test_set_response_attributes_chat(self):
         """Test set_response_attributes for chat completion."""
@@ -556,14 +518,15 @@ class TestUtilityFunctions:
         }
 
         # Act
-        set_response_attributes(mock_span, response_dict, "chat")
+        set_response_attributes(mock_span, response_dict)
 
         # Assert
-        mock_span.set_attribute.assert_any_call("gen_ai.response.model", "gpt-4")
-        mock_span.set_attribute.assert_any_call("gen_ai.response.id", "chatcmpl-123")
-        mock_span.set_attribute.assert_any_call("gen_ai.usage.prompt_tokens", 10)
-        mock_span.set_attribute.assert_any_call("gen_ai.usage.completion_tokens", 20)
-        mock_span.set_attribute.assert_any_call("llm.usage.total_tokens", 30)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_RESPONSE_MODEL, "gpt-4")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, 10)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, 20)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, 30)
+        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", "Hello!")
 
     def test_set_response_attributes_embedding(self):
         """Test set_response_attributes for embedding."""
@@ -577,12 +540,12 @@ class TestUtilityFunctions:
         }
 
         # Act
-        set_response_attributes(mock_span, response_dict, "embedding")
+        set_response_attributes(mock_span, response_dict)
 
         # Assert
-        mock_span.set_attribute.assert_any_call("gen_ai.response.model", "text-embedding-ada-002")
-        mock_span.set_attribute.assert_any_call("gen_ai.response.embeddings.0.index", 0)
-        mock_span.set_attribute.assert_any_call("gen_ai.response.embeddings.0.dimensions", 3)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_RESPONSE_MODEL, "text-embedding-ada-002")
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, 5)
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, 5)
 
     def test_set_response_attributes_image_generation(self):
         """Test set_response_attributes for image generation."""
@@ -590,17 +553,15 @@ class TestUtilityFunctions:
         mock_span = Mock()
         mock_span.is_recording.return_value = True
         response_dict = {
-            "data": [{"url": "https://example.com/image.png", "revised_prompt": "A beautiful sunset over mountains"}]
+            "model": "dall-e-3",
+            "data": [{"url": "https://example.com/image.png", "revised_prompt": "A beautiful sunset over mountains"}],
         }
 
         # Act
-        set_response_attributes(mock_span, response_dict, "image_generation")
+        set_response_attributes(mock_span, response_dict)
 
         # Assert
-        mock_span.set_attribute.assert_any_call("gen_ai.response.images.0.url", "https://example.com/image.png")
-        mock_span.set_attribute.assert_any_call(
-            "gen_ai.response.images.0.revised_prompt", "A beautiful sunset over mountains"
-        )
+        mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_RESPONSE_MODEL, "dall-e-3")
 
     def test_set_request_attributes_not_recording(self):
         """Test set_request_attributes when span is not recording."""
@@ -623,7 +584,7 @@ class TestUtilityFunctions:
         response_dict = {"model": "gpt-4"}
 
         # Act
-        set_response_attributes(mock_span, response_dict, "chat")
+        set_response_attributes(mock_span, response_dict)
 
         # Assert
         mock_span.set_attribute.assert_not_called()
