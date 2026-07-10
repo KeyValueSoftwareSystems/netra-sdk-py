@@ -7,7 +7,7 @@ from typing import Any, Dict, List, Optional
 import httpx
 
 from netra.config import Config
-from netra.evaluation.models import DatasetItem, TurnType
+from netra.evaluation.models import DatasetItem, DatasetType, TurnType
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +102,11 @@ class EvaluationHttpClient:
             return 10.0
 
     def create_dataset(
-        self, name: Optional[str], tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE
+        self,
+        name: Optional[str],
+        dataset_type: DatasetType = DatasetType.TEXT,
+        turn_type: TurnType = TurnType.SINGLE,
+        tags: Optional[List[str]] = None,
     ) -> Any:
         """
         Create an empty dataset
@@ -121,7 +125,12 @@ class EvaluationHttpClient:
             return None
         try:
             url = "/evaluations/dataset"
-            payload: Dict[str, Any] = {"name": name, "tags": tags if tags else [], "turnType": turn_type.value}
+            payload: Dict[str, Any] = {
+                "name": name,
+                "tags": tags if tags else [],
+                "turnType": turn_type.value,
+                "datasetType": dataset_type.value,
+            }
             response = self._client.post(url, json=payload)
             response.raise_for_status()
             data = response.json()
