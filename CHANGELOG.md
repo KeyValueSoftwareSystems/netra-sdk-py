@@ -8,10 +8,6 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Configure the default TTL via `cache_ttl_seconds` in `Netra.init()` or the `NETRA_CACHE_TTL_SECONDS` environment variable. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
 
-## [0.1.95] - 2026-06-26
-
-- **Added get_all_datasets with tag as optional param** - If tag is provided, we get details of all the datasets with that particular tag attached.
-
 ## [0.1.94] - 2026-06-22
 
 - **Introduce synthetic usage spans to fix cost calculation in the Claude Agent SDK** — Create separate spans for each model's usage to provide more accurate cost reporting. If separate spans cannot be created, usage is recorded on the main span as a fallback.
@@ -314,4 +310,3 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 - Added utility to set input and output data for any active span in a trace
 
 [0.1.96]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
-[0.1.95]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
