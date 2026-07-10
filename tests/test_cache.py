@@ -45,6 +45,13 @@ class TestTTLCache:
         assert cache.get("a") is None
         assert cache.get("b") == "2"
 
+    def test_set_with_zero_or_negative_ttl_does_not_store(self) -> None:
+        cache = TTLCache[str](default_ttl=60)
+        cache.set("zero", "a", ttl=0)
+        cache.set("negative", "b", ttl=-1)
+        assert cache.get("zero") is None
+        assert cache.get("negative") is None
+
     def test_thread_safe_concurrent_access(self) -> None:
         cache = TTLCache[int](default_ttl=60)
         errors: list[Exception] = []
