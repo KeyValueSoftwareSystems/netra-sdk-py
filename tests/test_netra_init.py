@@ -12,6 +12,7 @@ import pytest
 
 from netra import Netra
 from netra.config import Config
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS
 
 
 class TestNetraInitialization:
@@ -54,11 +55,16 @@ class TestNetraInitialization:
             headers=None,
             disable_batch=None,
             trace_content=None,
+            debug_mode=None,
+            enable_root_span=None,
             resource_attributes=None,
             environment=None,
             enable_scrubbing=None,
-            debug_mode=None,
             blocked_spans=None,
+            enable_metrics=None,
+            metrics_export_interval_ms=None,
+            export_auto_metrics=None,
+            cache_ttl_seconds=None,
         )
 
         # Verify Tracer was initialized
@@ -68,7 +74,7 @@ class TestNetraInitialization:
         mock_init_instrumentations.assert_called_once_with(
             should_enrich_metrics=True,
             base64_image_uploader=None,
-            instruments=None,
+            instruments=DEFAULT_INSTRUMENTS,
             block_instruments=None,
         )
 
@@ -86,11 +92,16 @@ class TestNetraInitialization:
             "headers": "key1=value1,key2=value2",
             "disable_batch": True,
             "trace_content": False,
+            "debug_mode": True,
+            "enable_root_span": False,
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
             "enable_scrubbing": None,
-            "debug_mode": True,
             "blocked_spans": None,
+            "enable_metrics": None,
+            "metrics_export_interval_ms": None,
+            "export_auto_metrics": None,
+            "cache_ttl_seconds": None,
         }
 
         app_name = "test-app"
