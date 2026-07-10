@@ -306,6 +306,11 @@ class Netra:
                     cls.prompts.clear_cache()
                 except Exception:
                     pass
+            if hasattr(cls, "models") and cls.models is not None:
+                try:
+                    cls.models.clear_cache()
+                except Exception:
+                    pass
 
     @classmethod
     def get_meter(cls, name: str = "netra", version: Optional[str] = None) -> otel_metrics.Meter:
