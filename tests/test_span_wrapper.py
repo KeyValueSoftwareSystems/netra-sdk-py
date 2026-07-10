@@ -122,7 +122,7 @@ class TestSpanWrapperInitialization:
         span_wrapper = SpanWrapper("test_span")
 
         assert span_wrapper.name == "test_span"
-        assert span_wrapper.attributes == {}
+        assert span_wrapper.attributes == {"netra.span.type": "SPAN"}
         assert span_wrapper.start_time is None
         assert span_wrapper.end_time is None
         assert span_wrapper.status == "pending"
@@ -160,7 +160,7 @@ class TestSpanWrapperInitialization:
 
         span_wrapper = SpanWrapper("test_span", attributes=None)
 
-        assert span_wrapper.attributes == {}
+        assert span_wrapper.attributes == {"netra.span.type": "SPAN"}
 
 
 class TestSpanWrapperAttributeSetters:
@@ -407,7 +407,7 @@ class TestSpanWrapperContextManager:
         args, kwargs = self.mock_tracer.start_as_current_span.call_args
         assert kwargs["name"] == "test_span"
         assert kwargs["kind"] == SpanKind.CLIENT
-        assert kwargs["attributes"] == {"initial_key": "initial_value"}
+        assert kwargs["attributes"] == {"initial_key": "initial_value", "netra.span.type": "SPAN"}
         assert self.span_wrapper.span is self.mock_span
 
         # Verify return value
