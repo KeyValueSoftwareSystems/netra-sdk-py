@@ -134,6 +134,7 @@ def build_request_url(scope: Dict[str, Any]) -> str:
             url = f"{scheme}://{host}{path}"
         else:
             url = f"{scheme}://{host}:{port}{path}"
+    else:
         url = path
 
     if query_string:
