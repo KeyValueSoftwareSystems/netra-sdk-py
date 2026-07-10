@@ -11,6 +11,7 @@
 - 📈 **Session Management**: Track user sessions and custom attributes
 - 🌐 **HTTP Client Instrumentation**: Automatic tracing for aiohttp and httpx
 - 💾 **Vector Database Support**: Weaviate, Qdrant, and other vector DB instrumentation
+- 📋 **Prompt Management**: Fetch managed prompts from Netra with optional in-memory TTL caching
 
 ## 📦 Installation
 
@@ -49,6 +50,7 @@ Netra.init(
     trace_content=True,
     environment="Your Application environment",
     instruments={InstrumentSet.OPENAI, InstrumentSet.ANTHROPIC},
+    cache_ttl_seconds=60,  # default TTL for opt-in prompt caching (env: NETRA_CACHE_TTL_SECONDS)
 )
 ```
 
@@ -319,6 +321,40 @@ Action tracking follows this schema:
 ]
 ```
 
+## 📋 Prompt Management
+
+Fetch managed prompt versions from Netra via `Netra.prompts`. Caching is opt-in and disabled by default.
+
+```python
+from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
+
+Netra.init(
+    app_name="My App",
+    instruments={InstrumentSet.OPENAI},
+    cache_ttl_seconds=60,  # default TTL for cached prompt reads
+)
+
+# Fetch a prompt (calls the API on every request by default)
+prompt = Netra.prompts.get_prompt("my-prompt", label="production")
+
+# Opt in to in-memory caching to reduce API calls
+prompt = Netra.prompts.get_prompt("my-prompt", label="production", use_cache=True)
+
+# Override TTL for a single call (seconds)
+prompt = Netra.prompts.get_prompt("my-prompt", use_cache=True, cache_ttl=300)
+
+# Clear cached entries after updating a prompt
+Netra.prompts.clear_cache()
+```
+
+Caching notes:
+
+- `use_cache` defaults to `False`; enable it per call when you want caching.
+- Cache keys are scoped by prompt `name` and `label`.
+- Empty or failed responses are not stored in the cache.
+- The prompt cache is cleared automatically when `Netra.shutdown()` is called.
+
 ## 🔧 Advanced Configuration
 
 ### Environment Variables
@@ -337,6 +373,7 @@ Netra SDK can be configured using the following environment variables:
 | `NETRA_TRACE_CONTENT` | Whether to capture prompt/completion content (`true`/`false`) | `true` |
 | `NETRA_ENV` | Deployment environment (e.g., `prod`, `staging`, `dev`) | `local` |
 | `NETRA_RESOURCE_ATTRS` | JSON string of custom resource attributes | `{}` |
+| `NETRA_CACHE_TTL_SECONDS` | Default TTL in seconds for opt-in SDK read caches (e.g. `get_prompt`) | `60` |
 
 #### Standard OpenTelemetry Variables
 

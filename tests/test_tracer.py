@@ -12,6 +12,8 @@ from netra.tracer import Tracer
 class TestTracerInitialization:
     """Test tracer initialization and setup."""
 
+    @patch("netra.tracer.FilteringSpanExporter", side_effect=lambda exporter, patterns: exporter)
+    @patch("netra.tracer.TrialAwareOTLPExporter", side_effect=lambda exporter: exporter)
     @patch("netra.tracer.trace")
     @patch("netra.tracer.TracerProvider")
     @patch("netra.tracer.Resource")
@@ -26,6 +28,8 @@ class TestTracerInitialization:
         mock_resource,
         mock_tracer_provider,
         mock_trace,
+        mock_trial_exporter,
+        mock_filtering_exporter,
     ):
         """Test tracer initialization with OTLP endpoint."""
         # Arrange
@@ -43,6 +47,7 @@ class TestTracerInitialization:
         mock_resource.return_value = mock_resource_instance
 
         mock_provider = Mock()
+        mock_provider._netra_processors_installed = False
         mock_tracer_provider.return_value = mock_provider
 
         mock_exporter = Mock()
@@ -53,6 +58,8 @@ class TestTracerInitialization:
 
         mock_session_proc = Mock()
         mock_session_processor.return_value = mock_session_proc
+
+        mock_trace.get_tracer_provider.return_value = Mock()
 
         # Act
         Tracer(mock_config)
@@ -80,6 +87,7 @@ class TestTracerInitialization:
         # Verify global tracer provider is set
         mock_trace.set_tracer_provider.assert_called_once_with(mock_provider)
 
+    @patch("netra.tracer.FilteringSpanExporter", side_effect=lambda exporter, patterns: exporter)
     @patch("netra.tracer.trace")
     @patch("netra.tracer.TracerProvider")
     @patch("netra.tracer.Resource")
@@ -94,6 +102,7 @@ class TestTracerInitialization:
         mock_resource,
         mock_tracer_provider,
         mock_trace,
+        mock_filtering_exporter,
     ):
         """Test tracer initialization with console exporter fallback."""
         # Arrange
@@ -111,6 +120,7 @@ class TestTracerInitialization:
         mock_resource.return_value = mock_resource_instance
 
         mock_provider = Mock()
+        mock_provider._netra_processors_installed = False
         mock_tracer_provider.return_value = mock_provider
 
         mock_exporter = Mock()
@@ -118,6 +128,8 @@ class TestTracerInitialization:
 
         mock_simple_proc = Mock()
         mock_simple_processor.return_value = mock_simple_proc
+
+        mock_trace.get_tracer_provider.return_value = Mock()
 
         # Act
         Tracer(mock_config)
@@ -165,7 +177,10 @@ class TestTracerInitialization:
         mock_resource.return_value = mock_resource_instance
 
         mock_provider = Mock()
+        mock_provider._netra_processors_installed = False
         mock_tracer_provider.return_value = mock_provider
+
+        mock_trace.get_tracer_provider.return_value = Mock()
 
         # Act
         Tracer(mock_config)
@@ -318,6 +333,8 @@ class TestTracerConfiguration:
         }
         mock_resource.assert_called_once_with(attributes=expected_attrs)
 
+    @patch("netra.tracer.FilteringSpanExporter", side_effect=lambda exporter, patterns: exporter)
+    @patch("netra.tracer.TrialAwareOTLPExporter", side_effect=lambda exporter: exporter)
     @patch("netra.tracer.trace")
     @patch("netra.tracer.TracerProvider")
     @patch("netra.tracer.Resource")
@@ -332,6 +349,8 @@ class TestTracerConfiguration:
         mock_resource,
         mock_tracer_provider,
         mock_trace,
+        mock_trial_exporter,
+        mock_filtering_exporter,
     ):
         """Test tracer initialization with batch processing disabled."""
         # Arrange
@@ -346,6 +365,7 @@ class TestTracerConfiguration:
         mock_config.blocked_spans = []
 
         mock_provider = Mock()
+        mock_provider._netra_processors_installed = False
         mock_tracer_provider.return_value = mock_provider
 
         mock_exporter = Mock()
@@ -353,6 +373,8 @@ class TestTracerConfiguration:
 
         mock_simple_proc = Mock()
         mock_simple_processor.return_value = mock_simple_proc
+
+        mock_trace.get_tracer_provider.return_value = Mock()
 
         # Act
         Tracer(mock_config)
