@@ -43,7 +43,9 @@ class Models:
             cache_ttl: Per-call cache TTL in seconds (default: 300).
 
         Returns:
-            List of model dicts from the API response, or None on failure.
+            List of model dicts from the API response, or empty list on failure.
+            When use_cache is True, do not mutate the returned list or nested
+            dicts/prices — the same objects may be served on later cache hits.
         """
         cache_key = f"model:pricing:{name or 'all'}"
 
