@@ -12,6 +12,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.97b1] - 2026-07-28
 
+- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Configure the default TTL via `cache_ttl_seconds` in `Netra.init()` or the `NETRA_CACHE_TTL_SECONDS` environment variable. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
+
 - **Add instrumentation for Hermes Agent** - New monkey-patching based instrumentation for the `hermes-agent` SDK (>= 0.17.0). Captures conversation runs, skill invocations (single, stacked, and bundle), tool executions, function calls, and approval gates as OpenTelemetry spans with full input/output attributes, token usage, and model metadata.
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
@@ -21,6 +23,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - **Reparent children of blocked root instruments instead of dropping the subtree** - When an instrumentation is not allowed to emit root-level spans, its children are now re-parented onto the nearest valid ancestor rather than dropping the entire subtree, so downstream spans are preserved.
 
 - **Add utility to explicitly record exceptions on a span** - New `Netra.record_exception(exception, attributes=...)` utility to attach a caught exception to the currently active span from within an `except` block. It adds a standard OpenTelemetry exception event (type, message, stacktrace), sets the span status to ERROR, and records the `netra.error_message` attribute.
+
 
 ## [0.1.95] - 2026-06-26
 
