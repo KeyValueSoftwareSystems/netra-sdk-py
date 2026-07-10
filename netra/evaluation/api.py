@@ -11,6 +11,7 @@ from netra.evaluation.models import (
     Dataset,
     DatasetItem,
     DatasetRecord,
+    DatasetType,
     EvaluatorConfig,
     GetAllDatasetsResponse,
     GetDatasetItemsResponse,
@@ -48,7 +49,13 @@ class Evaluation:
         self._config = config
         self._client = EvaluationHttpClient(config)
 
-    def create_dataset(self, name: str, tags: Optional[List[str]] = None, turn_type: TurnType = TurnType.SINGLE) -> Any:
+    def create_dataset(
+        self,
+        name: str,
+        dataset_type: DatasetType = DatasetType.TEXT,
+        turn_type: TurnType = TurnType.SINGLE,
+        tags: Optional[List[str]] = None,
+    ) -> Any:
         """
         Create an empty dataset and return its id on success, else None.
 
@@ -63,7 +70,7 @@ class Evaluation:
         if not name:
             logger.error("netra.evaluation: Failed to create dataset: dataset name is required")
             return None
-        response = self._client.create_dataset(name=name, tags=tags, turn_type=turn_type)
+        response = self._client.create_dataset(name=name, dataset_type=dataset_type, turn_type=turn_type, tags=tags)
 
         if not response:
             return None
