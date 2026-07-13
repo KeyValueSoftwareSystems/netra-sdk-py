@@ -56,7 +56,6 @@ class TestNetraInitialization:
             disable_batch=None,
             trace_content=None,
             debug_mode=None,
-            enable_root_span=None,
             resource_attributes=None,
             environment=None,
             enable_scrubbing=None,
@@ -64,7 +63,6 @@ class TestNetraInitialization:
             enable_metrics=None,
             metrics_export_interval_ms=None,
             export_auto_metrics=None,
-            cache_ttl_seconds=None,
         )
 
         # Verify Tracer was initialized
@@ -93,7 +91,6 @@ class TestNetraInitialization:
             "disable_batch": True,
             "trace_content": False,
             "debug_mode": True,
-            "enable_root_span": False,
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
             "enable_scrubbing": None,
@@ -101,7 +98,6 @@ class TestNetraInitialization:
             "enable_metrics": None,
             "metrics_export_interval_ms": None,
             "export_auto_metrics": None,
-            "cache_ttl_seconds": None,
         }
 
         app_name = "test-app"
