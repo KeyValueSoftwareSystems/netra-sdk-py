@@ -7,6 +7,8 @@ from netra.prompts.client import PromptsHttpClient
 
 logger = logging.getLogger(__name__)
 
+PROMPT_CACHE_TTL_SECONDS = 60
+
 
 class Prompts:
     """
@@ -22,7 +24,7 @@ class Prompts:
         """
         self._config = cfg
         self._client = PromptsHttpClient(cfg)
-        self._cache: TTLCache[Any] = TTLCache(default_ttl=cfg.cache_ttl_seconds)
+        self._cache: TTLCache[Any] = TTLCache(default_ttl=PROMPT_CACHE_TTL_SECONDS)
 
     def clear_cache(self) -> None:
         """Clear all cached prompt entries."""
@@ -42,7 +44,7 @@ class Prompts:
             name: Name of the prompt
             label: Label of the prompt version (default: "production")
             use_cache: When True, read/write the in-memory cache (default: False)
-            cache_ttl: Per-call cache TTL in seconds (default: init cache_ttl_seconds)
+            cache_ttl: Per-call cache TTL in seconds (default: PROMPT_CACHE_TTL_SECONDS)
 
         Returns:
             Prompt version data or None/empty dict if not found
