@@ -9,7 +9,7 @@ from netra.models.api import MODEL_PRICING_CACHE_TTL_SECONDS, Models
 
 @pytest.fixture
 def models() -> Models:
-    cfg = Config(cache_ttl_seconds=60)
+    cfg = Config()
     client = MagicMock()
     instance = Models(cfg)
     instance._client = client
@@ -153,7 +153,6 @@ class TestModelsCacheShutdown:
         mock_init_instrumentations: MagicMock,
     ) -> None:
         mock_cfg = MagicMock()
-        mock_cfg.cache_ttl_seconds = 60
         mock_config.return_value = mock_cfg
 
         Netra.init()

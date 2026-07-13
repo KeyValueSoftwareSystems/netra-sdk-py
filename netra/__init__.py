@@ -76,7 +76,6 @@ class Netra:
         metrics_export_interval_ms: Optional[int] = None,
         export_auto_metrics: Optional[bool] = None,
         root_instruments: Optional[AbstractSet[NetraInstruments]] = None,
-        cache_ttl_seconds: Optional[int] = None,
     ) -> None:
         """
         Thread-safe initialization of Netra.
@@ -111,8 +110,6 @@ class Netra:
                 span is blocked, its entire subtree is discarded.  Pass a set
                 containing ``NetraInstruments.ALL`` to allow all
                 instrumentations to produce root spans (legacy behaviour).
-            cache_ttl_seconds: Default TTL in seconds for opt-in read caches
-                (default: 60, env: NETRA_CACHE_TTL_SECONDS)
 
         Returns:
             None
@@ -137,7 +134,6 @@ class Netra:
                 enable_metrics=enable_metrics,
                 metrics_export_interval_ms=metrics_export_interval_ms,
                 export_auto_metrics=export_auto_metrics,
-                cache_ttl_seconds=cache_ttl_seconds,
             )
 
             # Configure logging based on debug mode
