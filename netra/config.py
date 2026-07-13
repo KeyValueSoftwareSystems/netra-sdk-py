@@ -65,7 +65,6 @@ class Config:
         enable_metrics: Optional[bool] = None,
         metrics_export_interval_ms: Optional[int] = None,
         export_auto_metrics: Optional[bool] = None,
-        cache_ttl_seconds: Optional[int] = None,
     ):
         """
         Initialize the configuration.
@@ -82,7 +81,6 @@ class Config:
             enable_metrics: Whether to enable custom metrics export via OTLP (default: False)
             metrics_export_interval_ms: How often to push metrics to the collector in ms (default: 60000)
             export_auto_metrics: Whether to export OTel auto-instrumented system metrics (default: False)
-            cache_ttl_seconds: Default TTL in seconds for opt-in SDK read caches (default: 60, env: NETRA_CACHE_TTL_SECONDS)
         """
         self.app_name = self._get_app_name(app_name)
         self.otlp_endpoint = self._get_otlp_endpoint()
@@ -106,9 +104,6 @@ class Config:
         self.blocked_spans = blocked_spans
         self.metrics_export_interval_ms = self._get_int_config(
             metrics_export_interval_ms, "NETRA_METRICS_EXPORT_INTERVAL", default=60000
-        )
-        self.cache_ttl_seconds = self._get_int_config(
-            cache_ttl_seconds, "NETRA_CACHE_TTL_SECONDS", default=60
         )
 
         # Resolved at init time (env-only) so overrides applied before ``Netra.init()``

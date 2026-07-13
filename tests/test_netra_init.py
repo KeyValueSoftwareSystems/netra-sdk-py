@@ -63,7 +63,6 @@ class TestNetraInitialization:
             enable_metrics=None,
             metrics_export_interval_ms=None,
             export_auto_metrics=None,
-            cache_ttl_seconds=None,
         )
 
         # Verify Tracer was initialized
@@ -98,7 +97,6 @@ class TestNetraInitialization:
             "enable_metrics": None,
             "metrics_export_interval_ms": None,
             "export_auto_metrics": None,
-            "cache_ttl_seconds": None,
         }
 
         app_name = "test-app"
