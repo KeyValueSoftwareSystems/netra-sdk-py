@@ -875,7 +875,12 @@ class TestSimulationHooks:
         assert result == {"token": "xyz"}
 
     def test_hooks_describe(self) -> None:
-        """Test that hooks.describe() returns correct metadata."""
+        """Test that hooks.describe() returns correct metadata.
+        
+        Note: before/after hooks are flattened to a single descriptor for wire format
+        compatibility with the backend API. The descriptor contains metadata from the
+        first registered hook plus a count of all registered items.
+        """
         from netra.simulation.hooks import SimulationHooks
 
         def setup_all() -> dict:
@@ -903,20 +908,29 @@ class TestSimulationHooks:
 
         meta = hooks.describe()
 
+        # beforeAll and afterAll return full descriptors
         assert "beforeAll" in meta
+        assert meta["beforeAll"]["configured"] is True
         assert meta["beforeAll"]["name"] == "setup_all"
         assert meta["beforeAll"]["description"] == "Setup shared resources."
 
+        # before/after are flattened - single descriptor with item count
         assert "before" in meta
-        assert "refund-item" in meta["before"]
-        assert meta["before"]["refund-item"]["name"] == "setup_refund"
+        assert meta["before"]["configured"] is True
+        assert meta["before"]["name"] == "setup_refund"
+        assert "Setup refund scenario." in meta["before"]["description"]
+        assert "1 item(s)" in meta["before"]["description"]
 
         assert "after" in meta
-        assert "refund-item" in meta["after"]
-        assert meta["after"]["refund-item"]["name"] == "teardown_refund"
+        assert meta["after"]["configured"] is True
+        assert meta["after"]["name"] == "teardown_refund"
+        assert "Teardown refund scenario." in meta["after"]["description"]
+        assert "1 item(s)" in meta["after"]["description"]
 
         assert "afterAll" in meta
+        assert meta["afterAll"]["configured"] is True
         assert meta["afterAll"]["name"] == "teardown_all"
+        assert meta["afterAll"]["description"] == "Teardown shared resources."
 
     def test_hooks_describe_empty(self) -> None:
         """Test that hooks.describe() returns empty dict when no hooks configured."""
@@ -926,4 +940,42 @@ class TestSimulationHooks:
         meta = hooks.describe()
 
         assert meta == {}
+
+    def test_hooks_describe_multiple_items(self) -> None:
+        """Test that before/after hooks with multiple items are flattened correctly."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_scenario(shared_context: Optional[dict]) -> dict:
+            """Setup for any scenario."""
+            return {}
+
+        def teardown_scenario(result: dict, shared_context: Optional[dict]) -> None:
+            """Teardown for any scenario."""
+            pass
+
+        hooks = SimulationHooks(
+            before={
+                "item-1": setup_scenario,
+                "item-2": setup_scenario,
+                "item-3": setup_scenario,
+            },
+            after={
+                "item-1": teardown_scenario,
+                "item-2": teardown_scenario,
+            },
+        )
+
+        meta = hooks.describe()
+
+        # before should be flattened with count of 3 items
+        assert "before" in meta
+        assert meta["before"]["configured"] is True
+        assert meta["before"]["name"] == "setup_scenario"
+        assert "3 item(s)" in meta["before"]["description"]
+
+        # after should be flattened with count of 2 items
+        assert "after" in meta
+        assert meta["after"]["configured"] is True
+        assert meta["after"]["name"] == "teardown_scenario"
+        assert "2 item(s)" in meta["after"]["description"]
 

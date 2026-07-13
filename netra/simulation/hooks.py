@@ -108,7 +108,7 @@ class SimulationHooks:
                 "name": getattr(fn, "__name__", None),
                 "description": doc[:200] if doc else None,
             }
-        
+
         def _desc_dict(hook_dict: Optional[dict[str, Callable]]) -> Optional[dict[str, Any]]:
             """Summarize item-keyed hooks for backend UI metadata.
 
@@ -234,12 +234,16 @@ async def run_after(
 ) -> None:
     """Execute the item-specific ``after`` hook for a single scenario (best-effort).
 
-    Exceptions are caught and logged; they do not affect the scenario status.
+    The ``after`` hook is called regardless of whether the scenario succeeded,
+    failed, or had its ``before`` hook fail. This ensures cleanup logic runs
+    even when setup fails. Exceptions are caught and logged; they do not affect
+    the scenario status.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
         dataset_item_id: The stable identifier from the dataset item.
-        item_result: The result dict from the conversation loop.
+        item_result: The result dict from the conversation loop (or error result
+            if ``before`` failed).
         shared_context: The dict returned by ``before_all``, or ``None``.
     """
     # Execute item-specific after hook (only if registered for this item)

@@ -137,6 +137,13 @@ class Simulation:
     ) -> dict[str, Any]:
         """Orchestrate concurrent simulation execution.
 
+        Each simulation item is dispatched to a thread via ``run_in_executor``.
+        Inside each thread, ``run_async_safely`` creates a **new** event loop
+        so that async user tasks (``BaseTask.run``) work correctly without
+        nesting into the orchestrator's loop.  This two-level design lets us
+        honour ``max_concurrency`` while supporting both sync and async tasks
+        transparently.
+        
         Executes ``before_all`` first (if configured). If it fails the entire
         run is aborted.  Individual scenarios run concurrently via a thread
         pool; each thread gets its own event loop so sync and async tasks work
@@ -196,11 +203,23 @@ class Simulation:
         loop = asyncio.get_running_loop()
 
         def run_item_in_thread(run_item: SimulationItem) -> dict[str, Any]:
+            """Run a single simulation item in a dedicated thread/event-loop.
+
+            Args:
+                run_item: The simulation item to run.
+
+            Returns: Dictionary with simulation result.
+            """
             return run_async_safely(
                 self._execute_conversation(run_id, run_item, task, max_turns, hooks, shared_context)
             )
 
         async def process_item(run_item: SimulationItem) -> None:
+            """Process a single simulation item and record its outcome.
+
+            Args: 
+                run_item: The simulation item to process.
+            """
             nonlocal processed_count
             result = await loop.run_in_executor(executor, run_item_in_thread, run_item)
             async with lock:
