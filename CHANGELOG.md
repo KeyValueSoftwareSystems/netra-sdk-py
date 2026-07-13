@@ -6,7 +6,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.97] - 
 
-- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Configure the default TTL via `cache_ttl_seconds` in `Netra.init()` or the `NETRA_CACHE_TTL_SECONDS` environment variable. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
+- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `PROMPT_CACHE_TTL_SECONDS` (60); override per call with `cache_ttl`. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
+- **Add opt-in TTL caching for `get_model_pricing`** - `Netra.models.get_model_pricing` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override per call with `cache_ttl`. Use `Netra.models.clear_cache()` to invalidate cached entries.
 
 ## [0.1.96] - 2026-07-23
 

@@ -12,6 +12,7 @@
 - 🌐 **HTTP Client Instrumentation**: Automatic tracing for aiohttp and httpx
 - 💾 **Vector Database Support**: Weaviate, Qdrant, and other vector DB instrumentation
 - 📋 **Prompt Management**: Fetch managed prompts from Netra with optional in-memory TTL caching
+- 💰 **Model Pricing**: Fetch model pricing from Netra with optional in-memory TTL caching
 
 ## 📦 Installation
 
@@ -50,7 +51,6 @@ Netra.init(
     trace_content=True,
     environment="Your Application environment",
     instruments={InstrumentSet.OPENAI, InstrumentSet.ANTHROPIC},
-    cache_ttl_seconds=60,  # default TTL for opt-in prompt caching (env: NETRA_CACHE_TTL_SECONDS)
 )
 ```
 
@@ -323,7 +323,7 @@ Action tracking follows this schema:
 
 ## 📋 Prompt Management
 
-Fetch managed prompt versions from Netra via `Netra.prompts`. Caching is opt-in and disabled by default.
+Fetch managed prompt versions from Netra via `Netra.prompts`. Caching is opt-in and disabled by default. Default TTL is **60 seconds** (`PROMPT_CACHE_TTL_SECONDS`); override per call with `cache_ttl`.
 
 ```python
 from netra import Netra
@@ -332,13 +332,12 @@ from netra.instrumentation.instruments import InstrumentSet
 Netra.init(
     app_name="My App",
     instruments={InstrumentSet.OPENAI},
-    cache_ttl_seconds=60,  # default TTL for cached prompt reads
 )
 
 # Fetch a prompt (calls the API on every request by default)
 prompt = Netra.prompts.get_prompt("my-prompt", label="production")
 
-# Opt in to in-memory caching to reduce API calls
+# Opt in to in-memory caching to reduce API calls (default TTL: 60s)
 prompt = Netra.prompts.get_prompt("my-prompt", label="production", use_cache=True)
 
 # Override TTL for a single call (seconds)
@@ -351,9 +350,48 @@ Netra.prompts.clear_cache()
 Caching notes:
 
 - `use_cache` defaults to `False`; enable it per call when you want caching.
+- Default TTL is the module constant `PROMPT_CACHE_TTL_SECONDS` (60); override with `cache_ttl`.
 - Cache keys are scoped by prompt `name` and `label`.
 - Empty or failed responses are not stored in the cache.
 - The prompt cache is cleared automatically when `Netra.shutdown()` is called.
+
+## 💰 Model Pricing
+
+Fetch model details and pricing for your project via `Netra.models`. Caching is opt-in and disabled by default. Default TTL is **300 seconds** (`MODEL_PRICING_CACHE_TTL_SECONDS`); override per call with `cache_ttl`.
+
+```python
+from netra import Netra
+from netra.instrumentation.instruments import InstrumentSet
+
+Netra.init(
+    app_name="My App",
+    instruments={InstrumentSet.OPENAI},
+)
+
+# Fetch all model pricing (calls the API on every request by default)
+models = Netra.models.get_model_pricing()
+
+# Fetch pricing for a specific model
+models = Netra.models.get_model_pricing(name="gpt-4o")
+
+# Opt in to in-memory caching to reduce API calls (default TTL: 300s)
+models = Netra.models.get_model_pricing(use_cache=True)
+
+# Override TTL for a single call (seconds)
+models = Netra.models.get_model_pricing(use_cache=True, cache_ttl=600)
+
+# Clear cached entries after pricing updates
+Netra.models.clear_cache()
+```
+
+Caching notes:
+
+- `use_cache` defaults to `False`; enable it per call when you want caching.
+- Default TTL is the module constant `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override with `cache_ttl`.
+- Cache keys are scoped by model `name` (or `"all"` when no name is passed).
+- Empty or failed responses are not stored in the cache.
+- When `use_cache` is `True`, do not mutate the returned list or nested dicts — the same objects may be served on later cache hits.
+- The model pricing cache is cleared automatically when `Netra.shutdown()` is called.
 
 ## 🔧 Advanced Configuration
 
@@ -373,7 +411,6 @@ Netra SDK can be configured using the following environment variables:
 | `NETRA_TRACE_CONTENT` | Whether to capture prompt/completion content (`true`/`false`) | `true` |
 | `NETRA_ENV` | Deployment environment (e.g., `prod`, `staging`, `dev`) | `local` |
 | `NETRA_RESOURCE_ATTRS` | JSON string of custom resource attributes | `{}` |
-| `NETRA_CACHE_TTL_SECONDS` | Default TTL in seconds for opt-in SDK read caches (e.g. `get_prompt`) | `60` |
 
 #### Standard OpenTelemetry Variables
 
