@@ -4,21 +4,21 @@ Hooks let you run setup and teardown logic around scenario execution
 without merging all scenarios into one or relying on sequential ordering.
 
 Hook levels:
-    before_all  -- runs once before any scenario starts (dataset-level setup)
-    before      -- runs before each individual scenario (item-level setup)
-    after       -- runs after each individual scenario (item-level teardown)
-    after_all   -- runs once after all scenarios complete (dataset-level teardown)
+    before_all   -- runs once before any scenario starts (dataset-level setup)
+    before       -- runs before specific scenarios only (item-specific setup, keyed by dataset_item_id)
+    after        -- runs after specific scenarios only (item-specific teardown, keyed by dataset_item_id)
+    after_all    -- runs once after all scenarios complete (dataset-level teardown)
 
-Context flow:
-    before_all()        -> returns shared_context (dict | None)
-    before(item, shared_context) -> returns item_context (dict | None)
-    BaseTask.run(..., setup_context)  <- receives merged context
-    after(item, result, shared_context)
+Execution order per item:
+    before_all()                           -> returns shared_context (dict | None)
+    before[dataset_item_id](shared_context) -> returns item_context (dict | None), if registered
+    BaseTask.run(..., setup_context)       <- receives merged context
+    after[dataset_item_id](result, shared_context), if registered
     after_all(results, shared_context)
 
 Failure semantics:
-    - before_all failure  -> entire run is marked failed (prescript_failed), no scenarios run
-    - before failure      -> that scenario is marked failed (prescript_failed), others continue
+    - before_all failure -> entire run is marked failed (prescript_failed), no scenarios run
+    - before failure     -> that scenario is marked failed (prescript_failed), others continue
     - after / after_all failures are logged as warnings and do not affect run/scenario status
 """
 
@@ -46,16 +46,17 @@ class SimulationHooks:
 
     Attributes:
         before_all: Called once before any scenario starts. May return a
-            ``dict`` that is forwarded to every ``before`` call and every
+            ``dict`` that is forwarded to ``before`` hooks and every
             ``BaseTask.run()`` call as ``setup_context``.
-        before: Called before each individual scenario. Receives the
-            ``run_item_id`` (str) and the ``shared_context`` returned by
-            ``before_all``. May return a ``dict`` that is merged into
-            ``shared_context`` and passed as ``setup_context`` to
-            ``BaseTask.run()`` for that specific scenario.
-        after: Called after each scenario completes (success or failure).
-            Receives the ``run_item_id``, the result ``dict`` from the
-            conversation loop, and ``shared_context``. Return value is ignored.
+        before: Dict mapping ``dataset_item_id`` to hook functions. Each function
+            receives ``shared_context`` and may return a ``dict`` that is merged
+            with ``shared_context`` and passed as ``setup_context`` to
+            ``BaseTask.run()`` for that specific scenario. Only called for
+            specific items that have registered hooks.
+        after: Dict mapping ``dataset_item_id`` to hook functions. Each function
+            receives the result ``dict`` from the conversation loop and
+            ``shared_context``. Only called for specific items that have
+            registered hooks. Return value is ignored.
         after_all: Called once after all scenarios finish. Receives the
             aggregated results ``dict`` and ``shared_context``. Return value
             is ignored.
@@ -65,28 +66,31 @@ class SimulationHooks:
         def setup():
             employee = create_employee()
             return {"employee_id": employee.id}
-
-        def setup_item(run_item_id, shared_context):
+            
+        def setup_refund_item(shared_context):
+            # Only for refund scenario
             token = login(shared_context["employee_id"])
-            return {"token": token}
-
-        def teardown_item(run_item_id, result, shared_context):
+            return {"refund_account": "12345", "token": token}
+            
+        def teardown_refund_item(result, shared_context):
+            # Cleanup only for refund scenario
             logout(shared_context.get("token"))
+            cleanup_refund(shared_context.get("refund_account"))
 
         def teardown(results, shared_context):
             delete_employee(shared_context["employee_id"])
 
         hooks = SimulationHooks(
             before_all=setup,
-            before=setup_item,
-            after=teardown_item,
+            before={"refund-scenario-id": setup_refund_item},
+            after={"refund-scenario-id": teardown_refund_item},
             after_all=teardown,
         )
     """
 
     before_all: Optional[BeforeAllFn] = field(default=None)
-    before: Optional[BeforeFn] = field(default=None)
-    after: Optional[AfterFn] = field(default=None)
+    before: Optional[dict[str, BeforeFn]] = field(default=None)
+    after: Optional[dict[str, AfterFn]] = field(default=None)
     after_all: Optional[AfterAllFn] = field(default=None)
 
     def describe(self) -> dict[str, Any]:
@@ -104,13 +108,34 @@ class SimulationHooks:
                 "name": getattr(fn, "__name__", None),
                 "description": doc[:200] if doc else None,
             }
+        
+        def _desc_dict(hook_dict: Optional[dict[str, Callable]]) -> Optional[dict[str, Any]]:
+            """Summarize item-keyed hooks for backend UI metadata.
+
+            Local execution still uses the per-item dict. The create-run API
+            currently validates ``before`` / ``after`` as a single descriptor
+            object (not a map of item IDs), so we flatten for wire format.
+            """
+            if not hook_dict:
+                return None
+            first_fn = next(iter(hook_dict.values()))
+            doc = inspect.getdoc(first_fn)
+            item_ids = list(hook_dict.keys())
+            base_desc = (doc[:160] if doc else "") or ""
+            suffix = f" ({len(item_ids)} item(s))"
+            description = (base_desc + suffix)[:200] if base_desc or item_ids else None
+            return {
+                "configured": True,
+                "name": getattr(first_fn, "__name__", None),
+                "description": description,
+            }
 
         return {
             k: v
             for k, v in {
                 "beforeAll": _desc(self.before_all),
-                "before": _desc(self.before),
-                "after": _desc(self.after),
+                "before": _desc_dict(self.before),
+                "after": _desc_dict(self.after),
                 "afterAll": _desc(self.after_all),
             }.items()
             if v is not None
@@ -164,70 +189,71 @@ async def run_before_all(hooks: Optional[SimulationHooks]) -> Optional[dict]:
 
 async def run_before(
     hooks: Optional[SimulationHooks],
-    run_item_id: str,
+    dataset_item_id: str,
     shared_context: Optional[dict],
 ) -> Optional[dict]:
-    """Execute the ``before`` hook for a single scenario.
+    """Execute the item-specific ``before`` hook for a single scenario.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
-        run_item_id: The identifier of the scenario being set up.
+        dataset_item_id: The stable identifier from the dataset item.
         shared_context: The dict returned by ``before_all``, or ``None``.
 
     Returns:
-        A merged context dict (``shared_context`` + item-specific overrides),
-        or ``shared_context`` unchanged when no ``before`` hook is configured.
+        A merged context dict (``shared_context`` + item-specific ``before`` result),
+        or ``shared_context`` unchanged when no hook is registered for this item.
 
     Raises:
         Exception: Re-raises any exception so the caller can mark the
             scenario as ``prescript_failed``.
     """
-    if hooks is None or hooks.before is None:
-        return shared_context
+    # Execute item-specific before hook (only if registered for this item)
+    if hooks and hooks.before and dataset_item_id in hooks.before:
+        logger.info("netra.simulation: running before hook for dataset_item_id=%s", dataset_item_id)
+        item_hook = hooks.before[dataset_item_id]
+        result = await _call_hook(item_hook, shared_context)
+        
+        base = dict(shared_context or {})
+        if result is not None and isinstance(result, dict):
+            base.update(result)
+        elif result is not None:
+            logger.warning(
+                "netra.simulation: before hook returned %s (expected dict or None); ignoring value",
+                type(result).__name__,
+            )
+        return base or None
 
-    logger.info("netra.simulation: running before hook for run_item_id=%s", run_item_id)
-    result = await _call_hook(hooks.before, run_item_id, shared_context)
-
-    base = dict(shared_context or {})
-    if result is not None and isinstance(result, dict):
-        base.update(result)
-    elif result is not None:
-        logger.warning(
-            "netra.simulation: before hook returned %s (expected dict or None); ignoring value",
-            type(result).__name__,
-        )
-
-    return base or None
+    return shared_context
 
 
 async def run_after(
     hooks: Optional[SimulationHooks],
-    run_item_id: str,
+    dataset_item_id: str,
     item_result: dict,
     shared_context: Optional[dict],
 ) -> None:
-    """Execute the ``after`` hook for a single scenario (best-effort).
+    """Execute the item-specific ``after`` hook for a single scenario (best-effort).
 
     Exceptions are caught and logged; they do not affect the scenario status.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
-        run_item_id: The identifier of the scenario that just finished.
+        dataset_item_id: The stable identifier from the dataset item.
         item_result: The result dict from the conversation loop.
         shared_context: The dict returned by ``before_all``, or ``None``.
     """
-    if hooks is None or hooks.after is None:
-        return
-
-    logger.info("netra.simulation: running after hook for run_item_id=%s", run_item_id)
-    try:
-        await _call_hook(hooks.after, run_item_id, item_result, shared_context)
-    except Exception:
-        logger.warning(
-            "netra.simulation: after hook raised an exception for run_item_id=%s (ignored)",
-            run_item_id,
-            exc_info=True,
-        )
+    # Execute item-specific after hook (only if registered for this item)
+    if hooks and hooks.after and dataset_item_id in hooks.after:
+        logger.info("netra.simulation: running after hook for dataset_item_id=%s", dataset_item_id)
+        try:
+            item_hook = hooks.after[dataset_item_id]
+            await _call_hook(item_hook, item_result, shared_context)
+        except Exception:
+            logger.warning(
+                "netra.simulation: after hook raised an exception for dataset_item_id=%s (ignored)",
+                dataset_item_id,
+                exc_info=True,
+            )
 
 
 async def run_after_all(

@@ -262,6 +262,7 @@ class Simulation:
             Dictionary with execution result including success status.
         """
         run_item_id = run_item.run_item_id
+        dataset_item_id = run_item.dataset_item_id
         message = run_item.message
         turn_id = run_item.turn_id
         raw_files: list[FileData] = run_item.files
@@ -269,9 +270,10 @@ class Simulation:
 
         # --- before ---
         setup_context: Optional[dict] = None
-        if hooks and hooks.before is not None:
+        has_before_hooks = hooks and hooks.before and dataset_item_id in hooks.before
+        if has_before_hooks:
             try:
-                setup_context = await run_before(hooks, run_item_id, shared_context)
+                setup_context = await run_before(hooks, dataset_item_id, shared_context)
             except Exception as exc:
                 error_msg = f"before hook failed: {exc}"
                 logger.error(
@@ -292,7 +294,7 @@ class Simulation:
                     "success": False,
                     "error": error_msg,
                 }
-                await run_after(hooks, run_item_id, item_result, shared_context)
+                await run_after(hooks, dataset_item_id, item_result, shared_context)
                 return item_result
         else:
             setup_context = shared_context
@@ -331,7 +333,7 @@ class Simulation:
                         "error": error_msg,
                         "turn_id": turn_id,
                     }
-                    await run_after(hooks, run_item_id, item_result, shared_context)
+                    await run_after(hooks, dataset_item_id, item_result, shared_context)
                     return item_result
 
                 if response.decision == ConversationStatus.STOP:
@@ -346,7 +348,7 @@ class Simulation:
                         "success": True,
                         "final_turn_id": turn_id,
                     }
-                    await run_after(hooks, run_item_id, item_result, shared_context)
+                    await run_after(hooks, dataset_item_id, item_result, shared_context)
                     return item_result
 
                 message = response.next_user_message  # type:ignore[assignment]
@@ -369,7 +371,7 @@ class Simulation:
                     "error": error_msg,
                     "turn_id": turn_id,
                 }
-                await run_after(hooks, run_item_id, item_result, shared_context)
+                await run_after(hooks, dataset_item_id, item_result, shared_context)
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
@@ -381,5 +383,5 @@ class Simulation:
             "error": error_msg,
             "turn_id": turn_id,
         }
-        await run_after(hooks, run_item_id, item_result, shared_context)
+        await run_after(hooks, dataset_item_id, item_result, shared_context)
         return item_result

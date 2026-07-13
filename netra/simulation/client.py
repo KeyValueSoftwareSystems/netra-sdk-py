@@ -155,6 +155,7 @@ class SimulationHttpClient:
             simulation_items = [
                 SimulationItem(
                     run_item_id=msg.get("testRunItemId", ""),
+                    dataset_item_id=msg.get("datasetItemId", ""),
                     message=msg.get("userMessage", ""),
                     turn_id=msg.get("turnId", ""),
                     files=self._parse_files(msg.get("attachments")),
