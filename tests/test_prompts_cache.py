@@ -4,12 +4,12 @@ import pytest
 
 from netra import Netra
 from netra.config import Config
-from netra.prompts.api import Prompts
+from netra.prompts.api import PROMPT_CACHE_TTL_SECONDS, Prompts
 
 
 @pytest.fixture
 def prompts() -> Prompts:
-    cfg = Config(cache_ttl_seconds=60)
+    cfg = Config()
     client = MagicMock()
     instance = Prompts(cfg)
     instance._client = client
@@ -102,6 +102,11 @@ class TestPromptsGetPromptCaching:
 
         assert prompts._client.get_prompt_version.call_count == 2
 
+    def test_default_ttl_is_prompts_owned_constant(self, prompts: Prompts) -> None:
+        assert PROMPT_CACHE_TTL_SECONDS == 60
+        assert prompts._cache._default_ttl == PROMPT_CACHE_TTL_SECONDS
+        assert prompts._cache._default_ttl != 300
+
 
 class TestPromptsCacheShutdown:
     def setup_method(self) -> None:
@@ -122,7 +127,6 @@ class TestPromptsCacheShutdown:
         mock_init_instrumentations: MagicMock,
     ) -> None:
         mock_cfg = MagicMock()
-        mock_cfg.cache_ttl_seconds = 60
         mock_config.return_value = mock_cfg
 
         Netra.init()
