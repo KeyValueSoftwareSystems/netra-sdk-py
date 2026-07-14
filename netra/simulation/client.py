@@ -140,7 +140,8 @@ class SimulationHttpClient:
                 "context": context or {},
             }
             if hooks_meta:
-                payload["hooksMeta"] = hooks_meta
+                # Run-level beforeAll/afterAll + item-level before/after (under items).
+                payload["lifecycleHooks"] = hooks_meta
             response = self._client.post(url, json=payload)  # type:ignore[union-attr]
             response.raise_for_status()
             data = response.json()

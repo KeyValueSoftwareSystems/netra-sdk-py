@@ -96,8 +96,9 @@ class SimulationHooks:
     def describe(self) -> dict[str, Any]:
         """Return a metadata dict suitable for sending to the backend.
 
-        The backend stores this so the UI can display which hooks are
-        configured on a test run without storing the script itself.
+        Run-level hooks (``beforeAll`` / ``afterAll``) are stored on the test run.
+        Item-level hooks (``before`` / ``after``) are sent under ``items`` keyed by
+        ``datasetItemId`` and stored on each matching test run item.
         """
         def _desc(fn: Optional[Callable]) -> Optional[dict[str, Any]]:
             if fn is None:
@@ -109,37 +110,33 @@ class SimulationHooks:
                 "description": doc[:200] if doc else None,
             }
 
-        def _desc_dict(hook_dict: Optional[dict[str, Callable]]) -> Optional[dict[str, Any]]:
-            """Summarize item-keyed hooks for backend UI metadata.
+        payload: dict[str, Any] = {}
+        before_all = _desc(self.before_all)
+        after_all = _desc(self.after_all)
+        if before_all:
+            payload["beforeAll"] = before_all
+        if after_all:
+            payload["afterAll"] = after_all
 
-            Local execution still uses the per-item dict. The create-run API
-            currently validates ``before`` / ``after`` as a single descriptor
-            object (not a map of item IDs), so we flatten for wire format.
-            """
-            if not hook_dict:
-                return None
-            first_fn = next(iter(hook_dict.values()))
-            doc = inspect.getdoc(first_fn)
-            item_ids = list(hook_dict.keys())
-            base_desc = (doc[:160] if doc else "") or ""
-            suffix = f" ({len(item_ids)} item(s))"
-            description = (base_desc + suffix)[:200] if base_desc or item_ids else None
-            return {
-                "configured": True,
-                "name": getattr(first_fn, "__name__", None),
-                "description": description,
-            }
+        item_ids = set(self.before or {}) | set(self.after or {})
+        if item_ids:
+            items: list[dict[str, Any]] = []
+            for item_id in item_ids:
+                entry: dict[str, Any] = {"datasetItemId": item_id}
+                before_fn = (self.before or {}).get(item_id)
+                after_fn = (self.after or {}).get(item_id)
+                before_desc = _desc(before_fn)
+                after_desc = _desc(after_fn)
+                if before_desc:
+                    entry["before"] = before_desc
+                if after_desc:
+                    entry["after"] = after_desc
+                if "before" in entry or "after" in entry:
+                    items.append(entry)
+            if items:
+                payload["items"] = items
 
-        return {
-            k: v
-            for k, v in {
-                "beforeAll": _desc(self.before_all),
-                "before": _desc_dict(self.before),
-                "after": _desc_dict(self.after),
-                "afterAll": _desc(self.after_all),
-            }.items()
-            if v is not None
-        }
+        return payload
 
 
 async def _call_hook(fn: Callable, *args: Any, **kwargs: Any) -> Any:
