@@ -3,10 +3,11 @@
 import asyncio
 import base64
 import concurrent.futures
+import inspect
 import logging
 import os
 import threading
-from typing import Awaitable, Optional, TypeVar
+from typing import Any, Awaitable, Optional, TypeVar
 
 import httpx
 
@@ -190,14 +191,19 @@ async def execute_task(
     message: str,
     session_id: Optional[str],
     raw_files: Optional[list[FileData]] = None,
+    setup_context: Optional[dict[str, Any]] = None,
 ) -> tuple[str, Optional[str]]:
     """Execute a task's run method (sync or async) and extract message and session_id.
+
+    ``setup_context`` is forwarded only when the task's ``run`` method accepts
+    it as a parameter, keeping backwards compatibility with existing tasks.
 
     Args:
         task: The BaseTask instance to execute.
         message: The input message to pass to the task.
         session_id: The current session identifier.
         raw_files: Raw file metadata from the backend.
+        setup_context: Optional dict from ``before_all`` / ``before`` hooks.
 
     Returns:
         A tuple of (response_message, session_id).
@@ -207,7 +213,18 @@ async def execute_task(
     """
     processed_files = process_files(raw_files) if raw_files else None
 
-    result = task.run(message=message, session_id=session_id, files=processed_files)
+    # Forward setup_context only if the task's run() declares it
+    sig = inspect.signature(task.run)
+    if "setup_context" in sig.parameters:
+        result = task.run(
+            message=message,
+            session_id=session_id,
+            files=processed_files,
+            setup_context=setup_context,
+        )
+    else:
+        result = task.run(message=message, session_id=session_id, files=processed_files)
+
     if asyncio.iscoroutine(result):
         result = await result
 

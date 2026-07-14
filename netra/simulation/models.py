@@ -52,12 +52,14 @@ class SimulationItem:
 
     Attributes:
         run_item_id: Unique identifier for the run item.
+        dataset_item_id: Stable identifier from the dataset item.
         message: The user message content.
         turn_id: Identifier for the conversation turn.
         files: File metadata attached to this item.
     """
 
     run_item_id: str
+    dataset_item_id: str
     message: str
     turn_id: str
     files: list[FileData] = field(default_factory=list)

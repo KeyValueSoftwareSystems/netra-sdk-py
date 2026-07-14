@@ -114,6 +114,7 @@ class SimulationHttpClient:
         name: str,
         dataset_id: str,
         context: Optional[dict[str, Any]] = None,
+        hooks_meta: Optional[dict[str, Any]] = None,
     ) -> Optional[dict[str, Any]]:
         """Create a new simulation run for the specified dataset.
 
@@ -121,6 +122,8 @@ class SimulationHttpClient:
             name: Name of the simulation run.
             dataset_id: Identifier of the dataset to simulate.
             context: Optional context data for the simulation.
+            hooks_meta: Optional metadata describing configured hooks, stored
+                by the backend for UI display purposes.
 
         Returns:
             Dictionary containing run_id and simulation_items, or None on failure.
@@ -136,6 +139,9 @@ class SimulationHttpClient:
                 "datasetId": dataset_id,
                 "context": context or {},
             }
+            if hooks_meta:
+                # Run-level beforeAll/afterAll + item-level before/after (under items).
+                payload["lifecycleHooks"] = hooks_meta
             response = self._client.post(url, json=payload)  # type:ignore[union-attr]
             response.raise_for_status()
             data = response.json()
@@ -150,6 +156,7 @@ class SimulationHttpClient:
             simulation_items = [
                 SimulationItem(
                     run_item_id=msg.get("testRunItemId", ""),
+                    dataset_item_id=msg.get("datasetItemId", ""),
                     message=msg.get("userMessage", ""),
                     turn_id=msg.get("turnId", ""),
                     files=self._parse_files(msg.get("attachments")),
@@ -229,13 +236,22 @@ class SimulationHttpClient:
             logger.error("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg)
             raise
 
-    def report_failure(self, run_id: str, run_item_id: str, error: str) -> None:
+    def report_failure(
+        self,
+        run_id: str,
+        run_item_id: str,
+        error: str,
+        status: str = "failed",
+    ) -> None:
         """Report a task execution failure to the backend.
 
         Args:
             run_id: Identifier of the run.
             run_item_id: Identifier of the run item.
             error: Error message describing the failure.
+            status: The run status to set on the item. Use ``"prescript_failed"``
+                when the failure originated from a ``before_all`` or ``before``
+                hook. Defaults to ``"failed"``.
         """
         if not self._ensure_client():
             return
@@ -243,7 +259,7 @@ class SimulationHttpClient:
         response: Optional[httpx.Response] = None
         try:
             url = URL_RUN_ITEM_STATUS.format(run_id=run_id, run_item_id=run_item_id)
-            payload: dict[str, Any] = {"status": "failed", "failureReason": error}
+            payload: dict[str, Any] = {"status": status, "failureReason": error}
             response = self._client.patch(url, json=payload)  # type:ignore[union-attr]
             response.raise_for_status()
             logger.info("%s: Reported failure - %s", LOG_PREFIX, error)
