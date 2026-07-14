@@ -125,12 +125,12 @@ class TestSimulationItem:
     """Tests for the SimulationItem frozen dataclass."""
 
     def test_defaults(self) -> None:
-        item = SimulationItem(run_item_id="r1", message="hi", turn_id="t1")
+        item = SimulationItem(run_item_id="r1", dataset_item_id="d1", message="hi", turn_id="t1")
         assert item.files == []
 
     def test_with_files(self) -> None:
         fd = FileData(file_name="a.txt", content_type="text/plain", description=None, download_url="https://x")
-        item = SimulationItem(run_item_id="r1", message="hi", turn_id="t1", files=[fd])
+        item = SimulationItem(run_item_id="r1", dataset_item_id="d1", message="hi", turn_id="t1", files=[fd])
         assert len(item.files) == 1
 
 
@@ -636,7 +636,7 @@ class TestSimulation:
         mock_client.create_run.return_value = {
             "run_id": "run-1",
             "simulation_items": [
-                SimulationItem(run_item_id="item-1", message="hello", turn_id="turn-1"),
+                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
             ],
         }
         mock_client.trigger_conversation.return_value = stop_response
@@ -668,7 +668,7 @@ class TestSimulation:
         mock_client.create_run.return_value = {
             "run_id": "run-1",
             "simulation_items": [
-                SimulationItem(run_item_id="item-1", message="hello", turn_id="turn-1"),
+                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
             ],
         }
         mock_client.trigger_conversation.side_effect = RuntimeError("backend down")
@@ -703,7 +703,7 @@ class TestSimulation:
         mock_client.create_run.return_value = {
             "run_id": "run-1",
             "simulation_items": [
-                SimulationItem(run_item_id="item-1", message="hello", turn_id="turn-1"),
+                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
             ],
         }
         mock_client.trigger_conversation.return_value = continue_response
@@ -743,7 +743,7 @@ class TestSimulation:
         mock_client.create_run.return_value = {
             "run_id": "run-1",
             "simulation_items": [
-                SimulationItem(run_item_id="item-1", message="hello", turn_id="turn-1"),
+                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
             ],
         }
         mock_client.trigger_conversation.return_value = None
@@ -781,3 +781,191 @@ class TestBaseTask:
         result = asyncio.run(task.run(message="hi"))  # type: ignore[arg-type]
         assert isinstance(result, TaskResult)
         assert result.message == "async-echo: hi"
+
+
+# ---------------------------------------------------------------------------
+# Section 6: SimulationHooks
+# ---------------------------------------------------------------------------
+
+
+class TestSimulationHooks:
+    """Tests for SimulationHooks lifecycle management."""
+
+    def test_before_hook_for_specific_item(self) -> None:
+        """Test that before hook runs only for matching items."""
+        from netra.simulation.hooks import SimulationHooks, run_before
+
+        call_log = []
+
+        def setup_refund(shared_context: Optional[dict]) -> dict:
+            call_log.append("before:refund")
+            return {"refund_account": "12345"}
+
+        hooks = SimulationHooks(before={"refund-item": setup_refund})
+
+        # Run for matching item
+        result = asyncio.run(run_before(hooks, "refund-item", {"employee_id": "emp-1"}))
+        assert call_log == ["before:refund"]
+        assert result == {"employee_id": "emp-1", "refund_account": "12345"}
+
+        # Run for non-matching item
+        call_log.clear()
+        result = asyncio.run(run_before(hooks, "other-item", {"employee_id": "emp-1"}))
+        assert call_log == []
+        assert result == {"employee_id": "emp-1"}
+
+    def test_before_hook_merges_context(self) -> None:
+        """Test that before hook merges context correctly."""
+        from netra.simulation.hooks import SimulationHooks, run_before
+
+        call_log = []
+
+        def setup_refund(shared_context: Optional[dict]) -> dict:
+            call_log.append("before:refund")
+            return {"refund_account": "12345", "token": "abc123"}
+
+        hooks = SimulationHooks(before={"refund-item": setup_refund})
+
+        result = asyncio.run(run_before(hooks, "refund-item", {"employee_id": "emp-1"}))
+
+        assert call_log == ["before:refund"]
+        assert result == {"employee_id": "emp-1", "token": "abc123", "refund_account": "12345"}
+
+    def test_after_hook_for_specific_item(self) -> None:
+        """Test that after hook runs only for matching items."""
+        from netra.simulation.hooks import SimulationHooks, run_after
+
+        call_log = []
+
+        def teardown_refund(result: dict, shared_context: Optional[dict]) -> None:
+            call_log.append("after:refund")
+
+        hooks = SimulationHooks(after={"refund-item": teardown_refund})
+
+        # Run for matching item
+        asyncio.run(run_after(hooks, "refund-item", {"success": True}, {"employee_id": "emp-1"}))
+        assert call_log == ["after:refund"]
+
+        # Run for non-matching item
+        call_log.clear()
+        asyncio.run(run_after(hooks, "other-item", {"success": True}, {"employee_id": "emp-1"}))
+        assert call_log == []
+
+    def test_async_hooks(self) -> None:
+        """Test that async hooks are properly awaited."""
+        from netra.simulation.hooks import SimulationHooks, run_before
+
+        call_log = []
+
+        async def async_setup(shared_context: Optional[dict]) -> dict:
+            await asyncio.sleep(0.001)
+            call_log.append("async_before")
+            return {"token": "xyz"}
+
+        hooks = SimulationHooks(before={"item-1": async_setup})
+        result = asyncio.run(run_before(hooks, "item-1", {}))
+
+        assert call_log == ["async_before"]
+        assert result == {"token": "xyz"}
+
+    def test_hooks_describe(self) -> None:
+        """Test that hooks.describe() returns correct metadata.
+
+        Note: before/after hooks are flattened to a single descriptor for wire format
+        compatibility with the backend API. The descriptor contains metadata from the
+        first registered hook plus a count of all registered items.
+        """
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_all() -> dict:
+            """Setup shared resources."""
+            return {}
+
+        def setup_refund(shared_context: Optional[dict]) -> dict:
+            """Setup refund scenario."""
+            return {}
+
+        def teardown_refund(result: dict, shared_context: Optional[dict]) -> None:
+            """Teardown refund scenario."""
+
+        def teardown_all(results: dict, shared_context: Optional[dict]) -> None:
+            """Teardown shared resources."""
+
+        hooks = SimulationHooks(
+            before_all=setup_all,
+            before={"refund-item": setup_refund},
+            after={"refund-item": teardown_refund},
+            after_all=teardown_all,
+        )
+
+        meta = hooks.describe()
+
+        # beforeAll and afterAll return full descriptors
+        assert "beforeAll" in meta
+        assert meta["beforeAll"]["configured"] is True
+        assert meta["beforeAll"]["name"] == "setup_all"
+        assert meta["beforeAll"]["description"] == "Setup shared resources."
+
+        # before/after are flattened - single descriptor with item count
+        assert "before" in meta
+        assert meta["before"]["configured"] is True
+        assert meta["before"]["name"] == "setup_refund"
+        assert "Setup refund scenario." in meta["before"]["description"]
+        assert "1 item(s)" in meta["before"]["description"]
+
+        assert "after" in meta
+        assert meta["after"]["configured"] is True
+        assert meta["after"]["name"] == "teardown_refund"
+        assert "Teardown refund scenario." in meta["after"]["description"]
+        assert "1 item(s)" in meta["after"]["description"]
+
+        assert "afterAll" in meta
+        assert meta["afterAll"]["configured"] is True
+        assert meta["afterAll"]["name"] == "teardown_all"
+        assert meta["afterAll"]["description"] == "Teardown shared resources."
+
+    def test_hooks_describe_empty(self) -> None:
+        """Test that hooks.describe() returns empty dict when no hooks configured."""
+        from netra.simulation.hooks import SimulationHooks
+
+        hooks = SimulationHooks()
+        meta = hooks.describe()
+
+        assert meta == {}
+
+    def test_hooks_describe_multiple_items(self) -> None:
+        """Test that before/after hooks with multiple items are flattened correctly."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_scenario(shared_context: Optional[dict]) -> dict:
+            """Setup for any scenario."""
+            return {}
+
+        def teardown_scenario(result: dict, shared_context: Optional[dict]) -> None:
+            """Teardown for any scenario."""
+
+        hooks = SimulationHooks(
+            before={
+                "item-1": setup_scenario,
+                "item-2": setup_scenario,
+                "item-3": setup_scenario,
+            },
+            after={
+                "item-1": teardown_scenario,
+                "item-2": teardown_scenario,
+            },
+        )
+
+        meta = hooks.describe()
+
+        # before should be flattened with count of 3 items
+        assert "before" in meta
+        assert meta["before"]["configured"] is True
+        assert meta["before"]["name"] == "setup_scenario"
+        assert "3 item(s)" in meta["before"]["description"]
+
+        # after should be flattened with count of 2 items
+        assert "after" in meta
+        assert meta["after"]["configured"] is True
+        assert meta["after"]["name"] == "teardown_scenario"
+        assert "2 item(s)" in meta["after"]["description"]
