@@ -801,9 +801,7 @@ class TestSimulationHooks:
             call_log.append("before:refund")
             return {"refund_account": "12345"}
 
-        hooks = SimulationHooks(
-            before={"refund-item": setup_refund}
-        )
+        hooks = SimulationHooks(before={"refund-item": setup_refund})
 
         # Run for matching item
         result = asyncio.run(run_before(hooks, "refund-item", {"employee_id": "emp-1"}))
@@ -826,9 +824,7 @@ class TestSimulationHooks:
             call_log.append("before:refund")
             return {"refund_account": "12345", "token": "abc123"}
 
-        hooks = SimulationHooks(
-            before={"refund-item": setup_refund}
-        )
+        hooks = SimulationHooks(before={"refund-item": setup_refund})
 
         result = asyncio.run(run_before(hooks, "refund-item", {"employee_id": "emp-1"}))
 
@@ -844,9 +840,7 @@ class TestSimulationHooks:
         def teardown_refund(result: dict, shared_context: Optional[dict]) -> None:
             call_log.append("after:refund")
 
-        hooks = SimulationHooks(
-            after={"refund-item": teardown_refund}
-        )
+        hooks = SimulationHooks(after={"refund-item": teardown_refund})
 
         # Run for matching item
         asyncio.run(run_after(hooks, "refund-item", {"success": True}, {"employee_id": "emp-1"}))
@@ -876,7 +870,7 @@ class TestSimulationHooks:
 
     def test_hooks_describe(self) -> None:
         """Test that hooks.describe() returns correct metadata.
-        
+
         Note: before/after hooks are flattened to a single descriptor for wire format
         compatibility with the backend API. The descriptor contains metadata from the
         first registered hook plus a count of all registered items.
@@ -893,11 +887,9 @@ class TestSimulationHooks:
 
         def teardown_refund(result: dict, shared_context: Optional[dict]) -> None:
             """Teardown refund scenario."""
-            pass
 
         def teardown_all(results: dict, shared_context: Optional[dict]) -> None:
             """Teardown shared resources."""
-            pass
 
         hooks = SimulationHooks(
             before_all=setup_all,
@@ -951,7 +943,6 @@ class TestSimulationHooks:
 
         def teardown_scenario(result: dict, shared_context: Optional[dict]) -> None:
             """Teardown for any scenario."""
-            pass
 
         hooks = SimulationHooks(
             before={
@@ -978,4 +969,3 @@ class TestSimulationHooks:
         assert meta["after"]["configured"] is True
         assert meta["after"]["name"] == "teardown_scenario"
         assert "2 item(s)" in meta["after"]["description"]
-

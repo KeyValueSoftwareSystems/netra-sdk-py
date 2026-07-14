@@ -143,7 +143,7 @@ class Simulation:
         nesting into the orchestrator's loop.  This two-level design lets us
         honour ``max_concurrency`` while supporting both sync and async tasks
         transparently.
-        
+
         Executes ``before_all`` first (if configured). If it fails the entire
         run is aborted.  Individual scenarios run concurrently via a thread
         pool; each thread gets its own event loop so sync and async tasks work
@@ -168,7 +168,7 @@ class Simulation:
         }
 
         # --- before_all ---
-        shared_context: Optional[dict] = None
+        shared_context: Optional[dict[str, Any]] = None
         if hooks and hooks.before_all is not None:
             try:
                 shared_context = await run_before_all(hooks)
@@ -217,7 +217,7 @@ class Simulation:
         async def process_item(run_item: SimulationItem) -> None:
             """Process a single simulation item and record its outcome.
 
-            Args: 
+            Args:
                 run_item: The simulation item to process.
             """
             nonlocal processed_count
@@ -262,7 +262,7 @@ class Simulation:
         task: BaseTask,
         max_turns: int,
         hooks: Optional[SimulationHooks],
-        shared_context: Optional[dict],
+        shared_context: Optional[dict[str, Any]],
     ) -> dict[str, Any]:
         """Execute a multi-turn conversation for a single simulation item.
 
@@ -288,7 +288,7 @@ class Simulation:
         session_id: Optional[str] = None
 
         # --- before ---
-        setup_context: Optional[dict] = None
+        setup_context: Optional[dict[str, Any]] = None
         has_before_hooks = hooks and hooks.before and dataset_item_id in hooks.before
         if has_before_hooks:
             try:

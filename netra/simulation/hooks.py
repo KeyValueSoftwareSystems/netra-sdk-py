@@ -66,12 +66,12 @@ class SimulationHooks:
         def setup():
             employee = create_employee()
             return {"employee_id": employee.id}
-            
+
         def setup_refund_item(shared_context):
             # Only for refund scenario
             token = login(shared_context["employee_id"])
             return {"refund_account": "12345", "token": token}
-            
+
         def teardown_refund_item(result, shared_context):
             # Cleanup only for refund scenario
             logout(shared_context.get("token"))
@@ -100,7 +100,8 @@ class SimulationHooks:
         Item-level hooks (``before`` / ``after``) are sent under ``items`` keyed by
         ``datasetItemId`` and stored on each matching test run item.
         """
-        def _desc(fn: Optional[Callable]) -> Optional[dict[str, Any]]:
+
+        def _desc(fn: Optional[Callable[..., Any]]) -> Optional[dict[str, Any]]:
             if fn is None:
                 return None
             doc = inspect.getdoc(fn)
@@ -139,7 +140,7 @@ class SimulationHooks:
         return payload
 
 
-async def _call_hook(fn: Callable, *args: Any, **kwargs: Any) -> Any:
+async def _call_hook(fn: Callable[..., Any], *args: Any, **kwargs: Any) -> Any:
     """Invoke a hook function that may be sync or async.
 
     Args:
@@ -156,7 +157,7 @@ async def _call_hook(fn: Callable, *args: Any, **kwargs: Any) -> Any:
     return result
 
 
-async def run_before_all(hooks: Optional[SimulationHooks]) -> Optional[dict]:
+async def run_before_all(hooks: Optional[SimulationHooks]) -> Optional[dict[str, Any]]:
     """Execute the ``before_all`` hook and return the shared context.
 
     Args:
@@ -187,8 +188,8 @@ async def run_before_all(hooks: Optional[SimulationHooks]) -> Optional[dict]:
 async def run_before(
     hooks: Optional[SimulationHooks],
     dataset_item_id: str,
-    shared_context: Optional[dict],
-) -> Optional[dict]:
+    shared_context: Optional[dict[str, Any]],
+) -> Optional[dict[str, Any]]:
     """Execute the item-specific ``before`` hook for a single scenario.
 
     Args:
@@ -209,7 +210,7 @@ async def run_before(
         logger.info("netra.simulation: running before hook for dataset_item_id=%s", dataset_item_id)
         item_hook = hooks.before[dataset_item_id]
         result = await _call_hook(item_hook, shared_context)
-        
+
         base = dict(shared_context or {})
         if result is not None and isinstance(result, dict):
             base.update(result)
@@ -226,8 +227,8 @@ async def run_before(
 async def run_after(
     hooks: Optional[SimulationHooks],
     dataset_item_id: str,
-    item_result: dict,
-    shared_context: Optional[dict],
+    item_result: dict[str, Any],
+    shared_context: Optional[dict[str, Any]],
 ) -> None:
     """Execute the item-specific ``after`` hook for a single scenario (best-effort).
 
@@ -259,8 +260,8 @@ async def run_after(
 
 async def run_after_all(
     hooks: Optional[SimulationHooks],
-    results: dict,
-    shared_context: Optional[dict],
+    results: dict[str, Any],
+    shared_context: Optional[dict[str, Any]],
 ) -> None:
     """Execute the ``after_all`` hook (best-effort).
 
