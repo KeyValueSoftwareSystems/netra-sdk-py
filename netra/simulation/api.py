@@ -352,7 +352,7 @@ class Simulation:
                         "error": error_msg,
                         "turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    await run_after(hooks, dataset_item_id, item_result, setup_context)
                     return item_result
 
                 if response.decision == ConversationStatus.STOP:
@@ -367,7 +367,7 @@ class Simulation:
                         "success": True,
                         "final_turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    await run_after(hooks, dataset_item_id, item_result, setup_context)
                     return item_result
 
                 message = response.next_user_message  # type:ignore[assignment]
@@ -390,7 +390,7 @@ class Simulation:
                     "error": error_msg,
                     "turn_id": turn_id,
                 }
-                await run_after(hooks, dataset_item_id, item_result, shared_context)
+                await run_after(hooks, dataset_item_id, item_result, setup_context)
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
@@ -402,5 +402,4 @@ class Simulation:
             "error": error_msg,
             "turn_id": turn_id,
         }
-        await run_after(hooks, dataset_item_id, item_result, shared_context)
         return item_result

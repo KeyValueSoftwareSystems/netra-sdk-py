@@ -13,7 +13,7 @@ Execution order per item:
     before_all()                           -> returns shared_context (dict | None)
     before[dataset_item_id](shared_context) -> returns item_context (dict | None), if registered
     BaseTask.run(..., setup_context)       <- receives merged context
-    after[dataset_item_id](result, shared_context), if registered
+    after[dataset_item_id](result, setup_context), if registered
     after_all(results, shared_context)
 
 Failure semantics:
@@ -55,8 +55,9 @@ class SimulationHooks:
             specific items that have registered hooks.
         after: Dict mapping ``dataset_item_id`` to hook functions. Each function
             receives the result ``dict`` from the conversation loop and
-            ``shared_context``. Only called for specific items that have
-            registered hooks. Return value is ignored.
+            ``setup_context`` (merged ``before_all`` + item ``before``). Only
+            called for specific items that have registered hooks. Return value
+            is ignored.
         after_all: Called once after all scenarios finish. Receives the
             aggregated results ``dict`` and ``shared_context``. Return value
             is ignored.
@@ -72,10 +73,10 @@ class SimulationHooks:
             token = login(shared_context["employee_id"])
             return {"refund_account": "12345", "token": token}
 
-        def teardown_refund_item(result, shared_context):
-            # Cleanup only for refund scenario
-            logout(shared_context.get("token"))
-            cleanup_refund(shared_context.get("refund_account"))
+        def teardown_refund_item(result, setup_context):
+            # Cleanup only for refund scenario (uses item context from before)
+            logout(setup_context.get("token"))
+            cleanup_refund(setup_context.get("refund_account"))
 
         def teardown(results, shared_context):
             delete_employee(shared_context["employee_id"])
@@ -228,7 +229,7 @@ async def run_after(
     hooks: Optional[SimulationHooks],
     dataset_item_id: str,
     item_result: dict[str, Any],
-    shared_context: Optional[dict[str, Any]],
+    setup_context: Optional[dict[str, Any]],
 ) -> None:
     """Execute the item-specific ``after`` hook for a single scenario (best-effort).
 
@@ -242,14 +243,16 @@ async def run_after(
         dataset_item_id: The stable identifier from the dataset item.
         item_result: The result dict from the conversation loop (or error result
             if ``before`` failed).
-        shared_context: The dict returned by ``before_all``, or ``None``.
+        setup_context: Merged context from ``before_all`` + item ``before``
+            (same dict passed to ``BaseTask.run``). When ``before`` failed,
+            this is typically the ``before_all`` shared context only.
     """
     # Execute item-specific after hook (only if registered for this item)
     if hooks and hooks.after and dataset_item_id in hooks.after:
         logger.info("netra.simulation: running after hook for dataset_item_id=%s", dataset_item_id)
         try:
             item_hook = hooks.after[dataset_item_id]
-            await _call_hook(item_hook, item_result, shared_context)
+            await _call_hook(item_hook, item_result, setup_context)
         except Exception:
             logger.warning(
                 "netra.simulation: after hook raised an exception for dataset_item_id=%s (ignored)",
