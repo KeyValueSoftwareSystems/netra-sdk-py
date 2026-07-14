@@ -869,11 +869,10 @@ class TestSimulationHooks:
         assert result == {"token": "xyz"}
 
     def test_hooks_describe(self) -> None:
-        """Test that hooks.describe() returns correct metadata.
+        """Test that hooks.describe() returns run-level + per-item metadata.
 
-        Note: before/after hooks are flattened to a single descriptor for wire format
-        compatibility with the backend API. The descriptor contains metadata from the
-        first registered hook plus a count of all registered items.
+        Run-level hooks land on ``beforeAll`` / ``afterAll``. Item-level hooks
+        are under ``items``, each keyed by ``datasetItemId``.
         """
         from netra.simulation.hooks import SimulationHooks
 
@@ -885,7 +884,7 @@ class TestSimulationHooks:
             """Setup refund scenario."""
             return {}
 
-        def teardown_refund(result: dict, shared_context: Optional[dict]) -> None:
+        def teardown_refund(result: dict, setup_context: Optional[dict]) -> None:
             """Teardown refund scenario."""
 
         def teardown_all(results: dict, shared_context: Optional[dict]) -> None:
@@ -900,29 +899,26 @@ class TestSimulationHooks:
 
         meta = hooks.describe()
 
-        # beforeAll and afterAll return full descriptors
         assert "beforeAll" in meta
         assert meta["beforeAll"]["configured"] is True
         assert meta["beforeAll"]["name"] == "setup_all"
         assert meta["beforeAll"]["description"] == "Setup shared resources."
 
-        # before/after are flattened - single descriptor with item count
-        assert "before" in meta
-        assert meta["before"]["configured"] is True
-        assert meta["before"]["name"] == "setup_refund"
-        assert "Setup refund scenario." in meta["before"]["description"]
-        assert "1 item(s)" in meta["before"]["description"]
-
-        assert "after" in meta
-        assert meta["after"]["configured"] is True
-        assert meta["after"]["name"] == "teardown_refund"
-        assert "Teardown refund scenario." in meta["after"]["description"]
-        assert "1 item(s)" in meta["after"]["description"]
-
         assert "afterAll" in meta
         assert meta["afterAll"]["configured"] is True
         assert meta["afterAll"]["name"] == "teardown_all"
         assert meta["afterAll"]["description"] == "Teardown shared resources."
+
+        assert "items" in meta
+        assert len(meta["items"]) == 1
+        item = meta["items"][0]
+        assert item["datasetItemId"] == "refund-item"
+        assert item["before"]["configured"] is True
+        assert item["before"]["name"] == "setup_refund"
+        assert item["before"]["description"] == "Setup refund scenario."
+        assert item["after"]["configured"] is True
+        assert item["after"]["name"] == "teardown_refund"
+        assert item["after"]["description"] == "Teardown refund scenario."
 
     def test_hooks_describe_empty(self) -> None:
         """Test that hooks.describe() returns empty dict when no hooks configured."""
@@ -934,14 +930,14 @@ class TestSimulationHooks:
         assert meta == {}
 
     def test_hooks_describe_multiple_items(self) -> None:
-        """Test that before/after hooks with multiple items are flattened correctly."""
+        """Test that item-level hooks are emitted per datasetItemId under items."""
         from netra.simulation.hooks import SimulationHooks
 
         def setup_scenario(shared_context: Optional[dict]) -> dict:
             """Setup for any scenario."""
             return {}
 
-        def teardown_scenario(result: dict, shared_context: Optional[dict]) -> None:
+        def teardown_scenario(result: dict, setup_context: Optional[dict]) -> None:
             """Teardown for any scenario."""
 
         hooks = SimulationHooks(
@@ -958,14 +954,14 @@ class TestSimulationHooks:
 
         meta = hooks.describe()
 
-        # before should be flattened with count of 3 items
-        assert "before" in meta
-        assert meta["before"]["configured"] is True
-        assert meta["before"]["name"] == "setup_scenario"
-        assert "3 item(s)" in meta["before"]["description"]
+        assert "items" in meta
+        by_id = {entry["datasetItemId"]: entry for entry in meta["items"]}
+        assert set(by_id) == {"item-1", "item-2", "item-3"}
 
-        # after should be flattened with count of 2 items
-        assert "after" in meta
-        assert meta["after"]["configured"] is True
-        assert meta["after"]["name"] == "teardown_scenario"
-        assert "2 item(s)" in meta["after"]["description"]
+        for item_id in ("item-1", "item-2"):
+            assert by_id[item_id]["before"]["name"] == "setup_scenario"
+            assert by_id[item_id]["after"]["name"] == "teardown_scenario"
+
+        # item-3 has before only
+        assert by_id["item-3"]["before"]["name"] == "setup_scenario"
+        assert "after" not in by_id["item-3"]
