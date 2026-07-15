@@ -11,12 +11,13 @@ wiring is explicit.
 """
 
 import threading
+import time
 
 import pytest
 
 from netra.exporters.filtering_span_exporter import FilteringSpanExporter
 from netra.processors import root_instrument_filter_processor as rifp
-from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_ATTR, RootInstrumentFilterProcessor
+from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_FIELD, RootInstrumentFilterProcessor
 
 pytestmark = pytest.mark.unit
 
@@ -270,7 +271,7 @@ def test_evicted_registry_still_drops_in_batch_root():
     assert openai.parent is None
 
 
-def test_candidate_marker_set_on_start_and_stripped_from_survivor():
+def test_candidate_marker_is_off_the_attribute_map():
     processor, exporter, recorder = make_pipeline({"openai"})
 
     # Non-root-connected candidate (under a surviving manual root) is kept.
@@ -280,14 +281,18 @@ def test_candidate_marker_set_on_start_and_stripped_from_survivor():
     processor.on_start(manual_root)
     processor.on_start(fastapi)
 
-    assert fastapi.attributes.get(ROOT_BLOCK_CANDIDATE_ATTR) is True  # marked at on_start
-    assert ROOT_BLOCK_CANDIDATE_ATTR not in manual_root.attributes  # manual span untouched
+    # Candidacy is carried as a plain instance attribute, never an OTel span
+    # attribute, so it cannot be evicted by the attribute limit and is never
+    # exported.
+    assert getattr(fastapi, ROOT_BLOCK_CANDIDATE_FIELD, False) is True  # marked at on_start
+    assert ROOT_BLOCK_CANDIDATE_FIELD not in fastapi.attributes
+    assert getattr(manual_root, ROOT_BLOCK_CANDIDATE_FIELD, False) is False  # manual span untouched
 
     exporter.export([manual_root, fastapi])
 
     assert exported_ids(recorder) == {1, 2}
-    # Internal marker must never leak onto the exported (surviving) span.
-    assert ROOT_BLOCK_CANDIDATE_ATTR not in fastapi.attributes
+    # Nothing to strip: the marker was never in the exported attribute map.
+    assert ROOT_BLOCK_CANDIDATE_FIELD not in fastapi.attributes
 
 
 def test_shutdown_does_not_clear_registry_before_flush():
@@ -355,3 +360,104 @@ def test_concurrent_on_start_is_safe_and_bounded():
 
     assert not errors
     assert len(rifp.ROOT_BLOCK_CANDIDATES) <= rifp._MAX_ROOT_CANDIDATES
+
+
+# ---------------------------------------------------------------------------
+# Interaction between name/local blocking and the root-instrument peel
+# ---------------------------------------------------------------------------
+
+
+def test_name_blocked_ancestor_drops_disallowed_candidate_child():
+    # A root dropped by a global name pattern must not let a disallowed
+    # instrumentation child be promoted to root in its place.
+    processor = RootInstrumentFilterProcessor({"openai"})
+    recorder = RecordingExporter()
+    exporter = FilteringSpanExporter(recorder, patterns=["BlockedRoot"])
+
+    blocked_root = FakeSpan(1, None, parent_ctx=None, name="BlockedRoot")  # name-blocked, not a candidate
+    fastapi = FakeSpan(2, scope("fastapi"), parent_ctx=blocked_root.context, name="fastapi.request")
+
+    processor.on_start(blocked_root)
+    processor.on_start(fastapi)
+    exporter.export([blocked_root, fastapi])
+
+    # Root dropped by name; FastAPI dropped because it would otherwise become a
+    # root from an instrument excluded from root_instruments.
+    assert exported_ids(recorder) == set()
+
+
+def test_name_blocked_ancestor_keeps_allowed_grandchild_as_root():
+    # With an allowed span beneath the name-blocked root, it survives and is
+    # promoted to root; the disallowed intermediate is dropped.
+    processor = RootInstrumentFilterProcessor({"openai"})
+    recorder = RecordingExporter()
+    exporter = FilteringSpanExporter(recorder, patterns=["BlockedRoot"])
+
+    blocked_root = FakeSpan(1, None, parent_ctx=None, name="BlockedRoot")
+    fastapi = FakeSpan(2, scope("fastapi"), parent_ctx=blocked_root.context, name="fastapi.request")
+    openai = FakeSpan(3, scope("openai"), parent_ctx=fastapi.context, name="openai.chat")
+
+    for span in (blocked_root, fastapi, openai):
+        processor.on_start(span)
+    exporter.export([blocked_root, fastapi, openai])
+
+    assert exported_ids(recorder) == {3}
+    assert openai.parent is None
+
+
+# ---------------------------------------------------------------------------
+# TTL: an active candidate must not be evicted before it ends
+# ---------------------------------------------------------------------------
+
+
+def test_active_candidate_not_evicted_by_unrelated_span_end():
+    processor = RootInstrumentFilterProcessor({"openai"})
+
+    # Long-lived blocked root starts and stays active.
+    root = FakeSpan(1, scope("fastapi"), parent_ctx=None)
+    processor.on_start(root)
+
+    # An unrelated (allowed) span cycles through start/end many times, each of
+    # which triggers an eviction pass. The still-active root must survive.
+    for other in range(2, 12):
+        unrelated = FakeSpan(other, scope("openai"), parent_ctx=None, trace_id=other)
+        processor.on_start(unrelated)
+        processor.on_end(unrelated)
+
+    assert 1 in rifp.ROOT_BLOCK_CANDIDATES  # active root retained regardless of elapsed time
+
+    # Once the root ends its TTL clock starts; age it past the TTL and confirm
+    # it is then reclaimable.
+    processor.on_end(root)
+    with rifp._root_candidates_lock:
+        parent_ctx, _ended = rifp.ROOT_BLOCK_CANDIDATES[1]
+        rifp.ROOT_BLOCK_CANDIDATES[1] = (parent_ctx, time.monotonic() - rifp._ROOT_CANDIDATE_TTL_SECONDS - 1)
+    trigger = FakeSpan(99, scope("openai"), parent_ctx=None, trace_id=99)
+    processor.on_start(trigger)
+    processor.on_end(trigger)
+
+    assert 1 not in rifp.ROOT_BLOCK_CANDIDATES  # ended + stale -> evicted
+
+
+# ---------------------------------------------------------------------------
+# Marker durability: real spans under a tight attribute limit
+# ---------------------------------------------------------------------------
+
+
+def test_candidate_marker_survives_span_attribute_limit():
+    from opentelemetry.sdk.trace import SpanLimits, TracerProvider
+
+    from netra.exporters.utils import is_root_block_candidate
+
+    provider = TracerProvider(span_limits=SpanLimits(max_attributes=1))
+    provider.add_span_processor(RootInstrumentFilterProcessor({"openai"}))
+    tracer = provider.get_tracer("netra.instrumentation.fastapi")
+
+    span = tracer.start_span("fastapi.request")
+    # Instrumentation records its own attribute; with max_attributes=1 this would
+    # evict an attribute-based marker.
+    span.set_attribute("http.method", "GET")
+    span.end()
+
+    assert is_root_block_candidate(span) is True
+    assert ROOT_BLOCK_CANDIDATE_FIELD not in dict(span.attributes or {})

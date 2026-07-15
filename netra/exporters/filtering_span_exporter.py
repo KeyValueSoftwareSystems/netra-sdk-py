@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Sequence, Set, Tuple
+from typing import Any, Dict, List, Sequence, Set
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
@@ -12,10 +12,10 @@ from netra.exporters.utils import (
     has_local_block_flag,
     is_trace_id_blocked,
     is_trial_blocked,
+    normalize_parent,
     read_local_block_patterns,
     reparent_spans,
     resolve_root_dropped,
-    strip_root_block_candidate_marker,
 )
 from netra.processors.local_filtering_span_processor import BLOCKED_LOCAL_PARENT_MAP
 
@@ -63,13 +63,19 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             self._record_blocked_trace_ids(spans)
             return SpanExportResult.SUCCESS
 
-        # Resolve which root-block candidates are root-connected (and must be
-        # dropped) once per batch.
-        root_dropped, root_dropped_parent_map = resolve_root_dropped(spans)
+        # Classify unconditional name/local drops first, then resolve which
+        # root-block candidates are root-connected. Feeding the name/local drops
+        # into the peel is what stops a disallowed candidate from being promoted
+        # to a root when its only surviving ancestor is itself name-blocked.
+        name_local_parent_map = self._classify_name_local_drops(spans)
+        root_dropped, root_dropped_parent_map = resolve_root_dropped(spans, name_local_parent_map)
 
-        kept, blocked_parent_map = self._partition(spans, root_dropped)
+        dropped_ids: Set[Any] = set(name_local_parent_map)
+        dropped_ids.update(root_dropped)
 
-        merged_map = self._merge_parent_maps(root_dropped_parent_map, blocked_parent_map)
+        kept = self._collect_survivors(spans, dropped_ids)
+
+        merged_map = self._merge_parent_maps(root_dropped_parent_map, name_local_parent_map)
         if merged_map:
             reparent_spans(kept, merged_map)
         if not kept:
@@ -87,53 +93,60 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             if trace_id:
                 add_blocked_trace_id(trace_id)
 
-    def _partition(
-        self, spans: Sequence[ReadableSpan], root_dropped: Set[int]
-    ) -> Tuple[List[ReadableSpan], Dict[Any, Any]]:
-        """Split *spans* into survivors and a map of dropped span IDs to their parents.
+    def _classify_name_local_drops(self, spans: Sequence[ReadableSpan]) -> Dict[Any, Any]:
+        """Find the spans dropped unconditionally by a global or local name rule.
 
-        The dropped-parent map only records name/locally blocked spans; root-dropped
-        spans are already covered by ``resolve_root_dropped``'s parent map.
+        Trace-blocked spans are skipped entirely (they are dropped without
+        reparenting). The result feeds both the candidate peel — as transparent
+        dropped ancestors — and the reparent map.
 
         Args:
             spans: The batch of spans to classify.
-            root_dropped: Span IDs resolved as root-connected and to be dropped.
 
         Returns:
-            ``(kept, blocked_parent_map)`` — the surviving spans, and a
-            ``{blocked_span_id -> parent}`` map for reparenting their children.
+            A ``{dropped_span_id -> normalized_parent}`` map for name/locally
+            blocked spans in this batch.
+        """
+        parent_map: Dict[Any, Any] = {}
+        for span in spans:
+            trace_id = get_trace_id(span)
+            if trace_id and is_trace_id_blocked(trace_id):
+                continue
+
+            name = getattr(span, "name", None)
+            if name is None:
+                continue
+
+            if self._matcher.matches(name) or self._is_locally_blocked(span, name):
+                span_id = get_span_id(span)
+                if span_id is not None:
+                    parent_map[span_id] = normalize_parent(getattr(span, "parent", None))
+
+        return parent_map
+
+    def _collect_survivors(self, spans: Sequence[ReadableSpan], dropped_ids: Set[Any]) -> List[ReadableSpan]:
+        """Return the spans that survive filtering.
+
+        Args:
+            spans: The batch of spans to filter.
+            dropped_ids: Span IDs dropped by name/local rules or the root peel.
+
+        Returns:
+            The spans to forward to the wrapped exporter (before reparenting).
         """
         kept: List[ReadableSpan] = []
-        blocked_parent_map: Dict[Any, Any] = {}
-
         for span in spans:
             trace_id = get_trace_id(span)
             if trace_id and is_trace_id_blocked(trace_id):
                 continue
 
             span_id = get_span_id(span)
-            root_blocked = span_id is not None and span_id in root_dropped
-
-            # Strip the internal candidacy marker so it never leaks onto a
-            # surviving (kept) span in the exported output.
-            strip_root_block_candidate_marker(span)
-
-            name = getattr(span, "name", None)
-            if name is None:
-                if not root_blocked:
-                    kept.append(span)
+            if span_id is not None and span_id in dropped_ids:
                 continue
 
-            if not (self._matcher.matches(name) or self._is_locally_blocked(span, name) or root_blocked):
-                kept.append(span)
-                continue
+            kept.append(span)
 
-            # Blocked: record its parent so children in this or a later batch can
-            # be reparented past it.
-            if span_id is not None:
-                blocked_parent_map[span_id] = getattr(span, "parent", None)
-
-        return kept, blocked_parent_map
+        return kept
 
     def _is_locally_blocked(self, span: ReadableSpan, name: str) -> bool:
         """Check whether *span* is blocked by its per-span local rules.

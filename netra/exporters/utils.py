@@ -7,7 +7,11 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
 from netra.config import Config
-from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_ATTR, get_root_block_candidates
+from netra.processors.root_instrument_filter_processor import (
+    ROOT_BLOCK_CANDIDATE_FIELD,
+    get_root_block_candidates,
+    root_block_candidates_contains,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -269,42 +273,36 @@ def has_local_block_flag(span: ReadableSpan) -> bool:
 def is_root_block_candidate(span: ReadableSpan) -> bool:
     """Check whether *span* carries the durable root-block-candidate marker.
 
+    The marker is a plain instance attribute (not an OTel span attribute), so it
+    cannot be evicted by the span attribute limit.
+
     Args:
         span: The span to check.
 
     Returns:
         ``True`` if the span was marked as a root-block candidate at start.
     """
-    return bool(_read_attribute(span, ROOT_BLOCK_CANDIDATE_ATTR))
+    return bool(getattr(span, ROOT_BLOCK_CANDIDATE_FIELD, False))
 
 
-def strip_root_block_candidate_marker(span: ReadableSpan) -> None:
-    """Remove the internal candidacy marker so it never reaches the backend.
-
-    Mutates the underlying ``_attributes`` mapping (``ReadableSpan.attributes``
-    is a read-only proxy), falling back to a mutable ``attributes`` mapping.
-
-    Args:
-        span: The span to clean before export.
-    """
-    try:
-        attrs = getattr(span, "_attributes", None)
-        if attrs is None or not hasattr(attrs, "__delitem__"):
-            attrs = getattr(span, "attributes", None)
-        if attrs is not None and hasattr(attrs, "__delitem__") and ROOT_BLOCK_CANDIDATE_ATTR in attrs:
-            del attrs[ROOT_BLOCK_CANDIDATE_ATTR]
-    except Exception:
-        logger.debug("Failed to strip root-block-candidate marker", exc_info=True)
-
-
-def resolve_root_dropped(spans: Sequence[ReadableSpan]) -> Tuple[Set[int], Dict[int, Optional[SpanContext]]]:
+def resolve_root_dropped(
+    spans: Sequence[ReadableSpan],
+    extra_dropped_ancestors: Optional[Dict[int, Optional[SpanContext]]] = None,
+) -> Tuple[Set[int], Dict[int, Optional[SpanContext]]]:
     """Resolve the root-block candidates in *spans* that must be dropped.
 
     A candidate is dropped when it is *root-connected*: it is a trace root (no
-    local parent), or its parent is itself a dropped candidate. The peel stops
-    at the first surviving ancestor — an allowed instrument, a netra/manual
-    span, or a non-instrumentation span — and never crosses a remote
-    (cross-process) parent link.
+    local parent), or its parent is itself a dropped span. The peel stops at the
+    first surviving ancestor — an allowed instrument, a netra/manual span, or a
+    non-instrumentation span — and never crosses a remote (cross-process) parent
+    link.
+
+    ``extra_dropped_ancestors`` are spans dropped for *other* reasons (a global
+    or per-span local name block) that are removed from the exported tree just
+    like candidates. Folding them in lets the peel "see through" them: a
+    candidate whose only surviving ancestor was a name-blocked span becomes
+    root-connected once that span is dropped, and so must be dropped too rather
+    than promoted to a root it is not allowed to be.
 
     The candidate set is the registry snapshot overlaid with any span in the
     current batch that carries the durable candidacy marker. The overlay makes
@@ -316,6 +314,8 @@ def resolve_root_dropped(spans: Sequence[ReadableSpan]) -> Tuple[Set[int], Dict[
 
     Args:
         spans: The batch of spans being exported.
+        extra_dropped_ancestors: ``{span_id -> parent_span_context}`` for spans
+            dropped by name/local rules, treated as transparent dropped nodes.
 
     Returns:
         ``(dropped_span_ids, dropped_parent_map)`` where ``dropped_parent_map``
@@ -323,8 +323,14 @@ def resolve_root_dropped(spans: Sequence[ReadableSpan]) -> Tuple[Set[int], Dict[
         true root) for reparenting.
     """
     candidates = _collect_candidates(spans)
+    # Only genuine root-block candidates trigger a peel; name/local drops alone
+    # (with no candidate in play) are handled by the caller directly.
     if not candidates:
         return set(), {}
+
+    if extra_dropped_ancestors:
+        for span_id, parent_ctx in extra_dropped_ancestors.items():
+            candidates.setdefault(span_id, parent_ctx)
 
     dropped = _peel_root_connected(spans, candidates)
     dropped_parent_map: Dict[int, Optional[SpanContext]] = {sid: candidates[sid] for sid in dropped}
@@ -332,26 +338,41 @@ def resolve_root_dropped(spans: Sequence[ReadableSpan]) -> Tuple[Set[int], Dict[
 
 
 def _collect_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, Optional[SpanContext]]:
-    """Merge the registry snapshot with in-batch candidacy markers.
+    """Merge in-batch candidacy markers with the cross-batch registry.
 
-    The in-batch overlay lets a marked span be recognised even if its registry
-    entry was evicted or cleared before export.
+    The in-batch markers let a marked span be recognised even if its registry
+    entry was evicted or cleared before export. The registry is only consulted
+    for *cross-batch* ancestry — a batch parent whose candidacy was recorded in
+    an earlier batch. When no batch parent references such an entry, the full
+    (locked, O(registry)) snapshot is skipped entirely.
 
     Args:
         spans: The batch of spans being exported.
 
     Returns:
-        A ``{span_id -> parent_span_context}`` map of every known candidate,
+        A ``{span_id -> parent_span_context}`` map of every relevant candidate,
         with in-batch markers overriding the registry snapshot.
     """
-    candidates = get_root_block_candidates()
+    in_batch: Dict[int, Optional[SpanContext]] = {}
+    parent_ids: Set[int] = set()
     for span in spans:
-        if not is_root_block_candidate(span):
-            continue
         span_id = get_span_id(span)
-        if span_id is None or span_id == INVALID_SPAN_ID:
-            continue
-        candidates[span_id] = normalize_parent(getattr(span, "parent", None))
+        if is_root_block_candidate(span) and span_id is not None and span_id != INVALID_SPAN_ID:
+            in_batch[span_id] = normalize_parent(getattr(span, "parent", None))
+        parent = getattr(span, "parent", None)
+        parent_id = getattr(parent, "span_id", None) if parent is not None else None
+        if parent_id is not None and parent_id != INVALID_SPAN_ID:
+            parent_ids.add(parent_id)
+
+    # A registry entry can only be walked if it is the parent of some batch span
+    # (every in-batch candidate contributes its own parent id here too, so
+    # multi-hop cross-batch chains are covered). Parents already resolvable
+    # in-batch never need the registry.
+    if not root_block_candidates_contains(parent_ids - set(in_batch)):
+        return in_batch
+
+    candidates = get_root_block_candidates()
+    candidates.update(in_batch)
     return candidates
 
 
@@ -372,52 +393,69 @@ def _peel_root_connected(spans: Sequence[ReadableSpan], candidates: Dict[int, Op
     memo: Dict[int, bool] = {}
     dropped: Set[int] = set()
 
-    def is_dropped(span_id: int, visiting: Set[int]) -> bool:
-        """Resolve whether *span_id* is a root-connected candidate, memoized.
+    def is_dropped(start_id: int) -> bool:
+        """Resolve whether *start_id* is a root-connected candidate, memoized.
+
+        Walks the candidate ancestry chain iteratively (no recursion, so a
+        deeply nested trace cannot blow the Python stack). Every node on a
+        linear candidate chain shares the terminal verdict — the chain is
+        dropped iff it peels all the way to a true root — so the resolved
+        result is written back to the whole walked path in one pass.
 
         Args:
-            span_id: The span ID to resolve.
-            visiting: The span IDs on the current recursion path (cycle guard).
+            start_id: The span ID to resolve.
 
         Returns:
-            ``True`` if *span_id* is a candidate whose ancestry peels to a root.
+            ``True`` if *start_id* is a candidate whose ancestry peels to a root.
         """
-        if span_id in memo:
-            return memo[span_id]
-        if span_id not in candidates:
-            # Not a candidate -> a surviving ancestor. Stops the peel.
-            return False
-        if span_id in visiting:
-            # Cycle guard: treat as non-dropped to avoid infinite recursion.
-            return False
+        path: List[int] = []
+        on_path: Set[int] = set()
+        node = start_id
+        while True:
+            if node in memo:
+                result = memo[node]
+                break
+            if node not in candidates:
+                # Not a candidate -> a surviving ancestor. Stops the peel.
+                result = False
+                break
+            if node in on_path:
+                # Cycle guard: treat as non-dropped to avoid looping forever.
+                result = False
+                break
 
-        parent_ctx = candidates[span_id]
-        if parent_ctx is None:
-            result = True  # candidate is a true trace root
-        elif getattr(parent_ctx, "is_remote", False):
-            result = False  # do not peel across a process boundary
-        else:
+            # Fresh candidate node: it shares the chain's terminal verdict.
+            path.append(node)
+            on_path.add(node)
+
+            parent_ctx = candidates[node]
+            if parent_ctx is None:
+                result = True  # candidate is a true trace root
+                break
+            if getattr(parent_ctx, "is_remote", False):
+                result = False  # do not peel across a process boundary
+                break
             parent_id = getattr(parent_ctx, "span_id", None)
             if parent_id is None or parent_id == INVALID_SPAN_ID:
                 result = True
-            else:
-                visiting.add(span_id)
-                result = is_dropped(parent_id, visiting)
-                visiting.discard(span_id)
+                break
 
-        memo[span_id] = result
-        if result:
-            dropped.add(span_id)
+            node = parent_id
+
+        for span_id in path:
+            memo[span_id] = result
+            if result:
+                dropped.add(span_id)
         return result
 
     for span in spans:
         span_id = get_span_id(span)
         if span_id is not None and span_id != INVALID_SPAN_ID:
-            is_dropped(span_id, set())
+            is_dropped(span_id)
         parent_ctx = getattr(span, "parent", None)
         parent_id = getattr(parent_ctx, "span_id", None) if parent_ctx is not None else None
         if parent_id is not None and parent_id != INVALID_SPAN_ID:
-            is_dropped(parent_id, set())
+            is_dropped(parent_id)
 
     return dropped
 
