@@ -1,16 +1,18 @@
 import logging
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Optional, Sequence, Set
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import (
     SpanExporter,
     SpanExportResult,
 )
+from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
 from netra.exporters.utils import add_blocked_trace_id, get_trace_id, is_trace_id_blocked, is_trial_blocked
 from netra.processors.local_filtering_span_processor import (
     BLOCKED_LOCAL_PARENT_MAP,
 )
+from netra.processors.root_instrument_filter_processor import get_root_block_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -72,6 +74,10 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
                     add_blocked_trace_id(trace_id)
             return SpanExportResult.SUCCESS
 
+        # Resolve which root-block candidates are root-connected and must be
+        # dropped (RootInstrumentFilterProcessor path).  Computed once per batch.
+        root_dropped, root_dropped_parent_map = self._compute_root_dropped()
+
         filtered: List[ReadableSpan] = []
         blocked_parent_map: Dict[Any, Any] = {}
         for span in spans:
@@ -81,8 +87,16 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             if trace_id and is_trace_id_blocked(trace_id):
                 continue
 
+            span_context = getattr(span, "context", None)
+            span_id = getattr(span_context, "span_id", None) if span_context else None
+
+            # Root-instrument blocking: this span is a root-connected candidate.
+            root_blocked = span_id is not None and span_id in root_dropped
+
             name = getattr(span, "name", None)
             if name is None:
+                if root_blocked:
+                    continue
                 filtered.append(span)
                 continue
 
@@ -101,24 +115,24 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             except Exception:
                 locally_blocked = False
 
-            if not (globally_blocked or locally_blocked):
+            if not (globally_blocked or locally_blocked or root_blocked):
                 filtered.append(span)
                 continue
 
             # Collect mapping for reparenting children of the blocked span
-            span_context = getattr(span, "context", None)
-            span_id = getattr(span_context, "span_id", None) if span_context else None
             if span_id is not None:
                 blocked_parent_map[span_id] = getattr(span, "parent", None)
 
-        # Merge with registry of locally blocked spans captured by processor to handle
-        # cases where children export before their blocked parent (SimpleSpanProcessor)
+        # Merge with registries captured by processors so children that export in
+        # a different batch than their blocked ancestor are still reparented
+        # (e.g. BatchSpanProcessor, or SimpleSpanProcessor child-before-parent).
         merged_map: Dict[Any, Any] = {}
         try:
             if BLOCKED_LOCAL_PARENT_MAP:
                 merged_map.update(BLOCKED_LOCAL_PARENT_MAP)
         except Exception:
             pass
+        merged_map.update(root_dropped_parent_map)
         merged_map.update(blocked_parent_map)
 
         if merged_map:
@@ -126,6 +140,55 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         if not filtered:
             return SpanExportResult.SUCCESS
         return self._exporter.export(filtered)
+
+    def _compute_root_dropped(self) -> "tuple[Set[int], Dict[int, Optional[SpanContext]]]":
+        """Resolve the set of root-block candidates that must be dropped.
+
+        A candidate is dropped when it is *root-connected*: it is a trace root
+        (no local parent), or its parent is itself a dropped candidate.  The
+        peel therefore stops at the first surviving ancestor — an allowed
+        instrument, a netra/manual span, or a non-instrumentation span — and
+        never crosses a remote (cross-process) parent link.
+
+        Returns:
+            A tuple ``(dropped_span_ids, dropped_parent_map)`` where
+            ``dropped_parent_map`` maps each dropped span ID to its parent
+            ``SpanContext`` (``None`` for a true root) for reparenting.
+        """
+        candidates = get_root_block_candidates()
+        if not candidates:
+            return set(), {}
+
+        memo: Dict[int, bool] = {}
+
+        def is_dropped(span_id: int, visiting: Set[int]) -> bool:
+            if span_id in memo:
+                return memo[span_id]
+            if span_id not in candidates:
+                # Not a candidate → a surviving ancestor. Stops the peel.
+                return False
+            if span_id in visiting:
+                # Cycle guard: treat as non-dropped to avoid infinite recursion.
+                return False
+            parent_ctx = candidates[span_id]
+            if parent_ctx is None:
+                result = True  # candidate is a true trace root
+            elif getattr(parent_ctx, "is_remote", False):
+                result = False  # do not peel across a process boundary
+            else:
+                parent_id = getattr(parent_ctx, "span_id", None)
+                if parent_id is None or parent_id == INVALID_SPAN_ID:
+                    result = True
+                else:
+                    visiting.add(span_id)
+                    result = is_dropped(parent_id, visiting)
+                    visiting.discard(span_id)
+            memo[span_id] = result
+            return result
+
+        dropped: Set[int] = {sid for sid in candidates if is_dropped(sid, set())}
+        dropped_parent_map: Dict[int, Optional[SpanContext]] = {sid: candidates[sid] for sid in dropped}
+        return dropped, dropped_parent_map
 
     def _is_blocked(self, name: str) -> bool:
         """

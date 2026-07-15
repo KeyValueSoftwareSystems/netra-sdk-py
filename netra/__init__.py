@@ -107,9 +107,19 @@ class Netra:
             root_instruments: Set of instruments allowed to produce root-level
                 spans.  Independent of ``instruments``.  Defaults to
                 ``DEFAULT_INSTRUMENTS_FOR_ROOT`` when ``None``.  When a root
-                span is blocked, its entire subtree is discarded.  Pass a set
-                containing ``NetraInstruments.ALL`` to allow all
-                instrumentations to produce root spans (legacy behaviour).
+                span comes from an instrumentation outside this set, only that
+                span is dropped — its children are reparented onto its parent
+                (a true root's children become the new roots).  The peel then
+                repeats: if a promoted child is itself from a non-root
+                instrumentation it is dropped too, recursively, until a
+                surviving span is reached.  This keeps LLM/vector spans that
+                originate under an unwanted server root (e.g. FastAPI) without
+                emitting the server span itself.  Note: when
+                ``enable_root_span=True``, Netra attaches its own root span and
+                every auto-instrumentation span becomes its child, so no
+                reparenting occurs.  Pass a set containing
+                ``NetraInstruments.ALL`` to allow all instrumentations to
+                produce root spans (legacy behaviour).
 
         Returns:
             None
