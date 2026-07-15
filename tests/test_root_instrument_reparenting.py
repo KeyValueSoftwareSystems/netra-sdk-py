@@ -16,7 +16,7 @@ import pytest
 
 from netra.exporters.filtering_span_exporter import FilteringSpanExporter
 from netra.processors import root_instrument_filter_processor as rifp
-from netra.processors.root_instrument_filter_processor import RootInstrumentFilterProcessor
+from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_ATTR, RootInstrumentFilterProcessor
 
 pytestmark = pytest.mark.unit
 
@@ -241,6 +241,93 @@ def test_allowed_root_instrument_exports_normally():
 
     assert exported_ids(recorder) == {1, 2}
     assert openai.parent is fastapi.context
+
+
+# ---------------------------------------------------------------------------
+# Robustness: candidacy must survive registry eviction / clear
+# ---------------------------------------------------------------------------
+
+
+def test_evicted_registry_still_drops_in_batch_root():
+    # The blocked root leaks unless candidacy is carried durably on the span:
+    # simulate the registry being evicted (overflow/TTL) between on_start and
+    # export.  The FastAPI root must still be dropped via its span marker.
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    fastapi = FakeSpan(1, scope("fastapi"), parent_ctx=None)
+    openai = FakeSpan(2, scope("openai"), parent_ctx=fastapi.context)
+
+    processor.on_start(fastapi)
+    processor.on_start(openai)
+
+    # Registry wiped before export (models 4096-overflow / TTL eviction).
+    with rifp._root_candidates_lock:
+        rifp.ROOT_BLOCK_CANDIDATES.clear()
+
+    exporter.export([fastapi, openai])
+
+    assert exported_ids(recorder) == {2}  # FastAPI still dropped
+    assert openai.parent is None
+
+
+def test_candidate_marker_set_on_start_and_stripped_from_survivor():
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    # Non-root-connected candidate (under a surviving manual root) is kept.
+    manual_root = FakeSpan(1, "my.app.tracer", parent_ctx=None)
+    fastapi = FakeSpan(2, scope("fastapi"), parent_ctx=manual_root.context)
+
+    processor.on_start(manual_root)
+    processor.on_start(fastapi)
+
+    assert fastapi.attributes.get(ROOT_BLOCK_CANDIDATE_ATTR) is True  # marked at on_start
+    assert ROOT_BLOCK_CANDIDATE_ATTR not in manual_root.attributes  # manual span untouched
+
+    exporter.export([manual_root, fastapi])
+
+    assert exported_ids(recorder) == {1, 2}
+    # Internal marker must never leak onto the exported (surviving) span.
+    assert ROOT_BLOCK_CANDIDATE_ATTR not in fastapi.attributes
+
+
+def test_shutdown_does_not_clear_registry_before_flush():
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    fastapi = FakeSpan(1, scope("fastapi"), parent_ctx=None)
+    openai = FakeSpan(2, scope("openai"), parent_ctx=fastapi.context)
+
+    processor.on_start(fastapi)
+    processor.on_start(openai)
+
+    # Processor shuts down first (registered before the exporter); the registry
+    # must survive so the exporter's final flush still drops the blocked root.
+    processor.shutdown()
+    assert len(rifp.ROOT_BLOCK_CANDIDATES) >= 1
+
+    exporter.export([fastapi, openai])
+    assert exported_ids(recorder) == {2}
+    assert openai.parent is None
+
+
+def test_unrelated_registry_entries_do_not_affect_batch():
+    # A large backlog of candidates from other traces must not be dropped or
+    # traversed as part of this batch (correctness + bounded work).
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    for other in range(1000, 1500):
+        processor.on_start(FakeSpan(other, scope("fastapi"), parent_ctx=None, trace_id=other))
+
+    fastapi = FakeSpan(1, scope("fastapi"), parent_ctx=None)
+    openai = FakeSpan(2, scope("openai"), parent_ctx=fastapi.context)
+    processor.on_start(fastapi)
+    processor.on_start(openai)
+
+    exporter.export([fastapi, openai])
+
+    # Only spans in this batch are affected; unrelated candidates are neither
+    # exported nor reparented here.
+    assert exported_ids(recorder) == {2}
+    assert openai.parent is None
 
 
 # ---------------------------------------------------------------------------

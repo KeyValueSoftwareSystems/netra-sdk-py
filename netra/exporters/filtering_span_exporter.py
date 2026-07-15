@@ -1,5 +1,5 @@
 import logging
-from typing import Any, Dict, List, Optional, Sequence, Set
+from typing import Any, Dict, List, Optional, Sequence, Set, cast
 
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.sdk.trace.export import (
@@ -12,7 +12,7 @@ from netra.exporters.utils import add_blocked_trace_id, get_trace_id, is_trace_i
 from netra.processors.local_filtering_span_processor import (
     BLOCKED_LOCAL_PARENT_MAP,
 )
-from netra.processors.root_instrument_filter_processor import get_root_block_candidates
+from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_ATTR, get_root_block_candidates
 
 logger = logging.getLogger(__name__)
 
@@ -76,7 +76,7 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
 
         # Resolve which root-block candidates are root-connected and must be
         # dropped (RootInstrumentFilterProcessor path).  Computed once per batch.
-        root_dropped, root_dropped_parent_map = self._compute_root_dropped()
+        root_dropped, root_dropped_parent_map = self._compute_root_dropped(spans)
 
         filtered: List[ReadableSpan] = []
         blocked_parent_map: Dict[Any, Any] = {}
@@ -92,6 +92,10 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
 
             # Root-instrument blocking: this span is a root-connected candidate.
             root_blocked = span_id is not None and span_id in root_dropped
+
+            # Strip the internal candidacy marker so it never leaks onto a
+            # surviving (kept) span in the exported output.
+            self._strip_root_candidate_marker(span)
 
             name = getattr(span, "name", None)
             if name is None:
@@ -141,7 +145,9 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
             return SpanExportResult.SUCCESS
         return self._exporter.export(filtered)
 
-    def _compute_root_dropped(self) -> "tuple[Set[int], Dict[int, Optional[SpanContext]]]":
+    def _compute_root_dropped(
+        self, spans: Sequence[ReadableSpan]
+    ) -> "tuple[Set[int], Dict[int, Optional[SpanContext]]]":
         """Resolve the set of root-block candidates that must be dropped.
 
         A candidate is dropped when it is *root-connected*: it is a trace root
@@ -150,16 +156,38 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         instrument, a netra/manual span, or a non-instrumentation span — and
         never crosses a remote (cross-process) parent link.
 
+        The candidate set is the registry snapshot *overlaid* with any span in
+        the current batch that carries the durable candidacy marker.  The
+        overlay is what makes the decision robust: a blocked root still in the
+        batch is dropped even if its registry entry was evicted (TTL/overflow)
+        or cleared, because the marker travels with the span.
+
+        Only ancestor chains reachable from this batch are evaluated, so the
+        cost is proportional to the batch (plus its ancestry) rather than to
+        the whole registry.
+
+        Args:
+            spans: The batch of spans being exported.
+
         Returns:
             A tuple ``(dropped_span_ids, dropped_parent_map)`` where
             ``dropped_parent_map`` maps each dropped span ID to its parent
             ``SpanContext`` (``None`` for a true root) for reparenting.
         """
         candidates = get_root_block_candidates()
+        for span in spans:
+            if not self._is_root_candidate(span):
+                continue
+            span_id = self._span_id_of(span)
+            if span_id is None or span_id == INVALID_SPAN_ID:
+                continue
+            candidates[span_id] = self._normalize_parent(getattr(span, "parent", None))
+
         if not candidates:
             return set(), {}
 
         memo: Dict[int, bool] = {}
+        dropped: Set[int] = set()
 
         def is_dropped(span_id: int, visiting: Set[int]) -> bool:
             if span_id in memo:
@@ -184,11 +212,82 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
                     result = is_dropped(parent_id, visiting)
                     visiting.discard(span_id)
             memo[span_id] = result
+            if result:
+                dropped.add(span_id)
             return result
 
-        dropped: Set[int] = {sid for sid in candidates if is_dropped(sid, set())}
+        # Seed traversal from batch spans and their parents only.  This drops
+        # batch candidates that are root-connected and populates the reparent
+        # map with the dropped ancestors of surviving batch spans.
+        for span in spans:
+            span_id = self._span_id_of(span)
+            if span_id is not None and span_id != INVALID_SPAN_ID:
+                is_dropped(span_id, set())
+            parent_ctx = getattr(span, "parent", None)
+            parent_id = getattr(parent_ctx, "span_id", None) if parent_ctx is not None else None
+            if parent_id is not None and parent_id != INVALID_SPAN_ID:
+                is_dropped(parent_id, set())
+
         dropped_parent_map: Dict[int, Optional[SpanContext]] = {sid: candidates[sid] for sid in dropped}
         return dropped, dropped_parent_map
+
+    @staticmethod
+    def _span_id_of(span: ReadableSpan) -> Optional[int]:
+        """Return *span*'s own span ID, or ``None`` if unavailable."""
+        span_context = getattr(span, "context", None)
+        if span_context is None:
+            return None
+        return cast(Optional[int], getattr(span_context, "span_id", None))
+
+    @staticmethod
+    def _normalize_parent(parent: Any) -> Optional[SpanContext]:
+        """Normalize a span's parent link to ``None`` for a true root.
+
+        Mirrors ``RootInstrumentFilterProcessor._get_parent_span_context`` so
+        the in-batch overlay and the registry store parents identically.
+
+        Args:
+            parent: The span's ``parent`` ``SpanContext`` (or ``None``).
+
+        Returns:
+            The parent ``SpanContext``, or ``None`` when the span is a root.
+        """
+        if parent is None:
+            return None
+        parent_id = getattr(parent, "span_id", None)
+        if parent_id is None or parent_id == INVALID_SPAN_ID:
+            return None
+        return cast(Optional[SpanContext], parent)
+
+    @staticmethod
+    def _is_root_candidate(span: ReadableSpan) -> bool:
+        """Return ``True`` if *span* carries the durable root-block-candidate marker."""
+        try:
+            attrs = getattr(span, "attributes", None)
+            if not attrs:
+                return False
+            value = attrs.get(ROOT_BLOCK_CANDIDATE_ATTR) if hasattr(attrs, "get") else attrs[ROOT_BLOCK_CANDIDATE_ATTR]
+            return bool(value)
+        except Exception:
+            return False
+
+    def _strip_root_candidate_marker(self, span: ReadableSpan) -> None:
+        """Remove the internal candidacy marker so it never reaches the backend.
+
+        Mutates the underlying ``_attributes`` mapping (``ReadableSpan.attributes``
+        is a read-only proxy), falling back to a mutable ``attributes`` mapping.
+
+        Args:
+            span: The span to clean.
+        """
+        try:
+            attrs = getattr(span, "_attributes", None)
+            if attrs is None or not hasattr(attrs, "__delitem__"):
+                attrs = getattr(span, "attributes", None)
+            if attrs is not None and hasattr(attrs, "__delitem__") and ROOT_BLOCK_CANDIDATE_ATTR in attrs:
+                del attrs[ROOT_BLOCK_CANDIDATE_ATTR]
+        except Exception:
+            logger.debug("Failed to strip root-block-candidate marker", exc_info=True)
 
     def _is_blocked(self, name: str) -> bool:
         """

@@ -15,14 +15,22 @@ _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrument
 _MAX_ROOT_CANDIDATES = 4096
 _ROOT_CANDIDATE_TTL_SECONDS = 600.0
 
+# Durable per-span marker set on a span the moment it is classified as a
+# root-block candidate.  Unlike the registry, this marker travels *with* the
+# span into its export batch, so the exporter can still recognise a blocked root
+# even if the registry entry was evicted (TTL/overflow) or cleared (shutdown)
+# between ``on_start`` and export.  The exporter strips it before export so it
+# never leaks into surviving (kept) spans.
+ROOT_BLOCK_CANDIDATE_ATTR = "netra.root_block_candidate"
+
 # Process-global registry of "root-block candidate" spans: spans emitted by an
 # auto-instrumentation library that is *not* permitted to produce root-level
 # spans.  Maps ``span_id -> (parent_span_context_or_None, monotonic_timestamp)``.
 #
-# The registry (rather than a per-span attribute) is what the
-# ``FilteringSpanExporter`` consults to decide, at export time, which candidates
-# are *root-connected* and must be dropped, and to reparent the survivors — even
-# when a candidate and its children land in different export batches.  Entries
+# The registry lets the ``FilteringSpanExporter`` resolve *cross-batch*
+# ancestry — reparenting a child that exports in a later batch than its dropped
+# ancestor.  It is a supplement, not the source of truth: candidacy is carried
+# durably on the span via ``ROOT_BLOCK_CANDIDATE_ATTR`` (see above).  Entries
 # survive until they expire via TTL so late-exporting children still find their
 # dropped ancestor's parent.
 _root_candidates_lock = threading.Lock()
@@ -51,9 +59,10 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
     Unlike a naive "block the whole trace" filter, this processor never
     discards a subtree.  When an auto-instrumentation span (e.g. FastAPI,
     Flask, ASGI) comes from a library outside the allowed *root_instruments*
-    set, the processor records it as a **root-block candidate** in a shared,
-    TTL-evicted registry (``ROOT_BLOCK_CANDIDATES``) along with its parent
-    ``SpanContext``.
+    set, the processor marks it as a **root-block candidate** with a durable
+    span attribute (``ROOT_BLOCK_CANDIDATE_ATTR``) and also records it, along
+    with its parent ``SpanContext``, in a shared TTL-evicted registry
+    (``ROOT_BLOCK_CANDIDATES``) used for cross-batch reparenting.
 
     The actual drop decision is made at export time by
     :class:`~netra.exporters.filtering_span_exporter.FilteringSpanExporter`:
@@ -112,9 +121,16 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
             pass
 
     def shutdown(self) -> None:
-        """Release all resources held by the processor."""
-        with _root_candidates_lock:
-            ROOT_BLOCK_CANDIDATES.clear()
+        """No-op — the candidate registry is **not** cleared here.
+
+        This processor is registered before the exporter's span processor, so
+        clearing the shared registry on shutdown would empty it *before* the
+        exporter's final flush runs — causing still-buffered blocked root spans
+        to slip through as exported roots.  The registry is process-global and
+        already bounded (``_MAX_ROOT_CANDIDATES``) and TTL-evicted, so leaving
+        it intact is safe; clearing it here is not.
+        """
+        return None
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op — this processor does not buffer data.
@@ -155,7 +171,22 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
             return
 
         parent_ctx = self._get_parent_span_context(span)
+        # Durable marker first: it must survive even if the registry entry is
+        # later evicted/cleared before this span reaches the exporter.
+        self._mark_candidate(span)
         self._record_candidate(span_id, parent_ctx)
+
+    @staticmethod
+    def _mark_candidate(span: Span) -> None:
+        """Stamp *span* with the durable root-block-candidate marker.
+
+        Args:
+            span: The candidate span being started.
+        """
+        try:
+            span.set_attribute(ROOT_BLOCK_CANDIDATE_ATTR, True)
+        except Exception:
+            pass
 
     @staticmethod
     def _record_candidate(span_id: int, parent_ctx: Optional[SpanContext]) -> None:
