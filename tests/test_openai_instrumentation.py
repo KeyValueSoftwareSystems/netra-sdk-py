@@ -149,3 +149,92 @@ class TestUtilityFunctions:
         result = should_suppress_instrumentation()
 
         assert result is False
+
+
+class TestUsageAttributes:
+    """Test _set_usage_attributes token capture across Chat and Responses shapes."""
+
+    @staticmethod
+    def _capture(usage):
+        """Run _set_usage_attributes against a recording span and return {attr: value}."""
+        from netra.instrumentation.openai.utils import _set_usage_attributes
+
+        span = Mock()
+        span.is_recording.return_value = True
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        _set_usage_attributes(span, usage)
+        return captured
+
+    def test_chat_completions_cache_read_and_write(self):
+        """Chat Completions usage maps cached/cache_write tokens to read/creation attributes."""
+        from opentelemetry.semconv_ai import SpanAttributes
+
+        attrs = self._capture(
+            {
+                "prompt_tokens": 100,
+                "completion_tokens": 20,
+                "total_tokens": 120,
+                "prompt_tokens_details": {"cached_tokens": 64, "cache_write_tokens": 30},
+                "completion_tokens_details": {"reasoning_tokens": 8},
+            }
+        )
+
+        assert attrs[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] == 100
+        assert attrs[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] == 20
+        assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 120
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 64
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 30
+        assert attrs[SpanAttributes.LLM_USAGE_REASONING_TOKENS] == 8
+
+    def test_responses_api_cache_write(self):
+        """Responses API usage (input_tokens_details) also captures cache_write_tokens."""
+        from opentelemetry.semconv_ai import SpanAttributes
+
+        attrs = self._capture(
+            {
+                "input_tokens": 200,
+                "output_tokens": 40,
+                "total_tokens": 240,
+                "input_tokens_details": {"cached_tokens": 128, "cache_write_tokens": 50},
+                "output_tokens_details": {"reasoning_tokens": 12},
+            }
+        )
+
+        assert attrs[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] == 200
+        assert attrs[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] == 40
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 128
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 50
+        assert attrs[SpanAttributes.LLM_USAGE_REASONING_TOKENS] == 12
+
+    def test_zero_valued_cache_write_is_recorded(self):
+        """A cache_write_tokens of 0 must be recorded, not dropped as falsy."""
+        from opentelemetry.semconv_ai import SpanAttributes
+
+        attrs = self._capture(
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 0,
+                "total_tokens": 10,
+                "prompt_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 0},
+            }
+        )
+
+        assert attrs[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] == 0
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 0
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 0
+
+    def test_missing_cache_write_is_omitted(self):
+        """When cache_write_tokens is absent, the creation attribute is not set."""
+        from opentelemetry.semconv_ai import SpanAttributes
+
+        attrs = self._capture(
+            {
+                "prompt_tokens": 10,
+                "completion_tokens": 5,
+                "prompt_tokens_details": {"cached_tokens": 4},
+            }
+        )
+
+        assert SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS not in attrs
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 4
