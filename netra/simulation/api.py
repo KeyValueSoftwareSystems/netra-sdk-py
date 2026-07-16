@@ -102,21 +102,8 @@ class Simulation:
             context=context or {},
             hooks_meta=hooks_meta,
         )
-
-        # Fall back to bundled endpoint for backends without split initialize
         if init_result is None:
-            logger.info("%s: initialize endpoint unavailable, using bundled create", LOG_PREFIX)
-            return self._run_with_bundled_creation(
-                name=name,
-                dataset_id=dataset_id,
-                context=context,
-                hooks_meta=hooks_meta,
-                task=task,
-                max_concurrency=max_concurrency,
-                max_turns=max_turns,
-                hooks=hooks,
-                start_time=start_time,
-            )
+            return None
 
         run_id: str = init_result["run_id"]
         items: list[dict[str, str]] = init_result["items"]
@@ -261,51 +248,6 @@ class Simulation:
             self._client.post_run_status(run_id, "failed")
             return None
 
-    def _run_with_bundled_creation(
-        self,
-        name: str,
-        dataset_id: str,
-        context: Optional[dict[str, Any]],
-        hooks_meta: Optional[dict[str, Any]],
-        task: BaseTask,
-        max_concurrency: int,
-        max_turns: int,
-        hooks: Optional[SimulationHooks],
-        start_time: float,
-    ) -> Optional[dict[str, Any]]:
-        """Fallback path using combined create endpoint (generates first turns eagerly)."""
-        run_result = self._client.create_run(
-            name=name,
-            dataset_id=dataset_id,
-            context=context or {},
-            hooks_meta=hooks_meta,
-        )
-        if not run_result:
-            return None
-
-        run_id = run_result.get("run_id")
-        simulation_items = run_result.get("simulation_items")
-        if not simulation_items:
-            logger.error("%s: No items returned from create_run", LOG_PREFIX)
-            return None
-
-        logger.info("%s: Starting simulation with %d items (bundled path)", LOG_PREFIX, len(simulation_items))
-        try:
-            result = run_async_safely(
-                self._run_simulation_async(
-                    run_id, simulation_items, task, max_concurrency, max_turns, hooks  # type:ignore[arg-type]
-                )
-            )
-
-            elapsed_time = time.time() - start_time
-            logger.info("%s: Simulation completed in %.2f seconds", LOG_PREFIX, elapsed_time)
-            self._client.post_run_status(run_id, "completed")  # type:ignore[arg-type]
-            return result
-        except Exception:
-            logger.error("%s: Run simulation failed", LOG_PREFIX, exc_info=True)
-            self._client.post_run_status(run_id, "failed")  # type:ignore[arg-type]
-            return None
-
     async def _run_simulation_async(
         self,
         run_id: str,
@@ -325,8 +267,7 @@ class Simulation:
         nesting into the orchestrator's loop.
 
         When ``setup_contexts`` is provided, per-item before hooks have already
-        been executed and the conversation loop skips them. The bundled path
-        (setup_contexts is None) still runs hooks inline.
+        been executed and the conversation loop skips them.
 
         Args:
             run_id: The simulation run identifier.
@@ -348,35 +289,6 @@ class Simulation:
             "total_items": len(simulation_items),
         }
 
-        # --- before_all (bundled path only — new path passes shared_context) ---
-        if shared_context is None and hooks and hooks.before_all is not None:
-            try:
-                shared_context = await run_before_all(hooks)
-            except Exception as exc:
-                logger.error(
-                    "%s: before_all hook failed: %s — aborting run",
-                    LOG_PREFIX,
-                    exc,
-                    exc_info=True,
-                )
-                for item in simulation_items:
-                    self._client.report_failure(
-                        run_id=run_id,
-                        run_item_id=item.run_item_id,
-                        error=f"before_all hook failed: {exc}",
-                        status="prescript_failed",
-                    )
-                results["success"] = False
-                results["failed"] = [
-                    {
-                        "run_item_id": item.run_item_id,
-                        "success": False,
-                        "error": f"before_all hook failed: {exc}",
-                    }
-                    for item in simulation_items
-                ]
-                return results
-
         processed_count = 0
         lock = asyncio.Lock()
         loop = asyncio.get_running_loop()
@@ -392,8 +304,7 @@ class Simulation:
                     max_turns,
                     hooks,
                     shared_context,
-                    precomputed_setup_context=precomputed,
-                    skip_before_hook=setup_contexts is not None,
+                    setup_context=precomputed,
                 )
             )
 
@@ -446,15 +357,13 @@ class Simulation:
         max_turns: int,
         hooks: Optional[SimulationHooks],
         shared_context: Optional[dict[str, Any]],
-        precomputed_setup_context: Optional[dict[str, Any]] = None,
-        skip_before_hook: bool = False,
+        setup_context: Optional[dict[str, Any]] = None,
     ) -> dict[str, Any]:
         """Execute a multi-turn conversation for a single simulation item.
 
-        Runs the ``before`` hook before starting the conversation loop and
-        the ``after`` hook when the conversation ends (success or failure).
-        When ``skip_before_hook`` is True, the before hook has already been
-        executed and ``precomputed_setup_context`` is used directly.
+        The per-item ``before`` hook has already been executed by the caller;
+        the merged ``setup_context`` is passed directly to ``BaseTask.run``.
+        The ``after`` hook runs when the conversation ends (success or failure).
 
         Args:
             run_id: The simulation run identifier.
@@ -463,8 +372,7 @@ class Simulation:
             max_turns: Safety limit on the number of conversation turns.
             hooks: Optional lifecycle hooks.
             shared_context: Context dict returned by the ``before_all`` hook.
-            precomputed_setup_context: Pre-executed before hook result.
-            skip_before_hook: If True, skip per-item before hook execution.
+            setup_context: Merged context from ``before_all`` + item ``before``.
 
         Returns:
             Dictionary with execution result including success status.
@@ -475,40 +383,6 @@ class Simulation:
         turn_id = run_item.turn_id
         raw_files: list[FileData] = run_item.files
         session_id: Optional[str] = None
-
-        # --- before ---
-        setup_context: Optional[dict[str, Any]] = None
-        if skip_before_hook:
-            setup_context = precomputed_setup_context
-        else:
-            has_before_hooks = hooks and hooks.before and dataset_item_id in hooks.before
-            if has_before_hooks:
-                try:
-                    setup_context = await run_before(hooks, dataset_item_id, shared_context)
-                except Exception as exc:
-                    error_msg = f"before hook failed: {exc}"
-                    logger.error(
-                        "%s: %s for run_item_id=%s",
-                        LOG_PREFIX,
-                        error_msg,
-                        run_item_id,
-                        exc_info=True,
-                    )
-                    self._client.report_failure(
-                        run_id=run_id,
-                        run_item_id=run_item_id,
-                        error=error_msg,
-                        status="prescript_failed",
-                    )
-                    item_result = {
-                        "run_item_id": run_item_id,
-                        "success": False,
-                        "error": error_msg,
-                    }
-                    await run_after(hooks, dataset_item_id, item_result, shared_context)
-                    return item_result
-            else:
-                setup_context = shared_context
 
         for turn_number in range(1, max_turns + 1):
             try:
@@ -594,4 +468,5 @@ class Simulation:
             "error": error_msg,
             "turn_id": turn_id,
         }
+        await run_after(hooks, dataset_item_id, item_result, setup_context)
         return item_result
