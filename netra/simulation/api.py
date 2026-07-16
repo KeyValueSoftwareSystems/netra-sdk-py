@@ -94,6 +94,186 @@ class Simulation:
         hooks_meta = hooks.describe() if hooks else None
 
         start_time = time.time()
+
+        # --- Phase 1: Initialize run (DB only, no LLM) ---
+        init_result = self._client.initialize_run(
+            name=name,
+            dataset_id=dataset_id,
+            context=context or {},
+            hooks_meta=hooks_meta,
+        )
+
+        # Fall back to bundled endpoint for backends without split initialize
+        if init_result is None:
+            logger.info("%s: initialize endpoint unavailable, using bundled create", LOG_PREFIX)
+            return self._run_with_bundled_creation(
+                name=name,
+                dataset_id=dataset_id,
+                context=context,
+                hooks_meta=hooks_meta,
+                task=task,
+                max_concurrency=max_concurrency,
+                max_turns=max_turns,
+                hooks=hooks,
+                start_time=start_time,
+            )
+
+        run_id: str = init_result["run_id"]
+        items: list[dict[str, str]] = init_result["items"]
+
+        if not items:
+            logger.error("%s: No items returned from initialize_run", LOG_PREFIX)
+            return None
+
+        # --- Phase 2: Run before_all hook (no LLM cost yet) ---
+        shared_context: Optional[dict[str, Any]] = None
+        if hooks and hooks.before_all is not None:
+            try:
+                shared_context = run_async_safely(run_before_all(hooks))
+            except Exception as exc:
+                logger.error(
+                    "%s: before_all hook failed: %s — aborting run (no LLM spent)",
+                    LOG_PREFIX,
+                    exc,
+                    exc_info=True,
+                )
+                for item in items:
+                    self._client.report_failure(
+                        run_id=run_id,
+                        run_item_id=item["test_run_item_id"],
+                        error=f"before_all hook failed: {exc}",
+                        status="prescript_failed",
+                    )
+                self._client.post_run_status(run_id, "completed")
+                return {
+                    "success": False,
+                    "completed": [],
+                    "failed": [
+                        {
+                            "run_item_id": item["test_run_item_id"],
+                            "success": False,
+                            "error": f"before_all hook failed: {exc}",
+                        }
+                        for item in items
+                    ],
+                    "total_items": len(items),
+                }
+
+        # --- Phase 3: Run per-item before hooks + generate first turns ---
+        simulation_items: list[SimulationItem] = []
+        setup_contexts: dict[str, Optional[dict[str, Any]]] = {}
+        failed_items: list[dict[str, Any]] = []
+
+        for item in items:
+            run_item_id = item["test_run_item_id"]
+            dataset_item_id = item["dataset_item_id"]
+
+            has_before_hook = hooks and hooks.before and dataset_item_id in hooks.before
+            if has_before_hook:
+                try:
+                    item_context = run_async_safely(run_before(hooks, dataset_item_id, shared_context))
+                    setup_contexts[run_item_id] = item_context
+                except Exception as exc:
+                    error_msg = f"before hook failed: {exc}"
+                    logger.error(
+                        "%s: %s for run_item_id=%s",
+                        LOG_PREFIX,
+                        error_msg,
+                        run_item_id,
+                        exc_info=True,
+                    )
+                    self._client.report_failure(
+                        run_id=run_id,
+                        run_item_id=run_item_id,
+                        error=error_msg,
+                        status="prescript_failed",
+                    )
+                    failed_items.append(
+                        {
+                            "run_item_id": run_item_id,
+                            "success": False,
+                            "error": error_msg,
+                        }
+                    )
+                    continue
+            else:
+                setup_contexts[run_item_id] = shared_context
+
+            sim_item = self._client.generate_first_turn(
+                run_id=run_id,
+                run_item_id=run_item_id,
+            )
+            if sim_item is None:
+                logger.warning(
+                    "%s: Failed to generate first turn for item %s, marking failed",
+                    LOG_PREFIX,
+                    run_item_id,
+                )
+                self._client.report_failure(
+                    run_id=run_id,
+                    run_item_id=run_item_id,
+                    error="Failed to generate first user message",
+                )
+                failed_items.append(
+                    {
+                        "run_item_id": run_item_id,
+                        "success": False,
+                        "error": "Failed to generate first user message",
+                    }
+                )
+                continue
+            simulation_items.append(sim_item)
+
+        if not simulation_items:
+            logger.error("%s: All items failed during setup/generation", LOG_PREFIX)
+            self._client.post_run_status(run_id, "completed")
+            return {
+                "success": False,
+                "completed": [],
+                "failed": failed_items,
+                "total_items": len(items),
+            }
+
+        # --- Phase 4: Run conversation loops (before hooks already executed) ---
+        logger.info("%s: Starting simulation with %d items", LOG_PREFIX, len(simulation_items))
+        try:
+            result = run_async_safely(
+                self._run_simulation_async(
+                    run_id,
+                    simulation_items,
+                    task,
+                    max_concurrency,
+                    max_turns,
+                    hooks,
+                    shared_context=shared_context,
+                    setup_contexts=setup_contexts,
+                )
+            )
+            if failed_items:
+                result.setdefault("failed", []).extend(failed_items)
+
+            elapsed_time = time.time() - start_time
+            logger.info("%s: Simulation completed in %.2f seconds", LOG_PREFIX, elapsed_time)
+            self._client.post_run_status(run_id, "completed")
+            return result
+        except Exception:
+            logger.error("%s: Run simulation failed", LOG_PREFIX, exc_info=True)
+            self._client.post_run_status(run_id, "failed")
+            return None
+
+    def _run_with_bundled_creation(
+        self,
+        name: str,
+        dataset_id: str,
+        context: Optional[dict[str, Any]],
+        hooks_meta: Optional[dict[str, Any]],
+        task: BaseTask,
+        max_concurrency: int,
+        max_turns: int,
+        hooks: Optional[SimulationHooks],
+        start_time: float,
+    ) -> Optional[dict[str, Any]]:
+        """Fallback path using combined create endpoint (generates first turns eagerly)."""
         run_result = self._client.create_run(
             name=name,
             dataset_id=dataset_id,
@@ -109,7 +289,7 @@ class Simulation:
             logger.error("%s: No items returned from create_run", LOG_PREFIX)
             return None
 
-        logger.info("%s: Starting simulation with %d items", LOG_PREFIX, len(simulation_items))
+        logger.info("%s: Starting simulation with %d items (bundled path)", LOG_PREFIX, len(simulation_items))
         try:
             result = run_async_safely(
                 self._run_simulation_async(
@@ -134,20 +314,19 @@ class Simulation:
         max_concurrency: int,
         max_turns: int,
         hooks: Optional[SimulationHooks],
+        shared_context: Optional[dict[str, Any]] = None,
+        setup_contexts: Optional[dict[str, Optional[dict[str, Any]]]] = None,
     ) -> dict[str, Any]:
         """Orchestrate concurrent simulation execution.
 
         Each simulation item is dispatched to a thread via ``run_in_executor``.
         Inside each thread, ``run_async_safely`` creates a **new** event loop
         so that async user tasks (``BaseTask.run``) work correctly without
-        nesting into the orchestrator's loop.  This two-level design lets us
-        honour ``max_concurrency`` while supporting both sync and async tasks
-        transparently.
+        nesting into the orchestrator's loop.
 
-        Executes ``before_all`` first (if configured). If it fails the entire
-        run is aborted.  Individual scenarios run concurrently via a thread
-        pool; each thread gets its own event loop so sync and async tasks work
-        without loop nesting.
+        When ``setup_contexts`` is provided, per-item before hooks have already
+        been executed and the conversation loop skips them. The bundled path
+        (setup_contexts is None) still runs hooks inline.
 
         Args:
             run_id: The simulation run identifier.
@@ -156,6 +335,8 @@ class Simulation:
             max_concurrency: Maximum concurrent executions.
             max_turns: Maximum conversation turns per item.
             hooks: Optional lifecycle hooks.
+            shared_context: Pre-computed before_all context.
+            setup_contexts: Pre-computed per-item setup contexts keyed by run_item_id.
 
         Returns:
             Dictionary with simulation results.
@@ -167,9 +348,8 @@ class Simulation:
             "total_items": len(simulation_items),
         }
 
-        # --- before_all ---
-        shared_context: Optional[dict[str, Any]] = None
-        if hooks and hooks.before_all is not None:
+        # --- before_all (bundled path only — new path passes shared_context) ---
+        if shared_context is None and hooks and hooks.before_all is not None:
             try:
                 shared_context = await run_before_all(hooks)
             except Exception as exc:
@@ -179,7 +359,6 @@ class Simulation:
                     exc,
                     exc_info=True,
                 )
-                # Mark every item as prescript_failed and abort
                 for item in simulation_items:
                     self._client.report_failure(
                         run_id=run_id,
@@ -203,15 +382,19 @@ class Simulation:
         loop = asyncio.get_running_loop()
 
         def run_item_in_thread(run_item: SimulationItem) -> dict[str, Any]:
-            """Run a single simulation item in a dedicated thread/event-loop.
-
-            Args:
-                run_item: The simulation item to run.
-
-            Returns: Dictionary with simulation result.
-            """
+            """Run a single simulation item in a dedicated thread/event-loop."""
+            precomputed = setup_contexts.get(run_item.run_item_id) if setup_contexts is not None else None
             return run_async_safely(
-                self._execute_conversation(run_id, run_item, task, max_turns, hooks, shared_context)
+                self._execute_conversation(
+                    run_id,
+                    run_item,
+                    task,
+                    max_turns,
+                    hooks,
+                    shared_context,
+                    precomputed_setup_context=precomputed,
+                    skip_before_hook=setup_contexts is not None,
+                )
             )
 
         async def process_item(run_item: SimulationItem) -> None:
@@ -263,11 +446,15 @@ class Simulation:
         max_turns: int,
         hooks: Optional[SimulationHooks],
         shared_context: Optional[dict[str, Any]],
+        precomputed_setup_context: Optional[dict[str, Any]] = None,
+        skip_before_hook: bool = False,
     ) -> dict[str, Any]:
         """Execute a multi-turn conversation for a single simulation item.
 
         Runs the ``before`` hook before starting the conversation loop and
         the ``after`` hook when the conversation ends (success or failure).
+        When ``skip_before_hook`` is True, the before hook has already been
+        executed and ``precomputed_setup_context`` is used directly.
 
         Args:
             run_id: The simulation run identifier.
@@ -276,6 +463,8 @@ class Simulation:
             max_turns: Safety limit on the number of conversation turns.
             hooks: Optional lifecycle hooks.
             shared_context: Context dict returned by the ``before_all`` hook.
+            precomputed_setup_context: Pre-executed before hook result.
+            skip_before_hook: If True, skip per-item before hook execution.
 
         Returns:
             Dictionary with execution result including success status.
@@ -289,34 +478,37 @@ class Simulation:
 
         # --- before ---
         setup_context: Optional[dict[str, Any]] = None
-        has_before_hooks = hooks and hooks.before and dataset_item_id in hooks.before
-        if has_before_hooks:
-            try:
-                setup_context = await run_before(hooks, dataset_item_id, shared_context)
-            except Exception as exc:
-                error_msg = f"before hook failed: {exc}"
-                logger.error(
-                    "%s: %s for run_item_id=%s",
-                    LOG_PREFIX,
-                    error_msg,
-                    run_item_id,
-                    exc_info=True,
-                )
-                self._client.report_failure(
-                    run_id=run_id,
-                    run_item_id=run_item_id,
-                    error=error_msg,
-                    status="prescript_failed",
-                )
-                item_result = {
-                    "run_item_id": run_item_id,
-                    "success": False,
-                    "error": error_msg,
-                }
-                await run_after(hooks, dataset_item_id, item_result, shared_context)
-                return item_result
+        if skip_before_hook:
+            setup_context = precomputed_setup_context
         else:
-            setup_context = shared_context
+            has_before_hooks = hooks and hooks.before and dataset_item_id in hooks.before
+            if has_before_hooks:
+                try:
+                    setup_context = await run_before(hooks, dataset_item_id, shared_context)
+                except Exception as exc:
+                    error_msg = f"before hook failed: {exc}"
+                    logger.error(
+                        "%s: %s for run_item_id=%s",
+                        LOG_PREFIX,
+                        error_msg,
+                        run_item_id,
+                        exc_info=True,
+                    )
+                    self._client.report_failure(
+                        run_id=run_id,
+                        run_item_id=run_item_id,
+                        error=error_msg,
+                        status="prescript_failed",
+                    )
+                    item_result = {
+                        "run_item_id": run_item_id,
+                        "success": False,
+                        "error": error_msg,
+                    }
+                    await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    return item_result
+            else:
+                setup_context = shared_context
 
         for turn_number in range(1, max_turns + 1):
             try:

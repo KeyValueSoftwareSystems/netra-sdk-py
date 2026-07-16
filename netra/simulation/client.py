@@ -11,6 +11,8 @@ from netra.simulation.constants import (
     TELEMETRY_SUFFIX,
     URL_AGENT_RESPONSE,
     URL_CREATE_RUN,
+    URL_FIRST_TURN,
+    URL_INITIALIZE_RUN,
     URL_RUN_ITEM_STATUS,
     URL_RUN_STATUS,
 )
@@ -171,6 +173,96 @@ class SimulationHttpClient:
         except Exception as exc:
             error_msg = self._extract_error_message(response, exc)
             logger.error("%s: Failed to create simulation run: %s", LOG_PREFIX, error_msg)
+            return None
+
+    def initialize_run(
+        self,
+        name: str,
+        dataset_id: str,
+        context: Optional[dict[str, Any]] = None,
+        hooks_meta: Optional[dict[str, Any]] = None,
+    ) -> Optional[dict[str, Any]]:
+        """Create run + items without generating first user messages.
+
+        Returns dict with run_id and items (testRunItemId + datasetItemId),
+        or None on failure.
+        """
+        if not self._ensure_client():
+            return None
+
+        response: Optional[httpx.Response] = None
+        try:
+            url = URL_INITIALIZE_RUN
+            payload: dict[str, Any] = {
+                "name": name,
+                "datasetId": dataset_id,
+                "context": context or {},
+            }
+            if hooks_meta:
+                payload["lifecycleHooks"] = hooks_meta
+            response = self._client.post(url, json=payload)  # type:ignore[union-attr]
+            response.raise_for_status()
+            data = response.json()
+
+            response_data = data.get("data", {})
+            run_id = response_data.get("id", "")
+            items = response_data.get("items", [])
+            if not items:
+                logger.warning("%s: No items returned from initialize_run", LOG_PREFIX)
+                return None
+
+            return {
+                "run_id": run_id,
+                "dataset_id": response_data.get("datasetId", ""),
+                "dataset_name": response_data.get("datasetName", ""),
+                "items": [
+                    {
+                        "test_run_item_id": item.get("testRunItemId", ""),
+                        "dataset_item_id": item.get("datasetItemId", ""),
+                    }
+                    for item in items
+                ],
+            }
+        except Exception as exc:
+            error_msg = self._extract_error_message(response, exc)
+            logger.error("%s: Failed to initialize run: %s", LOG_PREFIX, error_msg)
+            return None
+
+    def generate_first_turn(
+        self,
+        run_id: str,
+        run_item_id: str,
+    ) -> Optional[SimulationItem]:
+        """Generate the first user message for a single test run item.
+
+        Returns a SimulationItem with message/turnId populated, or None on failure.
+        """
+        if not self._ensure_client():
+            return None
+
+        response: Optional[httpx.Response] = None
+        try:
+            url = URL_FIRST_TURN.format(run_id=run_id, run_item_id=run_item_id)
+            response = self._client.post(url, json={})  # type:ignore[union-attr]
+            response.raise_for_status()
+            data = response.json()
+
+            resp = data.get("data", {})
+            return SimulationItem(
+                run_item_id=run_item_id,
+                dataset_item_id=resp.get("datasetItemId", ""),
+                message=resp.get("userMessage", ""),
+                turn_id=resp.get("turnId", ""),
+                files=self._parse_files(resp.get("attachments")),
+            )
+        except Exception as exc:
+            error_msg = self._extract_error_message(response, exc)
+            logger.error(
+                "%s: Failed to generate first turn for item %s: %s",
+                LOG_PREFIX,
+                run_item_id,
+                error_msg,
+            )
             return None
 
     def trigger_conversation(
