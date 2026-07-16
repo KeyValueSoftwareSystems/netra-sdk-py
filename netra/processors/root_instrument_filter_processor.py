@@ -81,13 +81,11 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
     """Record spans from auto-instrumentation libraries that are not permitted
     to produce root-level spans, so the exporter can drop-and-reparent them.
 
-    Unlike a naive "block the whole trace" filter, this processor never
-    discards a subtree.  When an auto-instrumentation span (e.g. FastAPI,
-    Flask, ASGI) comes from a library outside the allowed *root_instruments*
-    set, the processor marks it as a **root-block candidate** with a durable
-    instance-level marker (``ROOT_BLOCK_CANDIDATE_FIELD``) and also records it,
-    along with its parent ``SpanContext``, in a shared TTL-evicted registry
-    (``ROOT_BLOCK_CANDIDATES``) used for cross-batch reparenting.
+    When an auto-instrumentation span comes from a library outside the allowed
+    *root_instruments* set, the processor marks it as a **root-block candidate**
+    with a durable instance-level marker (``ROOT_BLOCK_CANDIDATE_FIELD``) and
+    also records it, along with its parent ``SpanContext``, in a shared TTL-evicted
+    registry (``ROOT_BLOCK_CANDIDATES``) used for cross-batch reparenting.
 
     The actual drop decision is made at export time by
     :class:`~netra.exporters.filtering_span_exporter.FilteringSpanExporter`:
