@@ -285,21 +285,21 @@ def is_root_block_candidate(span: ReadableSpan) -> bool:
     return bool(getattr(span, ROOT_BLOCK_CANDIDATE_FIELD, False))
 
 
-def resolve_root_dropped(
+def find_root_spans_blocked(
     spans: Sequence[ReadableSpan],
-    extra_dropped_ancestors: Optional[Dict[int, Optional[SpanContext]]] = None,
+    parents_of_spans_blocked_by_name: Optional[Dict[int, Optional[SpanContext]]] = None,
 ) -> Tuple[Set[int], Dict[int, Optional[SpanContext]]]:
-    """Resolve the root-block candidates in *spans* that must be dropped.
+    """Find the root-block candidates in *spans* that must be dropped.
 
     A candidate is dropped when it is *root-connected*: it is a trace root (no
-    local parent), or its parent is itself a dropped span. The peel stops at the
-    first surviving ancestor — an allowed instrument, a netra/manual span, or a
-    non-instrumentation span — and never crosses a remote (cross-process) parent
-    link.
+    local parent), or every ancestor between it and the trace root is itself
+    dropped. Walking up the ancestor chain stops at the first surviving ancestor
+    — an allowed instrument, a netra/manual span, or a non-instrumentation span —
+    and never crosses a remote (cross-process) parent link.
 
-    ``extra_dropped_ancestors`` are spans dropped for *other* reasons (a global
-    or per-span local name block) that are removed from the exported tree just
-    like candidates. Folding them in lets the peel "see through" them: a
+    ``parents_of_spans_blocked_by_name`` are spans dropped for *other* reasons (a
+    global or per-span local name block) that are removed from the exported tree
+    just like candidates. Folding them in lets the walk "see through" them: a
     candidate whose only surviving ancestor was a name-blocked span becomes
     root-connected once that span is dropped, and so must be dropped too rather
     than promoted to a root it is not allowed to be.
@@ -314,30 +314,32 @@ def resolve_root_dropped(
 
     Args:
         spans: The batch of spans being exported.
-        extra_dropped_ancestors: ``{span_id -> parent_span_context}`` for spans
-            dropped by name/local rules, treated as transparent dropped nodes.
+        parents_of_spans_blocked_by_name: ``{span_id -> parent_span_context}`` for
+            spans dropped by name/local rules, treated as transparent dropped nodes.
 
     Returns:
-        ``(dropped_span_ids, dropped_parent_map)`` where ``dropped_parent_map``
-        maps each dropped span ID to its parent ``SpanContext`` (``None`` for a
-        true root) for reparenting.
+        ``(root_connected_ids, parents_of_root_spans_blocked)`` where
+        ``parents_of_root_spans_blocked`` maps each dropped span ID to its parent
+        ``SpanContext`` (``None`` for a true root) for reparenting.
     """
-    candidates = _collect_candidates(spans)
-    # Only genuine root-block candidates trigger a peel; name/local drops alone
-    # (with no candidate in play) are handled by the caller directly.
+    candidates = _collect_root_block_candidates(spans)
+    # Only genuine root-block candidates trigger a chain walk; name/local drops
+    # alone (with no candidate in play) are handled by the caller directly.
     if not candidates:
         return set(), {}
 
-    if extra_dropped_ancestors:
-        for span_id, parent_ctx in extra_dropped_ancestors.items():
+    if parents_of_spans_blocked_by_name:
+        for span_id, parent_ctx in parents_of_spans_blocked_by_name.items():
             candidates.setdefault(span_id, parent_ctx)
 
-    dropped = _peel_root_connected(spans, candidates)
-    dropped_parent_map: Dict[int, Optional[SpanContext]] = {sid: candidates[sid] for sid in dropped}
-    return dropped, dropped_parent_map
+    root_connected_ids = _find_root_connected_candidates(spans, candidates)
+    parents_of_root_spans_blocked: Dict[int, Optional[SpanContext]] = {
+        sid: candidates[sid] for sid in root_connected_ids
+    }
+    return root_connected_ids, parents_of_root_spans_blocked
 
 
-def _collect_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, Optional[SpanContext]]:
+def _collect_root_block_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, Optional[SpanContext]]:
     """Merge in-batch candidacy markers with the cross-batch registry.
 
     The in-batch markers let a marked span be recognised even if its registry
@@ -376,7 +378,9 @@ def _collect_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, Optional[Spa
     return candidates
 
 
-def _peel_root_connected(spans: Sequence[ReadableSpan], candidates: Dict[int, Optional[SpanContext]]) -> Set[int]:
+def _find_root_connected_candidates(
+    spans: Sequence[ReadableSpan], candidates: Dict[int, Optional[SpanContext]]
+) -> Set[int]:
     """Return the candidate span IDs that are root-connected (and so dropped).
 
     Traversal is seeded only from batch spans and their parents, so unrelated
@@ -385,93 +389,93 @@ def _peel_root_connected(spans: Sequence[ReadableSpan], candidates: Dict[int, Op
     Args:
         spans: The batch of spans being exported.
         candidates: The ``{span_id -> parent_span_context}`` candidate map from
-            :func:`_collect_candidates`.
+            :func:`_collect_root_block_candidates`.
 
     Returns:
         The set of candidate span IDs that are root-connected.
     """
     memo: Dict[int, bool] = {}
-    dropped: Set[int] = set()
+    root_connected_ids: Set[int] = set()
 
-    def is_dropped(start_id: int) -> bool:
+    def resolves_to_root(start_id: int) -> bool:
         """Resolve whether *start_id* is a root-connected candidate, memoized.
 
         Walks the candidate ancestry chain iteratively (no recursion, so a
         deeply nested trace cannot blow the Python stack). Every node on a
         linear candidate chain shares the terminal verdict — the chain is
-        dropped iff it peels all the way to a true root — so the resolved
+        dropped iff it walks all the way up to a true root — so the resolved
         result is written back to the whole walked path in one pass.
 
         Args:
             start_id: The span ID to resolve.
 
         Returns:
-            ``True`` if *start_id* is a candidate whose ancestry peels to a root.
+            ``True`` if *start_id* is a candidate whose ancestry reaches a root.
         """
-        path: List[int] = []
-        on_path: Set[int] = set()
-        node = start_id
+        walked_ids: List[int] = []
+        seen_ids: Set[int] = set()
+        current_id = start_id
         while True:
-            if node in memo:
-                result = memo[node]
+            if current_id in memo:
+                reaches_root = memo[current_id]
                 break
-            if node not in candidates:
-                # Not a candidate -> a surviving ancestor. Stops the peel.
-                result = False
+            if current_id not in candidates:
+                # Not a candidate -> a surviving ancestor. Stops the walk.
+                reaches_root = False
                 break
-            if node in on_path:
+            if current_id in seen_ids:
                 # Cycle guard: treat as non-dropped to avoid looping forever.
-                result = False
+                reaches_root = False
                 break
 
             # Fresh candidate node: it shares the chain's terminal verdict.
-            path.append(node)
-            on_path.add(node)
+            walked_ids.append(current_id)
+            seen_ids.add(current_id)
 
-            parent_ctx = candidates[node]
+            parent_ctx = candidates[current_id]
             if parent_ctx is None:
-                result = True  # candidate is a true trace root
+                reaches_root = True  # candidate is a true trace root
                 break
             if getattr(parent_ctx, "is_remote", False):
-                result = False  # do not peel across a process boundary
+                reaches_root = False  # do not walk across a process boundary
                 break
             parent_id = getattr(parent_ctx, "span_id", None)
             if parent_id is None or parent_id == INVALID_SPAN_ID:
-                result = True
+                reaches_root = True
                 break
 
-            node = parent_id
+            current_id = parent_id
 
-        for span_id in path:
-            memo[span_id] = result
-            if result:
-                dropped.add(span_id)
-        return result
+        for span_id in walked_ids:
+            memo[span_id] = reaches_root
+            if reaches_root:
+                root_connected_ids.add(span_id)
+        return reaches_root
 
     for span in spans:
         span_id = get_span_id(span)
         if span_id is not None and span_id != INVALID_SPAN_ID:
-            is_dropped(span_id)
+            resolves_to_root(span_id)
         parent_ctx = getattr(span, "parent", None)
         parent_id = getattr(parent_ctx, "span_id", None) if parent_ctx is not None else None
         if parent_id is not None and parent_id != INVALID_SPAN_ID:
-            is_dropped(parent_id)
+            resolves_to_root(parent_id)
 
-    return dropped
+    return root_connected_ids
 
 
-def reparent_spans(spans: Sequence[ReadableSpan], blocked_parent_map: Dict[Any, Any]) -> None:
+def reparent_spans(spans: Sequence[ReadableSpan], dropped_span_parents: Dict[Any, Any]) -> None:
     """Reparent each span past any dropped ancestor onto its first survivor.
 
-    Walks the chain of blocked parents (following ``blocked_parent_map``) until
+    Walks the chain of dropped parents (following ``dropped_span_parents``) until
     a surviving parent — or ``None`` (promote to root) — is reached.
 
     Args:
         spans: The surviving spans whose parents may need rewriting.
-        blocked_parent_map: A ``{blocked_span_id -> parent}`` map of dropped
+        dropped_span_parents: A ``{dropped_span_id -> parent}`` map of dropped
             spans to their own parents.
     """
-    if not blocked_parent_map:
+    if not dropped_span_parents:
         return
 
     for span in spans:
@@ -484,10 +488,10 @@ def reparent_spans(spans: Sequence[ReadableSpan], blocked_parent_map: Dict[Any, 
         changed = False
         while new_parent is not None:
             parent_span_id = getattr(new_parent, "span_id", None)
-            if parent_span_id not in blocked_parent_map or parent_span_id in visited:
+            if parent_span_id not in dropped_span_parents or parent_span_id in visited:
                 break
             visited.add(parent_span_id)
-            new_parent = blocked_parent_map[parent_span_id]
+            new_parent = dropped_span_parents[parent_span_id]
             changed = True
 
         if changed:
