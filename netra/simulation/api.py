@@ -146,19 +146,24 @@ class Simulation:
                     "total_items": len(items),
                 }
 
-        # --- Phase 3: Run per-item before hooks + generate first turns ---
+        # --- Phase 3: Run per-item before hooks + generate first turns (parallel) ---
         simulation_items: list[SimulationItem] = []
         setup_contexts: dict[str, Optional[dict[str, Any]]] = {}
         failed_items: list[dict[str, Any]] = []
 
-        for item in items:
+        async def run_before_and_generate_first_turn(item: dict[str, str]) -> Optional[SimulationItem]:
+            """Execute the before hook and generate the first turn for a single item.
+
+            Returns:
+                SimulationItem if successful, None if failed (failure recorded in failed_items).
+            """
             run_item_id = item["test_run_item_id"]
             dataset_item_id = item["dataset_item_id"]
 
             has_before_hook = hooks and hooks.before and dataset_item_id in hooks.before
             if has_before_hook:
                 try:
-                    item_context = run_async_safely(run_before(hooks, dataset_item_id, shared_context))
+                    item_context = await run_before(hooks, dataset_item_id, shared_context)
                     setup_contexts[run_item_id] = item_context
                 except Exception as exc:
                     error_msg = f"before hook failed: {exc}"
@@ -175,14 +180,15 @@ class Simulation:
                         error=error_msg,
                         status="prescript_failed",
                     )
-                    failed_items.append(
-                        {
-                            "run_item_id": run_item_id,
-                            "success": False,
-                            "error": error_msg,
-                        }
-                    )
-                    continue
+                    item_result = {
+                        "run_item_id": run_item_id,
+                        "success": False,
+                        "error": error_msg,
+                    }
+                    failed_items.append(item_result)
+                    # Call after hook even when before fails (cleanup contract)
+                    await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    return None
             else:
                 setup_contexts[run_item_id] = shared_context
 
@@ -201,15 +207,22 @@ class Simulation:
                     run_item_id=run_item_id,
                     error="Failed to generate first user message",
                 )
-                failed_items.append(
-                    {
-                        "run_item_id": run_item_id,
-                        "success": False,
-                        "error": "Failed to generate first user message",
-                    }
-                )
-                continue
-            simulation_items.append(sim_item)
+                item_result = {
+                    "run_item_id": run_item_id,
+                    "success": False,
+                    "error": "Failed to generate first user message",
+                }
+                failed_items.append(item_result)
+                # Call after hook when first turn generation fails (cleanup contract)
+                await run_after(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
+                return None
+            return sim_item
+
+        async def _run_all_before_and_first_turns() -> list[Optional[SimulationItem]]:
+            return list(await asyncio.gather(*[run_before_and_generate_first_turn(item) for item in items]))
+
+        setup_results = run_async_safely(_run_all_before_and_first_turns())
+        simulation_items = [item for item in setup_results if item is not None]
 
         if not simulation_items:
             logger.error("%s: All items failed during setup/generation", LOG_PREFIX)
@@ -234,10 +247,9 @@ class Simulation:
                     hooks,
                     shared_context=shared_context,
                     setup_contexts=setup_contexts,
+                    setup_failed_items=failed_items,
                 )
             )
-            if failed_items:
-                result.setdefault("failed", []).extend(failed_items)
 
             elapsed_time = time.time() - start_time
             logger.info("%s: Simulation completed in %.2f seconds", LOG_PREFIX, elapsed_time)
@@ -258,6 +270,7 @@ class Simulation:
         hooks: Optional[SimulationHooks],
         shared_context: Optional[dict[str, Any]] = None,
         setup_contexts: Optional[dict[str, Optional[dict[str, Any]]]] = None,
+        setup_failed_items: Optional[list[dict[str, Any]]] = None,
     ) -> dict[str, Any]:
         """Orchestrate concurrent simulation execution.
 
@@ -278,6 +291,7 @@ class Simulation:
             hooks: Optional lifecycle hooks.
             shared_context: Pre-computed before_all context.
             setup_contexts: Pre-computed per-item setup contexts keyed by run_item_id.
+            setup_failed_items: Items that failed during before-hook or first-turn generation.
 
         Returns:
             Dictionary with simulation results.
@@ -337,6 +351,10 @@ class Simulation:
                     t.cancel()
                 await asyncio.gather(*tasks, return_exceptions=True)
                 executor.shutdown(wait=False, cancel_futures=True)
+
+        # Merge setup failures before calling after_all so it sees complete results
+        if setup_failed_items:
+            results.setdefault("failed", []).extend(setup_failed_items)
 
         # --- after_all ---
         await run_after_all(hooks, results, shared_context)
