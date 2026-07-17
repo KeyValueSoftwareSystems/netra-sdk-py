@@ -1,30 +1,40 @@
 import logging
-from typing import Any, Dict, List, Sequence
+from typing import Any, Dict, List, Sequence, Set
 
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.sdk.trace.export import (
-    SpanExporter,
-    SpanExportResult,
-)
+from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
-from netra.exporters.utils import add_blocked_trace_id, get_trace_id, is_trace_id_blocked, is_trial_blocked
-from netra.processors.local_filtering_span_processor import (
-    BLOCKED_LOCAL_PARENT_MAP,
+from netra.exporters.utils import (
+    PatternMatcher,
+    add_blocked_trace_id,
+    find_root_spans_blocked,
+    get_span_id,
+    get_trace_id,
+    has_local_block_flag,
+    is_trace_id_blocked,
+    is_trial_blocked,
+    normalize_parent,
+    read_local_block_patterns,
+    reparent_spans,
 )
+from netra.processors.local_filtering_span_processor import BLOCKED_LOCAL_PARENT_MAP
 
 logger = logging.getLogger(__name__)
 
 
 class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
-    """
-    SpanExporter wrapper that filters out spans by name.
+    """SpanExporter wrapper that drops spans by name and by root-instrument policy.
 
-    Matching rules:
-    - Exact match: pattern "Foo" blocks span.name == "Foo".
-    - Prefix match: pattern ending with '*' (e.g., "CloudSpanner.*") blocks spans whose
-      names start with the prefix before '*', e.g., "CloudSpanner.", "CloudSpanner.Query".
-    - Suffix match: pattern starting with '*' (e.g., "*.Query") blocks spans whose
-      names end with the suffix after '*', e.g., "DB.Query", "Search.Query".
+    A span is dropped when any of the following holds:
+    - its trace ID was blocked while a trial/quota block was active;
+    - its name matches a globally configured block pattern (see ``PatternMatcher``);
+    - its name matches a per-span local block pattern set by
+      ``LocalFilteringSpanProcessor``;
+    - it is a root-connected span from an instrumentation not allowed to emit
+      root spans (resolved by ``find_root_spans_blocked``).
+
+    Children of a dropped span are reparented onto the dropped span's parent so
+    subtrees are never silently discarded.
     """
 
     def __init__(self, exporter: SpanExporter, patterns: Sequence[str]) -> None:
@@ -32,272 +42,176 @@ class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]
         Initialize the filtering span exporter.
 
         Args:
-            exporter: The span exporter to use.
-            patterns: List of patterns to block.
+            exporter: The underlying span exporter to forward surviving spans to.
+            patterns: Global name patterns to block.
         """
         self._exporter = exporter
-        # Normalize once for efficient checks
-        exact: List[str] = []
-        prefixes: List[str] = []
-        suffixes: List[str] = []
-        for p in patterns:
-            if not p:
-                continue
-            if p.endswith("*") and not p.startswith("*"):
-                prefixes.append(p[:-1])
-            elif p.startswith("*") and not p.endswith("*"):
-                suffixes.append(p[1:])
-            else:
-                exact.append(p)
-        self._exact = set(exact)
-        self._prefixes = prefixes
-        self._suffixes = suffixes
+        self._matcher = PatternMatcher(patterns)
 
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
-        """
-        Export spans to the exporter.
+        """Filter *spans*, reparent survivors, and forward them to the wrapped exporter.
 
         Args:
-            spans: List of spans to export.
+            spans: The batch of spans to export.
 
         Returns:
-            SpanExportResult.SUCCESS if the export was successful.
+            The wrapped exporter's ``SpanExportResult``, or ``SUCCESS`` when the
+            batch is fully filtered (nothing left to forward).
         """
         if is_trial_blocked():
             logger.debug("Trial/quota exhausted: blocking spans from export")
-            # Track trace IDs from spans being blocked during blocking period
-            for span in spans:
-                trace_id = get_trace_id(span)
-                if trace_id:
-                    add_blocked_trace_id(trace_id)
+            self._record_blocked_trace_ids(spans)
             return SpanExportResult.SUCCESS
 
-        filtered: List[ReadableSpan] = []
-        blocked_parent_map: Dict[Any, Any] = {}
+        # Find unconditional name/local drops first, then resolve which
+        # root-block candidates are root-connected. Feeding the name/local drops
+        # into that walk is what stops a disallowed candidate from being promoted
+        # to a root when its only surviving ancestor is itself name-blocked.
+        parents_of_spans_blocked_by_name = self._find_spans_blocked_by_name(spans)
+        root_spans_blocked, parents_of_root_spans_blocked = find_root_spans_blocked(
+            spans, parents_of_spans_blocked_by_name
+        )
+
+        all_blocked_span_ids: Set[Any] = set(parents_of_spans_blocked_by_name)
+        all_blocked_span_ids.update(root_spans_blocked)
+
+        surviving_spans = self._collect_survivors(spans, all_blocked_span_ids)
+
+        reparent_map = self._build_reparent_map(parents_of_root_spans_blocked, parents_of_spans_blocked_by_name)
+        if reparent_map:
+            reparent_spans(surviving_spans, reparent_map)
+        if not surviving_spans:
+            return SpanExportResult.SUCCESS
+        return self._exporter.export(surviving_spans)
+
+    def _record_blocked_trace_ids(self, spans: Sequence[ReadableSpan]) -> None:
+        """Remember the trace IDs seen during a block so their later spans are dropped too.
+
+        Args:
+            spans: The batch of spans being dropped during the block.
+        """
         for span in spans:
             trace_id = get_trace_id(span)
+            if trace_id:
+                add_blocked_trace_id(trace_id)
 
-            # Check if this span belongs to a trace ID that was blocked
+    def _find_spans_blocked_by_name(self, spans: Sequence[ReadableSpan]) -> Dict[Any, Any]:
+        """Find the spans dropped unconditionally by a global or local name rule.
+
+        Trace-blocked spans are skipped entirely (they are dropped without
+        reparenting). The result feeds both the root-connected candidate walk —
+        as transparent dropped ancestors — and the reparent map.
+
+        Args:
+            spans: The batch of spans to classify.
+
+        Returns:
+            A ``{dropped_span_id -> normalized_parent}`` map for name/locally
+            blocked spans in this batch.
+        """
+        parent_map: Dict[Any, Any] = {}
+        for span in spans:
+            trace_id = get_trace_id(span)
             if trace_id and is_trace_id_blocked(trace_id):
                 continue
 
             name = getattr(span, "name", None)
             if name is None:
-                filtered.append(span)
                 continue
 
-            # Global blocking (configured patterns)
-            globally_blocked = self._is_blocked(name)
+            if self._matcher.matches(name) or self._is_locally_blocked(span, name):
+                span_id = get_span_id(span)
+                if span_id is not None:
+                    parent_map[span_id] = normalize_parent(getattr(span, "parent", None))
 
-            # Local per-span blocking via attribute set by LocalFilteringSpanProcessor
-            locally_blocked = False
-            try:
-                local_patterns = self._get_local_patterns(span)
-                if local_patterns:
-                    locally_blocked = self._matches_any_pattern(name, local_patterns)
-                # Fallback: if processor explicitly marked the span as locally blocked
-                if not locally_blocked and self._has_local_block_flag(span):
-                    locally_blocked = True
-            except Exception:
-                locally_blocked = False
+        return parent_map
 
-            if not (globally_blocked or locally_blocked):
-                filtered.append(span)
-                continue
-
-            # Collect mapping for reparenting children of the blocked span
-            span_context = getattr(span, "context", None)
-            span_id = getattr(span_context, "span_id", None) if span_context else None
-            if span_id is not None:
-                blocked_parent_map[span_id] = getattr(span, "parent", None)
-
-        # Merge with registry of locally blocked spans captured by processor to handle
-        # cases where children export before their blocked parent (SimpleSpanProcessor)
-        merged_map: Dict[Any, Any] = {}
-        try:
-            if BLOCKED_LOCAL_PARENT_MAP:
-                merged_map.update(BLOCKED_LOCAL_PARENT_MAP)
-        except Exception:
-            pass
-        merged_map.update(blocked_parent_map)
-
-        if merged_map:
-            self._reparent_blocked_children(filtered, merged_map)
-        if not filtered:
-            return SpanExportResult.SUCCESS
-        return self._exporter.export(filtered)
-
-    def _is_blocked(self, name: str) -> bool:
-        """
-        Check if a span name is blocked.
+    def _collect_survivors(self, spans: Sequence[ReadableSpan], all_blocked_span_ids: Set[Any]) -> List[ReadableSpan]:
+        """Return the spans that survive filtering.
 
         Args:
-            name: The span name to check.
+            spans: The batch of spans to filter.
+            all_blocked_span_ids: Span IDs dropped by name/local rules or by the
+                root-instrument policy.
 
         Returns:
-            True if the span name is blocked, False otherwise.
+            The spans to forward to the wrapped exporter (before reparenting).
         """
-        if name in self._exact:
-            return True
-        for pref in self._prefixes:
-            if name.startswith(pref):
+        surviving_spans: List[ReadableSpan] = []
+        for span in spans:
+            trace_id = get_trace_id(span)
+            if trace_id and is_trace_id_blocked(trace_id):
+                continue
+
+            span_id = get_span_id(span)
+            if span_id is not None and span_id in all_blocked_span_ids:
+                continue
+
+            surviving_spans.append(span)
+
+        return surviving_spans
+
+    def _is_locally_blocked(self, span: ReadableSpan, name: str) -> bool:
+        """Check whether *span* is blocked by its per-span local rules.
+
+        Args:
+            span: The span carrying the local-block attributes.
+            name: The span name to match against local patterns.
+
+        Returns:
+            ``True`` if *name* matches a local pattern or the span carries the
+            local-block flag; ``False`` on any read error.
+        """
+        try:
+            local_patterns = read_local_block_patterns(span)
+            if local_patterns and PatternMatcher(local_patterns).matches(name):
                 return True
-        for suf in self._suffixes:
-            if name.endswith(suf):
-                return True
-        return False
-
-    def _get_local_patterns(self, span: ReadableSpan) -> List[str]:
-        """
-        Fetch local-block patterns from span attributes set by LocalFilteringSpanProcessor.
-
-        Args:
-            span: The span to fetch local-block patterns from.
-
-        Returns:
-            List of local-block patterns.
-        """
-        try:
-            attrs = getattr(span, "attributes", None)
-            if not attrs:
-                return []
-            value = None
-            # Prefer Mapping.get if available
-            try:
-                if hasattr(attrs, "get"):
-                    value = attrs.get("netra.local_blocked_spans")
-                else:
-                    value = attrs["netra.local_blocked_spans"]
-            except Exception:
-                value = None
-            if isinstance(value, (list, tuple)) and all(isinstance(v, str) for v in value):
-                return [v for v in value if v]
-        except Exception:
-            logger.debug("Failed reading local blocked patterns from span", exc_info=True)
-        return []
-
-    def _matches_any_pattern(self, name: str, patterns: Sequence[str]) -> bool:
-        """
-        Check if a span name matches any of the given patterns.
-
-        Args:
-            name: The span name to check.
-            patterns: List of patterns to check against.
-
-        Returns:
-            True if the span name matches any of the given patterns, False otherwise.
-        """
-        for p in patterns:
-            if not p:
-                continue
-            if p.endswith("*") and not p.startswith("*"):
-                if name.startswith(p[:-1]):
-                    return True
-            elif p.startswith("*") and not p.endswith("*"):
-                if name.endswith(p[1:]):
-                    return True
-            else:
-                if name == p:
-                    return True
-        return False
-
-    def _has_local_block_flag(self, span: ReadableSpan) -> bool:
-        """
-        Check if a span has a local-block flag.
-
-        Args:
-            span: The span to check.
-
-        Returns:
-            True if the span has a local-block flag, False otherwise.
-        """
-        try:
-            attrs = getattr(span, "attributes", None)
-            if not attrs:
-                return False
-            try:
-                if hasattr(attrs, "get"):
-                    value = attrs.get("netra.local_blocked")
-                else:
-                    value = attrs["netra.local_blocked"]
-            except Exception:
-                value = None
-            return bool(value) is True
+            return has_local_block_flag(span)
         except Exception:
             return False
 
-    def _reparent_blocked_children(
-        self,
-        spans: Sequence[ReadableSpan],
-        blocked_parent_map: Dict[Any, Any],
-    ) -> None:
-        """
-        Reparent blocked children of a span.
+    def _build_reparent_map(
+        self, parents_of_root_spans_blocked: Dict[int, Any], parents_of_spans_blocked_by_name: Dict[Any, Any]
+    ) -> Dict[Any, Any]:
+        """Merge the cross-batch registry with this batch's dropped-parent maps.
+
+        Ordering matters: the process-global registry captured by processors is
+        the base, overlaid by root-blocked parents, then this batch's name/local
+        blocks — so in-batch parents win on conflict.
 
         Args:
-            spans: List of spans to reparent.
-            blocked_parent_map: Dictionary mapping span IDs to their blocked parent spans.
+            parents_of_root_spans_blocked: Root-blocked span IDs to their parents.
+            parents_of_spans_blocked_by_name: This batch's name/locally blocked
+                span IDs to their parents.
+
+        Returns:
+            The merged ``{dropped_span_id -> parent}`` map used for reparenting.
         """
-        if not blocked_parent_map:
-            return
-
-        for span in spans:
-            parent_context = getattr(span, "parent", None)
-            if parent_context is None:
-                continue
-
-            updated_parent = parent_context
-            visited: set[Any] = set()
-            changed = False
-
-            while updated_parent is not None:
-                parent_span_id = getattr(updated_parent, "span_id", None)
-                if parent_span_id not in blocked_parent_map or parent_span_id in visited:
-                    break
-                visited.add(parent_span_id)
-                updated_parent = blocked_parent_map[parent_span_id]
-                changed = True
-
-            if changed:
-                self._set_span_parent(span, updated_parent)
-
-    def _set_span_parent(self, span: ReadableSpan, parent: Any) -> None:
-        """
-        Set the parent of a span.
-
-        Args:
-            span: The span to set the parent of.
-            parent: The parent to set.
-        """
-        if hasattr(span, "_parent"):
-            try:
-                span._parent = parent
-                return
-            except Exception:
-                pass
+        reparent_map: Dict[Any, Any] = {}
         try:
-            setattr(span, "parent", parent)
+            if BLOCKED_LOCAL_PARENT_MAP:
+                reparent_map.update(BLOCKED_LOCAL_PARENT_MAP)
         except Exception:
-            logger.debug("Failed to reparent span %s", getattr(span, "name", "<unknown>"), exc_info=True)
+            pass
+        reparent_map.update(parents_of_root_spans_blocked)
+        reparent_map.update(parents_of_spans_blocked_by_name)
+        return reparent_map
 
     def shutdown(self) -> None:
-        """
-        Shutdown the exporter.
-        """
+        """Shutdown the wrapped exporter, suppressing shutdown errors."""
         try:
             self._exporter.shutdown()
         except Exception:
             pass
 
     def force_flush(self, timeout_millis: int = 30000) -> Any:
-        """
-        Force flush the exporter.
+        """Force flush the wrapped exporter.
 
         Args:
-            timeout_millis: The timeout in milliseconds.
+            timeout_millis: The flush timeout in milliseconds.
 
         Returns:
-            The result of the force flush operation.
+            The wrapped exporter's flush result, or ``True`` if it raised.
         """
         try:
             return self._exporter.force_flush(timeout_millis)
