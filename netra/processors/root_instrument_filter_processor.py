@@ -2,39 +2,104 @@ import logging
 import threading
 import time
 from collections import OrderedDict
-from typing import Optional, Set, cast
+from typing import Dict, Optional, Set, cast
 
 from opentelemetry import context as otel_context
-from opentelemetry import trace
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
-from opentelemetry.trace import INVALID_SPAN_ID
+from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
 logger = logging.getLogger(__name__)
 
-_LOCAL_BLOCKED_ATTR = "netra.local_blocked"
 _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
 
-_MAX_BLOCKED_TRACES = 4096
-_BLOCKED_TRACE_TTL_SECONDS = 600.0
+_MAX_ROOT_CANDIDATES = 4096
+_ROOT_CANDIDATE_TTL_SECONDS = 600.0
+
+# Durable per-span marker set on a span the moment it is classified as a
+# root-block candidate.  It is a plain *instance attribute* — deliberately NOT
+# an OTel span attribute — so it travels with the span into its export batch
+# without consuming the span's bounded attribute capacity and without being
+# evicted by ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`` when later instrumentation adds
+# attributes.  Being off the attribute map, it is never serialised to the
+# backend, so nothing needs to strip it before export.  The exporter can still
+# recognise a blocked root even if the registry entry was evicted (TTL/overflow)
+# or cleared (shutdown) between ``on_start`` and export.
+ROOT_BLOCK_CANDIDATE_FIELD = "_netra_root_block_candidate"
+
+# Process-global registry of "root-block candidate" spans: spans emitted by an
+# auto-instrumentation library that is *not* permitted to produce root-level
+# spans.  Maps ``span_id -> (parent_span_context_or_None, ended_at)`` where
+# ``ended_at`` is ``None`` while the span is still active and the monotonic end
+# timestamp once it has ended.
+#
+# The registry lets the ``FilteringSpanExporter`` resolve *cross-batch*
+# ancestry — reparenting a child that exports in a later batch than its dropped
+# ancestor.  It is a supplement, not the source of truth: candidacy is carried
+# durably on the span via ``ROOT_BLOCK_CANDIDATE_FIELD`` (see above).  The TTL
+# clock only starts when a candidate *ends*, so a long-lived root is never
+# evicted while still active, and ended entries survive long enough for
+# late-exporting children to still find their dropped ancestor's parent.
+_root_candidates_lock = threading.Lock()
+ROOT_BLOCK_CANDIDATES: "OrderedDict[int, tuple[Optional[SpanContext], Optional[float]]]" = OrderedDict()
+
+
+def get_root_block_candidates() -> Dict[int, Optional[SpanContext]]:
+    """Return a snapshot ``{span_id -> parent_span_context}`` of the current
+    root-block candidate registry.
+
+    The snapshot decouples the exporter's read from concurrent writes by
+    ``RootInstrumentFilterProcessor.on_start``.
+
+    Returns:
+        A plain dict mapping each candidate span's ID to the ``SpanContext`` of
+        its parent (``None`` for a candidate that is itself a trace root).
+    """
+    with _root_candidates_lock:
+        return {span_id: parent_ctx for span_id, (parent_ctx, _ended_at) in ROOT_BLOCK_CANDIDATES.items()}
+
+
+def root_block_candidates_contains(span_ids: Set[int]) -> bool:
+    """Return whether any of *span_ids* is currently a recorded candidate.
+
+    A cheap membership probe (set lookups under the lock, no copy) that lets the
+    exporter skip the full :func:`get_root_block_candidates` snapshot on batches
+    whose spans reference no cross-batch candidate ancestor.
+
+    Args:
+        span_ids: Span IDs to probe against the registry.
+
+    Returns:
+        ``True`` if at least one ID is a live candidate.
+    """
+    if not span_ids:
+        return False
+    with _root_candidates_lock:
+        return any(span_id in ROOT_BLOCK_CANDIDATES for span_id in span_ids)
 
 
 class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
-    """Block root spans (and their entire subtree) whose instrumentation is
-    not in the allowed *root_instruments* set.
+    """Record spans from auto-instrumentation libraries that are not permitted
+    to produce root-level spans, so the exporter can drop-and-reparent them.
 
-    When an auto-instrumentation root span (e.g. FastAPI, Flask) is not
-    permitted, this processor:
+    When an auto-instrumentation span comes from a library outside the allowed
+    *root_instruments* set, the processor marks it as a **root-block candidate**
+    with a durable instance-level marker (``ROOT_BLOCK_CANDIDATE_FIELD``) and
+    also records it, along with its parent ``SpanContext``, in a shared TTL-evicted
+    registry (``ROOT_BLOCK_CANDIDATES``) used for cross-batch reparenting.
 
-    1. Marks it with ``netra.local_blocked = True``.
-    2. Records its **trace_id** in a bounded, TTL-evicted registry.
-    3. Marks every subsequent child span that shares the same trace ID.
-
-    Tracking by trace ID (rather than individual span IDs) guarantees that
-    the block propagates correctly even in async frameworks where a parent
-    span may end before all of its children have started.
+    The actual drop decision is made at export time by
+    :class:`~netra.exporters.filtering_span_exporter.FilteringSpanExporter`:
+    a candidate is dropped only when it is *root-connected* — i.e. it is a
+    trace root, or every ancestor up to the trace root is also a dropped
+    candidate.  Dropped candidates have their children reparented onto the
+    dropped span's parent (``None`` for a true root, so the child becomes the
+    new root).  This peel repeats recursively: if the promoted child is itself
+    from a non-root instrumentation it is dropped too, until a survivor is
+    reached (an allowed instrument, a netra decorator / manual span, or any
+    non-instrumentation span).
 
     Spans created directly through netra decorators or ``Netra.start_span``
-    are never filtered — only spans from recognised auto-instrumentation
+    are never candidates — only spans from recognised auto-instrumentation
     libraries (scope prefix ``opentelemetry.instrumentation.*`` or
     ``netra.instrumentation.*``) are subject to the allow-list.
 
@@ -45,45 +110,53 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
 
     def __init__(self, allowed_root_instrument_names: Set[str]) -> None:
         self._allowed: frozenset[str] = frozenset(allowed_root_instrument_names)
-        self._blocked_trace_ids: OrderedDict[int, float] = OrderedDict()
-        self._lock = threading.Lock()
 
     def on_start(
         self,
         span: Span,
         parent_context: Optional[otel_context.Context] = None,
     ) -> None:
-        """Evaluate whether *span* belongs to a blocked trace and mark it
-        accordingly.
+        """Record *span* as a root-block candidate when it comes from a
+        non-allowed auto-instrumentation library.
 
         Args:
             span: The span that is being started.
             parent_context: The parent context of the span.
         """
         try:
-            self._process_span_start(span, parent_context)
+            self._process_span_start(span)
         except Exception:
             logger.debug("RootInstrumentFilterProcessor.on_start failed", exc_info=True)
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Prune expired entries from the blocked-trace registry.
+        """Start the TTL clock for a just-ended candidate, then prune expired entries.
 
-        The registry is **not** cleared on a per-span basis — entries
-        survive until they expire via TTL so that late-starting children
-        still see their trace as blocked.
+        Entries are **not** cleared per-span — once a candidate ends its entry
+        survives for ``_ROOT_CANDIDATE_TTL_SECONDS`` so that children exporting
+        after their (already-ended) blocked ancestor can still be reparented.
+        The TTL is measured from the *end* time, so an active long-lived root is
+        never evicted before it finishes.
 
         Args:
             span: The span that is being ended.
         """
         try:
-            self._evict_stale_traces()
+            self._mark_ended(span)
+            self._evict_stale_candidates()
         except Exception:
             pass
 
     def shutdown(self) -> None:
-        """Release all resources held by the processor."""
-        with self._lock:
-            self._blocked_trace_ids.clear()
+        """No-op — the candidate registry is **not** cleared here.
+
+        This processor is registered before the exporter's span processor, so
+        clearing the shared registry on shutdown would empty it *before* the
+        exporter's final flush runs — causing still-buffered blocked root spans
+        to slip through as exported roots.  The registry is process-global and
+        already bounded (``_MAX_ROOT_CANDIDATES``) and TTL-evicted, so leaving
+        it intact is safe; clearing it here is not.
+        """
+        return None
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op — this processor does not buffer data.
@@ -100,53 +173,17 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
     # Core logic
     # ------------------------------------------------------------------
 
-    def _process_span_start(
-        self,
-        span: Span,
-        parent_context: Optional[otel_context.Context],
-    ) -> None:
-        """Decide whether *span* should be blocked.
+    def _process_span_start(self, span: Span) -> None:
+        """Record *span* as a candidate if it is an auto-instrumentation span
+        whose instrument is not in the allowed root set.
 
-        A span is classified as a **child** (non-root) when either the
-        *parent_context* carries a valid span or the span object itself
-        records a valid ``parent_span_id``.  The two-pronged check handles
-        instrumentations (e.g. HTTPX, OpenAI) that set the parent link on
-        the span directly without propagating through the active context.
+        Every qualifying span is recorded regardless of whether it is a root
+        or a child at start time.  A child only *becomes* a root after its
+        ancestors are dropped, which is resolved at export; recording it now
+        ensures the exporter can peel it recursively.
 
         Args:
             span: The span that is being started.
-            parent_context: The parent context of the span.
-        """
-        parent_span_id = self._resolve_parent_span_id(parent_context)
-        if parent_span_id is None or parent_span_id == INVALID_SPAN_ID:
-            parent_span_id = self._get_parent_span_id_from_span(span)
-
-        is_child = parent_span_id is not None and parent_span_id != INVALID_SPAN_ID
-
-        if is_child:
-            self._maybe_block_child(span)
-        else:
-            self._maybe_block_root(span)
-
-    def _maybe_block_child(self, span: Span) -> None:
-        """Block *span* if its trace is in the blocked registry.
-
-        Args:
-            span: A child (non-root) span that is being started.
-        """
-        trace_id = self._get_trace_id(span)
-        if trace_id is None:
-            return
-        with self._lock:
-            if trace_id in self._blocked_trace_ids:
-                self._mark_blocked(span)
-
-    def _maybe_block_root(self, span: Span) -> None:
-        """Block *span* if it is an auto-instrumentation root whose name
-        is not in the allowed set.
-
-        Args:
-            span: A root span that is being started.
         """
         if not self._is_from_instrumentation_library(span):
             return
@@ -155,49 +192,96 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         if instr_name is None or instr_name in self._allowed:
             return
 
-        trace_id = self._get_trace_id(span)
-        if trace_id is not None:
-            with self._lock:
-                self._blocked_trace_ids[trace_id] = time.monotonic()
-                self._blocked_trace_ids.move_to_end(trace_id)
-                self._evict_overflow()
-        self._mark_blocked(span)
+        span_id = self._get_own_span_id(span)
+        if span_id is None or span_id == INVALID_SPAN_ID:
+            return
+
+        parent_ctx = self._get_parent_span_context(span)
+        # Durable marker first: it must survive even if the registry entry is
+        # later evicted/cleared before this span reaches the exporter.
+        self._mark_candidate(span)
+        self._record_candidate(span_id, parent_ctx)
 
     @staticmethod
-    def _resolve_parent_span_id(
-        parent_context: Optional[otel_context.Context],
-    ) -> Optional[int]:
-        """Return the parent span's ``span_id`` from *parent_context*.
+    def _mark_candidate(span: Span) -> None:
+        """Stamp *span* with the durable root-block-candidate marker.
+
+        The marker is a plain instance attribute (see ``ROOT_BLOCK_CANDIDATE_FIELD``),
+        not an OTel span attribute, so it cannot be evicted by the span attribute
+        limit and is never exported.
 
         Args:
-            parent_context: The context passed to ``on_start``.
-
-        Returns:
-            The parent ``span_id``, or ``None`` if unavailable.
+            span: The candidate span being started.
         """
-        if parent_context is None:
-            return None
-        parent_span = trace.get_current_span(parent_context)
-        if parent_span is None:
-            return None
-        sc = parent_span.get_span_context()
-        if sc is None:
-            return None
-        return cast(Optional[int], sc.span_id)
+        try:
+            setattr(span, ROOT_BLOCK_CANDIDATE_FIELD, True)
+        except Exception:
+            pass
 
     @staticmethod
-    def _get_parent_span_id_from_span(span: Span) -> Optional[int]:
-        """Extract the parent ``span_id`` from the span's internal state.
+    def _record_candidate(span_id: int, parent_ctx: Optional[SpanContext]) -> None:
+        """Register *span_id* as an **active** root-block candidate with its parent.
 
-        The OTel SDK ``Span`` stores the parent ``SpanContext`` directly,
-        which is authoritative even when the active-context-based
-        *parent_context* has no current span.
+        The entry's TTL clock is left unstarted (``ended_at = None``) until the
+        span ends, so a candidate that stays open longer than the TTL is never
+        evicted while still active.
+
+        Args:
+            span_id: The candidate span's own span ID.
+            parent_ctx: The candidate's parent ``SpanContext`` (``None`` when it
+                is a trace root).
+        """
+        with _root_candidates_lock:
+            ROOT_BLOCK_CANDIDATES[span_id] = (parent_ctx, None)
+            ROOT_BLOCK_CANDIDATES.move_to_end(span_id)
+            while len(ROOT_BLOCK_CANDIDATES) > _MAX_ROOT_CANDIDATES:
+                ROOT_BLOCK_CANDIDATES.popitem(last=False)
+
+    @staticmethod
+    def _mark_ended(span: ReadableSpan) -> None:
+        """Start the TTL clock for *span*'s candidate entry, if it has one.
+
+        Args:
+            span: The span that is ending.
+        """
+        ctx = getattr(span, "context", None)
+        span_id = getattr(ctx, "span_id", None) if ctx is not None else None
+        if span_id is None:
+            return
+        with _root_candidates_lock:
+            entry = ROOT_BLOCK_CANDIDATES.get(span_id)
+            if entry is not None:
+                ROOT_BLOCK_CANDIDATES[span_id] = (entry[0], time.monotonic())
+
+    @staticmethod
+    def _get_own_span_id(span: Span) -> Optional[int]:
+        """Return *span*'s own ``span_id``.
 
         Args:
             span: The span to inspect.
 
         Returns:
-            The parent ``span_id``, or ``None`` if unavailable.
+            The integer span ID, or ``None`` if unavailable.
+        """
+        ctx = getattr(span, "context", None) or getattr(span, "get_span_context", lambda: None)()
+        if ctx is None:
+            return None
+        return cast(Optional[int], getattr(ctx, "span_id", None))
+
+    @staticmethod
+    def _get_parent_span_context(span: Span) -> Optional[SpanContext]:
+        """Return the parent ``SpanContext`` recorded on *span*.
+
+        The OTel SDK ``Span`` stores its parent ``SpanContext`` directly, which
+        is authoritative for reparenting.  A ``None`` result means the span is a
+        trace root (its children should be promoted to roots when it is
+        dropped).
+
+        Args:
+            span: The span to inspect.
+
+        Returns:
+            The parent ``SpanContext``, or ``None`` for a root span.
         """
         parent = getattr(span, "parent", None)
         if parent is None:
@@ -205,23 +289,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         parent_id = getattr(parent, "span_id", None)
         if parent_id is None or parent_id == INVALID_SPAN_ID:
             return None
-        return cast(Optional[int], parent_id)
-
-    @staticmethod
-    def _get_trace_id(span: object) -> Optional[int]:
-        """Return the ``trace_id`` carried by *span*.
-
-        Args:
-            span: Any span-like object with a ``context`` or
-                ``get_span_context`` accessor.
-
-        Returns:
-            The integer trace ID, or ``None``.
-        """
-        ctx = getattr(span, "context", None) or getattr(span, "get_span_context", lambda: None)()
-        if ctx is None:
-            return None
-        return cast(Optional[int], getattr(ctx, "trace_id", None))
+        return cast(Optional[SpanContext], parent)
 
     @staticmethod
     def _is_from_instrumentation_library(span: Span) -> bool:
@@ -271,32 +339,18 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
                 return base if base else name
         return name
 
-    @staticmethod
-    def _mark_blocked(span: Span) -> None:
-        """Set the ``netra.local_blocked`` attribute on *span*.
+    def _evict_stale_candidates(self) -> None:
+        """Evict entries whose span ended more than ``_ROOT_CANDIDATE_TTL_SECONDS`` ago.
 
-        Args:
-            span: The span to mark.
+        Active candidates (``ended_at is None``) are never TTL-evicted. Scanning
+        stops at the first entry that is still active or not yet stale; a
+        long-lived active entry may therefore defer reclamation of stale entries
+        behind it, but memory stays bounded by ``_MAX_ROOT_CANDIDATES``.
         """
-        try:
-            span.set_attribute(_LOCAL_BLOCKED_ATTR, True)
-        except Exception:
-            pass
-
-    def _evict_stale_traces(self) -> None:
-        """Remove entries older than ``_BLOCKED_TRACE_TTL_SECONDS``."""
-        cutoff = time.monotonic() - _BLOCKED_TRACE_TTL_SECONDS
-        with self._lock:
-            while self._blocked_trace_ids:
-                _, ts = next(iter(self._blocked_trace_ids.items()))
-                if ts > cutoff:
+        cutoff = time.monotonic() - _ROOT_CANDIDATE_TTL_SECONDS
+        with _root_candidates_lock:
+            while ROOT_BLOCK_CANDIDATES:
+                _, (_, ended_at) = next(iter(ROOT_BLOCK_CANDIDATES.items()))
+                if ended_at is None or ended_at > cutoff:
                     break
-                self._blocked_trace_ids.popitem(last=False)
-
-    def _evict_overflow(self) -> None:
-        """Trim the registry to ``_MAX_BLOCKED_TRACES``.
-
-        Must be called while holding ``self._lock``.
-        """
-        while len(self._blocked_trace_ids) > _MAX_BLOCKED_TRACES:
-            self._blocked_trace_ids.popitem(last=False)
+                ROOT_BLOCK_CANDIDATES.popitem(last=False)
