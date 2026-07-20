@@ -379,58 +379,6 @@ class TestSimulationHttpClient:
         client = SimulationHttpClient(self._make_config(endpoint=""))
         assert client._ensure_client() is None
 
-    def test_create_run_returns_none_without_client(self) -> None:
-        from netra.simulation.client import SimulationHttpClient
-
-        client = SimulationHttpClient(self._make_config(endpoint=""))
-        assert client.create_run(name="test", dataset_id="ds-1") is None
-
-    @patch("netra.simulation.client.httpx.Client")
-    def test_create_run_success(self, mock_client_cls: MagicMock) -> None:
-        from netra.simulation.client import SimulationHttpClient
-
-        mock_response = MagicMock(spec=httpx.Response)
-        mock_response.json.return_value = {
-            "data": {
-                "id": "run-1",
-                "userMessages": [
-                    {
-                        "testRunItemId": "item-1",
-                        "userMessage": "hello",
-                        "turnId": "turn-1",
-                        "attachments": None,
-                    }
-                ],
-            }
-        }
-        mock_response.raise_for_status = MagicMock()
-
-        mock_instance = MagicMock()
-        mock_instance.post.return_value = mock_response
-        mock_client_cls.return_value = mock_instance
-
-        client = SimulationHttpClient(self._make_config())
-        result = client.create_run(name="test", dataset_id="ds-1")
-
-        assert result is not None
-        assert result["run_id"] == "run-1"
-        assert len(result["simulation_items"]) == 1
-        assert result["simulation_items"][0].message == "hello"
-
-    @patch("netra.simulation.client.httpx.Client")
-    def test_create_run_returns_none_on_http_error(self, mock_client_cls: MagicMock) -> None:
-        from netra.simulation.client import SimulationHttpClient
-
-        mock_instance = MagicMock()
-        mock_instance.post.side_effect = httpx.HTTPStatusError(
-            "Server Error", request=MagicMock(), response=MagicMock()
-        )
-        mock_client_cls.return_value = mock_instance
-
-        client = SimulationHttpClient(self._make_config())
-        result = client.create_run(name="test", dataset_id="ds-1")
-        assert result is None
-
     @patch("netra.simulation.client.httpx.Client")
     def test_trigger_conversation_stop(self, mock_client_cls: MagicMock) -> None:
         from netra.simulation.client import SimulationHttpClient
@@ -608,10 +556,10 @@ class TestSimulation:
         assert result is None
 
     @patch("netra.simulation.api.SimulationHttpClient")
-    def test_run_simulation_returns_none_when_create_run_fails(self, mock_client_cls: MagicMock) -> None:
+    def test_run_simulation_returns_none_when_initialize_run_fails(self, mock_client_cls: MagicMock) -> None:
         from netra.simulation.api import Simulation
 
-        mock_client_cls.return_value.create_run.return_value = None
+        mock_client_cls.return_value.initialize_run.return_value = None
         sim = Simulation(self._make_config())
         result = sim.run_simulation(name="test", dataset_id="ds-1", task=SyncTask())
         assert result is None
@@ -633,12 +581,18 @@ class TestSimulation:
         )
 
         mock_client = MagicMock()
-        mock_client.create_run.return_value = {
+        mock_client.initialize_run.return_value = {
             "run_id": "run-1",
-            "simulation_items": [
-                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
             ],
         }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
         mock_client.trigger_conversation.return_value = stop_response
         mock_client.post_run_status.return_value = {"status": "completed"}
         mock_client_cls.return_value = mock_client
@@ -665,12 +619,18 @@ class TestSimulation:
         mock_span_wrapper.return_value = mock_span
 
         mock_client = MagicMock()
-        mock_client.create_run.return_value = {
+        mock_client.initialize_run.return_value = {
             "run_id": "run-1",
-            "simulation_items": [
-                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
             ],
         }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
         mock_client.trigger_conversation.side_effect = RuntimeError("backend down")
         mock_client.post_run_status.return_value = {}
         mock_client_cls.return_value = mock_client
@@ -700,12 +660,18 @@ class TestSimulation:
         )
 
         mock_client = MagicMock()
-        mock_client.create_run.return_value = {
+        mock_client.initialize_run.return_value = {
             "run_id": "run-1",
-            "simulation_items": [
-                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
             ],
         }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
         mock_client.trigger_conversation.return_value = continue_response
         mock_client.post_run_status.return_value = {}
         mock_client_cls.return_value = mock_client
@@ -740,12 +706,18 @@ class TestSimulation:
         mock_span_wrapper.return_value = mock_span
 
         mock_client = MagicMock()
-        mock_client.create_run.return_value = {
+        mock_client.initialize_run.return_value = {
             "run_id": "run-1",
-            "simulation_items": [
-                SimulationItem(run_item_id="item-1", dataset_item_id="ds-item-1", message="hello", turn_id="turn-1"),
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
             ],
         }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
         mock_client.trigger_conversation.return_value = None
         mock_client.post_run_status.return_value = {}
         mock_client_cls.return_value = mock_client
