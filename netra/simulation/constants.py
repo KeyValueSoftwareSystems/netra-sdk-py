@@ -18,7 +18,8 @@ DEFAULT_MAX_TURNS = 50
 # ---------------------------------------------------------------------------
 # API endpoints
 # ---------------------------------------------------------------------------
-URL_CREATE_RUN = "/evaluations/test_run/multi-turn"
+URL_INITIALIZE_RUN = "/evaluations/test_run/multi-turn/initialize"
+URL_FIRST_TURN = "/evaluations/run/{run_id}/item/{run_item_id}/first-turn"
 URL_AGENT_RESPONSE = "/evaluations/turn/agent-response"
 URL_RUN_ITEM_STATUS = "/evaluations/run/{run_id}/item/{run_item_id}/status"
 URL_RUN_STATUS = "/evaluations/run/{run_id}/status"
