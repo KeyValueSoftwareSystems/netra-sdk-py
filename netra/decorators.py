@@ -387,18 +387,18 @@ def _create_function_wrapper(
 
         @functools.wraps(func)
         async def async_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Validate the span type first. ``as_type`` is fixed at decoration
+            # time (same result on every call), so failing here avoids pushing an
+            # entity or starting a span we would only have to unwind.
+            if not isinstance(as_type, SpanType):
+                logger.error("Invalid span type: %s", as_type)
+                return
+
             # Push entity before span starts so processors can capture it
             entity_token = SessionManager.push_entity(entity_type, span_name)
 
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
-            # Set span type if provided
-
-            if not isinstance(as_type, SpanType):
-                logger.error("Invalid span type: %s", as_type)
-                span.end()
-                SessionManager.pop_entity(entity_type, entity_token)
-                return
             try:
                 span.set_attribute("netra.span.type", as_type.value)
             except Exception:
@@ -449,6 +449,14 @@ def _create_function_wrapper(
 
         @functools.wraps(func)
         def sync_wrapper(*args: Any, **kwargs: Any) -> Any:
+            # Validate the span type first. ``as_type`` is fixed at decoration
+            # time (same result on every call), so failing here avoids pushing an
+            # entity or starting a span we would only have to unwind. ``None`` is
+            # allowed (the span simply carries no type attribute).
+            if as_type is not None and not isinstance(as_type, SpanType):
+                logger.error("Invalid span type: %s", as_type)
+                return
+
             # Push entity before span starts so processors can capture it
             entity_token = SessionManager.push_entity(entity_type, span_name)
 
@@ -456,11 +464,6 @@ def _create_function_wrapper(
             span = tracer.start_span(span_name)
             # Set span type if provided
             if as_type is not None:
-                if not isinstance(as_type, SpanType):
-                    logger.error("Invalid span type: %s", as_type)
-                    span.end()
-                    SessionManager.pop_entity(entity_type, entity_token)
-                    return
                 try:
                     span.set_attribute("netra.span.type", as_type.value)
                 except Exception:
