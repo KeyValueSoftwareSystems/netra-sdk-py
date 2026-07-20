@@ -151,8 +151,16 @@ class Simulation:
         setup_contexts: dict[str, Optional[dict[str, Any]]] = {}
         failed_items: list[dict[str, Any]] = []
 
-        async def run_before_and_generate_first_turn(item: dict[str, str]) -> Optional[SimulationItem]:
+        async def run_before_and_generate_first_turn(
+            item: dict[str, str],
+            loop: asyncio.AbstractEventLoop,
+            executor: concurrent.futures.ThreadPoolExecutor,
+        ) -> Optional[SimulationItem]:
             """Execute the before hook and generate the first turn for a single item.
+
+            The before hook runs on the event loop (it may be async). The
+            ``generate_first_turn`` HTTP call is offloaded to *executor* so
+            it does not block the loop.
 
             Returns:
                 SimulationItem if successful, None if failed (failure recorded in failed_items).
@@ -186,15 +194,16 @@ class Simulation:
                         "error": error_msg,
                     }
                     failed_items.append(item_result)
-                    # Call after hook even when before fails (cleanup contract)
                     await run_after(hooks, dataset_item_id, item_result, shared_context)
                     return None
             else:
                 setup_contexts[run_item_id] = shared_context
 
-            sim_item = self._client.generate_first_turn(
-                run_id=run_id,
-                run_item_id=run_item_id,
+            sim_item = await loop.run_in_executor(
+                executor,
+                self._client.generate_first_turn,
+                run_id,
+                run_item_id,
             )
             if sim_item is None:
                 logger.warning(
@@ -213,26 +222,31 @@ class Simulation:
                     "error": "Failed to generate first user message",
                 }
                 failed_items.append(item_result)
-                # Call after hook when first turn generation fails (cleanup contract)
                 await run_after(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
                 return None
             return sim_item
 
         async def _run_all_before_and_first_turns() -> list[Optional[SimulationItem]]:
-            return list(await asyncio.gather(*[run_before_and_generate_first_turn(item) for item in items]))
+            loop = asyncio.get_running_loop()
+            with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as executor:
+                return list(
+                    await asyncio.gather(*[run_before_and_generate_first_turn(item, loop, executor) for item in items])
+                )
 
         setup_results = run_async_safely(_run_all_before_and_first_turns())
         simulation_items = [item for item in setup_results if item is not None]
 
         if not simulation_items:
             logger.error("%s: All items failed during setup/generation", LOG_PREFIX)
-            self._client.post_run_status(run_id, "completed")
-            return {
+            results: dict[str, Any] = {
                 "success": False,
                 "completed": [],
                 "failed": failed_items,
                 "total_items": len(items),
             }
+            run_async_safely(run_after_all(hooks, results, shared_context))
+            self._client.post_run_status(run_id, "completed")
+            return results
 
         # --- Phase 4: Run conversation loops (before hooks already executed) ---
         logger.info("%s: Starting simulation with %d items", LOG_PREFIX, len(simulation_items))
