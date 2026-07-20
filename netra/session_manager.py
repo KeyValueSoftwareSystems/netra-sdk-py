@@ -21,13 +21,25 @@ NETRA_USER_OUTPUT = "netra.user.output"
 # or ContextVars) so they propagate across thread boundaries: the threading
 # instrumentation re-attaches the active OTel context inside worker threads,
 # which lets spans created there inherit the parent workflow's entity names.
-# Each key maps to an immutable tuple stack; push/pop attach/detach a context.
+#
+# Each key maps to an immutable tuple of frames, where a frame is
+# ``(frame_id, entity_name)``. ``push_entity`` appends a frame tagged with a
+# unique ``frame_id`` and returns that id as the token; ``pop_entity`` removes
+# the frame with the matching id. This is deliberately NOT modelled as OTel
+# ``attach``/``detach``: detach requires strict LIFO ordering, which the
+# deferred pop of streaming/generator spans cannot guarantee (a generator may
+# be finished out of creation order, or abandoned entirely). Removing a frame
+# by id is order-independent, so interleaved or partially-consumed generators
+# cannot corrupt or leak another entity's context.
 _ENTITY_STACK_KEYS: Dict[str, str] = {
     "workflow": "netra.workflow_stack",
     "task": "netra.task_stack",
     "agent": "netra.agent_stack",
     "span": "netra.span_stack",
 }
+
+# A single frame on an entity stack: an opaque per-push id plus the entity name.
+_EntityFrame = Tuple[object, str]
 
 # Current span and span registries are per-thread execution bookkeeping that
 # must NOT be shared across threads. ContextVars give thread-isolated,
@@ -44,13 +56,19 @@ _active_spans_var: "contextvars.ContextVar[Tuple[trace.Span, ...]]" = contextvar
 )
 
 
-def _read_entity_stack(entity_type: str) -> Tuple[str, ...]:
-    """Read the immutable entity-name stack for *entity_type* from the OTel context."""
+def _read_entity_frames(entity_type: str) -> Tuple[_EntityFrame, ...]:
+    """Read the immutable ``(frame_id, name)`` stack for *entity_type* from the OTel context."""
     key = _ENTITY_STACK_KEYS.get(entity_type)
     if key is None:
         return ()
     value = otel_context.get_value(key)
-    return value if isinstance(value, tuple) else ()
+    return cast(Tuple[_EntityFrame, ...], value) if isinstance(value, tuple) else ()
+
+
+def _current_entity_name(entity_type: str) -> Optional[str]:
+    """Return the name of the top (most recent) frame for *entity_type*, or None."""
+    frames = _read_entity_frames(entity_type)
+    return frames[-1][1] if frames else None
 
 
 class ConversationType(str, Enum):
@@ -176,57 +194,72 @@ class SessionManager:
         """
         Push an entity onto the appropriate entity stack.
 
-        The stack is stored in the OpenTelemetry context, so the push attaches
-        a new context and returns a detach token. The caller MUST pass that
-        token to :meth:`pop_entity` to restore the previous context (LIFO), the
-        same way OTel's ``attach``/``detach`` is used elsewhere.
+        The stack is stored in the OpenTelemetry context (so it propagates into
+        worker threads). The push appends a uniquely-tagged frame and returns
+        that tag as an opaque token. The caller MUST pass the token to
+        :meth:`pop_entity`, which removes *that specific frame* — order
+        independently, so a deferred/interleaved pop cannot disturb another
+        entity's context.
 
         Args:
             entity_type: Type of entity (workflow, task, agent, span)
             entity_name: Name of the entity
 
         Returns:
-            An opaque detach token to pass to :meth:`pop_entity`, or ``None`` if
+            An opaque token to pass to :meth:`pop_entity`, or ``None`` if
             ``entity_type`` is unknown.
         """
         key = _ENTITY_STACK_KEYS.get(entity_type)
         if key is None:
             return None
-        current = _read_entity_stack(entity_type)
-        new_ctx = otel_context.set_value(key, current + (entity_name,))
-        # Typed local so the return is object (not Any) regardless of whether
-        # the opentelemetry stubs are available to the type checker.
-        detach_token: object = otel_context.attach(new_ctx)
-        return detach_token
+        # A fresh object() is a process-unique identity for this exact push, so
+        # pop_entity can find and remove this frame even if frames are removed
+        # out of order (interleaved streaming spans).
+        frame_id: object = object()
+        frames = _read_entity_frames(entity_type)
+        otel_context.attach(otel_context.set_value(key, frames + ((frame_id, entity_name),)))
+        return frame_id
 
     @classmethod
     def pop_entity(cls, entity_type: str, token: Optional[object] = None) -> Optional[str]:
         """
-        Pop the most recent entity from the specified entity stack.
+        Remove the entity frame identified by ``token`` from its stack.
 
-        Detaches the context attached by the matching :meth:`push_entity` call,
-        restoring the previous entity stack. ``token`` should always be provided
-        by callers; it is optional only for backwards compatibility.
+        The frame is located by identity, so it is removed correctly regardless
+        of the order in which concurrent/deferred frames are popped. Rebinds the
+        entity key in the current OTel context to the reduced stack (it does not
+        ``detach``, which would require strict LIFO ordering).
 
         Args:
             entity_type: Type of entity (workflow, task, agent, span)
-            token: The detach token returned by the matching ``push_entity``.
+            token: The token returned by the matching ``push_entity``. When
+                ``None`` (legacy callers), the top frame is removed instead.
 
         Returns:
-            The name of the entity that was on top of the stack, or None.
+            The name of the frame that was removed, or None if nothing matched.
         """
-        if entity_type not in _ENTITY_STACK_KEYS:
+        key = _ENTITY_STACK_KEYS.get(entity_type)
+        if key is None:
             return None
-        stack = _read_entity_stack(entity_type)
-        name = stack[-1] if stack else None
-        if token is not None:
-            try:
-                # ``token`` is intentionally opaque (object); cast to Any so the
-                # call type-checks both with and without the opentelemetry stubs.
-                otel_context.detach(cast(Any, token))
-            except Exception:
-                logger.exception("Failed to detach entity context token for '%s'", entity_type)
-        return name
+        frames = _read_entity_frames(entity_type)
+        if not frames:
+            return None
+
+        if token is None:
+            # Legacy path: no token to match, remove the most recent frame.
+            removed_name = frames[-1][1]
+            new_frames = frames[:-1]
+        else:
+            index = next((i for i in range(len(frames) - 1, -1, -1) if frames[i][0] is token), None)
+            if index is None:
+                # Frame already removed (or belongs to a context we can't see);
+                # do not touch the stack.
+                return None
+            removed_name = frames[index][1]
+            new_frames = frames[:index] + frames[index + 1 :]
+
+        otel_context.attach(otel_context.set_value(key, new_frames))
+        return removed_name
 
     @classmethod
     def get_current_entity_attributes(cls) -> Dict[str, str]:
@@ -244,9 +277,9 @@ class SessionManager:
             ("agent", "agent.name"),
             ("span", "span.name"),
         ):
-            stack = _read_entity_stack(entity_type)
-            if stack:
-                attributes[f"{Config.LIBRARY_NAME}.{attr_suffix}"] = stack[-1]
+            name = _current_entity_name(entity_type)
+            if name is not None:
+                attributes[f"{Config.LIBRARY_NAME}.{attr_suffix}"] = name
 
         return attributes
 
@@ -254,9 +287,9 @@ class SessionManager:
     def clear_entity_stacks(cls) -> None:
         """Clear all entity stacks in the current context.
 
-        Attaches a context with every entity stack emptied. The detach token is
-        intentionally discarded (there is no scoped "unclear"); this is a blunt
-        reset intended for test isolation, not the normal push/pop lifecycle.
+        Rebinds every entity stack to empty in the current OTel context. This is
+        a blunt reset intended for test isolation, not the normal push/pop
+        lifecycle (which removes frames individually by id).
         """
         ctx = otel_context.get_current()
         for key in _ENTITY_STACK_KEYS.values():
@@ -272,10 +305,10 @@ class SessionManager:
             Dictionary containing all stack contents
         """
         return {
-            "workflows": list(_read_entity_stack("workflow")),
-            "tasks": list(_read_entity_stack("task")),
-            "agents": list(_read_entity_stack("agent")),
-            "spans": list(_read_entity_stack("span")),
+            "workflows": [name for _, name in _read_entity_frames("workflow")],
+            "tasks": [name for _, name in _read_entity_frames("task")],
+            "agents": [name for _, name in _read_entity_frames("agent")],
+            "spans": [name for _, name in _read_entity_frames("span")],
         }
 
     @staticmethod

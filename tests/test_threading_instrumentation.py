@@ -14,7 +14,7 @@ provider-independent, so a locally-bound tracer exercises it faithfully.
 """
 
 from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Dict, Iterator, List
+from typing import Any, Dict, Iterator, List
 
 import pytest
 from opentelemetry import trace
@@ -206,3 +206,80 @@ class TestEntityContextPropagation:
         for span in tool_spans:
             assert span.attributes is not None
             assert span.attributes.get(_WORKFLOW_ATTR) == "wf1"
+
+
+class TestEntityStackLifecycle:
+    """Frames are removed by identity, so a frame popped out of creation order
+    (as happens when streaming/generator spans finish in a different order than
+    they started, or are abandoned) never corrupts or leaks a sibling frame."""
+
+    def test_out_of_order_pop_removes_the_right_frame(self) -> None:
+        """Popping the first-pushed frame while a later one is still live leaves
+        the later frame's name intact (regression: token detach wiped it)."""
+        SessionManager.clear_entity_stacks()
+        token_a = SessionManager.push_entity("task", "task_a")
+        token_b = SessionManager.push_entity("task", "task_b")
+
+        # Pop A first (out of LIFO order). B must survive untouched.
+        removed = SessionManager.pop_entity("task", token_a)
+        assert removed == "task_a"
+        assert SessionManager.get_current_entity_attributes().get(_TASK_ATTR) == "task_b"
+        assert SessionManager.get_stack_info()["tasks"] == ["task_b"]
+
+        removed = SessionManager.pop_entity("task", token_b)
+        assert removed == "task_b"
+        assert SessionManager.get_stack_info()["tasks"] == []
+
+    def test_double_pop_is_a_noop(self) -> None:
+        """Popping a frame whose token was already popped does not disturb the
+        stack (regression: out-of-order detach could leak a stale frame)."""
+        SessionManager.clear_entity_stacks()
+        token = SessionManager.push_entity("workflow", "wf1")
+        assert SessionManager.pop_entity("workflow", token) == "wf1"
+        # Second pop with the same (now stale) token must not touch anything.
+        assert SessionManager.pop_entity("workflow", token) is None
+        assert SessionManager.get_stack_info()["workflows"] == []
+
+    def test_generator_early_break_restores_stack(self) -> None:
+        """A decorated generator abandoned mid-iteration (``break``) still runs
+        cleanup via ``finally``, so its entity frame is not leaked."""
+        from netra.decorators import task
+
+        SessionManager.clear_entity_stacks()
+
+        @task(name="streaming_task")
+        def stream() -> Iterator[int]:
+            yield from range(10)
+
+        for value in stream():
+            if value == 2:
+                break  # abandons the generator -> GeneratorExit
+
+        # The task frame pushed at call time must have been popped by finally.
+        assert SessionManager.get_stack_info()["tasks"] == []
+        assert SessionManager.get_current_entity_attributes().get(_TASK_ATTR) is None
+
+    def test_async_generator_early_break_restores_stack(self) -> None:
+        """Same guarantee for a decorated async generator abandoned mid-stream."""
+        import asyncio
+
+        from netra.decorators import task
+
+        SessionManager.clear_entity_stacks()
+
+        @task(name="astreaming_task")
+        async def astream() -> Any:
+            for i in range(10):
+                yield i
+
+        async def run() -> None:
+            agen = astream()
+            async for value in agen:
+                if value == 2:
+                    break
+            await agen.aclose()  # deterministic GeneratorExit into the wrapper
+
+        asyncio.run(run())
+
+        assert SessionManager.get_stack_info()["tasks"] == []
+        assert SessionManager.get_current_entity_attributes().get(_TASK_ATTR) is None
