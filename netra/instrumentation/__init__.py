@@ -392,6 +392,10 @@ def init_instrumentations(
     if CustomInstruments.CLAUDE_AGENT_SDK in netra_custom_instruments:
         init_claude_agent_sdk_instrumentation()
 
+    # Initialize hermes_agent instrumentation.
+    if CustomInstruments.HERMES_AGENT in netra_custom_instruments:
+        init_hermes_agent_instrumentation()
+
     # Subprocess instrumentation always enabled for
     # context propagation in subprocess
     init_subprocess_instrumentation()
@@ -1401,6 +1405,25 @@ def init_claude_agent_sdk_instrumentation() -> bool:
         return True
     except Exception:
         logging.exception("Error initializing Claude Agent SDK instrumentor")
+        return False
+
+
+def init_hermes_agent_instrumentation() -> bool:
+    """Initialize Hermes Agent instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("hermes-agent"):
+            from netra.instrumentation.hermes_agent import NetraHermesAgentInstrumentor
+
+            instrumentor = NetraHermesAgentInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception:
+        logging.exception("Error initializing Hermes Agent instrumentor")
         return False
 
 

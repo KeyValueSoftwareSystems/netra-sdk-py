@@ -73,6 +73,7 @@ class CustomInstruments(Enum):
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
+    HERMES_AGENT = "hermes_agent"
 
 
 class InstrumentSet(Enum):
@@ -138,6 +139,7 @@ class InstrumentSet(Enum):
     GROQ = ("groq", CustomInstruments)
     GRPC = ("grpc", CustomInstruments)
     HAYSTACK = ("haystack", Instruments)
+    HERMES_AGENT = ("hermes_agent", CustomInstruments)
     HTTPX = ("httpx", CustomInstruments)
     JINJA2 = ("jinja2", CustomInstruments)
     KAFKA_PYTHON = ("kafka_python", CustomInstruments)
@@ -234,6 +236,7 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.WATSONX,
         InstrumentSet.MCP,
         InstrumentSet.CLAUDE_AGENT_SDK,
+        InstrumentSet.HERMES_AGENT,
         # Web frameworks
         InstrumentSet.FASTAPI,
         # Vector DBs
@@ -288,5 +291,6 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.FASTAPI,
         InstrumentSet.MCP,
         InstrumentSet.CLAUDE_AGENT_SDK,
+        InstrumentSet.HERMES_AGENT,
     }
 )
