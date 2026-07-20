@@ -57,7 +57,21 @@ _active_spans_var: "contextvars.ContextVar[Tuple[trace.Span, ...]]" = contextvar
 
 
 def _read_entity_frames(entity_type: str) -> Tuple[_EntityFrame, ...]:
-    """Read the immutable ``(frame_id, name)`` stack for *entity_type* from the OTel context."""
+    """Read the current entity-stack frames for ``entity_type`` from the OTel context.
+
+    The stack is stored under the OTel context key mapped in
+    ``_ENTITY_STACK_KEYS`` as an immutable tuple of ``(frame_id, name)`` frames.
+    Reading tolerates a missing or malformed value (returns an empty stack)
+    because the key may be absent in a freshly propagated worker context.
+
+    Args:
+        entity_type: The entity kind to read (``"workflow"``, ``"task"``,
+            ``"agent"`` or ``"span"``).
+
+    Returns:
+        Tuple[_EntityFrame, ...]: The frames oldest-first (top of stack last).
+        Empty tuple if ``entity_type`` is unknown or no frames are set.
+    """
     key = _ENTITY_STACK_KEYS.get(entity_type)
     if key is None:
         return ()
@@ -66,7 +80,16 @@ def _read_entity_frames(entity_type: str) -> Tuple[_EntityFrame, ...]:
 
 
 def _current_entity_name(entity_type: str) -> Optional[str]:
-    """Return the name of the top (most recent) frame for *entity_type*, or None."""
+    """Return the name on top of the entity stack for ``entity_type``.
+
+    Args:
+        entity_type: The entity kind to inspect (``"workflow"``, ``"task"``,
+            ``"agent"`` or ``"span"``).
+
+    Returns:
+        Optional[str]: The most recently pushed (still-open) entity name, or
+        ``None`` if the stack is empty or ``entity_type`` is unknown.
+    """
     frames = _read_entity_frames(entity_type)
     return frames[-1][1] if frames else None
 
