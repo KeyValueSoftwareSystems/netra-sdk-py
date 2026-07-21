@@ -137,27 +137,69 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     _set_response_message_attributes(span, response_dict)
 
 
+def _first_present(usage: Dict[str, Any], *keys: str) -> Any:
+    """Return the first of ``keys`` whose value in ``usage`` is not None.
+
+    Used to resolve token fields that differ between OpenAI APIs but mean the
+    same thing (e.g. ``prompt_tokens`` in Chat Completions vs ``input_tokens``
+    in the Responses API). Keys are checked in the order given, so pass the
+    preferred alias first. A present key holding ``0`` is returned as-is; only
+    missing or explicitly-None values are skipped.
+
+    Args:
+        usage: The usage payload to read from.
+        *keys: Candidate keys to try, in priority order.
+
+    Returns:
+        The value of the first key present with a non-None value, or None if
+        none of the keys are present with a non-None value.
+    """
+    for key in keys:
+        if (value := usage.get(key)) is not None:
+            return value
+    return None
+
+
 def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
-    """Helper to set usage-related attributes"""
-    prompt_tokens = usage.get("prompt_tokens") or usage.get("input_tokens")
-    completion_tokens = usage.get("completion_tokens") or usage.get("output_tokens")
+    """Set usage/token attributes from an OpenAI usage payload.
 
-    if prompt_tokens:
-        span.set_attribute(f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", prompt_tokens)
+    Handles both the Chat Completions shape (``prompt_tokens``/``completion_tokens``
+    with ``prompt_tokens_details``) and the Responses API shape
+    (``input_tokens``/``output_tokens`` with ``input_tokens_details``). Token
+    counts are compared with ``is not None`` rather than truthiness so that a
+    legitimate ``0`` (e.g. a cache hit that wrote nothing) is recorded instead of
+    silently dropped.
+    """
+    prompt_tokens = _first_present(usage, "prompt_tokens", "input_tokens")
+    completion_tokens = _first_present(usage, "completion_tokens", "output_tokens")
 
-    if completion_tokens:
-        span.set_attribute(f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", completion_tokens)
+    if prompt_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, prompt_tokens)
 
-    if prompt_tokens_details := (usage.get("prompt_tokens_details") or usage.get("input_tokens_details")):
-        if cache_tokens := prompt_tokens_details.get("cached_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS}", cache_tokens)
+    if completion_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, completion_tokens)
 
-    if completion_tokens_details := (usage.get("completion_tokens_details") or usage.get("output_tokens_details")):
-        if reasoning_tokens := completion_tokens_details.get("reasoning_tokens"):
-            span.set_attribute(f"{SpanAttributes.LLM_USAGE_REASONING_TOKENS}", reasoning_tokens)
+    input_tokens_details = usage.get("prompt_tokens_details") or usage.get("input_tokens_details")
+    if input_tokens_details:
+        cache_read_tokens = input_tokens_details.get("cached_tokens")
+        if cache_read_tokens is not None:
+            span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS, cache_read_tokens)
 
-    if total_tokens := usage.get("total_tokens"):
-        span.set_attribute(f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", total_tokens)
+        # cache_write_tokens landed in the OpenAI SDK's usage breakdown alongside GPT-5.x
+        # prompt caching; map it to the Anthropic-style cache-creation attribute for parity.
+        cache_write_tokens = input_tokens_details.get("cache_write_tokens")
+        if cache_write_tokens is not None:
+            span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS, cache_write_tokens)
+
+    output_tokens_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
+    if output_tokens_details:
+        reasoning_tokens = output_tokens_details.get("reasoning_tokens")
+        if reasoning_tokens is not None:
+            span.set_attribute(SpanAttributes.LLM_USAGE_REASONING_TOKENS, reasoning_tokens)
+
+    total_tokens = usage.get("total_tokens")
+    if total_tokens is not None:
+        span.set_attribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
 
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
