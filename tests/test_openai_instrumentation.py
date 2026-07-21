@@ -205,6 +205,26 @@ class TestUtilityFunctions:
 
         # Assert
         assert result is False
+
+class TestUsageAttributes:
+    """Test _set_usage_attributes token capture across Chat and Responses shapes."""
+
+    @staticmethod
+    def _capture(usage):
+        """Run _set_usage_attributes against a recording span and return {attr: value}."""
+        from netra.instrumentation.openai.utils import _set_usage_attributes
+
+        span = Mock()
+        span.is_recording.return_value = True
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        _set_usage_attributes(span, usage)
+        return captured
+
+    def test_chat_completions_cache_read_and_write(self):
+        """Chat Completions usage maps cached/cache_write tokens to read/creation attributes."""
+        from opentelemetry.semconv_ai import SpanAttributes
+
         attrs = self._capture(
             {
                 "prompt_tokens": 100,
