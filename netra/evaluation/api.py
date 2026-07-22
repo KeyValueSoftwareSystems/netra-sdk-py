@@ -478,7 +478,11 @@ class Evaluation:
         """
         span_name = f"TestRun.{run_name}"
 
-        with SpanWrapper(span_name, module_name="netra.evaluation") as span:
+        with SpanWrapper(
+            span_name,
+            attributes={Config.TRACE_ORIGIN_KEY: Config.TRACE_ORIGIN_EVALUATION},
+            module_name="netra.evaluation",
+        ) as span:
             otel_span = span.get_current_span()
             if otel_span:
                 span_context = otel_span.get_span_context()

@@ -418,7 +418,11 @@ class Simulation:
 
         for turn_number in range(1, max_turns + 1):
             try:
-                with SpanWrapper(SPAN_NAME, module_name=LOG_PREFIX) as span:
+                with SpanWrapper(
+                    SPAN_NAME,
+                    attributes={Config.TRACE_ORIGIN_KEY: Config.TRACE_ORIGIN_EVALUATION},
+                    module_name=LOG_PREFIX,
+                ) as span:
                     trace_id = ""
                     otel_span = span.get_current_span()
                     if otel_span:
