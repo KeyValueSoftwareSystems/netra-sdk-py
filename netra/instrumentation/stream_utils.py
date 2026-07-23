@@ -210,6 +210,18 @@ def _is_stream(obj: Any) -> bool:
     return hasattr(obj, "__next__") or hasattr(obj, "__anext__")
 
 
+def _eager_commit(stream: Any, commit_fn: Callable[[Any], None]) -> Any:
+    """Commit a re-iterable's content eagerly and return the original object."""
+    logger.warning(
+        "wrap_stream_for_root_output: %s is a re-iterable, not a single-pass "
+        "stream; output committed eagerly. Use a static output setter for "
+        "fully-materialised values.",
+        type(stream).__name__,
+    )
+    commit_fn(stream)
+    return stream
+
+
 def wrap_stream_for_root_output(stream: Any, commit_fn: Callable[[Any], None]) -> Any:
     """Wrap *stream* so the accumulated output is committed via *commit_fn* when
     iteration ends.
@@ -244,28 +256,14 @@ def wrap_stream_for_root_output(stream: Any, commit_fn: Callable[[Any], None]) -
         if is_netra or _is_stream(stream):
             extractor = _netra_extractor if is_netra else _generic_extractor
             return RootOutputAsyncStreamWrapper(stream, commit_fn, extractor)
-        # Re-iterable async object — commit eagerly.
-        logger.warning(
-            "set_root_output_stream: %s is a re-iterable, not a single-pass stream; "
-            "output set eagerly on root span. Prefer Netra.set_root_output() for static values.",
-            type(stream).__name__,
-        )
-        commit_fn(stream)
-        return stream
+        return _eager_commit(stream, commit_fn)
 
     # Sync path
     if hasattr(stream, "__iter__"):
         if is_netra or _is_stream(stream):
             extractor = _netra_extractor if is_netra else _generic_extractor
             return RootOutputSyncStreamWrapper(stream, commit_fn, extractor)
-        # Re-iterable collection (list, tuple, set, …) — commit eagerly.
-        logger.warning(
-            "set_root_output_stream: %s is a re-iterable, not a single-pass stream; "
-            "output set eagerly on root span. Prefer Netra.set_root_output() for static values.",
-            type(stream).__name__,
-        )
-        commit_fn(stream)
-        return stream
+        return _eager_commit(stream, commit_fn)
 
     # Not iterable at all
     logger.warning(
