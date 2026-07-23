@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.0.0] - 2026-08-23
+- **Label evaluation/simulation traces on the root span** - Root spans produced by evaluation test runs (`Netra.evaluation`) and simulation runs (`Netra.simulation`) now carry a `netra.trace.origin` attribute set to `evaluation`, letting the backend and frontend distinguish these traces from normal workflow invocations.
+
+
 ## [0.1.99] - 2026-08-19
 
 - **Add support to capture cache-write tokens in OpenAI instrumentation** — The OpenAI instrumentor now extracts `cache_write_tokens` from `prompt_tokens_details` (or `input_tokens_details` for the Responses API) and maps it to the `gen_ai.usage.cache_creation_input_tokens` span attribute. This enables accurate cost calculation for new OpenAI models that report cache-write tokens separately, as well as OpenAI-compatible proxies that expose cache-write usage.
@@ -37,6 +41,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - **Add `USER_ID` to `SessionFilterField`** - Session stats and session summary queries can now filter by `user_id`.
 
 - **Fix OpenAI streaming wrapper span lifecycle** - Made `_finalize_span()` idempotent with a `_span_ended` guard, added `close()` and `__del__()` to both sync and async wrappers so spans are properly finalized even on early exit or GC. `AsyncStreamingWrapper` now exposes `aclose()` per the async iterator protocol, with `close()` as an async alias for OpenAI SDK compatibility.
+
+- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `PROMPT_CACHE_TTL_SECONDS` (60); override per call with `cache_ttl`. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
+- **Add opt-in TTL caching for `get_model_pricing`** - `Netra.models.get_model_pricing` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override per call with `cache_ttl`. Use `Netra.models.clear_cache()` to invalidate cached entries.
 
 - **Add instrumentation for Hermes Agent** - New monkey-patching based instrumentation for the `hermes-agent` SDK (>= 0.17.0). Captures conversation runs, skill invocations (single, stacked, and bundle), tool executions, function calls, and approval gates as OpenTelemetry spans with full input/output attributes, token usage, and model metadata.
 
