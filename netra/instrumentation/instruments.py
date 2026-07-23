@@ -249,6 +249,10 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.REQUESTS,
         InstrumentSet.PYMYSQL,
         InstrumentSet.SQLALCHEMY,
+        # Concurrency: propagate OTel trace context across thread boundaries
+        # (threading.Thread / ThreadPoolExecutor) so spans created in worker
+        # threads attach to the parent workflow trace instead of becoming roots.
+        InstrumentSet.THREADING,
     }
 )
 
