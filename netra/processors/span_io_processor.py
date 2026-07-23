@@ -275,7 +275,15 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     _prev_set_attribute(_USAGE_COMPLETION_TOKENS, value)
                     return
 
-                # 7. Everything else — pass through unchanged
+                # 7. db.statement → input (DB instrumentations: PyMySQL, etc.)
+                # Keep db.statement; never map into output (query results / params are user data).
+                if key == "db.statement":
+                    _prev_set_attribute(key, value)
+                    if _input_is_empty() and not _is_empty(value):
+                        _prev_set_attribute("input", value if isinstance(value, str) else str(value))
+                    return
+
+                # 8. Everything else — pass through unchanged
                 _prev_set_attribute(key, value)
 
             except Exception:
