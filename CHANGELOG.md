@@ -18,6 +18,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
 
+- **Fix `set_root_output_stream` not committing output on early `break`** - When users broke out of a stream iteration loop (e.g. `for chunk in stream: break`), the accumulated output was never written to the root span. The stream wrappers now use an internal generator with a `finally` block so that `_commit` fires reliably on full exhaustion, early `break`, or explicit `.close()`.
+
+- **Fix `set_root_output_stream` failing on plain iterables** - Passing an iterable without `__next__` (e.g. a `list`) to `set_root_output_stream` previously raised a `TypeError`. Plain iterables now have their output set eagerly on the root span with a warning directing users to `Netra.set_root_output()` for static values. Only true single-pass iterators (streams) are wrapped.
+
+- **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
+
 ## [0.1.96] - 2026-07-23
 
 - **Reparent children of blocked root instruments instead of dropping the subtree** - When an instrumentation is not allowed to emit root-level spans, its children are now re-parented onto the nearest valid ancestor rather than dropping the entire subtree, so downstream spans are preserved.
