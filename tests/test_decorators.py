@@ -221,7 +221,9 @@ class TestCreateFunctionWrapper:
         # Assert
         assert result == 8
         mock_session_manager.push_entity.assert_called_once_with("workflow", "test_span")
-        mock_session_manager.pop_entity.assert_called_once_with("workflow")
+        mock_session_manager.pop_entity.assert_called_once_with(
+            "workflow", mock_session_manager.push_entity.return_value
+        )
         mock_trace.get_tracer.assert_called_once_with("original_func")
         mock_tracer.start_span.assert_called_once_with("test_span")
 
@@ -257,7 +259,7 @@ class TestCreateFunctionWrapper:
         # Assert
         assert result == 24
         mock_session_manager.push_entity.assert_called_once_with("agent", "async_test_span")
-        mock_session_manager.pop_entity.assert_called_once_with("agent")
+        mock_session_manager.pop_entity.assert_called_once_with("agent", mock_session_manager.push_entity.return_value)
         mock_trace.get_tracer.assert_called_once_with("original_async_func")
         mock_tracer.start_span.assert_called_once_with("async_test_span")
 
@@ -288,7 +290,7 @@ class TestCreateFunctionWrapper:
         # Verify error was recorded in span
         mock_span.set_attribute.assert_any_call(f"{Config.LIBRARY_NAME}.entity.error", "Test error")
         mock_session_manager.push_entity.assert_called_once_with("task", "failing_span")
-        mock_session_manager.pop_entity.assert_called_once_with("task")
+        mock_session_manager.pop_entity.assert_called_once_with("task", mock_session_manager.push_entity.return_value)
 
     @patch("netra.decorators.SessionManager")
     @patch("netra.decorators.trace")

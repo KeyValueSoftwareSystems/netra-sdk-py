@@ -1,7 +1,8 @@
+import contextvars
 import logging
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Optional, Tuple, Union, cast
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -16,6 +17,82 @@ logger = logging.getLogger(__name__)
 NETRA_USER_INPUT = "netra.user.input"
 NETRA_USER_OUTPUT = "netra.user.output"
 
+# Entity stacks live in the OpenTelemetry *context* (not plain class variables
+# or ContextVars) so they propagate across thread boundaries: the threading
+# instrumentation re-attaches the active OTel context inside worker threads,
+# which lets spans created there inherit the parent workflow's entity names.
+#
+# Each key maps to an immutable tuple of frames, where a frame is
+# ``(frame_id, entity_name)``. ``push_entity`` appends a frame tagged with a
+# unique ``frame_id`` and returns that id as the token; ``pop_entity`` removes
+# the frame with the matching id. This is deliberately NOT modelled as OTel
+# ``attach``/``detach``: detach requires strict LIFO ordering, which the
+# deferred pop of streaming/generator spans cannot guarantee (a generator may
+# be finished out of creation order, or abandoned entirely). Removing a frame
+# by id is order-independent, so interleaved or partially-consumed generators
+# cannot corrupt or leak another entity's context.
+_ENTITY_STACK_KEYS: Dict[str, str] = {
+    "workflow": "netra.workflow_stack",
+    "task": "netra.task_stack",
+    "agent": "netra.agent_stack",
+    "span": "netra.span_stack",
+}
+
+# A single frame on an entity stack: an opaque per-push id plus the entity name.
+_EntityFrame = Tuple[object, str]
+
+# Current span and span registries are per-thread execution bookkeeping that
+# must NOT be shared across threads. ContextVars give thread-isolated,
+# copy-on-write storage (rebind, never mutate-in-place) so concurrent workers
+# cannot corrupt or observe each other's state.
+_current_span_var: "contextvars.ContextVar[Optional[trace.Span]]" = contextvars.ContextVar(
+    "netra_current_span", default=None
+)
+_spans_by_name_var: "contextvars.ContextVar[Dict[str, Tuple[trace.Span, ...]]]" = contextvars.ContextVar(
+    "netra_spans_by_name", default={}
+)
+_active_spans_var: "contextvars.ContextVar[Tuple[trace.Span, ...]]" = contextvars.ContextVar(
+    "netra_active_spans", default=()
+)
+
+
+def _read_entity_frames(entity_type: str) -> Tuple[_EntityFrame, ...]:
+    """Read the current entity-stack frames for ``entity_type`` from the OTel context.
+
+    The stack is stored under the OTel context key mapped in
+    ``_ENTITY_STACK_KEYS`` as an immutable tuple of ``(frame_id, name)`` frames.
+    Reading tolerates a missing or malformed value (returns an empty stack)
+    because the key may be absent in a freshly propagated worker context.
+
+    Args:
+        entity_type: The entity kind to read (``"workflow"``, ``"task"``,
+            ``"agent"`` or ``"span"``).
+
+    Returns:
+        Tuple[_EntityFrame, ...]: The frames oldest-first (top of stack last).
+        Empty tuple if ``entity_type`` is unknown or no frames are set.
+    """
+    key = _ENTITY_STACK_KEYS.get(entity_type)
+    if key is None:
+        return ()
+    value = otel_context.get_value(key)
+    return cast(Tuple[_EntityFrame, ...], value) if isinstance(value, tuple) else ()
+
+
+def _current_entity_name(entity_type: str) -> Optional[str]:
+    """Return the name on top of the entity stack for ``entity_type``.
+
+    Args:
+        entity_type: The entity kind to inspect (``"workflow"``, ``"task"``,
+            ``"agent"`` or ``"span"``).
+
+    Returns:
+        Optional[str]: The most recently pushed (still-open) entity name, or
+        ``None`` if the stack is empty or ``entity_type`` is unknown.
+    """
+    frames = _read_entity_frames(entity_type)
+    return frames[-1][1] if frames else None
+
 
 class ConversationType(str, Enum):
     INPUT = "input"
@@ -25,31 +102,18 @@ class ConversationType(str, Enum):
 class SessionManager:
     """Manages session and user context for applications."""
 
-    # Class variable to track the current span
-    _current_span: Optional[trace.Span] = None
-
-    # Class variables to track separate entity stacks
-    _workflow_stack: List[str] = []
-    _task_stack: List[str] = []
-    _agent_stack: List[str] = []
-    _span_stack: List[str] = []
-
-    # Span registry: name -> stack of spans (most-recent last)
-    _spans_by_name: Dict[str, List[trace.Span]] = {}
-
-    # Global stack of active spans in creation order (oldest first, newest last)
-    # Maintained for spans registered via SessionManager (e.g., SpanWrapper)
-    _active_spans: List[trace.Span] = []
-
     @classmethod
     def set_current_span(cls, span: Optional[trace.Span]) -> None:
         """
         Set the current span for the session manager.
 
+        Stored in a thread-isolated ContextVar so parallel workers do not
+        overwrite each other's current span.
+
         Args:
             span: The current span to store
         """
-        cls._current_span = span
+        _current_span_var.set(span)
 
     @classmethod
     def get_current_span(cls) -> Optional[trace.Span]:
@@ -59,25 +123,26 @@ class SessionManager:
         Returns:
             The stored current span or None if not set
         """
-        return cls._current_span
+        return _current_span_var.get()
 
     @classmethod
     def register_span(cls, name: str, span: trace.Span) -> None:
         """
         Register a span under a given name. Supports nested spans with the same name via a stack.
 
+        Uses copy-on-write on ContextVars (rebind rather than mutate-in-place)
+        so registrations are isolated per thread.
+
         Args:
             name: The name of the span to register
             span: The span to register
         """
         try:
-            stack = cls._spans_by_name.get(name)
-            if stack is None:
-                cls._spans_by_name[name] = [span]
-            else:
-                stack.append(span)
-            # Track globally as active
-            cls._active_spans.append(span)
+            by_name = _spans_by_name_var.get()
+            new_by_name = dict(by_name)
+            new_by_name[name] = by_name.get(name, ()) + (span,)
+            _spans_by_name_var.set(new_by_name)
+            _active_spans_var.set(_active_spans_var.get() + (span,))
         except Exception:
             logger.exception("Failed to register span '%s'", name)
 
@@ -91,20 +156,28 @@ class SessionManager:
             span: The span to unregister
         """
         try:
-            stack = cls._spans_by_name.get(name)
-            if not stack:
-                return
-            # Remove the last matching instance (normal case)
-            for i in range(len(stack) - 1, -1, -1):
-                if stack[i] is span:
-                    stack.pop(i)
-                    break
-            if not stack:
-                cls._spans_by_name.pop(name, None)
-            # Also remove from global active list (remove last matching instance)
-            for i in range(len(cls._active_spans) - 1, -1, -1):
-                if cls._active_spans[i] is span:
-                    cls._active_spans.pop(i)
+            by_name = _spans_by_name_var.get()
+            stack = by_name.get(name)
+            if stack:
+                # Remove the last matching instance (normal case)
+                for i in range(len(stack) - 1, -1, -1):
+                    if stack[i] is span:
+                        remaining = list(stack)
+                        del remaining[i]
+                        new_by_name = dict(by_name)
+                        if remaining:
+                            new_by_name[name] = tuple(remaining)
+                        else:
+                            new_by_name.pop(name, None)
+                        _spans_by_name_var.set(new_by_name)
+                        break
+            # Also remove from active list (remove last matching instance)
+            active = _active_spans_var.get()
+            for i in range(len(active) - 1, -1, -1):
+                if active[i] is span:
+                    remaining_active = list(active)
+                    del remaining_active[i]
+                    _active_spans_var.set(tuple(remaining_active))
                     break
         except Exception:
             logger.exception("Failed to unregister span '%s'", name)
@@ -134,49 +207,82 @@ class SessionManager:
         Returns:
             The most recently registered span with the given name, or None if not found
         """
-        stack = cls._spans_by_name.get(name)
+        stack = _spans_by_name_var.get().get(name)
         if stack:
             return stack[-1]
         return None
 
     @classmethod
-    def push_entity(cls, entity_type: str, entity_name: str) -> None:
+    def push_entity(cls, entity_type: str, entity_name: str) -> Optional[object]:
         """
         Push an entity onto the appropriate entity stack.
+
+        The stack is stored in the OpenTelemetry context (so it propagates into
+        worker threads). The push appends a uniquely-tagged frame and returns
+        that tag as an opaque token. The caller MUST pass the token to
+        :meth:`pop_entity`, which removes *that specific frame* — order
+        independently, so a deferred/interleaved pop cannot disturb another
+        entity's context.
 
         Args:
             entity_type: Type of entity (workflow, task, agent, span)
             entity_name: Name of the entity
+
+        Returns:
+            An opaque token to pass to :meth:`pop_entity`, or ``None`` if
+            ``entity_type`` is unknown.
         """
-        if entity_type == "workflow":
-            cls._workflow_stack.append(entity_name)
-        elif entity_type == "task":
-            cls._task_stack.append(entity_name)
-        elif entity_type == "agent":
-            cls._agent_stack.append(entity_name)
-        elif entity_type == "span":
-            cls._span_stack.append(entity_name)
+        key = _ENTITY_STACK_KEYS.get(entity_type)
+        if key is None:
+            return None
+        # A fresh object() is a process-unique identity for this exact push, so
+        # pop_entity can find and remove this frame even if frames are removed
+        # out of order (interleaved streaming spans).
+        frame_id: object = object()
+        frames = _read_entity_frames(entity_type)
+        otel_context.attach(otel_context.set_value(key, frames + ((frame_id, entity_name),)))
+        return frame_id
 
     @classmethod
-    def pop_entity(cls, entity_type: str) -> Optional[str]:
+    def pop_entity(cls, entity_type: str, token: Optional[object] = None) -> Optional[str]:
         """
-        Pop the most recent entity from the specified entity stack.
+        Remove the entity frame identified by ``token`` from its stack.
+
+        The frame is located by identity, so it is removed correctly regardless
+        of the order in which concurrent/deferred frames are popped. Rebinds the
+        entity key in the current OTel context to the reduced stack (it does not
+        ``detach``, which would require strict LIFO ordering).
 
         Args:
             entity_type: Type of entity (workflow, task, agent, span)
+            token: The token returned by the matching ``push_entity``. When
+                ``None`` (legacy callers), the top frame is removed instead.
 
         Returns:
-            Entity name or None if stack is empty
+            The name of the frame that was removed, or None if nothing matched.
         """
-        if entity_type == "workflow" and cls._workflow_stack:
-            return cls._workflow_stack.pop()
-        elif entity_type == "task" and cls._task_stack:
-            return cls._task_stack.pop()
-        elif entity_type == "agent" and cls._agent_stack:
-            return cls._agent_stack.pop()
-        elif entity_type == "span" and cls._span_stack:
-            return cls._span_stack.pop()
-        return None
+        key = _ENTITY_STACK_KEYS.get(entity_type)
+        if key is None:
+            return None
+        frames = _read_entity_frames(entity_type)
+        if not frames:
+            return None
+
+        if token is None:
+            # Legacy path: no token to match, remove the most recent frame.
+            removed_name = frames[-1][1]
+            new_frames = frames[:-1]
+        else:
+            index = next((i for i in range(len(frames) - 1, -1, -1) if frames[i][0] is token), None)
+            if index is None:
+                # Frame already removed (or belongs to a context we can't see);
+                # do not touch the stack.
+                return None
+            removed_name = frames[index][1]
+            new_frames = frames[:index] + frames[index + 1 :]
+
+        otel_context.attach(otel_context.set_value(key, new_frames))
+        return removed_name
 
     @classmethod
     def get_current_entity_attributes(cls) -> Dict[str, str]:
@@ -188,31 +294,30 @@ class SessionManager:
         """
         attributes = {}
 
-        # Add current workflow if exists
-        if cls._workflow_stack:
-            attributes[f"{Config.LIBRARY_NAME}.workflow.name"] = cls._workflow_stack[-1]
-
-        # Add current task if exists
-        if cls._task_stack:
-            attributes[f"{Config.LIBRARY_NAME}.task.name"] = cls._task_stack[-1]
-
-        # Add current agent if exists
-        if cls._agent_stack:
-            attributes[f"{Config.LIBRARY_NAME}.agent.name"] = cls._agent_stack[-1]
-
-        # Add current span if exists
-        if cls._span_stack:
-            attributes[f"{Config.LIBRARY_NAME}.span.name"] = cls._span_stack[-1]
+        for entity_type, attr_suffix in (
+            ("workflow", "workflow.name"),
+            ("task", "task.name"),
+            ("agent", "agent.name"),
+            ("span", "span.name"),
+        ):
+            name = _current_entity_name(entity_type)
+            if name is not None:
+                attributes[f"{Config.LIBRARY_NAME}.{attr_suffix}"] = name
 
         return attributes
 
     @classmethod
     def clear_entity_stacks(cls) -> None:
-        """Clear all entity stacks."""
-        cls._workflow_stack.clear()
-        cls._task_stack.clear()
-        cls._agent_stack.clear()
-        cls._span_stack.clear()
+        """Clear all entity stacks in the current context.
+
+        Rebinds every entity stack to empty in the current OTel context. This is
+        a blunt reset intended for test isolation, not the normal push/pop
+        lifecycle (which removes frames individually by id).
+        """
+        ctx = otel_context.get_current()
+        for key in _ENTITY_STACK_KEYS.values():
+            ctx = otel_context.set_value(key, (), ctx)
+        otel_context.attach(ctx)
 
     @classmethod
     def get_stack_info(cls) -> Dict[str, List[str]]:
@@ -223,10 +328,10 @@ class SessionManager:
             Dictionary containing all stack contents
         """
         return {
-            "workflows": cls._workflow_stack.copy(),
-            "tasks": cls._task_stack.copy(),
-            "agents": cls._agent_stack.copy(),
-            "spans": cls._span_stack.copy(),
+            "workflows": [name for _, name in _read_entity_frames("workflow")],
+            "tasks": [name for _, name in _read_entity_frames("task")],
+            "agents": [name for _, name in _read_entity_frames("agent")],
+            "spans": [name for _, name in _read_entity_frames("span")],
         }
 
     @staticmethod
@@ -321,13 +426,14 @@ class SessionManager:
             span = trace.get_current_span()
             if not (span and getattr(span, "is_recording", lambda: False)()):
                 # Fallback: use the most recent active span from SessionManager
-                if not cls._active_spans:
+                active_spans = _active_spans_var.get()
+                if not active_spans:
                     logger.warning("No active span to add conversation attribute.")
                     return
 
                 # Find the most recent *recording* span (the last item can be a finished span)
                 recording_span: Optional[trace.Span] = None
-                for span in reversed(cls._active_spans):
+                for span in reversed(active_spans):
                     try:
                         if span and getattr(span, "is_recording", lambda: False)():
                             recording_span = span

@@ -100,6 +100,8 @@ class SpanWrapper:
         self._span_cm: Optional[Any] = None
         # Token for locally attached baggage (if any)
         self._local_block_token: Optional[object] = None
+        # Detach token for the entity stack pushed in __enter__ (if any)
+        self._entity_token: Optional[object] = None
 
         if isinstance(as_type, SpanType):
             self.attributes["netra.span.type"] = as_type.value
@@ -115,7 +117,7 @@ class SpanWrapper:
 
         # Push entity before span starts so SessionSpanProcessor can capture the name
         if self._entity_type:
-            SessionManager.push_entity(self._entity_type, self.name)
+            self._entity_token = SessionManager.push_entity(self._entity_type, self.name)
 
         # If user provided local blocked patterns in attributes, attach them as baggage
         try:
@@ -209,7 +211,8 @@ class SpanWrapper:
 
         # Pop entity from session stack so nested spans get correct parentage
         if self._entity_type:
-            SessionManager.pop_entity(self._entity_type)
+            SessionManager.pop_entity(self._entity_type, self._entity_token)
+            self._entity_token = None
 
         # Don't suppress exceptions
         return False
