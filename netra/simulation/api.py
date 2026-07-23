@@ -11,8 +11,10 @@ from netra.simulation.hooks import (
     SimulationHooks,
     run_after,
     run_after_all,
+    run_after_each,
     run_before,
     run_before_all,
+    run_before_each,
 )
 from netra.simulation.models import ConversationStatus, FileData, SimulationItem
 from netra.simulation.task import BaseTask
@@ -73,17 +75,21 @@ class Simulation:
             max_turns: Maximum conversation turns per item before aborting
                 (default: 50).
             hooks: Optional :class:`~netra.simulation.hooks.SimulationHooks`
-                with ``before_all``, ``before``, ``after``, and ``after_all``
-                callables. Scripts live entirely on the SDK side; only
-                lightweight metadata is forwarded to the backend for UI display.
+                with ``before_all``, ``before_each``, ``before``, ``after``,
+                ``after_each``, and ``after_all`` callables. Scripts live
+                entirely on the SDK side; only lightweight metadata is
+                forwarded to the backend for UI display.
 
                 - ``before_all`` runs once before any scenario. If it raises,
                   the entire run is marked failed and no scenarios execute.
+                - ``before_each`` runs before every scenario. If it raises,
+                  that scenario is marked ``prescript_failed`` and skipped;
+                  other scenarios continue.
                 - ``before`` runs before each scenario. If it raises, that
                   scenario is marked ``prescript_failed`` and skipped; other
                   scenarios continue.
-                - ``after`` / ``after_all`` failures are logged but do not
-                  affect scenario or run status.
+                - ``after`` / ``after_each`` / ``after_all`` failures are
+                  logged but do not affect scenario or run status.
 
         Returns:
             Dictionary with simulation results, or None on failure.
@@ -156,11 +162,12 @@ class Simulation:
             loop: asyncio.AbstractEventLoop,
             executor: concurrent.futures.ThreadPoolExecutor,
         ) -> Optional[SimulationItem]:
-            """Execute the before hook and generate the first turn for a single item.
+            """Execute the before_each/before hooks and generate the first turn for a single item.
 
-            The before hook runs on the event loop (it may be async). The
-            ``generate_first_turn`` HTTP call is offloaded to *executor* so
-            it does not block the loop.
+            The before_each hook runs for every item, then the item-specific
+            before hook runs (if registered). Both run on the event loop (they
+            may be async). The ``generate_first_turn`` HTTP call is offloaded
+            to *executor* so it does not block the loop.
 
             Returns:
                 SimulationItem if successful, None if failed (failure recorded in failed_items).
@@ -169,9 +176,14 @@ class Simulation:
             dataset_item_id = item["dataset_item_id"]
 
             has_before_hook = hooks and hooks.before and dataset_item_id in hooks.before
-            if has_before_hook:
+            has_before_each_hook = hooks and hooks.before_each is not None
+
+            if has_before_each_hook or has_before_hook:
                 try:
-                    item_context = await run_before(hooks, dataset_item_id, shared_context)
+                    # before_each runs first for every item
+                    item_context = await run_before_each(hooks, dataset_item_id, shared_context)
+                    # then item-specific before hook (receives merged context from before_each)
+                    item_context = await run_before(hooks, dataset_item_id, item_context)
                     setup_contexts[run_item_id] = item_context
                 except Exception as exc:
                     error_msg = f"before hook failed: {exc}"
@@ -195,6 +207,7 @@ class Simulation:
                     }
                     failed_items.append(item_result)
                     await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    await run_after_each(hooks, dataset_item_id, item_result, shared_context)
                     return None
             else:
                 setup_contexts[run_item_id] = shared_context
@@ -223,6 +236,7 @@ class Simulation:
                 }
                 failed_items.append(item_result)
                 await run_after(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
+                await run_after_each(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
                 return None
             return sim_item
 
@@ -455,6 +469,7 @@ class Simulation:
                         "turn_id": turn_id,
                     }
                     await run_after(hooks, dataset_item_id, item_result, setup_context)
+                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
                     return item_result
 
                 if response.decision == ConversationStatus.STOP:
@@ -470,6 +485,7 @@ class Simulation:
                         "final_turn_id": turn_id,
                     }
                     await run_after(hooks, dataset_item_id, item_result, setup_context)
+                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
                     return item_result
 
                 message = response.next_user_message  # type:ignore[assignment]
@@ -493,6 +509,7 @@ class Simulation:
                     "turn_id": turn_id,
                 }
                 await run_after(hooks, dataset_item_id, item_result, setup_context)
+                await run_after_each(hooks, dataset_item_id, item_result, setup_context)
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
@@ -505,4 +522,5 @@ class Simulation:
             "turn_id": turn_id,
         }
         await run_after(hooks, dataset_item_id, item_result, setup_context)
+        await run_after_each(hooks, dataset_item_id, item_result, setup_context)
         return item_result
