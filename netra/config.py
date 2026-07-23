@@ -18,6 +18,11 @@ class Config:
     SDK_NAME = "netra"
     LIBRARY_NAME = "netra"
     LIBRARY_VERSION = __version__
+
+    # Root-span attribute marking traces produced by evaluation/simulation runs
+    # so the FE/BE can distinguish them from normal workflow invocations.
+    TRACE_ORIGIN_KEY = "netra.trace.origin"
+    TRACE_ORIGIN_EVALUATION = "evaluation"
     ATTRIBUTE_MAX_LEN = int(os.getenv("NETRA_ATTRIBUTE_MAX_LEN", 50000))
     CONVERSATION_MAX_LEN = int(os.getenv("NETRA_CONVERSATION_CONTENT_MAX_LEN", 50000))
     TRIAL_BLOCK_DURATION_SECONDS = int(os.getenv("TRIAL_BLOCK_DURATION_SECONDS", 15 * 60))
