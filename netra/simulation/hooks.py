@@ -317,8 +317,9 @@ async def run_after(
         item_result: The result dict from the conversation loop (or error result
             if ``before`` failed).
         setup_context: Merged context from ``before_all`` + ``before_each`` + item ``before``
-            (same dict passed to ``BaseTask.run``). When ``before`` failed,
-            this is typically the ``before_all`` shared context only.
+            (same dict passed to ``BaseTask.run``). When a before hook fails,
+            this is the furthest successfully built context (e.g. ``before_all``
+            only, or ``before_all`` + ``before_each`` if ``before`` failed).
     """
     # Execute item-specific after hook (only if registered for this item)
     if hooks and hooks.after and dataset_item_id in hooks.after:

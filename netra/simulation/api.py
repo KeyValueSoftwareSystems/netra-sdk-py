@@ -178,13 +178,16 @@ class Simulation:
             has_before_hook = hooks and hooks.before and dataset_item_id in hooks.before
             has_before_each_hook = hooks and hooks.before_each is not None
 
+            # Track the furthest successfully built context so teardown can
+            # clean up anything before_each created even if before fails.
+            setup_context: Optional[dict[str, Any]] = shared_context
             if has_before_each_hook or has_before_hook:
                 try:
                     # before_each runs first for every item
-                    item_context = await run_before_each(hooks, dataset_item_id, shared_context)
+                    setup_context = await run_before_each(hooks, dataset_item_id, setup_context)
                     # then item-specific before hook (receives merged context from before_each)
-                    item_context = await run_before(hooks, dataset_item_id, item_context)
-                    setup_contexts[run_item_id] = item_context
+                    setup_context = await run_before(hooks, dataset_item_id, setup_context)
+                    setup_contexts[run_item_id] = setup_context
                 except Exception as exc:
                     error_msg = f"before hook failed: {exc}"
                     logger.error(
@@ -206,11 +209,11 @@ class Simulation:
                         "error": error_msg,
                     }
                     failed_items.append(item_result)
-                    await run_after(hooks, dataset_item_id, item_result, shared_context)
-                    await run_after_each(hooks, dataset_item_id, item_result, shared_context)
+                    await run_after(hooks, dataset_item_id, item_result, setup_context)
+                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
                     return None
             else:
-                setup_contexts[run_item_id] = shared_context
+                setup_contexts[run_item_id] = setup_context
 
             sim_item = await loop.run_in_executor(
                 executor,
