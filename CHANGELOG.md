@@ -32,6 +32,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix OpenAI streaming wrapper span lifecycle** - Made `_finalize_span()` idempotent with a `_span_ended` guard, added `close()` and `__del__()` to both sync and async wrappers so spans are properly finalized even on early exit or GC. `AsyncStreamingWrapper` now exposes `aclose()` per the async iterator protocol, with `close()` as an async alias for OpenAI SDK compatibility.
 
+- **Label evaluation/simulation traces on the root span** - Root spans produced by evaluation test runs (`Netra.evaluation`) and simulation runs (`Netra.simulation`) now carry a `netra.trace.origin` attribute set to `evaluation`, letting the backend and frontend distinguish these traces from normal workflow invocations.
+
+
 - **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `PROMPT_CACHE_TTL_SECONDS` (60); override per call with `cache_ttl`. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
 - **Add opt-in TTL caching for `get_model_pricing`** - `Netra.models.get_model_pricing` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override per call with `cache_ttl`. Use `Netra.models.clear_cache()` to invalidate cached entries.
 
