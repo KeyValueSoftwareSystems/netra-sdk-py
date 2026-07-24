@@ -157,21 +157,17 @@ class Simulation:
         setup_contexts: dict[str, Optional[dict[str, Any]]] = {}
         failed_items: list[dict[str, Any]] = []
 
-        async def run_before_and_generate_first_turn(
-            item: dict[str, str],
-            loop: asyncio.AbstractEventLoop,
-            executor: concurrent.futures.ThreadPoolExecutor,
-        ) -> Optional[SimulationItem]:
-            """Execute the before_each/before hooks and generate the first turn for a single item.
+        def _setup_item_in_thread(item: dict[str, str]) -> Optional[SimulationItem]:
+            """Run hooks + first-turn generation for one item in a dedicated thread.
 
-            The before_each hook runs for every item, then the item-specific
-            before hook runs (if registered). Both run on the event loop (they
-            may be async). The ``generate_first_turn`` HTTP call is offloaded
-            to *executor* so it does not block the loop.
-
-            Returns:
-                SimulationItem if successful, None if failed (failure recorded in failed_items).
+            Each thread gets its own event loop via ``run_async_safely`` so
+            sync and async hooks both work without blocking the orchestrator.
+            Concurrency is bounded by the enclosing ThreadPoolExecutor.
             """
+            return run_async_safely(_setup_item_async(item))
+
+        async def _setup_item_async(item: dict[str, str]) -> Optional[SimulationItem]:
+            """Async body executed inside its own event loop per thread."""
             run_item_id = item["test_run_item_id"]
             dataset_item_id = item["dataset_item_id"]
 
@@ -183,9 +179,7 @@ class Simulation:
             setup_context: Optional[dict[str, Any]] = shared_context
             if has_before_each_hook or has_before_hook:
                 try:
-                    # before_each runs first for every item
                     setup_context = await run_before_each(hooks, dataset_item_id, setup_context)
-                    # then item-specific before hook (receives merged context from before_each)
                     setup_context = await run_before(hooks, dataset_item_id, setup_context)
                     setup_contexts[run_item_id] = setup_context
                 except Exception as exc:
@@ -215,11 +209,9 @@ class Simulation:
             else:
                 setup_contexts[run_item_id] = setup_context
 
-            sim_item = await loop.run_in_executor(
-                executor,
-                self._client.generate_first_turn,
-                run_id,
-                run_item_id,
+            sim_item = self._client.generate_first_turn(
+                run_id=run_id,
+                run_item_id=run_item_id,
             )
             if sim_item is None:
                 logger.warning(
@@ -243,14 +235,13 @@ class Simulation:
                 return None
             return sim_item
 
-        async def _run_all_before_and_first_turns() -> list[Optional[SimulationItem]]:
+        async def _run_all_setup() -> list[Optional[SimulationItem]]:
             loop = asyncio.get_running_loop()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-                return list(
-                    await asyncio.gather(*[run_before_and_generate_first_turn(item, loop, executor) for item in items])
-                )
+                futures = [loop.run_in_executor(executor, _setup_item_in_thread, item) for item in items]
+                return list(await asyncio.gather(*futures))
 
-        setup_results = run_async_safely(_run_all_before_and_first_turns())
+        setup_results = run_async_safely(_run_all_setup())
         simulation_items = [item for item in setup_results if item is not None]
 
         if not simulation_items:
