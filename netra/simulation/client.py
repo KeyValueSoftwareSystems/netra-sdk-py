@@ -17,6 +17,7 @@ from netra.simulation.constants import (
 )
 from netra.simulation.models import ConversationResponse, ConversationStatus, FileData, SimulationItem
 from netra.simulation.utils import parse_env_float
+from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -159,7 +160,7 @@ class SimulationHttpClient:
                 ],
             }
         except Exception as exc:
-            error_msg = self._extract_error_message(response, exc)
+            error_msg = extract_error_message(response, exc)
             logger.error("%s: Failed to initialize run: %s", LOG_PREFIX, error_msg)
             return None
 
@@ -191,7 +192,7 @@ class SimulationHttpClient:
                 files=self._parse_files(resp.get("attachments")),
             )
         except Exception as exc:
-            error_msg = self._extract_error_message(response, exc)
+            error_msg = extract_error_message(response, exc)
             logger.error(
                 "%s: Failed to generate first turn for item %s: %s",
                 LOG_PREFIX,
@@ -259,7 +260,7 @@ class SimulationHttpClient:
             )
 
         except Exception as exc:
-            error_msg = self._extract_error_message(response, exc)
+            error_msg = extract_error_message(response, exc)
             logger.error("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg)
             raise
 
@@ -291,7 +292,7 @@ class SimulationHttpClient:
             response.raise_for_status()
             logger.info("%s: Reported failure - %s", LOG_PREFIX, error)
         except Exception as exc:
-            error_msg = self._extract_error_message(response, exc)
+            error_msg = extract_error_message(response, exc)
             logger.error("%s: Failed to report failure: %s", LOG_PREFIX, error_msg)
 
     def post_run_status(self, run_id: str, status: str) -> Any:
@@ -319,7 +320,7 @@ class SimulationHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            error_msg = self._extract_error_message(response, exc)
+            error_msg = extract_error_message(response, exc)
             logger.error("%s: Failed to post run status for run '%s': %s", LOG_PREFIX, run_id, error_msg)
             return {"success": False}
 
@@ -357,27 +358,3 @@ class SimulationHttpClient:
                 )
             )
         return parsed
-
-    def _extract_error_message(
-        self,
-        response: Optional[httpx.Response],
-        exc: Exception,
-    ) -> Any:
-        """Extract error message from response or exception.
-
-        Args:
-            response: The HTTP response object, if available.
-            exc: The exception that was raised.
-
-        Returns:
-            A descriptive error message string.
-        """
-        if response is not None:
-            try:
-                response_json = response.json()
-                error_data = response_json.get("error", {})
-                if isinstance(error_data, dict):
-                    return error_data.get("message", str(exc))
-            except Exception:
-                logger.debug("%s: Could not parse error from response body", LOG_PREFIX, exc_info=True)
-        return str(exc)

@@ -506,29 +506,34 @@ class TestSimulationHttpClient:
         assert result == []
 
     def test_extract_error_message_from_response(self) -> None:
-        from netra.simulation.client import SimulationHttpClient
-
-        cfg = MagicMock()
-        cfg.otlp_endpoint = ""
-        cfg.api_key = ""
-        cfg.headers = {}
-        client = SimulationHttpClient(cfg)
+        from netra.utils import extract_error_message
 
         mock_response = MagicMock(spec=httpx.Response)
         mock_response.json.return_value = {"error": {"message": "custom error"}}
-        result = client._extract_error_message(mock_response, ValueError("fallback"))
+        result = extract_error_message(mock_response, ValueError("fallback"))
         assert result == "custom error"
 
     def test_extract_error_message_fallback(self) -> None:
-        from netra.simulation.client import SimulationHttpClient
+        from netra.utils import extract_error_message
 
-        cfg = MagicMock()
-        cfg.otlp_endpoint = ""
-        cfg.api_key = ""
-        cfg.headers = {}
-        client = SimulationHttpClient(cfg)
+        result = extract_error_message(None, ValueError("fallback"))
+        assert result == "fallback"
 
-        result = client._extract_error_message(None, ValueError("fallback"))
+    def test_extract_error_message_coerces_non_string_message(self) -> None:
+        from netra.utils import extract_error_message
+
+        # Backend validation errors return message as a list of strings.
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.return_value = {"error": {"message": ["a", "b"]}}
+        result = extract_error_message(mock_response, ValueError("fallback"))
+        assert result == "['a', 'b']"
+
+    def test_extract_error_message_unparseable_body_falls_back(self) -> None:
+        from netra.utils import extract_error_message
+
+        mock_response = MagicMock(spec=httpx.Response)
+        mock_response.json.side_effect = ValueError("not json")
+        result = extract_error_message(mock_response, ValueError("fallback"))
         assert result == "fallback"
 
 
