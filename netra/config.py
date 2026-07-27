@@ -6,7 +6,12 @@ from opentelemetry.util.re import parse_env_headers
 
 from netra.version import __version__
 
+# Fallback limits used when no Config has been activated yet (e.g. code paths that
+# run before ``Netra.init()``, or tests that never call it). Once ``init()`` runs,
+# the active Config instance's values (resolved from env at init time) take over.
 _DEFAULT_ATTRIBUTE_MAX_LEN = 50000
+_DEFAULT_CONVERSATION_CONTENT_MAX_LEN = 50000
+_DEFAULT_TRIAL_BLOCK_DURATION_SECONDS = 15 * 60
 
 
 class Config:
@@ -23,9 +28,6 @@ class Config:
     # so the FE/BE can distinguish them from normal workflow invocations.
     TRACE_ORIGIN_KEY = "netra.trace.origin"
     TRACE_ORIGIN_EVALUATION = "evaluation"
-    ATTRIBUTE_MAX_LEN = int(os.getenv("NETRA_ATTRIBUTE_MAX_LEN", 50000))
-    CONVERSATION_MAX_LEN = int(os.getenv("NETRA_CONVERSATION_CONTENT_MAX_LEN", 50000))
-    TRIAL_BLOCK_DURATION_SECONDS = int(os.getenv("TRIAL_BLOCK_DURATION_SECONDS", 15 * 60))
 
     def __init__(
         self,
@@ -81,8 +83,18 @@ class Config:
         self.metrics_export_interval_ms = self._get_int_config(
             metrics_export_interval_ms, "NETRA_METRICS_EXPORT_INTERVAL", default=60000
         )
+
+        # Resolved at init time (env-only) so overrides applied before ``Netra.init()``
+        # — including a late ``load_dotenv()`` — are honored. Previously these were
+        # class attributes read at import time, which ignored any post-import env change.
         self.attribute_max_len = self._get_int_config(
             None, "NETRA_ATTRIBUTE_MAX_LEN", default=_DEFAULT_ATTRIBUTE_MAX_LEN
+        )
+        self.conversation_max_len = self._get_int_config(
+            None, "NETRA_CONVERSATION_CONTENT_MAX_LEN", default=_DEFAULT_CONVERSATION_CONTENT_MAX_LEN
+        )
+        self.trial_block_duration_seconds = self._get_int_config(
+            None, "TRIAL_BLOCK_DURATION_SECONDS", default=_DEFAULT_TRIAL_BLOCK_DURATION_SECONDS
         )
 
         self._set_trace_content_env()
@@ -172,6 +184,10 @@ class Config:
         os.environ["TRACELOOP_TRACE_CONTENT"] = "true" if self.trace_content else "false"
 
 
+# The process-active Config instance, set by ``Netra.init()``. Global/static consumers
+# (span processors, the SessionManager classmethods, module-level exporter helpers) read
+# their limits off this instance rather than import-time class attributes, so limits
+# resolve at init time. ``None`` until ``init()`` runs; getters fall back to the defaults.
 _active_config: Optional["Config"] = None
 
 
@@ -194,3 +210,15 @@ def get_attribute_max_len() -> int:
     """Max length for a single span attribute value, from the active config or default."""
     cfg = get_active_config()
     return cfg.attribute_max_len if cfg is not None else _DEFAULT_ATTRIBUTE_MAX_LEN
+
+
+def get_conversation_max_len() -> int:
+    """Max length for a single conversation entry's content, from the active config or default."""
+    cfg = get_active_config()
+    return cfg.conversation_max_len if cfg is not None else _DEFAULT_CONVERSATION_CONTENT_MAX_LEN
+
+
+def get_trial_block_duration_seconds() -> int:
+    """Trial/quota export-block duration in seconds, from the active config or default."""
+    cfg = get_active_config()
+    return cfg.trial_block_duration_seconds if cfg is not None else _DEFAULT_TRIAL_BLOCK_DURATION_SECONDS
