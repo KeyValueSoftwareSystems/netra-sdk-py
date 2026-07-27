@@ -7,7 +7,7 @@ from typing import Any, Callable, Mapping, Optional, Set, Union
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
-from netra.config import Config
+from netra.config import Config, get_attribute_max_len
 from netra.instrumentation.instruments import InstrumentSet
 
 logger = logging.getLogger(__name__)
@@ -366,7 +366,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         Returns:
             The truncated value.
         """
-        max_len = Config.ATTRIBUTE_MAX_LEN
+        max_len = get_attribute_max_len()
 
         if isinstance(value, str):
             return value[:max_len] if len(value) > max_len else value
