@@ -32,7 +32,6 @@ class Config:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
-        enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         enable_scrubbing: Optional[bool] = None,
@@ -50,7 +49,6 @@ class Config:
             disable_batch: Whether to disable batch span processor
             trace_content: Whether to capture prompt/completion content
             debug_mode: Whether to enable SDK logging (default: False)
-            enable_root_span: Whether to create a process root span (default: False)
             resource_attributes: Custom resource attributes dict (e.g., {'env': 'prod', 'version': '1.0.0'})
             enable_scrubbing: Whether to enable pydantic logfire scrubbing (default: False)
             blocked_spans: List of span names (prefix/suffix patterns) to block from export
@@ -69,7 +67,6 @@ class Config:
         self.disable_batch = self._get_bool_config(disable_batch, "NETRA_DISABLE_BATCH", default=False)
         self.trace_content = self._get_bool_config(trace_content, "NETRA_TRACE_CONTENT", default=True)
         self.debug_mode = self._get_bool_config(debug_mode, "NETRA_DEBUG", default=False)
-        self.enable_root_span = self._get_bool_config(enable_root_span, "NETRA_ENABLE_ROOT_SPAN", default=False)
         self.enable_scrubbing = self._get_bool_config(enable_scrubbing, "NETRA_ENABLE_SCRUBBING", default=False)
         self.enable_metrics = self._get_bool_config(enable_metrics, "NETRA_ENABLE_METRICS", default=False)
         self.export_auto_metrics = self._get_bool_config(
