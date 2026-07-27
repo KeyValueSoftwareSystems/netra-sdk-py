@@ -54,6 +54,7 @@ class TestNetraInitialization:
             headers=None,
             disable_batch=None,
             trace_content=None,
+            debug_mode=None,
             resource_attributes=None,
             environment=None,
             enable_root_span=None,
@@ -87,6 +88,7 @@ class TestNetraInitialization:
             "headers": "key1=value1,key2=value2",
             "disable_batch": True,
             "trace_content": False,
+            "debug_mode": True,
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
             "enable_root_span": False,
@@ -109,7 +111,6 @@ class TestNetraInitialization:
             trace_content=trace_content,
             resource_attributes=resource_attributes,
             environment=environment,
-            enable_root_span=False,
             debug_mode=True,
             blocked_spans=None,
         )
