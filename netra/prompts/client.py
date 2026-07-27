@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from netra.config import Config
+from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -116,6 +117,7 @@ class PromptsHttpClient:
             )
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             url = "/sdk/prompts/version"
             payload: Dict[str, Any] = {"promptName": prompt_name, "label": label}
@@ -130,6 +132,6 @@ class PromptsHttpClient:
                 "netra.prompts: Failed to fetch prompt version for '%s' (label=%s): %s",
                 prompt_name,
                 label,
-                exc,
+                extract_error_message(response, exc),
             )
             return {}

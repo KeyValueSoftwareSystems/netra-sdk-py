@@ -16,6 +16,7 @@ from netra.dashboard.models import (
     SortField,
     SortOrder,
 )
+from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -133,6 +134,7 @@ class DashboardHttpClient:
             logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
             return None
 
+        response: Optional[httpx.Response] = None
         try:
             url = "/public/dashboard/query-data"
 
@@ -176,11 +178,10 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to execute dashboard query: %s",
-                response_json.get("error").get("message", ""),
+                extract_error_message(response, exc),
             )
             return None
 
@@ -213,6 +214,7 @@ class DashboardHttpClient:
             logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session stats")
             return None
 
+        response: Optional[httpx.Response] = None
         try:
             url = "/public/dashboard/sessions/stats"
 
@@ -246,11 +248,10 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to fetch session stats: %s",
-                response_json.get("error").get("message", ""),
+                extract_error_message(response, exc),
             )
             return None
 
@@ -270,6 +271,7 @@ class DashboardHttpClient:
             logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
             return None
 
+        response: Optional[httpx.Response] = None
         try:
             url = "/public/dashboard/sessions/summary"
             payload: Dict[str, Any] = {
@@ -294,11 +296,10 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception:
-            response_json = response.json()
+        except Exception as exc:
             logger.error(
                 "netra.dashboard: Failed to fetch session summary: %s",
-                response_json.get("error").get("message", ""),
+                extract_error_message(response, exc),
             )
             return None
 

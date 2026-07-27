@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from netra.config import Config
+from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +111,7 @@ class ModelsHttpClient:
             logger.error("netra.models: Models client is not initialized.")
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             params: Dict[str, str] = {}
             if name:
@@ -118,5 +120,5 @@ class ModelsHttpClient:
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            logger.error("netra.models: Failed to fetch models: %s", exc)
+            logger.error("netra.models: Failed to fetch models: %s", extract_error_message(response, exc))
             return {}
