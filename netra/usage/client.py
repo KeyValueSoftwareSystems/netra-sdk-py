@@ -5,6 +5,7 @@ from typing import Any, Dict, Optional
 import httpx
 
 from netra.config import Config
+from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
@@ -80,6 +81,7 @@ class UsageHttpClient:
             )
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             url = f"/usage/sessions/{session_id}"
             params: Dict[str, str] = {}
@@ -94,7 +96,11 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to fetch session usage '%s': %s", session_id, exc)
+            logger.error(
+                "netra.usage: Failed to fetch session usage '%s': %s",
+                session_id,
+                extract_error_message(response, exc),
+            )
             return {}
 
     def get_tenant_usage(self, tenant_id: str, start_time: str | None = None, end_time: str | None = None) -> Any:
@@ -114,6 +120,7 @@ class UsageHttpClient:
             )
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             url = f"/usage/tenants/{tenant_id}"
             params: Dict[str, str] = {}
@@ -128,7 +135,11 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to fetch tenant usage '%s': %s", tenant_id, exc)
+            logger.error(
+                "netra.usage: Failed to fetch tenant usage '%s': %s",
+                tenant_id,
+                extract_error_message(response, exc),
+            )
             return {}
 
     def list_traces(
@@ -168,6 +179,7 @@ class UsageHttpClient:
             logger.error("netra.usage: Usage client is not initialized; cannot list traces")
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             url = "/sdk/traces"
             payload: Dict[str, Any] = {}
@@ -210,7 +222,7 @@ class UsageHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to list traces: %s", exc)
+            logger.error("netra.usage: Failed to list traces: %s", extract_error_message(response, exc))
             return {}
 
     def list_spans_by_trace_id(
@@ -238,6 +250,7 @@ class UsageHttpClient:
             logger.error("netra.usage: Usage client is not initialized; cannot list spans for trace '%s'", trace_id)
             return {}
 
+        response: Optional[httpx.Response] = None
         try:
             url = f"/sdk/traces/{trace_id}/spans"
             params: Dict[str, Any] = {}
@@ -255,5 +268,9 @@ class UsageHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to list spans for trace '%s': %s", trace_id, exc)
+            logger.error(
+                "netra.usage: Failed to list spans for trace '%s': %s",
+                trace_id,
+                extract_error_message(response, exc),
+            )
             return {}

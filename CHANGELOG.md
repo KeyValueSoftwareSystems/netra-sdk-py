@@ -10,6 +10,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Remove `enable_root_span` configuration** - The `enable_root_span` option and the `NETRA_ENABLE_ROOT_SPAN` environment variable have been removed from `Netra.init()`. Netra no longer creates a long-lived process root span at initialization.
 
+- **Surface backend error messages in HTTP client logs** - Backend API clients (prompts, models, usage, dashboard, evaluation, simulation) now log the backend-provided error message (e.g. `Prompt 'X' not found`) on request failures instead of the raw HTTP exception string, via a shared `extract_error_message` helper in `netra.utils`. This also fixes a latent error in the dashboard and evaluation clients that could raise while handling a request that failed before a response was received.
+
 ## [0.1.99] - 2026-08-19
 
 - **Add support to capture cache-write tokens in OpenAI instrumentation** — The OpenAI instrumentor now extracts `cache_write_tokens` from `prompt_tokens_details` (or `input_tokens_details` for the Responses API) and maps it to the `gen_ai.usage.cache_creation_input_tokens` span attribute. This enables accurate cost calculation for new OpenAI models that report cache-write tokens separately, as well as OpenAI-compatible proxies that expose cache-write usage.
