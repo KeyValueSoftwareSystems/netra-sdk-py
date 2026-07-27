@@ -56,7 +56,6 @@ class TestNetraInitialization:
             trace_content=None,
             resource_attributes=None,
             environment=None,
-            enable_root_span=None,
             enable_scrubbing=None,
             debug_mode=None,
             blocked_spans=None,
@@ -89,7 +88,6 @@ class TestNetraInitialization:
             "trace_content": False,
             "resource_attributes": {"env": "test", "version": "1.0.0"},
             "environment": "testing",
-            "enable_root_span": False,
             "enable_scrubbing": None,
             "debug_mode": True,
             "blocked_spans": None,
@@ -109,7 +107,6 @@ class TestNetraInitialization:
             trace_content=trace_content,
             resource_attributes=resource_attributes,
             environment=environment,
-            enable_root_span=False,
             debug_mode=True,
             blocked_spans=None,
         )
