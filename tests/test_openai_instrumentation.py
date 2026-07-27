@@ -3,8 +3,11 @@ Unit tests for NetraOpenAIInstrumentor class.
 Focuses on core functionality and happy path scenarios.
 """
 
+import json
 from typing import Collection
 from unittest.mock import MagicMock, Mock, patch
+
+from opentelemetry.semconv_ai import SpanAttributes
 
 from netra.instrumentation.openai import NetraOpenAIInstrumentor
 from netra.instrumentation.openai.utils import should_suppress_instrumentation
@@ -238,3 +241,322 @@ class TestUsageAttributes:
 
         assert SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS not in attrs
         assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 4
+
+
+class TestResponseMessageAttributesToolCalls:
+    """Test _set_response_message_attributes handling of tool call responses."""
+
+    @staticmethod
+    def _capture(response_dict):
+        from netra.instrumentation.openai.utils import _set_response_message_attributes
+
+        span = Mock()
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        _set_response_message_attributes(span, response_dict)
+        return captured
+
+    def test_tool_calls_response_no_empty_assistant_entry(self):
+        """When content is null and tool_calls are present, no empty assistant entry should be emitted."""
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_abc123",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"location":"London"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+        attrs = self._capture(response)
+
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]) == {
+            "name": "get_weather",
+            "arguments": '{"location":"London"}',
+        }
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_abc123"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "tool_calls"
+        assert f"{SpanAttributes.LLM_COMPLETIONS}.2.role" not in attrs
+
+    def test_tool_calls_response_with_content_keeps_assistant_entry(self):
+        """When content is non-empty alongside tool_calls, both assistant text and tool calls are emitted."""
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": "Let me check that for you.",
+                        "tool_calls": [
+                            {
+                                "id": "call_xyz",
+                                "type": "function",
+                                "function": {"name": "lookup", "arguments": '{"q":"test"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+        attrs = self._capture(response)
+
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "Let me check that for you."
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.role"] == "assistant"
+        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.content"]) == {
+            "name": "lookup",
+            "arguments": '{"q":"test"}',
+        }
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.tool_call_id"] == "call_xyz"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.2.finish_reason"] == "tool_calls"
+
+    def test_normal_text_response_still_works(self):
+        """A regular text response (no tool_calls) still emits the assistant entry."""
+        response = {
+            "choices": [
+                {
+                    "message": {"role": "assistant", "content": "Hello there!"},
+                    "finish_reason": "stop",
+                }
+            ]
+        }
+
+        attrs = self._capture(response)
+
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "Hello there!"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "stop"
+
+    def test_multiple_tool_calls_in_single_response(self):
+        """Multiple tool_calls in one message produce sequential indexed entries without an empty leader."""
+        response = {
+            "choices": [
+                {
+                    "message": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_1",
+                                "type": "function",
+                                "function": {"name": "get_weather", "arguments": '{"city":"NYC"}'},
+                            },
+                            {
+                                "id": "call_2",
+                                "type": "function",
+                                "function": {"name": "get_time", "arguments": '{"tz":"EST"}'},
+                            },
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+        attrs = self._capture(response)
+
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_1"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.tool_call_id"] == "call_2"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.2.finish_reason"] == "tool_calls"
+
+    def test_delta_tool_calls_no_empty_entry(self):
+        """Delta branch (streaming) also skips empty content when tool_calls present."""
+        response = {
+            "choices": [
+                {
+                    "delta": {
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [
+                            {
+                                "id": "call_stream",
+                                "function": {"name": "search", "arguments": '{"q":"test"}'},
+                            }
+                        ],
+                    },
+                    "finish_reason": "tool_calls",
+                }
+            ]
+        }
+
+        attrs = self._capture(response)
+
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert "search" in attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_stream"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "tool_calls"
+
+
+class TestChatCompletionInputToolCalls:
+    """Test _set_chat_completion_input handling of tool-related messages."""
+
+    @staticmethod
+    def _capture(messages):
+        from netra.instrumentation.openai.utils import _set_chat_completion_input
+
+        span = Mock()
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        _set_chat_completion_input(span, messages)
+        return captured
+
+    def test_pydantic_model_message_is_captured(self):
+        """Non-dict messages with model_dump() are converted and captured."""
+        pydantic_msg = Mock()
+        pydantic_msg.model_dump.return_value = {
+            "role": "assistant",
+            "content": "Hello!",
+        }
+
+        messages = [
+            {"role": "user", "content": "Hi"},
+            pydantic_msg,
+        ]
+
+        attrs = self._capture(messages)
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Hi"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"] == "Hello!"
+
+    def test_assistant_tool_calls_are_serialized(self):
+        """Assistant messages with tool_calls produce indexed entries with name/arguments JSON."""
+        messages = [
+            {"role": "user", "content": "What's the weather?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_abc",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"location":"London"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_abc", "content": '{"temp": 22}'},
+        ]
+
+        attrs = self._capture(messages)
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "What's the weather?"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
+        assert json.loads(attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"]) == {
+            "name": "get_weather",
+            "arguments": '{"location":"London"}',
+        }
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.tool_call_id"] == "call_abc"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "tool"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.content"] == '{"temp": 22}'
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.tool_call_id"] == "call_abc"
+
+    def test_tool_call_id_captured_on_tool_messages(self):
+        """Tool messages have their tool_call_id captured as a span attribute."""
+        messages = [
+            {"role": "tool", "tool_call_id": "call_xyz", "content": "result data"},
+        ]
+
+        attrs = self._capture(messages)
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "tool"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "result data"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.tool_call_id"] == "call_xyz"
+
+    def test_pydantic_assistant_with_tool_calls(self):
+        """A Pydantic ChatCompletionMessage with tool_calls is correctly converted and serialized."""
+        func_mock = Mock()
+        func_mock.name = "get_weather"
+        func_mock.arguments = '{"location":"Paris"}'
+        tc_mock = Mock()
+        tc_mock.id = "call_pydantic"
+        tc_mock.function = func_mock
+
+        pydantic_msg = Mock()
+        pydantic_msg.model_dump.return_value = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_pydantic",
+                    "type": "function",
+                    "function": {"name": "get_weather", "arguments": '{"location":"Paris"}'},
+                }
+            ],
+        }
+
+        messages = [
+            {"role": "user", "content": "Weather in Paris?"},
+            pydantic_msg,
+            {"role": "tool", "tool_call_id": "call_pydantic", "content": '{"temp": 20}'},
+        ]
+
+        attrs = self._capture(messages)
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
+        assert json.loads(attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"]) == {
+            "name": "get_weather",
+            "arguments": '{"location":"Paris"}',
+        }
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.tool_call_id"] == "call_pydantic"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "tool"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.tool_call_id"] == "call_pydantic"
+
+    def test_none_content_message_is_skipped(self):
+        """A message with content=None and no tool_calls is skipped entirely — no blank entry emitted."""
+        messages = [
+            {"role": "user", "content": None},
+            {"role": "user", "content": "actual question"},
+        ]
+
+        attrs = self._capture(messages)
+
+        assert f"{SpanAttributes.LLM_PROMPTS}.0.role" in attrs
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "actual question"
+        assert f"{SpanAttributes.LLM_PROMPTS}.1.role" not in attrs
+
+    def test_contiguous_indices_with_tool_call_conversation(self):
+        """Full tool-call conversation produces contiguous prompt indices with no gaps."""
+        messages = [
+            {"role": "user", "content": "Hello"},
+            {"role": "assistant", "content": "Hi!"},
+            {"role": "user", "content": "Weather in London?"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "get_weather", "arguments": '{"location":"London"}'},
+                    }
+                ],
+            },
+            {"role": "tool", "tool_call_id": "call_1", "content": '{"temp": 15}'},
+        ]
+
+        attrs = self._capture(messages)
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"] == "Hi!"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.role"] == "assistant"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.tool_call_id"] == "call_1"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.role"] == "tool"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.tool_call_id"] == "call_1"
