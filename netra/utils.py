@@ -8,6 +8,8 @@ from __future__ import annotations
 import logging
 from typing import AbstractSet, Any, Optional, Set
 
+import httpx
+
 from netra.config import Config
 from netra.instrumentation.instruments import (
     DEFAULT_INSTRUMENTS_FOR_ROOT,
@@ -16,6 +18,35 @@ from netra.instrumentation.instruments import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+def extract_error_message(response: Optional[httpx.Response], exc: Exception) -> str:
+    """Extract a human-readable error message from a Netra backend HTTP error.
+
+    Netra backend error bodies follow the shape ``{"error": {"message": ...}}``
+    (produced by the backend's global HTTP exception filter). When the body is
+    absent, not JSON, or missing that field, fall back to ``str(exc)`` so the
+    caller always has something loggable.
+
+    Args:
+        response: The HTTP response tied to the failure, or ``None`` when the
+            request failed before a response was received (e.g. a connection
+            error or timeout).
+        exc: The exception that was raised.
+
+    Returns:
+        The backend-provided error message, or ``str(exc)`` as a fallback.
+    """
+    if response is not None:
+        try:
+            body = response.json()
+            error_data = body.get("error", {})
+            if isinstance(error_data, dict) and "message" in error_data:
+                message = error_data["message"]
+                return message if isinstance(message, str) else str(message)
+        except Exception:
+            logger.debug("utils: could not parse error from response body", exc_info=True)
+    return str(exc)
 
 
 def truncate_string(value: str, max_len: int) -> str:
