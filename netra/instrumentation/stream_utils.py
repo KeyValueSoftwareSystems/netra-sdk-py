@@ -142,6 +142,31 @@ class RootOutputAsyncStreamWrapper:
     Uses an internal async generator with ``finally`` so that ``_commit``
     fires on full exhaustion, early ``break`` (via ``aclose()``), or explicit
     close — mirroring the sync wrapper's behaviour.
+
+    Known limitation — async early ``break`` in long-lived event loops:
+        When a consumer does ``async for chunk in wrapper: break``, the
+        internal ``_aiter_gen()`` async generator is abandoned.  Python does
+        **not** call ``aclose()`` on it synchronously; instead, CPython's
+        async-generator finalizer (installed by asyncio) schedules ``aclose()``
+        for a **future event loop iteration**.  If the root span ends before
+        that scheduled cleanup runs, ``_commit()`` will attempt ``set_attribute()``
+        on an already-ended span, which is a silent no-op.
+
+        This is a fundamental limitation of Python's async generator cleanup
+        model and **cannot be fully fixed at the library level**.
+
+        Unaffected paths: full exhaustion, explicit ``aclose()``, context
+        manager exit (``async with``), and ``asyncio.run()`` (which
+        force-finalizes all async generators via ``loop.shutdown_asyncgens()``).
+
+        Workaround — use the ``async with`` context manager pattern for
+        early-break scenarios in long-lived loops.  ``__aexit__`` fires
+        ``_commit()`` synchronously before the span ends::
+
+            async with Netra.set_root_output_stream(stream) as wrapped:
+                async for chunk in wrapped:
+                    if should_stop:
+                        break
     """
 
     _netra_stream_wrapper = True
@@ -156,6 +181,10 @@ class RootOutputAsyncStreamWrapper:
         self._committed = False
 
     async def _aiter_gen(self) -> Any:
+        # NOTE: On early break the finally block runs only when asyncio's
+        # async-generator finalizer schedules aclose(), which happens on a
+        # future event loop iteration — not synchronously.  See the class
+        # docstring "Known limitation" section for implications.
         try:
             async for chunk in self._aiterator:
                 if self._track_chunks:

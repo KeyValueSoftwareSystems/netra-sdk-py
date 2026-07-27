@@ -596,6 +596,12 @@ class SessionManager:
             def commit_output(output: Any) -> None:
                 serialized = serialize_value(output)
                 if serialized:
+                    if not getattr(root_span, "is_recording", lambda: False)():
+                        logger.warning(
+                            "SessionManager.set_root_output_stream: root span is no longer "
+                            "recording; stream output will be dropped."
+                        )
+                        return
                     root_span.set_attribute(NETRA_USER_OUTPUT, serialized)
 
             return wrap_stream_for_root_output(value, commit_output)

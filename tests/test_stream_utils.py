@@ -240,7 +240,15 @@ class TestRootOutputAsyncStreamWrapper:
         assert wrapper._committed is True
 
     def test_async_break_triggers_commit(self) -> None:
-        """``async for x in stream: break`` must trigger ``_commit``."""
+        """``async for x in stream: break`` must trigger ``_commit``.
+
+        This test passes because ``asyncio.run()`` force-finalizes async
+        generators on shutdown (via ``loop.shutdown_asyncgens()``).  In a
+        long-lived event loop (e.g. a web server), the ``finally``/commit
+        is deferred to a future event loop iteration, which may run after
+        the root span has already ended — see the
+        ``RootOutputAsyncStreamWrapper`` class docstring for details.
+        """
         commit_fn = _make_commit_fn()
         wrapper = RootOutputAsyncStreamWrapper(_AsyncIterable([1, 2, 3]), commit_fn, _generic_extractor)
 
