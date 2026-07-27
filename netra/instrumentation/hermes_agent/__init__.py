@@ -23,7 +23,7 @@ from netra.instrumentation.hermes_agent.wrappers import (
 
 logger = logging.getLogger(__name__)
 
-_instruments = ("hermes-agent >= 0.18.0",)
+_instruments = ("hermes-agent >= 0.17.0",)
 
 
 def _is_hermes_agent_environment() -> bool:
