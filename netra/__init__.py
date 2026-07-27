@@ -6,7 +6,6 @@ from typing import AbstractSet, Any, Dict, List, Optional
 from opentelemetry import context as context_api
 from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace
-from opentelemetry.trace import SpanKind
 
 from netra.config import Config
 from netra.dashboard import Dashboard
@@ -41,8 +40,6 @@ class Netra:
     _initialized = False
     # Use RLock so the thread that already owns the lock can re-acquire it safely
     _init_lock = threading.RLock()
-    _root_span = None
-    _root_ctx_token = None
     _subprocess_ctx_token = None
     _metrics_enabled = False
 
@@ -65,7 +62,6 @@ class Netra:
         disable_batch: Optional[bool] = None,
         trace_content: Optional[bool] = None,
         debug_mode: Optional[bool] = None,
-        enable_root_span: Optional[bool] = None,
         resource_attributes: Optional[Dict[str, Any]] = None,
         environment: Optional[str] = None,
         enable_scrubbing: Optional[bool] = None,
@@ -86,7 +82,6 @@ class Netra:
             disable_batch: Whether to disable batch processing
             trace_content: Whether to trace content
             debug_mode: Whether to enable debug mode
-            enable_root_span: Whether to enable root span
             resource_attributes: Resource attributes to be sent to the server
             environment: Environment to be sent to the server
             enable_scrubbing: Whether to enable scrubbing
@@ -114,11 +109,8 @@ class Netra:
                 instrumentation it is dropped too, recursively, until a
                 surviving span is reached.  This keeps LLM/vector spans that
                 originate under an unwanted server root without emitting the server span itself.
-                Note: when ``enable_root_span=True``, Netra attaches its own root span and
-                every auto-instrumentation span becomes its child, so no
-                reparenting occurs.  Pass a set containing
-                ``NetraInstruments.ALL`` to allow all instrumentations to
-                produce root spans (legacy behaviour).
+                Pass a set containing ``NetraInstruments.ALL`` to allow all
+                instrumentations to produce root spans (legacy behaviour).
 
         Returns:
             None
@@ -135,7 +127,6 @@ class Netra:
                 disable_batch=disable_batch,
                 trace_content=trace_content,
                 debug_mode=debug_mode,
-                enable_root_span=enable_root_span,
                 resource_attributes=resource_attributes,
                 environment=environment,
                 enable_scrubbing=enable_scrubbing,
@@ -227,25 +218,6 @@ class Netra:
             cls._initialized = True
             logger.info("Netra successfully initialized.")
 
-            # Create and attach a long-lived root span if enabled
-            if cfg.enable_root_span:
-                tracer = trace.get_tracer("netra.root.span")
-                root_name = f"{Config.LIBRARY_NAME}.root.span"
-                root_span = tracer.start_span(root_name, kind=SpanKind.INTERNAL)
-
-                # Attach span to current context so subsequent spans become its children
-                ctx = trace.set_span_in_context(root_span)
-                token = context_api.attach(ctx)
-
-                # Save for potential shutdown/cleanup and session tracking
-                cls._root_span = root_span
-                cls._root_ctx_token = token
-                try:
-                    SessionManager.set_current_span(root_span)
-                except Exception:
-                    pass
-                logger.info("Netra root span created and attached to context.")
-
             # Ensure cleanup at process exit
             atexit.register(cls.shutdown)
 
@@ -253,20 +225,11 @@ class Netra:
     def shutdown(cls) -> None:
         """Flush all pending telemetry and release SDK resources.
 
-        Context tokens are detached in LIFO order (root first, subprocess
-        second) to match the attachment order in :meth:`init`.  All logging is
-        guarded against closed streams that may occur during ``atexit``
-        teardown.
+        The subprocess parent-context token is detached to match the
+        attachment done in :meth:`init`.  All logging is guarded against closed
+        streams that may occur during ``atexit`` teardown.
         """
         with cls._init_lock:
-            # Detach in LIFO order: root was attached last, so detach it first.
-            if cls._root_ctx_token is not None:
-                try:
-                    context_api.detach(cls._root_ctx_token)
-                except Exception:
-                    pass
-                finally:
-                    cls._root_ctx_token = None
             if cls._subprocess_ctx_token is not None:
                 try:
                     context_api.detach(cls._subprocess_ctx_token)
@@ -274,13 +237,6 @@ class Netra:
                     pass
                 finally:
                     cls._subprocess_ctx_token = None
-            if cls._root_span is not None:
-                try:
-                    cls._root_span.end()
-                except Exception:
-                    pass
-                finally:
-                    cls._root_span = None
             # Flush and shutdown the tracer provider
             try:
                 provider = trace.get_tracer_provider()
