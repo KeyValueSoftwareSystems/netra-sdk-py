@@ -34,10 +34,11 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Label evaluation/simulation traces on the root span** - Root spans produced by evaluation test runs (`Netra.evaluation`) and simulation runs (`Netra.simulation`) now carry a `netra.trace.origin` attribute set to `evaluation`, letting the backend and frontend distinguish these traces from normal workflow invocations.
 
-- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `PROMPT_CACHE_TTL_SECONDS` (60); override per call with `cache_ttl`. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
-
 - **Add opt-in TTL caching for `get_model_pricing`** - `Netra.models.get_model_pricing` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override per call with `cache_ttl`. Use `Netra.models.clear_cache()` to invalidate cached entries.
+
 - **Surface backend error messages in HTTP client logs** - Backend API clients (prompts, models, usage, dashboard, evaluation, simulation) now log the backend-provided error message (e.g. `Prompt 'X' not found`) on request failures instead of the raw HTTP exception string, via a shared `extract_error_message` helper in `netra.utils`. This also fixes a latent error in the dashboard and evaluation clients that could raise while handling a request that failed before a response was received.
+
+- **Resolve attribute/conversation truncation limits at init time instead of import time** - `NETRA_ATTRIBUTE_MAX_LEN`, `NETRA_CONVERSATION_CONTENT_MAX_LEN`, and `TRIAL_BLOCK_DURATION_SECONDS` are now resolved when `Netra.init()` builds the config rather than when `netra` is first imported. Overrides applied before `init()` — including a late `load_dotenv()` placed after the `netra` import — are now honored, so import order no longer affects these limits. Invalid values fall back to the defaults (50000/50000/900).
 
 - **Remove `enable_root_span` configuration** - The `enable_root_span` option and the `NETRA_ENABLE_ROOT_SPAN` environment variable have been removed from `Netra.init()`. Netra no longer creates a long-lived process root span at initialization.
 

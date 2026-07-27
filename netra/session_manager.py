@@ -8,7 +8,7 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 from opentelemetry import trace
 
-from netra.config import Config
+from netra.config import Config, get_conversation_max_len
 from netra.utils import process_content_for_max_len, serialize_value
 
 logger = logging.getLogger(__name__)
@@ -470,7 +470,7 @@ class SessionManager:
                     existing = []
 
             # Enforce per-entry content length limit without breaking the entire conversation structure
-            max_len = Config.CONVERSATION_MAX_LEN
+            max_len = get_conversation_max_len()
             processed_content = process_content_for_max_len(content, max_len)
 
             # Create a conversation entry
@@ -501,8 +501,8 @@ class SessionManager:
         """Set the ``input`` attribute on the current active span.
 
         Accepts any value. Dicts and lists are JSON-serialised; primitives are
-        converted with ``str()``. The result is truncated to
-        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+        converted with ``str()``. The result is truncated to the active config's
+        attribute max length.
 
         Args:
             value: The input value to record.
@@ -518,8 +518,8 @@ class SessionManager:
         """Set the ``output`` attribute on the current active span.
 
         Accepts any value. Dicts and lists are JSON-serialised; primitives are
-        converted with ``str()``. The result is truncated to
-        ``Config.ATTRIBUTE_MAX_LEN`` characters.
+        converted with ``str()``. The result is truncated to the active config's
+        attribute max length.
 
         Args:
             value: The output value to record.
