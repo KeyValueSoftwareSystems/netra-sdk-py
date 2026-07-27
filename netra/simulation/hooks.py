@@ -28,7 +28,6 @@ Failure semantics:
 """
 
 import asyncio
-import inspect
 import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
@@ -42,6 +41,8 @@ BeforeFn = Callable[..., Any | Awaitable[Any]]
 AfterFn = Callable[..., Any | Awaitable[Any]]
 AfterEachFn = Callable[..., Any | Awaitable[Any]]
 AfterAllFn = Callable[..., Any | Awaitable[Any]]
+
+_DESCRIPTION_MAX_LEN = 200
 
 
 @dataclass
@@ -79,28 +80,30 @@ class SimulationHooks:
         def setup():
             employee = create_employee()
             return {"employee_id": employee.id}
+        setup.description = "Create a test employee before any scenario runs."
 
         def setup_each(shared_context):
-            # Runs before every scenario
             token = get_fresh_token()
             return {"auth_token": token}
+        setup_each.description = "Obtain a fresh auth token before every scenario."
 
         def setup_refund_item(shared_context):
-            # Only for refund scenario
             token = login(shared_context["employee_id"])
             return {"refund_account": "12345", "token": token}
+        setup_refund_item.description = "Create a refund account for the refund scenario only."
 
         def teardown_refund_item(result, setup_context):
-            # Cleanup only for refund scenario
             logout(setup_context.get("token"))
             cleanup_refund(setup_context.get("refund_account"))
+        teardown_refund_item.description = "Delete the refund account after the refund scenario."
 
         def teardown_each(result, setup_context):
-            # Runs after every scenario
             invalidate_token(setup_context.get("auth_token"))
+        teardown_each.description = "Invalidate the auth token after every scenario."
 
         def teardown(results, shared_context):
             delete_employee(shared_context["employee_id"])
+        teardown.description = "Delete the test employee once all scenarios finish."
 
         hooks = SimulationHooks(
             before_all=setup,
@@ -126,16 +129,23 @@ class SimulationHooks:
         are stored on the test run. Item-level hooks (``before`` / ``after``) are
         sent under ``items`` keyed by ``datasetItemId`` and stored on each matching
         test run item.
+
+        Descriptions come from an explicit ``.description`` attribute on each
+        hook function, matching the TypeScript SDK.
         """
 
         def _desc(fn: Optional[Callable[..., Any]]) -> Optional[dict[str, Any]]:
             if fn is None:
                 return None
-            doc = inspect.getdoc(fn)
+            # Prefer an explicit `.description` property (same as the TS SDK).
+            explicit = getattr(fn, "description", None)
+            description = (
+                str(explicit)[:_DESCRIPTION_MAX_LEN] if isinstance(explicit, str) and explicit.strip() else None
+            )
             return {
                 "configured": True,
                 "name": getattr(fn, "__name__", None),
-                "description": doc[:200] if doc else None,
+                "description": description,
             }
 
         payload: dict[str, Any] = {}

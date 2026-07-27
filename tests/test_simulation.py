@@ -854,18 +854,24 @@ class TestSimulationHooks:
         from netra.simulation.hooks import SimulationHooks
 
         def setup_all() -> dict:
-            """Setup shared resources."""
             return {}
+
+        setup_all.description = "Setup shared resources."  # type: ignore[attr-defined]
 
         def setup_refund(shared_context: Optional[dict]) -> dict:
-            """Setup refund scenario."""
             return {}
 
+        setup_refund.description = "Setup refund scenario."  # type: ignore[attr-defined]
+
         def teardown_refund(result: dict, setup_context: Optional[dict]) -> None:
-            """Teardown refund scenario."""
+            pass
+
+        teardown_refund.description = "Teardown refund scenario."  # type: ignore[attr-defined]
 
         def teardown_all(results: dict, shared_context: Optional[dict]) -> None:
-            """Teardown shared resources."""
+            pass
+
+        teardown_all.description = "Teardown shared resources."  # type: ignore[attr-defined]
 
         hooks = SimulationHooks(
             before_all=setup_all,
@@ -897,6 +903,33 @@ class TestSimulationHooks:
         assert item["after"]["name"] == "teardown_refund"
         assert item["after"]["description"] == "Teardown refund scenario."
 
+    def test_hooks_describe_no_description(self) -> None:
+        """Hooks without an explicit .description produce None."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_all() -> dict:
+            return {}
+
+        hooks = SimulationHooks(before_all=setup_all)
+        meta = hooks.describe()
+
+        assert meta["beforeAll"]["name"] == "setup_all"
+        assert meta["beforeAll"]["description"] is None
+
+    def test_hooks_describe_truncates_description(self) -> None:
+        """Explicit descriptions are truncated to 200 characters."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_all() -> dict:
+            return {}
+
+        setup_all.description = "x" * 250  # type: ignore[attr-defined]
+
+        hooks = SimulationHooks(before_all=setup_all)
+        meta = hooks.describe()
+
+        assert meta["beforeAll"]["description"] == "x" * 200
+
     def test_hooks_describe_empty(self) -> None:
         """Test that hooks.describe() returns empty dict when no hooks configured."""
         from netra.simulation.hooks import SimulationHooks
@@ -911,11 +944,10 @@ class TestSimulationHooks:
         from netra.simulation.hooks import SimulationHooks
 
         def setup_scenario(shared_context: Optional[dict]) -> dict:
-            """Setup for any scenario."""
             return {}
 
         def teardown_scenario(result: dict, setup_context: Optional[dict]) -> None:
-            """Teardown for any scenario."""
+            pass
 
         hooks = SimulationHooks(
             before={
@@ -937,6 +969,7 @@ class TestSimulationHooks:
 
         for item_id in ("item-1", "item-2"):
             assert by_id[item_id]["before"]["name"] == "setup_scenario"
+            assert by_id[item_id]["before"]["description"] is None
             assert by_id[item_id]["after"]["name"] == "teardown_scenario"
 
         # item-3 has before only
