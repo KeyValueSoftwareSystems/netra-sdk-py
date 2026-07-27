@@ -425,6 +425,7 @@ class EvaluationHttpClient:
         if not self._client:
             logger.error("netra.evaluation: Evaluation client is not initialized; cannot get span")
             return None
+        response: Optional[httpx.Response] = None
         try:
             url = f"sdk/traces/spans/{span_id}"
             response = self._client.get(url)
@@ -433,7 +434,14 @@ class EvaluationHttpClient:
             if isinstance(data, dict):
                 return data.get("data", data)
             return data
-        except Exception:
+        except Exception as exc:
+            # Logged at debug: wait_for_span_ingestion polls this until the span
+            # lands, so a miss is the expected state rather than a failure.
+            logger.debug(
+                "netra.evaluation: Failed to get span '%s': %s",
+                span_id,
+                extract_error_message(response, exc),
+            )
             return None
 
     async def wait_for_span_ingestion(
