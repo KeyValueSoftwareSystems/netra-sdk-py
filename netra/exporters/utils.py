@@ -6,7 +6,7 @@ from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, cast
 from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
-from netra.config import Config
+from netra.config import get_trial_block_duration_seconds
 from netra.processors.root_instrument_filter_processor import (
     ROOT_BLOCK_CANDIDATE_FIELD,
     get_root_block_candidates,
@@ -43,11 +43,11 @@ def set_trial_blocked(blocked: bool) -> None:
                 _trial_blocked_at = time.time()
                 logger.warning(
                     "Trial/quota exhausted: blocking span export for %d seconds (15 minutes)",
-                    Config.TRIAL_BLOCK_DURATION_SECONDS,
+                    get_trial_block_duration_seconds(),
                 )
             else:
                 elapsed = time.time() - _trial_blocked_at
-                remaining = Config.TRIAL_BLOCK_DURATION_SECONDS - elapsed
+                remaining = get_trial_block_duration_seconds() - elapsed
                 logger.debug("Trial already blocked: %d seconds remaining", max(0, int(remaining)))
         else:
             if _trial_blocked_at is not None:
@@ -72,7 +72,7 @@ def is_trial_blocked() -> bool:
 
         # Check if 15 minutes have passed since blocking started
         elapsed = time.time() - _trial_blocked_at
-        if elapsed >= Config.TRIAL_BLOCK_DURATION_SECONDS:
+        if elapsed >= get_trial_block_duration_seconds():
             _trial_blocked_at = None
             logger.info("Trial blocking period (15 minutes) expired, resuming exports")
             return False

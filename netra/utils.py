@@ -10,7 +10,7 @@ from typing import AbstractSet, Any, Optional, Set
 
 import httpx
 
-from netra.config import Config
+from netra.config import get_attribute_max_len
 from netra.instrumentation.instruments import (
     DEFAULT_INSTRUMENTS_FOR_ROOT,
     InstrumentSet,
@@ -122,14 +122,14 @@ def process_content_for_max_len(content: Any, max_len: int) -> Any:
 
 
 def serialize_value(value: Any) -> str:
-    """Serialize *value* to a string capped at ``Config.ATTRIBUTE_MAX_LEN``."""
+    """Serialize *value* to a string capped at the active config's attribute max length."""
     if value is None:
         return ""
     try:
         import json
 
         serialized = json.dumps(value) if isinstance(value, (dict, list)) else str(value)
-        return truncate_string(serialized, Config.ATTRIBUTE_MAX_LEN)
+        return truncate_string(serialized, get_attribute_max_len())
     except Exception:
         logger.debug("utils: failed to serialize value", exc_info=True)
         return ""
