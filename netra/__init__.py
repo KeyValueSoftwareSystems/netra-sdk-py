@@ -7,7 +7,7 @@ from opentelemetry import context as context_api
 from opentelemetry import metrics as otel_metrics
 from opentelemetry import trace
 
-from netra.config import Config
+from netra.config import Config, set_active_config
 from netra.dashboard import Dashboard
 from netra.evaluation import Evaluation
 from netra.instrumentation import init_instrumentations
@@ -135,6 +135,11 @@ class Netra:
                 metrics_export_interval_ms=metrics_export_interval_ms,
                 export_auto_metrics=export_auto_metrics,
             )
+
+            # Register as the process-active config so global/static consumers
+            # (span processors, SessionManager, exporter helpers) resolve their
+            # limits off this init-time instance instead of import-time defaults.
+            set_active_config(cfg)
 
             # Configure logging based on debug mode
             configure_package_logging(debug_mode=cfg.debug_mode)
