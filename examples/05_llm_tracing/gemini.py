@@ -11,7 +11,6 @@ from google.genai import types as google_types
 
 from netra import Netra
 from netra.decorators import workflow
-from netra.pii import get_default_detector
 
 # --- Configuration ---
 
@@ -29,8 +28,8 @@ def initialize_netra_sdk() -> None:
     """
     Initializes the Netra SDK with configuration details.
 
-    This setup is crucial for enabling Netra's monitoring and PII protection
-    features within the application.
+    This setup is crucial for enabling Netra's monitoring features
+    within the application.
     """
     try:
         netra_api_key = os.environ["NETRA_API_KEY"]
@@ -54,13 +53,12 @@ def initialize_netra_sdk() -> None:
 
 
 @workflow(name="translator_workflow")  # type: ignore[arg-type]
-async def translate_text_with_pii_protection(text_to_translate: str) -> Any:
+async def translate_text(text_to_translate: str) -> Any:
     """
-    Translates English text to French using Gemini, with PII protection.
+    Translates English text to French using Gemini.
 
     This function is wrapped with the Netra `@workflow` decorator, which allows
-    Netra to monitor its execution. Before translation, it scans the input
-    for PII. If PII is found, it's masked before being sent to the Gemini API.
+    Netra to monitor its execution.
 
     Args:
         text_to_translate: The string of English text to be translated.
@@ -74,21 +72,9 @@ async def translate_text_with_pii_protection(text_to_translate: str) -> Any:
 
     logging.info("Starting translation workflow for: '%s'", text_to_translate)
 
-    # 1. PII Detection using Netra's default PII detector
-    logging.info("Scanning for PII in the input text.")
-    pii_detector = get_default_detector(action_type="MASK")
-    pii_result = pii_detector.detect(text_to_translate)
+    input_for_model = text_to_translate
 
-    if pii_result.has_pii:
-        logging.warning("PII detected. Using masked text for translation.")
-        # Use the text with PII masked (e.g., "My name is [PERSON_0]")
-        input_for_model = pii_result.masked_text
-        logging.info("Masked input: '%s'", input_for_model)
-    else:
-        logging.info("No PII detected. Using original text.")
-        input_for_model = text_to_translate
-
-    # 2. Translation using Google Gemini API
+    # Translation using Google Gemini API
     try:
         logging.info("Sending request to Gemini API.")
         google_api_key = os.environ["GOOGLE_API_KEY"]
@@ -131,9 +117,7 @@ async def main() -> None:
     Main function to parse command-line arguments and run the translation.
     """
     # Setup command-line argument parsing to get input text from the user
-    parser = argparse.ArgumentParser(
-        description="Translate English text to French using Gemini with Netra PII protection."
-    )
+    parser = argparse.ArgumentParser(description="Translate English text to French using Gemini with Netra tracing.")
     parser.add_argument("message", type=str, help="The English text to translate. Please wrap in quotes.")
     args = parser.parse_args()
 
@@ -141,7 +125,7 @@ async def main() -> None:
     initialize_netra_sdk()
 
     # Run the translation function and get the result
-    translated_message = await translate_text_with_pii_protection(args.message)  # type: ignore[misc]
+    translated_message = await translate_text(args.message)  # type: ignore[misc]
 
     if translated_message:
         print("\n--- Translation Result ---")
@@ -154,8 +138,7 @@ async def main() -> None:
 
 if __name__ == "__main__":
     # Example Usage from command line:
-    # python your_script_name.py "Hello, my name is John and my email is john.doe@example.com"
-    # python your_script_name.py "This is a test without any personal data."
+    # python your_script_name.py "Hello, my name is John."
 
     # Run the main asynchronous function
     asyncio.run(main())

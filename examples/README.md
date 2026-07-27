@@ -18,17 +18,7 @@ This directory contains examples demonstrating how to integrate Netra SDK into y
 - **`class_decorators.py`** - Advanced class-level instrumentation patterns
 
 
-### 🔒 03_pii_detection/
-
-- **`basic_pii_detection.py`** - Comprehensive PII detection and protection strategies
-
-
-### 🛡️ 04_input_scanner/
-
-- **`basic_input_scanning.py`** - Advanced security scanning for malicious inputs
-
-
 ### 🤖 05_llm_tracing/
 
-- **`gemini.py`** - Google Gemini API integration with PII protection
+- **`gemini.py`** - Google Gemini API integration and tracing
 - **`cohere.py`** - Cohere API monitoring and tracing
