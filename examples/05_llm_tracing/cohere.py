@@ -13,7 +13,6 @@ from rich.prompt import Prompt
 
 from netra import Netra
 from netra.decorators import workflow
-from netra.pii import get_default_detector
 
 # --- Configuration ---
 
@@ -72,14 +71,12 @@ def initialize_sdks() -> Any:
 
 
 @workflow(name="cohere_chat_workflow")  # type: ignore[arg-type]
-async def get_cohere_response_with_pii_protection(
-    client: Any, messages: List[Dict[str, str]], model: str
-) -> Optional[Any]:
+async def get_cohere_response(client: Any, messages: List[Dict[str, str]], model: str) -> Optional[Any]:
     """
-    Sends messages to the Cohere chat API with PII protection.
+    Sends messages to the Cohere chat API.
 
-    This function is wrapped with Netra's `@workflow` decorator. It scans the
-    latest user message for PII and masks it before sending the payload to Cohere.
+    This function is wrapped with Netra's `@workflow` decorator so Netra can
+    monitor its execution.
 
     Args:
         client: The initialized Cohere AsyncClient.
@@ -94,24 +91,10 @@ async def get_cohere_response_with_pii_protection(
         return None
 
     # Separate the latest message from the previous chat history
-    latest_message_content = messages[-1].get("message", "")
+    message_to_send = messages[-1].get("message", "")
     history_for_api = messages[:-1]
 
-    logging.info("Scanning latest user message for PII.")
-
-    # 1. PII Detection and Masking
-    pii_detector = get_default_detector(action_type="MASK")
-    pii_result = pii_detector.detect(latest_message_content)
-
-    if pii_result.has_pii:
-        logging.warning("PII detected. Using masked text for the API call.")
-        message_to_send = pii_result.masked_text
-        logging.info("Masked input: '%s'", message_to_send)
-    else:
-        logging.info("No PII detected in the latest message.")
-        message_to_send = latest_message_content
-
-    # 2. Call Cohere API
+    # Call Cohere API
     try:
         logging.info(f"Sending request to Cohere model: {model}")
         response = await client.chat(
@@ -159,7 +142,7 @@ async def main() -> None:
 
         # Get response from Cohere
         with console.status("[bold cyan]Cohere is thinking...[/bold cyan]"):
-            response = await get_cohere_response_with_pii_protection(
+            response = await get_cohere_response(
                 client=cohere_client, messages=chat_history, model=args.model
             )  # type: ignore[misc]
 
