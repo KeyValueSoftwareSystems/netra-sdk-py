@@ -151,9 +151,6 @@ def tool_execution_middleware_wrapper(tracer: Tracer) -> Callable[..., Any]:
     tools never pass through it, so there is no overlap with
     handle_function_call_wrapper.
 
-    NOTE: the target is a private helper — the most drift-prone of the patch
-    targets. Re-verify its keyword-only signature after upstream Hermes merges.
-
     Args:
         tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
 
@@ -321,6 +318,21 @@ def skill_invocation_wrapper(tracer: Tracer, kind: str, target_arg: str) -> Call
         args: Tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
+        """
+        Wrap a skill message builder in a hermes-agent skill span.
+
+        Args:
+            wrapped (Callable): The original skill message builder.
+            instance (Any): Unused; the builders are module-level functions.
+            args (Tuple): Positional arguments (skill target, user_instruction, ...).
+            kwargs (dict): Keyword arguments of the call.
+
+        Returns:
+            Any: The builder's return value — the expanded message string for
+                 the single-skill builder, or a
+                 ``(message, loaded_names, missing_names)`` tuple for the
+                 stacked/bundle builders. ``None`` means no skill was found.
+        """
         skill_target = _get_arg(args, kwargs, 0, target_arg)
         user_instruction = _get_arg(args, kwargs, 1, "user_instruction")
 
@@ -356,9 +368,6 @@ def approval_gate_wrapper(tracer: Tracer) -> Callable[..., Any]:
     tool-approval escalations. Because approvals run inside tool execution, the
     span nests under the tool span that triggered it.
 
-    NOTE: the target is a private helper; re-verify its keyword-only signature
-    after upstream Hermes merges.
-
     Args:
         tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
 
@@ -372,6 +381,23 @@ def approval_gate_wrapper(tracer: Tracer) -> Callable[..., Any]:
         args: Tuple[Any, ...],
         kwargs: dict[str, Any],
     ) -> Any:
+        """
+        Wrap the approval gate in a hermes-agent approval span.
+
+        A denial is recorded as a normal outcome; only a raised exception sets
+        the span status to ERROR.
+
+        Args:
+            wrapped (Callable): The original _run_approval_gate function.
+            instance (Any): Unused; _run_approval_gate is a module-level function.
+            args (Tuple): Unused; _run_approval_gate takes keyword-only arguments.
+            kwargs (dict): Keyword-only arguments (pattern_key, description,
+                           display_target, ...).
+
+        Returns:
+            Any: The ``{"approved": bool, "message": str | None}`` dict returned
+                 by _run_approval_gate.
+        """
         # _run_approval_gate is keyword-only.
         pattern_key = kwargs.get("pattern_key")
         description = kwargs.get("description")
