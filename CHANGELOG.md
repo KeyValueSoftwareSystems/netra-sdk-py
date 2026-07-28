@@ -18,9 +18,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
 
-- **Fix `set_root_output_stream` not committing output on early `break`** - When users broke out of a stream iteration loop (e.g. `for chunk in stream: break`), the accumulated output was never written to the root span. The stream wrappers now use an internal generator with a `finally` block so that `_commit` fires reliably on full exhaustion, early `break`, or explicit `.close()`.
-
-- **Fix `set_root_output_stream` failing on plain iterables** - Passing an iterable without `__next__` (e.g. a `list`) to `set_root_output_stream` previously raised a `TypeError`. Plain iterables now have their output set eagerly on the root span with a warning directing users to `Netra.set_root_output()` for static values. Only true single-pass iterators (streams) are wrapped.
+- **Fix set_root_output_stream handling** - `set_root_output_stream` now reliably commits output for streams, even when iteration ends early (for example, via `break` or `.close()`), and correctly handles plain iterables by setting their output immediately with a warning recommending `Netra.set_root_output()`. Only true single-pass iterators are wrapped as streams.
 
 - **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
 
