@@ -4,6 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.97-beta] - 2026-07-28
+
+- **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
 
 ## [0.1.96] - 2026-07-23
 

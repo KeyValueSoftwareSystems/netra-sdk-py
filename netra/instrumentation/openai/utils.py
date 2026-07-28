@@ -73,12 +73,37 @@ def _set_chat_completion_input(span: Span, messages: Any) -> None:
     if not isinstance(messages, list) or not messages:
         return
 
-    for index, message in enumerate(messages):
-        if isinstance(message, dict):
-            role = message.get("role", "user")
-            content = str(message.get("content", ""))
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", content)
+    prompt_index = 0
+    for message in messages:
+        if not isinstance(message, dict):
+            message = model_as_dict(message)
+        if not message:
+            continue
+
+        role = message.get("role", "user")
+
+        if content := message.get("content"):
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", str(content))
+            if role == "tool" and message.get("tool_call_id"):
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", message["tool_call_id"])
+            prompt_index += 1
+
+        for tc in message.get("tool_calls") or []:
+            func = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
+            if func is None:
+                continue
+            name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
+            arguments = func.get("arguments", "") if isinstance(func, dict) else getattr(func, "arguments", "")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", "assistant")
+            span.set_attribute(
+                f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content",
+                json.dumps({"name": name, "arguments": arguments}),
+            )
+            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
+            if tc_id:
+                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", tc_id)
+            prompt_index += 1
 
 
 def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
@@ -190,13 +215,12 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
     if choices := response_dict.get("choices"):
         for choice in choices:
             if message := choice.get("message"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
-                )
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content") or ""
-                )
-                message_index += 1
+                if content := message.get("content"):
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
+                    )
+                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
+                    message_index += 1
                 for tc in message.get("tool_calls") or []:
                     func = tc.get("function", {})
                     span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
@@ -208,13 +232,12 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
                         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
                     message_index += 1
             elif delta := choice.get("delta"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
-                )
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content") or ""
-                )
-                message_index += 1
+                if content := delta.get("content"):
+                    span.set_attribute(
+                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
+                    )
+                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
+                    message_index += 1
                 for tc in delta.get("tool_calls") or []:
                     func = tc.get("function", {})
                     span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
