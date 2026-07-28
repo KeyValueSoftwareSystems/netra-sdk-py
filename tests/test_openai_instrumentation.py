@@ -9,10 +9,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.openai import (
-    NetraOpenAIInstrumentor,
-    should_suppress_instrumentation,
-)
+from netra.instrumentation.openai import NetraOpenAIInstrumentor
+from netra.instrumentation.openai.utils import should_suppress_instrumentation
 
 
 class TestNetraOpenAIInstrumentor:
@@ -154,6 +152,7 @@ class TestUtilityFunctions:
         result = should_suppress_instrumentation()
 
         assert result is False
+
 
 class TestUsageAttributes:
     """Test _set_usage_attributes token capture across Chat and Responses shapes."""
