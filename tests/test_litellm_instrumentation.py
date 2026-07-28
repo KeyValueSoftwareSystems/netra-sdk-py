@@ -1,5 +1,5 @@
 from typing import Collection
-from unittest.mock import AsyncMock, MagicMock, Mock, patch
+from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 from opentelemetry.semconv_ai import SpanAttributes
