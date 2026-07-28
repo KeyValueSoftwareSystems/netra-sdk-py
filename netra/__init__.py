@@ -492,19 +492,26 @@ class Netra:
     @classmethod
     def set_root_output_stream(cls, value: Any) -> Any:
         """
-        Wrap a stream so the accumulated output is set on the root span when iteration ends.
+        Wrap a **single-pass stream** so the accumulated output is set on the root span
+        when iteration ends.
 
-        The returned object is a transparent proxy — iterate over it instead of the original::
+        *value* must be a true iterator (an object with ``__next__`` or ``__anext__``),
+        such as an LLM streaming response or a generator.  The caller **must** reassign
+        the return value and iterate the wrapper — not the original::
 
-            stream = Netra.set_root_output_stream(stream)
-            for chunk in stream:
+            stream = Netra.set_root_output_stream(stream)    # reassign!
+            for chunk in stream:                             # iterate the wrapper
                 ...
 
-        Supports both sync and async iterables.  Returns *value* unchanged if no active trace
+        For static, fully-materialised values (``list``, ``dict``, ``str``, etc.) use
+        :meth:`set_root_output` instead.  If a re-iterable collection is passed here by
+        mistake, the output is set eagerly on the root span and a warning is logged.
+
+        Supports both sync and async streams.  Returns *value* unchanged if no active trace
         context exists or if *value* is not iterable.
 
         Args:
-            value: The stream to wrap (Netra-instrumented or any generic iterable).
+            value: The stream to wrap (Netra-instrumented or any generic single-pass iterator).
 
         Returns:
             A wrapped stream proxy, or *value* unchanged if wrapping is not possible.
