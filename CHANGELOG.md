@@ -330,4 +330,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.9]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.97]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
