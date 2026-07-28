@@ -589,21 +589,23 @@ class SessionManager:
 
     @classmethod
     def set_root_output_stream(cls, value: Any) -> Any:
-        """Wrap a stream so that the accumulated output is set on the root span when iteration ends.
+        """Wrap a **single-pass stream** so that the accumulated output is set on the root span
+        when iteration ends.
 
-        The stream is wrapped transparently — the user should iterate over the returned object
-        instead of the original stream.  On exhaustion (or garbage collection), the output is
-        automatically written to the ``netra.user.output`` attribute of the root span for the
-        current trace, which is then promoted to ``output`` by the export pipeline.
-
-        Supports both sync iterables and async iterables.
+        Resolves the root span for the current trace and creates a commit
+        callback that serializes the output and writes it to that span.  The
+        callback is injected into ``stream_utils.wrap_stream_for_root_output``
+        so that module remains a pure utility with no Netra-internal imports.
 
         Args:
-            value: The stream to wrap.  May be a Netra-instrumented wrapper or any generic iterable.
+            value: The stream to wrap. Must be a Netra-instrumented wrapper or a single-pass
+                iterator (``__next__`` / ``__anext__``), such as an LLM streaming response
+                or a generator.
 
         Returns:
             A wrapped stream proxy.  Returns *value* unchanged if no active trace context
-            exists or if *value* is not iterable, so callers can always reassign safely::
+            exists, if *value* is not iterable, or if *value* is a re-iterable (output set
+            eagerly).  Callers can always reassign safely::
 
                 stream = Netra.set_root_output_stream(stream)
         """
@@ -615,7 +617,19 @@ class SessionManager:
             if not root_span:
                 logger.warning("SessionManager.set_root_output_stream: no root span found for current trace")
                 return value
-            return wrap_stream_for_root_output(value, root_span)
+
+            def commit_output(output: Any) -> None:
+                serialized = serialize_value(output)
+                if serialized:
+                    if not getattr(root_span, "is_recording", lambda: False)():
+                        logger.warning(
+                            "SessionManager.set_root_output_stream: root span is no longer "
+                            "recording; stream output will be dropped."
+                        )
+                        return
+                    root_span.set_attribute(NETRA_USER_OUTPUT, serialized)
+
+            return wrap_stream_for_root_output(value, commit_output)
         except Exception:
             logger.exception("SessionManager.set_root_output_stream: failed to wrap stream")
             return value
