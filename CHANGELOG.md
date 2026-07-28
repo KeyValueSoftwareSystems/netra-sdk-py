@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.97-beta] - 2026-07-28
+## [0.1.97b1] - 2026-07-28
 
 - **Add instrumentation for Hermes Agent** - New monkey-patching based instrumentation for the `hermes-agent` SDK (>= 0.17.0). Captures conversation runs, skill invocations (single, stacked, and bundle), tool executions, function calls, and approval gates as OpenTelemetry spans with full input/output attributes, token usage, and model metadata.
 
@@ -321,4 +321,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.97-beta]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.97b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
