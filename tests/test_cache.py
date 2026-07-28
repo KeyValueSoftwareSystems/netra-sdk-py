@@ -1,7 +1,5 @@
 from unittest.mock import patch
 
-import pytest
-
 from netra.cache import TTLCache
 
 
