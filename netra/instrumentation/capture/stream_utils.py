@@ -1,41 +1,37 @@
 """
-Utilities for wrapping stream objects so that when iteration completes, the
-accumulated output is automatically set on the root span of the current trace.
+Utilities for wrapping **stream** (single-pass iterator) objects so that when
+iteration completes, the accumulated output is committed via an injected
+callback.
 
-Three flows are supported:
+Only true streams — objects that implement the **iterator** protocol
+(``__next__`` / ``__anext__``) — are wrapped.  Re-iterable collections such
+as ``list``, ``tuple``, or ``set`` are **not** streams: their output is
+committed eagerly via the callback and the original object is returned
+unchanged.
+
+Supported flows:
 
     1. Netra-wrapped stream (``_netra_stream_wrapper = True``)
         The inner instrumentation wrapper has already accumulated the output
         in ``_netra_output``.  The outer tap simply delegates iteration and
         reads that attribute once the inner wrapper signals exhaustion.
 
-    2. Generic / unknown stream
-        Any iterable whose type Netra does not know about.  Chunks are
+    2. Generic / unknown single-pass stream
+        Any iterator whose type Netra does not know about.  Chunks are
         converted to strings via ``str(chunk)`` and concatenated.
 
-    3. Objects that carry no iterator protocol are returned unchanged with a
-    warning log.
+    3. Re-iterable collections (``list``, ``tuple``, etc.)
+        Output is committed eagerly via the callback.  A warning is logged
+        directing the caller to ``Netra.set_root_output()`` instead.
+
+    4. Objects that carry no iterator protocol are returned unchanged with a
+        warning log.
 """
 
 import logging
-from typing import Any, Callable, List, Union
-
-from opentelemetry.trace import Span
-
-from netra.session_manager import NETRA_USER_OUTPUT
-from netra.utils import serialize_value
+from typing import Any, AsyncIterator, Callable, Generator, Iterator, List, Union
 
 logger = logging.getLogger(__name__)
-
-
-def _set_output_on_root(root_span: Span, output: Any) -> None:
-    """Write serialized *output* to *root_span* as ``NETRA_USER_OUTPUT``."""
-    try:
-        serialized = serialize_value(output)
-        if serialized:
-            root_span.set_attribute(NETRA_USER_OUTPUT, serialized)
-    except Exception:
-        logger.warning("root_output_stream: failed to set output on root span", exc_info=True)
 
 
 # Extractors — injected at construction time, kept stateless
@@ -59,24 +55,45 @@ def _generic_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutput
 
 # Sync wrapper
 class RootOutputSyncStreamWrapper:
-    """Wraps a sync iterable; on exhaustion sets the output on the root span."""
+    """Wraps a **single-pass** sync iterator; on exhaustion commits the output
+    via the injected ``commit_fn`` callback.
+
+    This wrapper is intended for true streams (objects with ``__next__``) such
+    as LLM streaming responses, generators, and Netra-instrumented wrappers.
+    It must **not** be used for re-iterable collections (``list``, ``tuple``,
+    etc.) — use ``Netra.set_root_output()`` for those.
+
+    Internally delegates to a generator with a ``finally`` block so that
+    ``_commit`` fires reliably on full exhaustion, early ``break``, or
+    explicit ``.close()`` — not only on ``StopIteration``.
+    """
 
     _netra_stream_wrapper = True
 
-    def __init__(self, stream: Any, root_span: Span, extractor: Callable[[Any], Any]) -> None:
+    def __init__(self, stream: Any, commit_fn: Callable[[Any], None], extractor: Callable[[Any], Any]) -> None:
         self._stream = stream
-        self._root_span = root_span
+        self._iterator: Iterator[Any] = iter(stream)
+        self._commit_fn = commit_fn
         self._extractor = extractor
         self._chunks: List[str] = []
         self._track_chunks: bool = extractor is _generic_extractor
         self._committed = False
 
-    def __iter__(self) -> "RootOutputSyncStreamWrapper":
-        return self
+    def _iter_gen(self) -> Generator[Any, None, None]:
+        try:
+            for chunk in self._iterator:
+                if self._track_chunks:
+                    self._chunks.append(str(chunk))
+                yield chunk
+        finally:
+            self._commit()
+
+    def __iter__(self) -> Generator[Any, None, None]:
+        return self._iter_gen()
 
     def __next__(self) -> Any:
         try:
-            chunk = next(self._stream)
+            chunk = next(self._iterator)
             if self._track_chunks:
                 self._chunks.append(str(chunk))
             return chunk
@@ -107,31 +124,81 @@ class RootOutputSyncStreamWrapper:
             return
         self._committed = True
         try:
-            _set_output_on_root(self._root_span, self._extractor(self))
+            self._commit_fn(self._extractor(self))
         except Exception:
-            logger.debug("RootOutputSyncWrapper: failed to commit output to root span", exc_info=True)
+            logger.debug("RootOutputSyncWrapper: failed to commit output", exc_info=True)
 
 
 # Async wrapper
 class RootOutputAsyncStreamWrapper:
-    """Wraps an async iterable; on exhaustion sets the output on the root span."""
+    """Wraps a **single-pass** async iterator; on exhaustion commits the output
+    via the injected ``commit_fn`` callback.
+
+    This wrapper is intended for true async streams (objects with
+    ``__anext__``) such as async LLM streaming responses and async generators.
+    It must **not** be used for re-iterable async collections — use
+    ``Netra.set_root_output()`` for those.
+
+    Uses an internal async generator with ``finally`` so that ``_commit``
+    fires on full exhaustion, early ``break`` (via ``aclose()``), or explicit
+    close — mirroring the sync wrapper's behaviour.
+
+    Known limitation — async early ``break`` in long-lived event loops:
+        When a consumer does ``async for chunk in wrapper: break``, the
+        internal ``_aiter_gen()`` async generator is abandoned.  Python does
+        **not** call ``aclose()`` on it synchronously; instead, CPython's
+        async-generator finalizer (installed by asyncio) schedules ``aclose()``
+        for a **future event loop iteration**.  If the root span ends before
+        that scheduled cleanup runs, ``_commit()`` will attempt ``set_attribute()``
+        on an already-ended span, which is a silent no-op.
+
+        This is a fundamental limitation of Python's async generator cleanup
+        model and **cannot be fully fixed at the library level**.
+
+        Unaffected paths: full exhaustion, explicit ``aclose()``, context
+        manager exit (``async with``), and ``asyncio.run()`` (which
+        force-finalizes all async generators via ``loop.shutdown_asyncgens()``).
+
+        Workaround — use the ``async with`` context manager pattern for
+        early-break scenarios in long-lived loops.  ``__aexit__`` fires
+        ``_commit()`` synchronously before the span ends::
+
+            async with Netra.set_root_output_stream(stream) as wrapped:
+                async for chunk in wrapped:
+                    if should_stop:
+                        break
+    """
 
     _netra_stream_wrapper = True
 
-    def __init__(self, stream: Any, root_span: Span, extractor: Callable[[Any], Any]) -> None:
+    def __init__(self, stream: Any, commit_fn: Callable[[Any], None], extractor: Callable[[Any], Any]) -> None:
         self._stream = stream
-        self._root_span = root_span
+        self._aiterator: AsyncIterator[Any] = aiter(stream)
+        self._commit_fn = commit_fn
         self._extractor = extractor
         self._chunks: List[str] = []
         self._track_chunks: bool = extractor is _generic_extractor
         self._committed = False
 
-    def __aiter__(self) -> "RootOutputAsyncStreamWrapper":
-        return self
+    async def _aiter_gen(self) -> Any:
+        # NOTE: On early break the finally block runs only when asyncio's
+        # async-generator finalizer schedules aclose(), which happens on a
+        # future event loop iteration — not synchronously.  See the class
+        # docstring "Known limitation" section for implications.
+        try:
+            async for chunk in self._aiterator:
+                if self._track_chunks:
+                    self._chunks.append(str(chunk))
+                yield chunk
+        finally:
+            self._commit()
+
+    def __aiter__(self) -> Any:
+        return self._aiter_gen()
 
     async def __anext__(self) -> Any:
         try:
-            chunk = await self._stream.__anext__()
+            chunk = await self._aiterator.__anext__()
             if self._track_chunks:
                 self._chunks.append(str(chunk))
             return chunk
@@ -162,40 +229,74 @@ class RootOutputAsyncStreamWrapper:
             return
         self._committed = True
         try:
-            _set_output_on_root(self._root_span, self._extractor(self))
+            self._commit_fn(self._extractor(self))
         except Exception:
-            logger.debug("RootOutputAsyncWrapper: failed to commit output to root span", exc_info=True)
+            logger.debug("RootOutputAsyncWrapper: failed to commit output", exc_info=True)
 
 
-def wrap_stream_for_root_output(stream: Any, root_span: Span) -> Any:
-    """Wrap *stream* so the accumulated output is set on *root_span* when iteration ends.
+def _is_stream(obj: Any) -> bool:
+    """Return ``True`` if *obj* is a single-pass iterator (has ``__next__`` or ``__anext__``)."""
+    return hasattr(obj, "__next__") or hasattr(obj, "__anext__")
+
+
+def _eager_commit(stream: Any, commit_fn: Callable[[Any], None]) -> Any:
+    """Commit a re-iterable's content eagerly and return the original object."""
+    logger.warning(
+        "wrap_stream_for_root_output: %s is a re-iterable, not a single-pass "
+        "stream; output committed eagerly. Use a static output setter for "
+        "fully-materialised values.",
+        type(stream).__name__,
+    )
+    commit_fn(stream)
+    return stream
+
+
+def wrap_stream_for_root_output(stream: Any, commit_fn: Callable[[Any], None]) -> Any:
+    """Wrap *stream* so the accumulated output is committed via *commit_fn* when
+    iteration ends.
+
+    Only **single-pass iterators** (objects with ``__next__`` / ``__anext__``)
+    and Netra-instrumented wrappers are wrapped.  Re-iterable collections such
+    as ``list`` or ``tuple`` are not streams — their output is committed
+    **eagerly** via *commit_fn* and the original object is returned unchanged.
 
     Detection order:
-        1. ``_netra_stream_wrapper`` attribute present (Netra-wrapped)
-        2. Has ``__aiter__`` or ``__iter__`` (generic)
-        3. Not iterable (return unchanged)
+        1. ``_netra_stream_wrapper`` attribute — always wrapped (Netra-instrumented).
+        2. Has ``__next__`` / ``__anext__`` — single-pass stream, wrapped.
+        3. Has only ``__iter__`` / ``__aiter__`` (no ``__next__`` / ``__anext__``)
+           — re-iterable collection; output committed eagerly, returned unchanged.
+        4. Not iterable at all — returned unchanged with a warning.
 
     Args:
-        stream:    The stream to wrap.  May be sync or async.
-        root_span: The root OTel span that will receive the ``NETRA_USER_OUTPUT`` attribute.
+        stream:     The stream or value to wrap.  May be sync or async.
+        commit_fn:  Callback invoked with the extracted output when iteration
+                    completes (or eagerly for re-iterables).  The caller
+                    defines what "commit" means (e.g. serialize and set an
+                    attribute on a span).
 
     Returns:
-        A :class:`RootOutputSyncWrapper`, :class:`RootOutputAsyncWrapper`, or the
-        original *stream* unchanged if it is not iterable.
+        A :class:`RootOutputSyncStreamWrapper`, :class:`RootOutputAsyncStreamWrapper`,
+        or the original *stream* unchanged.
     """
     is_netra = getattr(stream, "_netra_stream_wrapper", False)
-    extractor: Callable[[Union["RootOutputSyncStreamWrapper", "RootOutputAsyncStreamWrapper"]], Any] = (
-        _netra_extractor if is_netra else _generic_extractor
-    )
 
+    # Async path
     if hasattr(stream, "__aiter__"):
-        return RootOutputAsyncStreamWrapper(stream, root_span, extractor)
+        if is_netra or _is_stream(stream):
+            extractor = _netra_extractor if is_netra else _generic_extractor
+            return RootOutputAsyncStreamWrapper(stream, commit_fn, extractor)
+        return _eager_commit(stream, commit_fn)
 
+    # Sync path
     if hasattr(stream, "__iter__"):
-        return RootOutputSyncStreamWrapper(stream, root_span, extractor)
+        if is_netra or _is_stream(stream):
+            extractor = _netra_extractor if is_netra else _generic_extractor
+            return RootOutputSyncStreamWrapper(stream, commit_fn, extractor)
+        return _eager_commit(stream, commit_fn)
 
+    # Not iterable at all
     logger.warning(
-        "set_root_output_stream: passed object of type %s is not iterable; returning unchanged",
+        "set_root_output_stream: passed object of type %s is not iterable; returning unchanged.",
         type(stream).__name__,
     )
     return stream
