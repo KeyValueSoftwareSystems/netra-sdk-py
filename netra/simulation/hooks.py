@@ -24,7 +24,9 @@ Failure semantics:
     - before_all failure  -> entire run is marked failed (prescript_failed), no scenarios run
     - before_each failure -> that scenario is marked failed (prescript_failed), others continue
     - before failure      -> that scenario is marked failed (prescript_failed), others continue
-    - after / after_each / after_all failures are logged as warnings and do not affect run/scenario status
+    - after failure       -> that scenario is marked postscript_failed; evaluations continue normally
+    - after_each failure  -> that scenario is marked postscript_failed; evaluations continue normally
+    - after_all failure   -> all scenarios are marked postscript_failed; evaluations continue normally
 """
 
 import asyncio
@@ -314,12 +316,11 @@ async def run_after(
     item_result: dict[str, Any],
     setup_context: Optional[dict[str, Any]],
 ) -> None:
-    """Execute the item-specific ``after`` hook for a single scenario (best-effort).
+    """Execute the item-specific ``after`` hook for a single scenario.
 
     The ``after`` hook is called regardless of whether the scenario succeeded,
     failed, or had its ``before`` hook fail. This ensures cleanup logic runs
-    even when setup fails. Exceptions are caught and logged; they do not affect
-    the scenario status.
+    even when setup fails.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
@@ -330,19 +331,15 @@ async def run_after(
             (same dict passed to ``BaseTask.run``). When a before hook fails,
             this is the furthest successfully built context (e.g. ``before_all``
             only, or ``before_all`` + ``before_each`` if ``before`` failed).
+
+    Raises:
+        Exception: Re-raises any exception so the caller can mark the
+            scenario as ``postscript_failed``.
     """
-    # Execute item-specific after hook (only if registered for this item)
     if hooks and hooks.after and dataset_item_id in hooks.after:
         logger.info("netra.simulation: running after hook for dataset_item_id=%s", dataset_item_id)
-        try:
-            item_hook = hooks.after[dataset_item_id]
-            await _call_hook(item_hook, item_result, setup_context)
-        except Exception:
-            logger.warning(
-                "netra.simulation: after hook raised an exception for dataset_item_id=%s (ignored)",
-                dataset_item_id,
-                exc_info=True,
-            )
+        item_hook = hooks.after[dataset_item_id]
+        await _call_hook(item_hook, item_result, setup_context)
 
 
 async def run_after_each(
@@ -351,30 +348,26 @@ async def run_after_each(
     item_result: dict[str, Any],
     setup_context: Optional[dict[str, Any]],
 ) -> None:
-    """Execute the ``after_each`` hook for a single scenario (best-effort).
+    """Execute the ``after_each`` hook for a single scenario.
 
     Unlike ``after`` (which is item-specific), ``after_each`` runs for every
-    dataset item. Exceptions are caught and logged; they do not affect the
-    scenario status.
+    dataset item.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
         dataset_item_id: The stable identifier from the dataset item.
         item_result: The result dict from the conversation loop.
         setup_context: Merged context passed to ``BaseTask.run``.
+
+    Raises:
+        Exception: Re-raises any exception so the caller can mark the
+            scenario as ``postscript_failed``.
     """
     if hooks is None or hooks.after_each is None:
         return
 
     logger.info("netra.simulation: running after_each hook for dataset_item_id=%s", dataset_item_id)
-    try:
-        await _call_hook(hooks.after_each, item_result, setup_context)
-    except Exception:
-        logger.warning(
-            "netra.simulation: after_each hook raised an exception for dataset_item_id=%s (ignored)",
-            dataset_item_id,
-            exc_info=True,
-        )
+    await _call_hook(hooks.after_each, item_result, setup_context)
 
 
 async def run_after_all(
@@ -382,23 +375,19 @@ async def run_after_all(
     results: dict[str, Any],
     shared_context: Optional[dict[str, Any]],
 ) -> None:
-    """Execute the ``after_all`` hook (best-effort).
-
-    Exceptions are caught and logged; they do not affect the run status.
+    """Execute the ``after_all`` hook.
 
     Args:
         hooks: The :class:`SimulationHooks` instance, or ``None``.
         results: The aggregated results dict from the simulation.
         shared_context: The dict returned by ``before_all``, or ``None``.
+
+    Raises:
+        Exception: Re-raises any exception so the caller can mark all
+            scenarios as ``postscript_failed``.
     """
     if hooks is None or hooks.after_all is None:
         return
 
     logger.info("netra.simulation: running after_all hook")
-    try:
-        await _call_hook(hooks.after_all, results, shared_context)
-    except Exception:
-        logger.warning(
-            "netra.simulation: after_all hook raised an exception (ignored)",
-            exc_info=True,
-        )
+    await _call_hook(hooks.after_all, results, shared_context)

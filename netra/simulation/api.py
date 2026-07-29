@@ -88,8 +88,10 @@ class Simulation:
                 - ``before`` runs before each scenario. If it raises, that
                   scenario is marked ``prescript_failed`` and skipped; other
                   scenarios continue.
-                - ``after`` / ``after_each`` / ``after_all`` failures are
-                  logged but do not affect scenario or run status.
+                - ``after`` / ``after_each`` failures mark that scenario as
+                  ``postscript_failed``; evaluations continue normally.
+                - ``after_all`` failure marks all scenarios as
+                  ``postscript_failed``; evaluations continue normally.
 
         Returns:
             Dictionary with simulation results, or None on failure.
@@ -203,8 +205,7 @@ class Simulation:
                         "error": error_msg,
                     }
                     failed_items.append(item_result)
-                    await run_after(hooks, dataset_item_id, item_result, setup_context)
-                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return None
             else:
                 setup_contexts[run_item_id] = setup_context
@@ -230,8 +231,9 @@ class Simulation:
                     "error": "Failed to generate first user message",
                 }
                 failed_items.append(item_result)
-                await run_after(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
-                await run_after_each(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
+                await self._run_after_hooks(
+                    run_id, run_item_id, dataset_item_id, hooks, item_result, setup_contexts[run_item_id]
+                )
                 return None
             return sim_item
 
@@ -252,7 +254,18 @@ class Simulation:
                 "failed": failed_items,
                 "total_items": len(items),
             }
-            run_async_safely(run_after_all(hooks, results, shared_context))
+            try:
+                run_async_safely(run_after_all(hooks, results, shared_context))
+            except Exception as exc:
+                error_msg = f"after_all hook failed: {exc}"
+                logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
+                for item in items:
+                    self._client.report_failure(
+                        run_id=run_id,
+                        run_item_id=item["test_run_item_id"],
+                        error=error_msg,
+                        status="postscript_failed",
+                    )
             self._client.post_run_status(run_id, "completed")
             return results
 
@@ -379,7 +392,21 @@ class Simulation:
             results.setdefault("failed", []).extend(setup_failed_items)
 
         # --- after_all ---
-        await run_after_all(hooks, results, shared_context)
+        try:
+            await run_after_all(hooks, results, shared_context)
+        except Exception as exc:
+            error_msg = f"after_all hook failed: {exc}"
+            logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
+            all_item_ids = [item.run_item_id for item in simulation_items]
+            if setup_failed_items:
+                all_item_ids.extend(item["run_item_id"] for item in setup_failed_items if "run_item_id" in item)
+            for rid in all_item_ids:
+                self._client.report_failure(
+                    run_id=run_id,
+                    run_item_id=rid,
+                    error=error_msg,
+                    status="postscript_failed",
+                )
 
         logger.info(
             "%s: Completed=%d, Failed=%d",
@@ -388,6 +415,35 @@ class Simulation:
             len(results["failed"]),
         )
         return results
+
+    async def _run_after_hooks(
+        self,
+        run_id: str,
+        run_item_id: str,
+        dataset_item_id: str,
+        hooks: Optional[SimulationHooks],
+        item_result: dict[str, Any],
+        setup_context: Optional[dict[str, Any]],
+    ) -> None:
+        """Run after/after_each hooks and report postscript_failed on error."""
+        try:
+            await run_after(hooks, dataset_item_id, item_result, setup_context)
+            await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+        except Exception as exc:
+            error_msg = f"after hook failed: {exc}"
+            logger.error(
+                "%s: %s for run_item_id=%s",
+                LOG_PREFIX,
+                error_msg,
+                run_item_id,
+                exc_info=True,
+            )
+            self._client.report_failure(
+                run_id=run_id,
+                run_item_id=run_item_id,
+                error=error_msg,
+                status="postscript_failed",
+            )
 
     async def _execute_conversation(
         self,
@@ -462,8 +518,7 @@ class Simulation:
                         "error": error_msg,
                         "turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, setup_context)
-                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return item_result
 
                 if response.decision == ConversationStatus.STOP:
@@ -478,8 +533,7 @@ class Simulation:
                         "success": True,
                         "final_turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, setup_context)
-                    await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return item_result
 
                 message = response.next_user_message  # type:ignore[assignment]
@@ -502,8 +556,7 @@ class Simulation:
                     "error": error_msg,
                     "turn_id": turn_id,
                 }
-                await run_after(hooks, dataset_item_id, item_result, setup_context)
-                await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+                await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
@@ -515,6 +568,5 @@ class Simulation:
             "error": error_msg,
             "turn_id": turn_id,
         }
-        await run_after(hooks, dataset_item_id, item_result, setup_context)
-        await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+        await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
         return item_result

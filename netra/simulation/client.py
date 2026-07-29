@@ -279,7 +279,9 @@ class SimulationHttpClient:
             error: Error message describing the failure.
             status: The run status to set on the item. Use ``"prescript_failed"``
                 when the failure originated from a ``before_all`` or ``before``
-                hook. Defaults to ``"failed"``.
+                hook, or ``"postscript_failed"`` when the failure originated
+                from an ``after``, ``after_each``, or ``after_all`` hook.
+                Defaults to ``"failed"``.
         """
         if not self._ensure_client():
             return
