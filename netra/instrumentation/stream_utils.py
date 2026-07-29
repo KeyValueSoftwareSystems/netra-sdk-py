@@ -53,6 +53,64 @@ def _generic_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutput
     return "".join(wrapper._chunks)
 
 
+def _force_finalize_inner_stream(iterator: Any, stream: Any) -> None:
+    """Force-finalize the inner stream so ``_netra_output`` is populated
+    before the outer wrapper's extractor reads it.
+
+    On early ``break`` the outer wrapper's ``_commit`` fires before the
+    inner wrapper has finalized.  This helper covers every inner iterator
+    variant without requiring changes to any instrumentation wrapper:
+
+    1. **Generator-based iterators** — the inner ``__iter__`` returns a
+       generator (either a plain non-Netra generator, or a Netra wrapper
+       that delegates to an internal plain generator).  Calling
+       ``iterator.close()`` throws ``GeneratorExit`` into the generator;
+       if its ``finally`` block triggers the wrapper's finalization,
+       ``_netra_output`` is set and we are done.
+
+    2. **Netra return-self iterators** — the inner wrapper's ``__iter__``
+       returns ``self`` and has no ``close()`` method.  We fall back to
+       calling the finalization method directly on *stream* (the original
+       inner wrapper).  All Netra instrumentation wrappers use either
+       ``_finalize()`` or ``_finalize_span()``; we try both.
+
+    Path 2 also serves as a fallback when path 1 closes a generator but
+    ``_netra_output`` is still unset (e.g. the generator catches
+    ``GeneratorExit`` without calling finalization).
+    """
+    if iterator is None:
+        return
+
+    # Path 1: generator-based inner iterator
+    if hasattr(iterator, "close"):
+        try:
+            iterator.close()
+        except Exception:
+            logger.debug("_force_finalize_inner_stream: failed to close iterator", exc_info=True)
+
+    # If the inner wrapper already set _netra_output (either because
+    # path 1 triggered finalization, or because __next__'s StopIteration
+    # handler already called _finalize/_finalize_span on full exhaustion),
+    # there is nothing left to do.  Skipping path 2 here is essential
+    # because several instrumentation wrappers (openai, groq, cerebras,
+    # litellm, google_genai, elevenlabs) have no idempotency guard in
+    # _finalize_span — calling it twice would double-end the span.
+    if getattr(stream, "_netra_output", None) is not None:
+        return
+
+    # Path 2: return-self wrappers — call the finalization method directly.
+    # Only reached when _netra_output is still unset (i.e. early break).
+    if stream is not None and getattr(stream, "_netra_stream_wrapper", False):
+        for method_name in ("_finalize", "_finalize_span"):
+            fn = getattr(stream, method_name, None)
+            if fn is not None and callable(fn):
+                try:
+                    fn()
+                except Exception:
+                    logger.debug("_force_finalize_inner_stream: %s() failed", method_name, exc_info=True)
+                return
+
+
 # Sync wrapper
 class RootOutputSyncStreamWrapper:
     """Wraps a **single-pass** sync iterator; on exhaustion commits the output
@@ -124,6 +182,7 @@ class RootOutputSyncStreamWrapper:
             return
         self._committed = True
         try:
+            _force_finalize_inner_stream(self._iterator, self._stream)
             self._commit_fn(self._extractor(self))
         except Exception:
             logger.debug("RootOutputSyncWrapper: failed to commit output", exc_info=True)
@@ -229,6 +288,7 @@ class RootOutputAsyncStreamWrapper:
             return
         self._committed = True
         try:
+            _force_finalize_inner_stream(self._aiterator, self._stream)
             self._commit_fn(self._extractor(self))
         except Exception:
             logger.debug("RootOutputAsyncWrapper: failed to commit output", exc_info=True)
