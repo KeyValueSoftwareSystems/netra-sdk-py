@@ -428,7 +428,8 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
 
-                usage = response.get("usage", {})
+            # Capture usage even if status is not "completed" (early break due to token limit)
+            if (usage := response.get("usage", None)) is not None:
                 self._complete_response["usage"] = usage
 
         self._span.add_event("llm.content.completion.chunk")
@@ -617,7 +618,8 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
 
-                usage = response.get("usage", {})
+            # Capture usage even if status is not "completed" (early break due to token limit)
+            if (usage := response.get("usage", None)) is not None:
                 self._complete_response["usage"] = usage
 
         self._span.add_event("llm.content.completion.chunk")
