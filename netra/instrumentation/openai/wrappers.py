@@ -415,7 +415,10 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
-            if response.get("status") == "completed":
+            if response.get("status") in ("completed", "incomplete"):
+                if response.get("model"):
+                    self._complete_response["model"] = response["model"]
+
                 response_output = response.get("output") or []
                 for output in response_output:
                     if output.get("type") == "function_call":
@@ -428,8 +431,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
 
-            # Capture usage even if status is not "completed" (early break due to token limit)
-            if (usage := response.get("usage", None)) is not None:
+                usage = response.get("usage", {})
                 self._complete_response["usage"] = usage
 
         self._span.add_event("llm.content.completion.chunk")
@@ -605,7 +607,10 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
-            if response.get("status") == "completed":
+            if response.get("status") in ("completed", "incomplete"):
+                if response.get("model"):
+                    self._complete_response["model"] = response["model"]
+
                 response_output = response.get("output") or []
                 for output in response_output:
                     if output.get("type") == "function_call":
@@ -618,8 +623,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
                             {"message": {"role": "assistant", "content": assistant_text}}
                         ]
 
-            # Capture usage even if status is not "completed" (early break due to token limit)
-            if (usage := response.get("usage", None)) is not None:
+                usage = response.get("usage", {})
                 self._complete_response["usage"] = usage
 
         self._span.add_event("llm.content.completion.chunk")

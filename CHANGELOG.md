@@ -42,7 +42,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Use explicit `.description` for simulation hook metadata** - Hook descriptions sent to the backend now come from an explicit `.description` attribute on each hook function (aligned with the TypeScript SDK), instead of reading Python docstrings.
 
-- **Fix OpenAI Responses API stream handling** — `Response API` instrumentation spans now include token usage when a stream ends due to reaching the token limit.
+- **Fix OpenAI Responses API stream handling** — `Response API` instrumentation spans now include token usage and completion output when a stream ends due to reaching the token limit (`incomplete` status).
 
 ## [0.1.96] - 2026-07-23
 
