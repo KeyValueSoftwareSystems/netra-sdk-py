@@ -53,8 +53,29 @@ def _generic_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutput
     return "".join(wrapper._chunks)
 
 
+def _finalize_via_method(stream: Any) -> None:
+    """Try to finalize a Netra wrapper by calling ``_finalize`` or ``_finalize_span``.
+
+    ``_finalize`` is tried first because wrappers that use it (e.g. Agno)
+    have an idempotency guard (``_finalized`` flag), making them safe to
+    call unconditionally.  ``_finalize_span`` is the fallback for LLM
+    wrappers (openai, groq, cerebras, litellm, google_genai) that lack
+    such a guard.
+    """
+    if stream is None or not getattr(stream, "_netra_stream_wrapper", False):
+        return
+    for method_name in ("_finalize", "_finalize_span"):
+        fn = getattr(stream, method_name, None)
+        if fn is not None and callable(fn):
+            try:
+                fn()
+            except Exception:
+                logger.warning("_force_finalize_inner_stream: %s() failed", method_name, exc_info=True)
+            return
+
+
 def _force_finalize_inner_stream(iterator: Any, stream: Any) -> None:
-    """Force-finalize the inner stream so ``_netra_output`` is populated
+    """Force-finalize a **sync** inner stream so ``_netra_output`` is populated
     before the outer wrapper's extractor reads it.
 
     On early ``break`` the outer wrapper's ``_commit`` fires before the
@@ -81,8 +102,11 @@ def _force_finalize_inner_stream(iterator: Any, stream: Any) -> None:
     if iterator is None:
         return
 
-    # Path 1: generator-based inner iterator
-    if hasattr(iterator, "close"):
+    # Path 1: generator-based inner iterator (sync only).
+    # Async iterators use ``aclose()`` (a coroutine) instead of ``close()``.
+    # Calling ``close()`` on an ObjectProxy-based async wrapper would close
+    # the underlying transport without triggering wrapper finalization.
+    if hasattr(iterator, "close") and not hasattr(iterator, "__anext__"):
         try:
             iterator.close()
         except Exception:
@@ -100,15 +124,36 @@ def _force_finalize_inner_stream(iterator: Any, stream: Any) -> None:
 
     # Path 2: return-self wrappers — call the finalization method directly.
     # Only reached when _netra_output is still unset (i.e. early break).
-    if stream is not None and getattr(stream, "_netra_stream_wrapper", False):
-        for method_name in ("_finalize", "_finalize_span"):
-            fn = getattr(stream, method_name, None)
-            if fn is not None and callable(fn):
-                try:
-                    fn()
-                except Exception:
-                    logger.debug("_force_finalize_inner_stream: %s() failed", method_name, exc_info=True)
-                return
+    _finalize_via_method(stream)
+
+
+async def _aforce_finalize_inner_stream(iterator: Any, stream: Any) -> None:
+    """Async variant of :func:`_force_finalize_inner_stream`.
+
+    Handles async generators via ``aclose()`` (path 1a) in addition to
+    sync generators (path 1b) and direct finalization (path 2).
+    """
+    if iterator is None:
+        return
+
+    # Path 1a: async generator — ``aclose()`` is a coroutine.
+    if hasattr(iterator, "aclose"):
+        try:
+            await iterator.aclose()
+        except Exception:
+            logger.debug("_aforce_finalize_inner_stream: failed to aclose iterator", exc_info=True)
+    # Path 1b: sync generator attached to an async wrapper (unusual but possible).
+    elif hasattr(iterator, "close") and not hasattr(iterator, "__anext__"):
+        try:
+            iterator.close()
+        except Exception:
+            logger.debug("_aforce_finalize_inner_stream: failed to close iterator", exc_info=True)
+
+    if getattr(stream, "_netra_output", None) is not None:
+        return
+
+    # Path 2: return-self wrappers — call the finalization method directly.
+    _finalize_via_method(stream)
 
 
 # Sync wrapper
@@ -250,7 +295,7 @@ class RootOutputAsyncStreamWrapper:
                     self._chunks.append(str(chunk))
                 yield chunk
         finally:
-            self._commit()
+            await self._acommit()
 
     def __aiter__(self) -> Any:
         return self._aiter_gen()
@@ -262,7 +307,7 @@ class RootOutputAsyncStreamWrapper:
                 self._chunks.append(str(chunk))
             return chunk
         except StopAsyncIteration:
-            self._commit()
+            await self._acommit()
             raise
 
     async def __aenter__(self) -> "RootOutputAsyncStreamWrapper":
@@ -274,7 +319,7 @@ class RootOutputAsyncStreamWrapper:
         if hasattr(self._stream, "__aexit__"):
             await self._stream.__aexit__(exc_type, exc_val, exc_tb)
         if exc_type is None:
-            self._commit()
+            await self._acommit()
 
     def __getattr__(self, name: str) -> Any:
         return getattr(self._stream, name)
@@ -283,7 +328,19 @@ class RootOutputAsyncStreamWrapper:
         if not self._committed:
             self._commit()
 
+    async def _acommit(self) -> None:
+        """Async commit — uses ``aclose()`` to finalize async generator inner streams."""
+        if self._committed:
+            return
+        self._committed = True
+        try:
+            await _aforce_finalize_inner_stream(self._aiterator, self._stream)
+            self._commit_fn(self._extractor(self))
+        except Exception:
+            logger.debug("RootOutputAsyncWrapper: failed to commit output", exc_info=True)
+
     def _commit(self) -> None:
+        """Sync fallback for ``__del__`` and other non-async contexts."""
         if self._committed:
             return
         self._committed = True
