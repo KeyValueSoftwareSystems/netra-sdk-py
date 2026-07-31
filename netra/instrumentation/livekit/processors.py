@@ -7,15 +7,20 @@ thread. ``on_end`` may only mutate *other* spans that are still recording, which
 exactly what the parent-ward content propagation below does.
 """
 
+from __future__ import annotations
+
 import itertools
 import logging
 import threading
 import weakref
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
+
+if TYPE_CHECKING:
+    from netra.instrumentation.livekit.wrappers import AudioHookManager
 
 from netra.instrumentation.livekit.utils import (
     ATTRIBUTE_MAP,
@@ -544,3 +549,106 @@ class LiveKitSpanProcessor(SpanProcessor):  # type: ignore[misc]
             original(name, attributes, timestamp)
 
         setattr(span, "add_event", patched_add_event)
+
+
+# ---------------------------------------------------------------------------
+# Audio span processor — correlates audio chunks with turn spans
+# ---------------------------------------------------------------------------
+
+_active_hooks_lock = threading.Lock()
+_active_hooks: Dict[int, "AudioHookManager"] = {}
+
+_AUDIO_SPAN_NAMES = frozenset({"user_speaking", "agent_speaking"})
+
+
+def register_audio_hooks(trace_id: int, hooks: "AudioHookManager") -> None:
+    """Register an ``AudioHookManager`` for a session so the processor can find it.
+
+    Args:
+        trace_id: The ``agent_session`` span's trace id (int).
+        hooks: The hooks instance for this session.
+    """
+    with _active_hooks_lock:
+        _active_hooks[trace_id] = hooks
+
+
+def unregister_audio_hooks(trace_id: int) -> None:
+    """Remove the hooks for a session.  Idempotent.
+
+    Args:
+        trace_id: The ``agent_session`` span's trace id (int).
+    """
+    with _active_hooks_lock:
+        _active_hooks.pop(trace_id, None)
+
+
+def pop_all_audio_hooks() -> list["AudioHookManager"]:
+    """Remove and return every registered hooks instance.
+
+    Used by ``Netra.shutdown()`` as a backstop.
+    """
+    with _active_hooks_lock:
+        items = list(_active_hooks.values())
+        _active_hooks.clear()
+        return items
+
+
+class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
+    """Watches for ``user_speaking`` and ``agent_speaking`` spans.
+
+    When either span starts, its OTel ``span_id`` and ``trace_id`` are pushed
+    to the ``AudioHookManager`` for that session so audio chunks carry the
+    correct IDs.  When the span ends the recording is closed.
+
+    The processor is registered process-wide but the hooks are per-session,
+    looked up by ``span.context.trace_id`` in the module-level registry.
+    """
+
+    def on_start(self, span: Span, parent_context: Optional[otel_context.Context] = None) -> None:
+        try:
+            if span.name not in _AUDIO_SPAN_NAMES:
+                return
+            ctx = span.get_span_context()
+            if not (ctx and ctx.is_valid):
+                return
+
+            with _active_hooks_lock:
+                hooks = _active_hooks.get(ctx.trace_id)
+            if hooks is None:
+                return
+
+            trace_id_hex = format(ctx.trace_id, "032x")
+            span_id_hex = format(ctx.span_id, "016x")
+
+            if span.name == "user_speaking":
+                hooks.on_user_speaking_start(trace_id_hex, span_id_hex)
+            elif span.name == "agent_speaking":
+                hooks.on_agent_speaking_start(trace_id_hex, span_id_hex)
+        except Exception:
+            logger.debug("netra.livekit: AudioSpanProcessor.on_start failed", exc_info=True)
+
+    def on_end(self, span: ReadableSpan) -> None:
+        try:
+            if span.name not in _AUDIO_SPAN_NAMES:
+                return
+            ctx = span.get_span_context()
+            if not (ctx and ctx.is_valid):
+                return
+
+            with _active_hooks_lock:
+                hooks = _active_hooks.get(ctx.trace_id)
+            if hooks is None:
+                return
+
+            if span.name == "user_speaking":
+                hooks.on_user_speaking_end()
+            elif span.name == "agent_speaking":
+                hooks.on_agent_speaking_end()
+        except Exception:
+            logger.debug("netra.livekit: AudioSpanProcessor.on_end failed", exc_info=True)
+
+    def force_flush(self, timeout_millis: int = 30000) -> bool:
+        return True
+
+    def shutdown(self) -> None:
+        pass
