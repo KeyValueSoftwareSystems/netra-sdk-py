@@ -251,6 +251,7 @@ class SessionFilterField(str, Enum):
     TENANT_ID = "tenant_id"
     ENVIRONMENT = "environment"
     SERVICE = "service"
+    USER_ID = "user_id"
 
 
 class SessionFilterOperator(str, Enum):

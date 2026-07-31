@@ -206,3 +206,23 @@ class Dashboard:
         )
         data = result.get("data", {})
         return data
+
+    def get_session_detail(self, session_id: str) -> Any:
+        """
+        Get full details for a session including its traces, tokens, costs, and tool calls.
+
+        Args:
+            session_id: Session identifier.
+
+        Returns:
+            Dict containing sessionId and traces, or None on error.
+        """
+        if not session_id:
+            logger.error("netra.dashboard: session_id is required to fetch session detail")
+            return None
+
+        result = self._client.get_session_detail(session_id=session_id)
+        if not isinstance(result, dict):
+            return result
+
+        return result.get("data", {})
