@@ -352,3 +352,17 @@ def set_approval_response_attributes(span: Span, result: Any) -> None:
     approved = result.get("approved")
     if approved is not None and span.is_recording():
         span.set_attribute(ATTR_APPROVAL_APPROVED, bool(approved))
+
+
+def set_title_generation_response_attributes(span: Span, result: Any) -> None:
+    """
+    Write the outcome of a Hermes title generation to the title generation span.
+
+    Args:
+        span (Span): The title generation span to write attributes to.
+        result (Any): The dict returned by ``generate_title``.
+    """
+    if result:
+        span.set_attribute("hermes.title", _serialize(result))
+    span.set_attribute(NETRA_SPAN_TYPE_ATTR, SpanType.SPAN.value)
+    span.set_status(Status(StatusCode.OK))
