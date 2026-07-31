@@ -316,7 +316,6 @@ class DashboardHttpClient:
             logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session detail")
             return None
 
-        response: Optional[httpx.Response] = None
         try:
             url = f"/public/dashboard/session/{session_id}"
 
@@ -324,10 +323,11 @@ class DashboardHttpClient:
             response.raise_for_status()
             data = response.json()
             return data
-        except Exception as exc:
+        except Exception:
+            response_json = response.json()
             logger.error(
                 "netra.dashboard: Failed to fetch session detail '%s': %s",
                 session_id,
-                extract_error_message(response, exc),
+                response_json.get("error").get("message", ""),
             )
             return None
