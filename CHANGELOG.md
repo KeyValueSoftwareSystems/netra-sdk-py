@@ -4,13 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.97b2] - 2026-07-31
+## [0.1.97] -
 
 - **Add `get_session_detail` dashboard wrapper** - New `Netra.dashboard.get_session_detail(session_id)` method that calls the public session details endpoint and returns session traces with tokens, cost, models, and tool calls.
 
 - **Add `USER_ID` to `SessionFilterField`** - Session stats and session summary queries can now filter by `user_id`.
 
-## [0.1.97b1] - 2026-07-28
+- **Add title generation instrumentation to Hermes Agent** - New `title_generation_wrapper` traces `agent.title_generator.generate_title` as a `hermes-agent.title_generation` workflow span. Since title generation runs in a daemon thread with no parent context, the wrapper's span becomes the trace root, correctly identifying these traces as title-generation workflows.
+
+- **Fix OpenAI streaming wrapper span lifecycle** - Made `_finalize_span()` idempotent with a `_span_ended` guard, added `close()` and `__del__()` to both sync and async wrappers so spans are properly finalized even on early exit or GC. `AsyncStreamingWrapper` now exposes `aclose()` per the async iterator protocol, with `close()` as an async alias for OpenAI SDK compatibility.
 
 - **Label evaluation/simulation traces on the root span** - Root spans produced by evaluation test runs (`Netra.evaluation`) and simulation runs (`Netra.simulation`) now carry a `netra.trace.origin` attribute set to `evaluation`, letting the backend and frontend distinguish these traces from normal workflow invocations.
 
@@ -342,4 +344,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.97b2]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.97]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
