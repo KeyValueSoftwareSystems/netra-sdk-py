@@ -88,10 +88,11 @@ class Simulation:
                 - ``before`` runs before each scenario. If it raises, that
                   scenario is marked ``prescript_failed`` and skipped; other
                   scenarios continue.
-                - ``after`` / ``after_each`` failures mark that scenario as
-                  ``postscript_failed``; evaluations continue normally.
-                - ``after_all`` failure marks all scenarios as
-                  ``postscript_failed``; evaluations continue normally.
+                - ``after`` / ``after_each`` always both attempt to run. A failure
+                  marks that scenario as ``postscript_failed`` only if it otherwise
+                  succeeded; an already-failed scenario keeps its original status.
+                - ``after_all`` failure marks successfully completed scenarios as
+                  ``postscript_failed``; already-failed scenarios keep their status.
 
         Returns:
             Dictionary with simulation results, or None on failure.
@@ -132,13 +133,12 @@ class Simulation:
                     exc,
                     exc_info=True,
                 )
-                for item in items:
-                    self._client.report_failure(
-                        run_id=run_id,
-                        run_item_id=item["test_run_item_id"],
-                        error=f"before_all hook failed: {exc}",
-                        status="prescript_failed",
-                    )
+                self._report_failures(
+                    run_id,
+                    [item["test_run_item_id"] for item in items],
+                    f"before_all hook failed: {exc}",
+                    "prescript_failed",
+                )
                 self._client.post_run_status(run_id, "completed")
                 return {
                     "success": False,
@@ -257,15 +257,9 @@ class Simulation:
             try:
                 run_async_safely(run_after_all(hooks, results, shared_context))
             except Exception as exc:
+                # All items already failed during setup — do not overwrite status.
                 error_msg = f"after_all hook failed: {exc}"
                 logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
-                for item in items:
-                    self._client.report_failure(
-                        run_id=run_id,
-                        run_item_id=item["test_run_item_id"],
-                        error=error_msg,
-                        status="postscript_failed",
-                    )
             self._client.post_run_status(run_id, "completed")
             return results
 
@@ -397,16 +391,9 @@ class Simulation:
         except Exception as exc:
             error_msg = f"after_all hook failed: {exc}"
             logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
-            all_item_ids = [item.run_item_id for item in simulation_items]
-            if setup_failed_items:
-                all_item_ids.extend(item["run_item_id"] for item in setup_failed_items if "run_item_id" in item)
-            for rid in all_item_ids:
-                self._client.report_failure(
-                    run_id=run_id,
-                    run_item_id=rid,
-                    error=error_msg,
-                    status="postscript_failed",
-                )
+            # Only mark successfully completed items — do not overwrite real failures.
+            successful_ids = [item["run_item_id"] for item in results.get("completed", []) if "run_item_id" in item]
+            self._report_failures(run_id, successful_ids, error_msg, "postscript_failed")
 
         logger.info(
             "%s: Completed=%d, Failed=%d",
@@ -415,6 +402,29 @@ class Simulation:
             len(results["failed"]),
         )
         return results
+
+    def _report_failures(
+        self,
+        run_id: str,
+        run_item_ids: list[str],
+        error: str,
+        status: str,
+    ) -> None:
+        """Report failures for many items concurrently."""
+        if not run_item_ids:
+            return
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(run_item_ids), 10)) as executor:
+            futures = [
+                executor.submit(
+                    self._client.report_failure,
+                    run_id,
+                    rid,
+                    error,
+                    status,
+                )
+                for rid in run_item_ids
+            ]
+            concurrent.futures.wait(futures)
 
     async def _run_after_hooks(
         self,
@@ -425,10 +435,16 @@ class Simulation:
         item_result: dict[str, Any],
         setup_context: Optional[dict[str, Any]],
     ) -> None:
-        """Run after/after_each hooks and report postscript_failed on error."""
+        """Run after/after_each hooks independently.
+
+        Both hooks always attempt to run. ``postscript_failed`` is reported only
+        when the item otherwise succeeded — an existing failure status/reason is
+        never overwritten.
+        """
+        errors: list[str] = []
+
         try:
             await run_after(hooks, dataset_item_id, item_result, setup_context)
-            await run_after_each(hooks, dataset_item_id, item_result, setup_context)
         except Exception as exc:
             error_msg = f"after hook failed: {exc}"
             logger.error(
@@ -438,10 +454,26 @@ class Simulation:
                 run_item_id,
                 exc_info=True,
             )
+            errors.append(error_msg)
+
+        try:
+            await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+        except Exception as exc:
+            error_msg = f"after_each hook failed: {exc}"
+            logger.error(
+                "%s: %s for run_item_id=%s",
+                LOG_PREFIX,
+                error_msg,
+                run_item_id,
+                exc_info=True,
+            )
+            errors.append(error_msg)
+
+        if errors and item_result.get("success"):
             self._client.report_failure(
                 run_id=run_id,
                 run_item_id=run_item_id,
-                error=error_msg,
+                error="; ".join(errors),
                 status="postscript_failed",
             )
 

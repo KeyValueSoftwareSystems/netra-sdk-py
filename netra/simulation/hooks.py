@@ -24,9 +24,11 @@ Failure semantics:
     - before_all failure  -> entire run is marked failed (prescript_failed), no scenarios run
     - before_each failure -> that scenario is marked failed (prescript_failed), others continue
     - before failure      -> that scenario is marked failed (prescript_failed), others continue
-    - after failure       -> that scenario is marked postscript_failed; evaluations continue normally
-    - after_each failure  -> that scenario is marked postscript_failed; evaluations continue normally
-    - after_all failure   -> all scenarios are marked postscript_failed; evaluations continue normally
+    - after / after_each  -> both always attempt to run; if the scenario otherwise
+                            succeeded it is marked postscript_failed, otherwise the
+                            existing failure status/reason is preserved
+    - after_all failure   -> successfully completed scenarios are marked
+                            postscript_failed; already-failed scenarios keep their status
 """
 
 import asyncio
@@ -333,8 +335,9 @@ async def run_after(
             only, or ``before_all`` + ``before_each`` if ``before`` failed).
 
     Raises:
-        Exception: Re-raises any exception so the caller can mark the
-            scenario as ``postscript_failed``.
+        Exception: Re-raises any exception so the caller can decide whether to
+            mark the scenario as ``postscript_failed`` (only when it otherwise
+            succeeded).
     """
     if hooks and hooks.after and dataset_item_id in hooks.after:
         logger.info("netra.simulation: running after hook for dataset_item_id=%s", dataset_item_id)
@@ -360,8 +363,9 @@ async def run_after_each(
         setup_context: Merged context passed to ``BaseTask.run``.
 
     Raises:
-        Exception: Re-raises any exception so the caller can mark the
-            scenario as ``postscript_failed``.
+        Exception: Re-raises any exception so the caller can decide whether to
+            mark the scenario as ``postscript_failed`` (only when it otherwise
+            succeeded).
     """
     if hooks is None or hooks.after_each is None:
         return
@@ -383,8 +387,9 @@ async def run_after_all(
         shared_context: The dict returned by ``before_all``, or ``None``.
 
     Raises:
-        Exception: Re-raises any exception so the caller can mark all
-            scenarios as ``postscript_failed``.
+        Exception: Re-raises any exception so the caller can mark successfully
+            completed scenarios as ``postscript_failed`` (already-failed ones
+            are left alone).
     """
     if hooks is None or hooks.after_all is None:
         return
