@@ -302,7 +302,7 @@ class DashboardHttpClient:
             )
             return None
 
-    def get_session_detail(self, session_id: str) -> Any:
+    def get_session_details(self, session_id: str) -> Any:
         """
         Get full details for a session including its traces.
 
