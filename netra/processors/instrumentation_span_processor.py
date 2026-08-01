@@ -8,7 +8,7 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 from netra.config import Config, get_attribute_max_len
-from netra.instrumentation.instruments import InstrumentSet
+from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES, InstrumentSet
 
 logger = logging.getLogger(__name__)
 
@@ -241,8 +241,12 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """Extracts the instrumentation name from the span's scope.
 
         For scopes with known prefixes (opentelemetry.instrumentation.* or
-        netra.instrumentation.*), returns just the final component.
-        Otherwise, returns the full scope name.
+        netra.instrumentation.*), returns just the final component.  A
+        third-party scope registered in ``THIRD_PARTY_INSTRUMENTATION_SCOPES``
+        resolves to its ``InstrumentSet`` value — ``livekit-agents`` to
+        ``livekit`` — so those spans get stamped with the same instrumentation
+        name as every other instrumentation instead of being skipped for
+        carrying a non-conforming scope.  Otherwise, returns the full scope name.
 
         Args:
             span: The span to extract the instrumentation name from.
@@ -257,6 +261,10 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         name = getattr(scope, "name", None)
         if not isinstance(name, str) or not name:
             return None
+
+        alias = THIRD_PARTY_INSTRUMENTATION_SCOPES.get(name)
+        if alias is not None:
+            return alias
 
         if name.startswith(_OTEL_INSTRUMENTATION_PREFIX) or name.startswith(_NETRA_INSTRUMENTATION_PREFIX):
             base_name = name.rsplit(".", 1)[-1].strip()

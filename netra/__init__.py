@@ -257,7 +257,12 @@ class Netra:
                     meter_provider = otel_metrics.get_meter_provider()
                     if hasattr(meter_provider, "force_flush"):
                         meter_provider.force_flush()
-                    if hasattr(meter_provider, "shutdown"):
+                    # _NetraOwnedMeterProvider.shutdown() is a no-op for third-party
+                    # callers (see netra/meter.py); Netra's own teardown must use the
+                    # owner entry point or metrics are never flushed at exit.
+                    if hasattr(meter_provider, "shutdown_as_owner"):
+                        meter_provider.shutdown_as_owner()
+                    elif hasattr(meter_provider, "shutdown"):
                         meter_provider.shutdown()
                 except Exception:
                     pass
