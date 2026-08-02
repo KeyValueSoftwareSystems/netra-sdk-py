@@ -168,6 +168,92 @@ class TestAudioChunkSender:
         completed_turns = session.get("completed_turns", 0)
         assert completed_turns >= 1
 
+    @pytest.mark.asyncio
+    async def test_interrupt_agent_span_truncates_audio(self, audio_server: tuple[str, AudioSessionStore]) -> None:
+        """Interrupt truncates pending agent audio to only what was heard."""
+        chunk_url, store = audio_server
+
+        sender = AudioChunkSender(
+            url=chunk_url,
+            session_id="test-interrupt",
+            api_key="test-key",
+            batch_interval=10.0,
+            max_batch_frames=1000,
+        )
+        await sender.start()
+
+        span_id = "ffff" * 4
+        # 24kHz mono 16-bit: each frame is 480 samples = 960 bytes = 20ms
+        for _ in range(50):
+            sender.enqueue(
+                _make_frame(n_samples=480),
+                kind="agent",
+                trace_id="aaaa" * 8,
+                span_id=span_id,
+            )
+        # 50 frames * 20ms = 1000ms total enqueued
+
+        # Simulate interrupt after 400ms of playback
+        sender.interrupt_agent_span(span_id=span_id, playback_ms=400)
+        await asyncio.sleep(0.5)
+        await sender.end_session()
+
+        assert sender.stats.errors == 0
+        # The span should be finalized (truncated)
+        assert span_id in sender._finalized_span_ids
+        # Total bytes sent should be <= 400ms worth = 400 * (24000 * 1 * 2) / 1000 = 19200
+        span_bytes = sender._span_bytes_sent.get(span_id, 0)
+        max_expected = int(400 * (24000 * 1 * 2) / 1000)
+        assert span_bytes <= max_expected, f"sent {span_bytes} > max {max_expected}"
+
+    @pytest.mark.asyncio
+    async def test_interrupt_discards_queued_frames_after_marker(
+        self, audio_server: tuple[str, AudioSessionStore]
+    ) -> None:
+        """Frames for an interrupted span queued after the marker are discarded."""
+        chunk_url, store = audio_server
+
+        sender = AudioChunkSender(
+            url=chunk_url,
+            session_id="test-interrupt-discard",
+            api_key="test-key",
+            batch_interval=10.0,
+            max_batch_frames=1000,
+        )
+        await sender.start()
+
+        span_id = "abab" * 4
+        # Enqueue some frames
+        for _ in range(5):
+            sender.enqueue(
+                _make_frame(n_samples=480),
+                kind="agent",
+                trace_id="aaaa" * 8,
+                span_id=span_id,
+            )
+
+        # Interrupt at 50ms (only ~2.5 frames worth)
+        sender.interrupt_agent_span(span_id=span_id, playback_ms=50)
+
+        # Enqueue more frames for the same span AFTER the interrupt marker
+        # (simulates frames already in the queue before _agent_interrupted was set)
+        for _ in range(10):
+            sender.enqueue(
+                _make_frame(n_samples=480),
+                kind="agent",
+                trace_id="aaaa" * 8,
+                span_id=span_id,
+            )
+
+        await asyncio.sleep(0.5)
+        await sender.end_session()
+
+        assert span_id in sender._finalized_span_ids
+        # Should have sent at most 50ms worth = 2400 bytes
+        span_bytes = sender._span_bytes_sent.get(span_id, 0)
+        max_expected = int(50 * (24000 * 1 * 2) / 1000)
+        assert span_bytes <= max_expected, f"sent {span_bytes} > max {max_expected}"
+
 
 # ---------------------------------------------------------------------------
 # AudioSpanProcessor unit tests
@@ -182,9 +268,9 @@ class TestAudioSpanProcessor:
             register_audio_hooks,
             unregister_audio_hooks,
         )
-        from netra.instrumentation.livekit.wrappers import AudioHookManager
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
-        hooks = AudioHookManager()
+        hooks = AudioStreamingWrapper()
         trace_id_int = 0xAAAABBBBCCCCDDDD
         register_audio_hooks(trace_id_int, hooks)
 
@@ -216,9 +302,9 @@ class TestAudioSpanProcessor:
             register_audio_hooks,
             unregister_audio_hooks,
         )
-        from netra.instrumentation.livekit.wrappers import AudioHookManager
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
-        hooks = AudioHookManager()
+        hooks = AudioStreamingWrapper()
         trace_id_int = 0x1111222233334444
         register_audio_hooks(trace_id_int, hooks)
 
@@ -262,10 +348,10 @@ class TestAudioSpanProcessor:
 class TestAudioHookManager:
 
     def test_on_user_frame_enqueues(self) -> None:
-        from netra.instrumentation.livekit.wrappers import AudioHookManager
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
         sender = MagicMock()
-        hooks = AudioHookManager(sender=sender)
+        hooks = AudioStreamingWrapper(sender=sender)
         hooks._session_trace_id = "aabb" * 8
 
         frame = _make_frame()
@@ -277,10 +363,10 @@ class TestAudioHookManager:
         assert call_kwargs.kwargs["trace_id"] == "aabb" * 8
 
     def test_on_agent_frame_uses_span_id(self) -> None:
-        from netra.instrumentation.livekit.wrappers import AudioHookManager
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
         sender = MagicMock()
-        hooks = AudioHookManager(sender=sender)
+        hooks = AudioStreamingWrapper(sender=sender)
         hooks._session_trace_id = "ccdd" * 8
         hooks.on_agent_speaking_start("ccdd" * 8, "span1234" * 2)
 
@@ -292,10 +378,10 @@ class TestAudioHookManager:
         assert call_kwargs.kwargs["kind"] == "agent"
 
     def test_end_all_marks_open_spans(self) -> None:
-        from netra.instrumentation.livekit.wrappers import AudioHookManager
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
         sender = MagicMock()
-        hooks = AudioHookManager(sender=sender)
+        hooks = AudioStreamingWrapper(sender=sender)
         hooks.on_user_speaking_start("trace1", "span_u")
         hooks.on_agent_speaking_start("trace1", "span_a")
 
@@ -306,4 +392,59 @@ class TestAudioHookManager:
         kinds = {c["kind"] for c in calls}
         assert kinds == {"user", "agent"}
         assert hooks._current_user_span_id is None
+        assert hooks._current_agent_span_id is None
+
+    def test_interrupt_calls_sender_interrupt_agent_span(self) -> None:
+        """clear_buffer + playback_finished triggers sender.interrupt_agent_span."""
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
+
+        sender = MagicMock()
+        hooks = AudioStreamingWrapper(sender=sender)
+        hooks.on_agent_speaking_start("trace1", "span_agent")
+
+        # Simulate user interrupt: clear_buffer fires
+        hooks._on_clear_buffer()
+        assert hooks._agent_interrupted is True
+        assert hooks._interrupted_agent_span_id == "span_agent"
+
+        # Agent frames after interrupt should be skipped
+        frame = _make_frame()
+        hooks.on_agent_frame(frame)
+        sender.enqueue.assert_not_called()
+
+        # playback_finished fires with position
+        ev = MagicMock()
+        ev.interrupted = True
+        ev.playback_position = 0.75  # 750ms heard
+        hooks._on_playback_finished(ev)
+
+        sender.interrupt_agent_span.assert_called_once_with(span_id="span_agent", playback_ms=750)
+
+    def test_interrupt_skips_non_interrupted_playback_finished(self) -> None:
+        """Non-interrupted playback_finished events are ignored."""
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
+
+        sender = MagicMock()
+        hooks = AudioStreamingWrapper(sender=sender)
+        hooks.on_agent_speaking_start("trace1", "span_agent")
+
+        ev = MagicMock()
+        ev.interrupted = False
+        ev.playback_position = 2.0
+        hooks._on_playback_finished(ev)
+
+        sender.interrupt_agent_span.assert_not_called()
+
+    def test_on_agent_speaking_end_skips_mark_when_interrupted(self) -> None:
+        """When interrupted, on_agent_speaking_end does NOT call mark_audio_end."""
+        from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
+
+        sender = MagicMock()
+        hooks = AudioStreamingWrapper(sender=sender)
+        hooks.on_agent_speaking_start("trace1", "span_agent")
+        hooks._on_clear_buffer()
+
+        hooks.on_agent_speaking_end()
+
+        sender.mark_audio_end.assert_not_called()
         assert hooks._current_agent_span_id is None

@@ -20,7 +20,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
 if TYPE_CHECKING:
-    from netra.instrumentation.livekit.wrappers import AudioHookManager
+    from netra.instrumentation.livekit.wrappers import AudioStreamingWrapper
 
 from netra.instrumentation.livekit.utils import (
     ATTRIBUTE_MAP,
@@ -556,13 +556,13 @@ class LiveKitSpanProcessor(SpanProcessor):  # type: ignore[misc]
 # ---------------------------------------------------------------------------
 
 _active_hooks_lock = threading.Lock()
-_active_hooks: Dict[int, "AudioHookManager"] = {}
+_active_hooks: Dict[int, "AudioStreamingWrapper"] = {}
 
 _AUDIO_SPAN_NAMES = frozenset({"user_speaking", "agent_speaking"})
 
 
-def register_audio_hooks(trace_id: int, hooks: "AudioHookManager") -> None:
-    """Register an ``AudioHookManager`` for a session so the processor can find it.
+def register_audio_hooks(trace_id: int, hooks: "AudioStreamingWrapper") -> None:
+    """Register an ``AudioStreamingWrapper`` for a session so the processor can find it.
 
     Args:
         trace_id: The ``agent_session`` span's trace id (int).
@@ -582,7 +582,7 @@ def unregister_audio_hooks(trace_id: int) -> None:
         _active_hooks.pop(trace_id, None)
 
 
-def pop_all_audio_hooks() -> list["AudioHookManager"]:
+def pop_all_audio_hooks() -> list["AudioStreamingWrapper"]:
     """Remove and return every registered hooks instance.
 
     Used by ``Netra.shutdown()`` as a backstop.
@@ -597,7 +597,7 @@ class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """Watches for ``user_speaking`` and ``agent_speaking`` spans.
 
     When either span starts, its OTel ``span_id`` and ``trace_id`` are pushed
-    to the ``AudioHookManager`` for that session so audio chunks carry the
+    to the ``AudioStreamingWrapper`` for that session so audio chunks carry the
     correct IDs.  When the span ends the recording is closed.
 
     The processor is registered process-wide but the hooks are per-session,

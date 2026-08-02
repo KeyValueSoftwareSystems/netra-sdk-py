@@ -12,6 +12,7 @@ Three request shapes:
     x-audio-start-ms   (epoch ms)
     x-audio-seq        (0-based, per-span)
     x-audio-last: true (final chunk only)
+    x-audio-heard-ms   (only on interrupted last chunk — ms of audio actually heard)
     x-audio-sample-rate / channels / bit-depth
 
 **Noise chunk** (unspanned audio) — same but ``x-audio-span-id``,
@@ -66,6 +67,14 @@ class _AudioEndMarker:
 
 
 @dataclass
+class _InterruptMarker:
+    """Signals that an agent span was interrupted at a given playback position."""
+
+    span_id: str
+    playback_ms: int
+
+
+@dataclass
 class _PendingBatch:
     """Accumulator for frames of the same kind + span_id until flush."""
 
@@ -93,7 +102,7 @@ class _PendingBatch:
         return b"".join(self.pcm_parts)
 
 
-_QueueItemType = _QueueItem | _AudioEndMarker
+_QueueItemType = _QueueItem | _AudioEndMarker | _InterruptMarker
 
 
 @dataclass
@@ -156,6 +165,8 @@ class AudioChunkSender:
         self._span_trace_ids: Dict[str, str] = {}
         self._span_roles: Dict[str, str] = {}
         self._known_span_ids: Set[str] = set()
+        self._span_bytes_sent: Dict[str, int] = {}
+        self._interrupted_spans: Set[str] = set()
         self._task: Optional[asyncio.Task[None]] = None
         self._client: Any = None
         self._closed = False
@@ -233,6 +244,25 @@ class AudioChunkSender:
             self._queue.put_nowait(_AudioEndMarker(kind=kind, span_id=span_id))
         except asyncio.QueueFull:
             logger.debug("netra.audio: could not enqueue audio-end marker for span=%s", span_id)
+
+    def interrupt_agent_span(self, span_id: str, playback_ms: int) -> None:
+        """Signal that an agent span was interrupted after *playback_ms* of heard audio.
+
+        Enqueues a marker for the send loop to truncate the pending batch to only
+        the audio the user actually heard, then finalize the span with
+        ``x-audio-heard-ms``.
+
+        This works even if the span was already finalized by the normal
+        ``mark_audio_end`` path (which fires when the OTel span ends before
+        clear_buffer). In that case, the send loop sends a correction chunk
+        with just the ``x-audio-heard-ms`` header.
+        """
+        if self._closed or not span_id:
+            return
+        try:
+            self._queue.put_nowait(_InterruptMarker(span_id=span_id, playback_ms=playback_ms))
+        except asyncio.QueueFull:
+            logger.debug("netra.audio: could not enqueue interrupt marker for span=%s", span_id)
 
     async def end_session(self) -> None:
         """Flush remaining frames, finalize open spans, signal session end."""
@@ -315,6 +345,25 @@ class AudioChunkSender:
                     )
                 continue
 
+            if isinstance(item, _InterruptMarker):
+                self._interrupted_spans.add(item.span_id)
+                batch = agent_batch
+                if batch.span_id == item.span_id and batch.pcm_parts:
+                    await self._truncate_and_finalize(batch, item.playback_ms)
+                    _reset_batch("agent")
+                else:
+                    await self._send_span_last(
+                        kind=self._span_roles.get(item.span_id, "agent"),
+                        span_id=item.span_id,
+                        trace_id=self._span_trace_ids.get(item.span_id, ""),
+                        heard_ms=item.playback_ms,
+                        force=True,
+                    )
+                continue
+
+            if item.span_id in self._interrupted_spans:
+                continue
+
             batch = _batch_for(item.kind)
 
             if batch.pcm_parts and batch.span_id != item.span_id:
@@ -344,9 +393,18 @@ class AudioChunkSender:
                 trace_id=self._span_trace_ids.get(span_id, ""),
             )
 
-    async def _send_span_last(self, *, kind: str, span_id: str, trace_id: str) -> None:
-        """Send an empty terminal chunk with ``x-audio-last: true``."""
-        if not span_id or span_id in self._finalized_span_ids:
+    async def _send_span_last(
+        self, *, kind: str, span_id: str, trace_id: str, heard_ms: int = 0, force: bool = False
+    ) -> None:
+        """Send an empty terminal chunk with ``x-audio-last: true``.
+
+        When *force* is True, send even if the span was already finalized.
+        This allows interrupt corrections (``x-audio-heard-ms``) to reach the
+        backend after the normal last-marker was already sent.
+        """
+        if not span_id:
+            return
+        if not force and span_id in self._finalized_span_ids:
             return
         await self._post_chunk(
             kind=kind,
@@ -358,6 +416,7 @@ class AudioChunkSender:
             frame_count=0,
             is_last=True,
             start_ms=0,
+            heard_ms=heard_ms,
         )
 
     async def _flush_batch(self, batch: _PendingBatch, *, is_last: bool = False) -> None:
@@ -389,6 +448,59 @@ class AudioChunkSender:
                 trace_id=batch.trace_id or self._span_trace_ids.get(batch.span_id, ""),
             )
 
+    async def _truncate_and_finalize(self, batch: _PendingBatch, playback_ms: int) -> None:
+        """Truncate *batch* to only the audio heard before interrupt, then finalize.
+
+        Calculates how many PCM bytes correspond to *playback_ms* of audio,
+        subtracts bytes already sent in prior flushes for this span, and trims
+        the pending batch accordingly. Sends the result with ``x-audio-last: true``
+        and ``x-audio-heard-ms`` so the backend can trim precisely.
+        """
+        sample_rate = batch.sample_rate or 16000
+        channels = batch.num_channels or 1
+        bytes_per_ms = (sample_rate * channels * 2) / 1000
+
+        total_heard_bytes = int(playback_ms * bytes_per_ms)
+        already_sent = self._span_bytes_sent.get(batch.span_id, 0)
+        remaining_to_send = total_heard_bytes - already_sent
+
+        if remaining_to_send <= 0:
+            await self._send_span_last(
+                kind=batch.kind,
+                span_id=batch.span_id,
+                trace_id=batch.trace_id or self._span_trace_ids.get(batch.span_id, ""),
+                heard_ms=playback_ms,
+            )
+            return
+
+        full_pcm = batch.pcm_bytes
+        if remaining_to_send < len(full_pcm):
+            frame_size = channels * 2
+            remaining_to_send = (remaining_to_send // frame_size) * frame_size
+            truncated = full_pcm[:remaining_to_send]
+        else:
+            truncated = full_pcm
+
+        await self._post_chunk(
+            kind=batch.kind,
+            span_id=batch.span_id,
+            trace_id=batch.trace_id,
+            sample_rate=batch.sample_rate,
+            num_channels=batch.num_channels,
+            pcm=truncated,
+            frame_count=batch.frame_count,
+            is_last=True,
+            start_ms=batch.start_ms,
+            heard_ms=playback_ms,
+        )
+        logger.debug(
+            "netra.audio: truncated interrupted span=%s to %d bytes (heard=%dms, already_sent=%d)",
+            batch.span_id,
+            len(truncated),
+            playback_ms,
+            already_sent,
+        )
+
     async def _post_chunk(
         self,
         *,
@@ -401,6 +513,7 @@ class AudioChunkSender:
         frame_count: int,
         is_last: bool,
         start_ms: int = 0,
+        heard_ms: int = 0,
     ) -> None:
         if self._circuit_tripped:
             return
@@ -428,6 +541,8 @@ class AudioChunkSender:
             headers["x-audio-seq"] = str(seq)
             if is_last:
                 headers["x-audio-last"] = "true"
+                if heard_ms > 0:
+                    headers["x-audio-heard-ms"] = str(heard_ms)
             self._known_span_ids.add(span_id)
             self._span_roles[span_id] = kind
             if trace_id:
@@ -442,6 +557,7 @@ class AudioChunkSender:
         if is_span and ok:
             self._seq[span_id] = self._seq.get(span_id, 0) + 1
             self._sent_span_ids.add(span_id)
+            self._span_bytes_sent[span_id] = self._span_bytes_sent.get(span_id, 0) + len(pcm)
             if is_last:
                 self._finalized_span_ids.add(span_id)
 
