@@ -138,6 +138,7 @@ class Simulation:
                     [item["test_run_item_id"] for item in items],
                     f"before_all hook failed: {exc}",
                     "prescript_failed",
+                    max_concurrency,
                 )
                 self._client.post_run_status(run_id, "completed")
                 return {
@@ -392,8 +393,23 @@ class Simulation:
             error_msg = f"after_all hook failed: {exc}"
             logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
             # Only mark successfully completed items — do not overwrite real failures.
-            successful_ids = [item["run_item_id"] for item in results.get("completed", []) if "run_item_id" in item]
-            self._report_failures(run_id, successful_ids, error_msg, "postscript_failed")
+            completed = results.get("completed", [])
+            successful_ids = [item["run_item_id"] for item in completed if "run_item_id" in item]
+            self._report_failures(
+                run_id,
+                successful_ids,
+                error_msg,
+                "postscript_failed",
+                max_concurrency,
+            )
+            for item in completed:
+                item["success"] = False
+                item["error"] = error_msg
+                item["status"] = "postscript_failed"
+            results.setdefault("failed", []).extend(completed)
+            results["completed"] = []
+
+        results["success"] = len(results["failed"]) == 0
 
         logger.info(
             "%s: Completed=%d, Failed=%d",
@@ -409,11 +425,12 @@ class Simulation:
         run_item_ids: list[str],
         error: str,
         status: str,
+        max_concurrency: int = 5,
     ) -> None:
-        """Report failures for many items concurrently."""
+        """Report failures for many items concurrently, capped like other paths."""
         if not run_item_ids:
             return
-        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(run_item_ids), 10)) as executor:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(run_item_ids), max_concurrency)) as executor:
             futures = [
                 executor.submit(
                     self._client.report_failure,
@@ -470,12 +487,16 @@ class Simulation:
             errors.append(error_msg)
 
         if errors and item_result.get("success"):
+            error = "; ".join(errors)
             self._client.report_failure(
                 run_id=run_id,
                 run_item_id=run_item_id,
-                error="; ".join(errors),
+                error=error,
                 status="postscript_failed",
             )
+            item_result["success"] = False
+            item_result["error"] = error
+            item_result["status"] = "postscript_failed"
 
     async def _execute_conversation(
         self,
