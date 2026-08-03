@@ -8,6 +8,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix Hermes Agent tool call duplication** - Registry tools that pass through both `_run_agent_tool_execution_middleware` and `handle_function_call` no longer produce duplicate spans. The middleware wrapper now claims tool_call_ids in a `_middleware_traced_ids` context var; `handle_function_call_wrapper` checks this set and passes through when the ID is already traced. Also updated result extraction to handle the `_ManagedToolResult` dataclass in addition to legacy tuples.
 
+- **Hide empty user and assistant messages from OpenAI span preview** - OpenAI instrumentation now skips emitting prompt attributes for messages with empty or null content, empty function call entries, and reasoning/reasoning_summary items, keeping span previews clean and only showing meaningful conversation turns.
+
 - **Add `get_session_detail` dashboard wrapper** - New `Netra.dashboard.get_session_detail(session_id)` method that calls the public session details endpoint and returns session traces with tokens, cost, models, and tool calls.
 
 - **Add `USER_ID` to `SessionFilterField`** - Session stats and session summary queries can now filter by `user_id`.
