@@ -151,7 +151,6 @@ class Config:
             None, "NETRA_AUDIO_MAX_REQUEST_BYTES", default=_DEFAULT_AUDIO_MAX_REQUEST_BYTES
         )
         self.audio_roles = self._get_role_set("NETRA_AUDIO_ROLES")
-        self.audio_save_local = self._get_bool_config(None, "NETRA_AUDIO_SAVE_LOCAL", default=False)
 
         # Order matters: audio_batch_bytes is clamped against the resolved
         # max-request size first, then the two ceilings are raised to whatever
@@ -210,12 +209,6 @@ class Config:
             logger.warning(
                 "netra.audio: NETRA_AUDIO_ROLES resolved empty; no call audio will be captured. "
                 "Traces are unaffected."
-            )
-
-        if self.audio_save_local:
-            logger.warning(
-                "netra.audio: NETRA_AUDIO_SAVE_LOCAL is enabled. Local WAV capture is a "
-                "development-only aid and retains full-session PCM in memory."
             )
 
     def _get_role_set(self, env_var: str) -> FrozenSet[str]:

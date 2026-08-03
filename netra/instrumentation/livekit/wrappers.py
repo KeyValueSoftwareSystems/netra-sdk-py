@@ -1,40 +1,36 @@
-"""wrapt wrappers for LiveKit's ``AgentSession`` lifecycle and audio hooks.
+"""wrapt wrappers for LiveKit's ``AgentSession`` lifecycle.
 
-The session id — the LiveKit room SID, falling back to the room name — is attached
-as OTel baggage *around* ``AgentSession.start`` so that the ``agent_session`` root
-span, created inside ``start()``, carries it, then detached so the caller's context
-is restored. See ``wrap_start`` and ``_resolve_session_id``.
+Two things hang off the session's lifecycle, and this module is where both are
+bolted on:
 
-When audio capture is enabled, ``_after_start`` constructs the sender and hooks,
-patches the session's audio I/O, and registers the hooks for the
-``AudioSpanProcessor`` to find. ``_before_close`` tears everything down.
+* **the Netra session id** — the LiveKit room SID, falling back to the room name
+  — attached as OTel baggage *around* ``AgentSession.start`` so the
+  ``agent_session`` root span created inside it carries the id, then detached so
+  the caller's context is restored. See :func:`wrap_start` and
+  :func:`_resolve_session_id`;
+* **call-audio capture** — started once ``start()`` has returned and torn down
+  before the session closes. The capture itself lives in ``audio_capture.py``;
+  this module only decides when it begins and ends.
 
 Nothing in here may change the behaviour of the user's application: every hook
-calls the wrapped function even if our own logic raises, and exceptions raised by
-the user's code propagate untouched.
+runs the wrapped function whether or not our own logic succeeded, and exceptions
+raised by the user's code propagate untouched.
 """
 
 from __future__ import annotations
 
-import functools
 import logging
-import time
 from contextlib import ExitStack
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from netra.config import get_active_config
+from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
 from netra.session_manager import SessionManager
-
-if TYPE_CHECKING:
-    from livekit.agents import AgentSession
-    from livekit.rtc import AudioFrame
-
-    from netra.instrumentation.livekit.audio_sender import AudioChunkSender
 
 logger = logging.getLogger(__name__)
 
-# The wrapt quadruple: (wrapped, instance, args, kwargs). ``instance`` is a
-# livekit AgentSession, which is not importable at module scope — the SDK must
+# The wrapt quadruple is (wrapped, instance, args, kwargs). ``instance`` is a
+# livekit AgentSession, which cannot be imported at module scope — the SDK must
 # stay importable with livekit-agents absent.
 WrappedAsync = Callable[..., Awaitable[Any]]
 
@@ -135,12 +131,28 @@ def _room_name(kwargs: Dict[str, Any]) -> Optional[str]:
 
 
 def _session_span(instance: Any) -> Optional[Any]:
-    """Return the live ``agent_session`` span, or ``None`` once it is gone."""
+    """Return the live ``agent_session`` span, or ``None`` once it is gone.
+
+    Args:
+        instance: The ``AgentSession``.
+
+    Returns:
+        LiveKit's own session span while the session is open.
+    """
     return getattr(instance, "_session_span", None)
 
 
 def _trace_id_of(session_span: Optional[Any]) -> Optional[int]:
-    """Read the trace id off the ``agent_session`` span."""
+    """Read the trace id off the ``agent_session`` span.
+
+    Args:
+        session_span: The session span, or ``None``.
+
+    Returns:
+        The trace id, or ``None`` when there is no usable span context. This is
+        the key every per-session resource is filed under, so ``None`` means the
+        session gets no session-scoped wiring at all.
+    """
     if session_span is None:
         return None
     try:
@@ -154,366 +166,18 @@ def _trace_id_of(session_span: Optional[Any]) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
-# Audio hook manager
-# ---------------------------------------------------------------------------
-
-
-class AudioStreamingWrapper:
-    """Coordinates audio streaming using active OTel span context.
-
-    All frames are sent.  Frames inside a ``user_speaking`` or
-    ``agent_speaking`` span carry that span's ID; all other frames are
-    sent with an empty ``span_id``.
-
-    Lifecycle:
-        1. ``attach(session)`` patches audio I/O after ``session.start()``.
-        2. ``AudioSpanProcessor`` pushes span start/end events so frames
-           carry the correct span_id.
-        3. Per-frame callbacks stream every frame via HTTP.
-        4. ``end_all()`` closes any still-open span recordings on session close.
-    """
-
-    def __init__(self, sender: "AudioChunkSender | None" = None) -> None:
-        self._sender = sender
-
-        self._current_user_span_id: Optional[str] = None
-        self._current_user_trace_id: Optional[str] = None
-
-        self._current_agent_span_id: Optional[str] = None
-        self._current_agent_trace_id: Optional[str] = None
-        self._last_agent_span_id: Optional[str] = None
-
-        self._session_trace_id: Optional[str] = None
-
-        self._agent_interrupted = False
-        self._interrupted_agent_span_id: Optional[str] = None
-
-    def attach(self, session: "AgentSession") -> None:
-        """Patch both audio input and output on *session*.
-
-        Must be called after ``session.start()`` so that ``session.input``
-        and ``session.output`` are initialised.
-        """
-        try:
-            from opentelemetry import context
-            from opentelemetry import trace as otrace
-
-            span = otrace.get_current_span(context.get_current())
-            ctx = span.get_span_context()
-            if ctx and ctx.is_valid:
-                self._session_trace_id = format(ctx.trace_id, "032x")
-        except Exception:
-            pass
-        self._wrap_audio_input(session)
-        self._wrap_audio_output(session)
-
-    # -- SpanProcessor callbacks --------------------------------------------
-
-    def on_user_speaking_start(self, trace_id: str, span_id: str) -> None:
-        self._current_user_span_id = span_id
-        self._current_user_trace_id = trace_id
-        logger.debug("netra.audio: user_speaking started — span_id=%s", span_id)
-
-    def on_agent_speaking_start(self, trace_id: str, span_id: str) -> None:
-        self._current_agent_span_id = span_id
-        self._current_agent_trace_id = trace_id
-        self._last_agent_span_id = span_id
-        self._agent_interrupted = False
-        self._interrupted_agent_span_id = None
-        logger.debug("netra.audio: agent_speaking started — span_id=%s", span_id)
-
-    def on_agent_speaking_end(self) -> None:
-        if self._agent_interrupted:
-            self._current_agent_span_id = None
-            self._current_agent_trace_id = None
-            return
-        if self._current_agent_span_id is not None and self._sender is not None:
-            self._sender.mark_audio_end(kind="agent", span_id=self._current_agent_span_id)
-        self._current_agent_span_id = None
-        self._current_agent_trace_id = None
-
-    def on_user_speaking_end(self) -> None:
-        if self._current_user_span_id is not None and self._sender is not None:
-            self._sender.mark_audio_end(kind="user", span_id=self._current_user_span_id)
-        self._current_user_span_id = None
-        self._current_user_trace_id = None
-
-    # -- Per-frame callbacks ------------------------------------------------
-
-    def on_user_frame(self, frame: "AudioFrame") -> None:
-        """Enqueue one incoming user audio frame.
-
-        Stamps capture-time metadata at the earliest point we see the frame.
-        """
-        if self._sender is None:
-            return
-        timestamp_ns = time.time_ns()
-        trace_id = self._current_user_trace_id or self._session_trace_id or ""
-        self._sender.enqueue(
-            frame,
-            kind="user",
-            span_id=self._current_user_span_id or "",
-            trace_id=trace_id,
-            timestamp_ns=timestamp_ns,
-        )
-
-    def on_agent_frame(self, frame: "AudioFrame") -> None:
-        """Enqueue one outgoing agent audio frame.
-
-        Skipped when ``_agent_interrupted`` is set — after ``clear_buffer``
-        but before the next ``agent_speaking`` span starts.
-        """
-        if self._sender is None or self._agent_interrupted:
-            return
-        timestamp_ns = time.time_ns()
-        trace_id = self._current_agent_trace_id or self._session_trace_id or ""
-        self._sender.enqueue(
-            frame,
-            kind="agent",
-            span_id=self._current_agent_span_id or "",
-            trace_id=trace_id,
-            timestamp_ns=timestamp_ns,
-        )
-
-    def on_agent_flush(self) -> None:
-        logger.debug("netra.audio: agent flush")
-
-    def end_all(self) -> None:
-        """End any open span recordings.  Called on session close."""
-        if self._sender is not None:
-            if self._current_user_span_id is not None:
-                self._sender.mark_audio_end(kind="user", span_id=self._current_user_span_id)
-            if self._current_agent_span_id is not None:
-                self._sender.mark_audio_end(kind="agent", span_id=self._current_agent_span_id)
-        self._current_user_span_id = None
-        self._current_user_trace_id = None
-        self._current_agent_span_id = None
-        self._current_agent_trace_id = None
-
-    # -- Session I/O patching -----------------------------------------------
-
-    def _wrap_audio_input(self, session: "AgentSession") -> None:
-        """Replace the user audio stream with a proxy that intercepts frames."""
-        session_input = getattr(session, "input", None)
-        if session_input is None:
-            logger.warning("netra.audio: session.input not available — user audio not captured")
-            return
-
-        audio_input = getattr(session_input, "audio", None)
-        if audio_input is None:
-            logger.warning("netra.audio: session.input.audio not available — user audio not captured")
-            return
-
-        leaf = _leaf_audio_input(audio_input)
-        proxy = _AudioInputProxy(leaf, self)
-
-        if leaf is audio_input:
-            try:
-                session_input.audio = proxy
-                logger.debug("netra.audio: replaced session.input.audio with proxy")
-            except (AttributeError, TypeError):
-                _patch_anext(leaf, self)
-        else:
-            parent = _parent_of_leaf(audio_input)
-            if parent is not None:
-                try:
-                    parent.source = proxy
-                    logger.debug("netra.audio: replaced leaf source with proxy")
-                except (AttributeError, TypeError):
-                    _patch_anext(leaf, self)
-            else:
-                _patch_anext(leaf, self)
-
-    def _wrap_audio_output(self, session: "AgentSession") -> None:
-        """Wrap agent ``capture_frame``, ``flush``, and ``clear_buffer``.
-
-        Also subscribes to ``playback_finished`` so we know when an
-        interrupted segment finishes playout and can truncate the
-        pending PCM batch to only include heard audio.
-        """
-        audio_output = getattr(getattr(session, "output", None), "audio", None)
-        if audio_output is None:
-            logger.warning("netra.audio: session.output.audio not available — agent audio not captured")
-            return
-
-        hooks = self
-        original_capture = audio_output.capture_frame
-        original_flush = audio_output.flush
-
-        @functools.wraps(original_capture)
-        async def traced_capture(frame: "AudioFrame") -> None:
-            try:
-                hooks.on_agent_frame(frame)
-            except Exception as exc:
-                logger.debug("netra.audio: agent frame hook failed: %s", exc)
-            await original_capture(frame)
-
-        @functools.wraps(original_flush)
-        def traced_flush() -> Any:
-            try:
-                hooks.on_agent_flush()
-            except Exception as exc:
-                logger.debug("netra.audio: agent flush hook failed: %s", exc)
-            return original_flush()
-
-        audio_output.capture_frame = traced_capture
-        audio_output.flush = traced_flush
-        logger.debug("netra.audio: wrapped capture_frame + flush")
-
-        original_clear_buffer = getattr(audio_output, "clear_buffer", None)
-        if callable(original_clear_buffer):
-
-            @functools.wraps(original_clear_buffer)
-            def traced_clear_buffer() -> Any:
-                try:
-                    hooks._on_clear_buffer()
-                except Exception as exc:
-                    logger.debug("netra.audio: clear_buffer hook failed: %s", exc)
-                return original_clear_buffer()
-
-            audio_output.clear_buffer = traced_clear_buffer
-            logger.debug("netra.audio: wrapped clear_buffer for interrupt detection")
-
-        on_fn = getattr(audio_output, "on", None)
-        if callable(on_fn):
-            try:
-                on_fn("playback_finished", hooks._on_playback_finished)
-                logger.debug("netra.audio: subscribed to playback_finished events")
-            except Exception:
-                logger.debug("netra.audio: could not subscribe to playback_finished", exc_info=True)
-
-    # -- Interrupt handling -------------------------------------------------
-
-    def _on_clear_buffer(self) -> None:
-        """Called when LiveKit clears the agent audio buffer (user interrupt).
-
-        Sets the interrupt flag to stop enqueueing further agent frames
-        and saves the active span_id for later use by ``_on_playback_finished``.
-
-        Note: The OTel ``agent_speaking`` span often ends BEFORE clear_buffer
-        fires, so ``_current_agent_span_id`` may already be None. We fall back
-        to ``_last_agent_span_id`` which persists across span boundaries.
-        """
-        self._agent_interrupted = True
-        self._interrupted_agent_span_id = self._current_agent_span_id or self._last_agent_span_id
-        logger.debug(
-            "netra.audio: clear_buffer detected — agent audio interrupted (span_id=%s)",
-            self._interrupted_agent_span_id,
-        )
-
-    def _on_playback_finished(self, ev: Any) -> None:
-        """Called when an audio output segment finishes playout.
-
-        On an interrupted segment, reads ``playback_position`` (seconds of
-        audio the user actually heard) and tells the sender to truncate
-        the pending batch and finalize the span.
-        """
-        interrupted = getattr(ev, "interrupted", False)
-        if not interrupted:
-            return
-
-        span_id = self._interrupted_agent_span_id
-        if not span_id or self._sender is None:
-            return
-
-        playback_position = getattr(ev, "playback_position", 0.0)
-        playback_ms = int(playback_position * 1000)
-        self._sender.interrupt_agent_span(span_id=span_id, playback_ms=playback_ms)
-        logger.debug(
-            "netra.audio: playback_finished interrupted — span_id=%s playback_ms=%d",
-            span_id,
-            playback_ms,
-        )
-
-
-# ---------------------------------------------------------------------------
-# Audio input proxy
-# ---------------------------------------------------------------------------
-
-
-class _AudioInputProxy:
-    """Transparent proxy around an async audio iterator.
-
-    Class-level ``__aiter__`` / ``__anext__`` ensures interception works
-    with ``async for`` (which resolves ``__anext__`` on the *type*, not the
-    instance).
-    """
-
-    def __init__(self, original: Any, hooks: AudioStreamingWrapper) -> None:
-        self._original = original
-        self._hooks = hooks
-
-    def __aiter__(self) -> "_AudioInputProxy":
-        return self
-
-    async def __anext__(self) -> "AudioFrame":
-        frame: "AudioFrame" = await self._original.__anext__()
-        try:
-            self._hooks.on_user_frame(frame)
-        except Exception as exc:
-            logger.debug("netra.audio: user frame hook failed: %s", exc)
-        return frame
-
-    def __getattr__(self, name: str) -> Any:
-        return getattr(self._original, name)
-
-
-# ---------------------------------------------------------------------------
-# Audio input helpers
-# ---------------------------------------------------------------------------
-
-
-def _leaf_audio_input(audio_input: Any) -> Any:
-    """Walk the ``.source`` chain to find the innermost audio source."""
-    current = audio_input
-    while getattr(current, "source", None) is not None:
-        current = current.source
-    return current
-
-
-def _parent_of_leaf(audio_input: Any) -> Optional[Any]:
-    """Return the object whose ``.source`` is the leaf, or ``None``."""
-    current = audio_input
-    while True:
-        child = getattr(current, "source", None)
-        if child is None:
-            return None
-        if getattr(child, "source", None) is None:
-            return current
-        current = child
-
-
-def _patch_anext(leaf: Any, hooks: AudioStreamingWrapper) -> None:
-    """Last-resort fallback: patch ``__anext__`` on the instance."""
-    original = leaf.__anext__
-
-    @functools.wraps(original)
-    async def traced() -> "AudioFrame":
-        frame = await original()
-        try:
-            hooks.on_user_frame(frame)
-        except Exception as exc:
-            logger.debug("netra.audio: user frame hook (fallback) failed: %s", exc)
-        return frame
-
-    leaf.__anext__ = traced
-    logger.debug("netra.audio: fell back to __anext__ instance patch")
-
-
-# ---------------------------------------------------------------------------
-# Session lifecycle hooks (called from wrapt wrappers)
+# Session lifecycle hooks
 # ---------------------------------------------------------------------------
 
 
 async def _after_start(instance: Any, session_id: Optional[str]) -> None:
-    """Per-session wiring that runs once ``start()`` has returned.
+    """Run the per-session wiring, now that ``start()`` has returned.
 
-    When audio capture is enabled, constructs an ``AudioChunkSender`` and
-    ``AudioStreamingWrapper``, patches the session's audio I/O, and registers the
-    hooks for the ``AudioSpanProcessor`` to find.
+    Args:
+        instance: The ``AgentSession`` that has started.
+        session_id: The Netra session id resolved for it, if any.
     """
-    span = _session_span(instance)
-    trace_id = _trace_id_of(span)
+    trace_id = _trace_id_of(_session_span(instance))
     if trace_id is None:
         logger.debug(
             "netra.livekit: no agent_session span after start(); session-scoped wiring skipped "
@@ -522,103 +186,36 @@ async def _after_start(instance: Any, session_id: Optional[str]) -> None:
         )
         return
 
-    logger.debug(
-        "netra.livekit: agent session started session_id=%s trace_id=%032x",
-        session_id,
-        trace_id,
-    )
+    logger.debug("netra.livekit: agent session started session_id=%s trace_id=%032x", session_id, trace_id)
 
-    cfg = get_active_config()
-    if cfg is None or not cfg.audio_capture_enabled:
+    config = get_active_config()
+    if config is None or not config.audio_capture_enabled:
         return
 
-    try:
-        from netra.instrumentation.livekit.audio_sender import AudioChunkSender
-        from netra.instrumentation.livekit.processors import register_audio_hooks
-
-        audio_url = cfg.audio_endpoint()
-        if not audio_url:
-            return
-
-        api_key = cfg.api_key or ""
-        auth_headers = {k: v for k, v in (cfg.headers or {}).items() if k.lower() in ("x-api-key", "authorization")}
-
-        max_queue = max(1, cfg.audio_buffer_bytes // cfg.audio_batch_bytes) if cfg.audio_batch_bytes > 0 else 64
-
-        sender = AudioChunkSender(
-            url=audio_url,
-            session_id=session_id or "",
-            api_key=api_key,
-            auth_headers=auth_headers,
-            batch_interval=cfg.audio_batch_interval_ms / 1000.0,
-            max_queue_size=max_queue,
-        )
-
-        hooks = AudioStreamingWrapper(sender=sender)
-
-        await sender.start()
-        hooks.attach(instance)
-
-        instance._netra_audio_sender = sender
-        instance._netra_audio_hooks = hooks
-
-        register_audio_hooks(trace_id, hooks)
-        logger.debug("netra.audio: audio capture attached for trace_id=%032x", trace_id)
-    except Exception:
-        logger.warning("netra.livekit: audio capture setup failed", exc_info=True)
+    await start_audio_capture(instance, config=config, session_id=session_id or "", trace_id=trace_id)
 
 
 async def _before_close(instance: Any) -> None:
-    """Per-session teardown that runs *before* LiveKit closes the session.
+    """Run the per-session teardown, *before* LiveKit closes the session.
 
-    Must run before the wrapped call: ``_aclose_impl`` ends ``_session_span``
-    and only then emits ``close``, after which the span is ``None`` and its
-    trace id — our state key — is unreachable.
+    Ordering is load-bearing: ``_aclose_impl`` ends ``_session_span`` before it
+    emits ``close``, after which the span is gone and its trace id — the key
+    every per-session resource is filed under — is unreachable.
 
-    Idempotent: the second call sees ``_session_span`` as ``None``.
+    Idempotent, in two layers: a second call finds no ``_session_span``, and the
+    coordinator registry only hands out a coordinator once.
+
+    Args:
+        instance: The ``AgentSession`` that is closing.
     """
-    span = _session_span(instance)
-    trace_id = _trace_id_of(span)
+    session_span = _session_span(instance)
+    trace_id = _trace_id_of(session_span)
     if trace_id is None:
         logger.debug("netra.livekit: session close with no live agent_session span; nothing to tear down")
         return
 
     logger.debug("netra.livekit: agent session closing trace_id=%032x", trace_id)
-
-    hooks: Optional[AudioStreamingWrapper] = getattr(instance, "_netra_audio_hooks", None)
-    sender: Optional["AudioChunkSender"] = getattr(instance, "_netra_audio_sender", None)
-
-    try:
-        from netra.instrumentation.livekit.processors import unregister_audio_hooks
-
-        unregister_audio_hooks(trace_id)
-    except Exception:
-        pass
-
-    if hooks is not None:
-        try:
-            hooks.end_all()
-        except Exception:
-            logger.debug("netra.audio: hooks.end_all() failed", exc_info=True)
-
-    if sender is not None:
-        try:
-            await sender.end_session()
-        except Exception:
-            logger.debug("netra.audio: sender.end_session() failed", exc_info=True)
-
-        if span is not None:
-            try:
-                span.set_attribute("netra.audio.sent_bytes", sender.stats.bytes_sent)
-                span.set_attribute("netra.audio.sent_chunks", sender.stats.chunks_sent)
-                span.set_attribute("netra.audio.dropped_frames", sender.stats.frames_dropped)
-                span.set_attribute("netra.audio.errors", sender.stats.errors)
-                span.set_attribute("netra.audio.circuit_tripped", sender.stats.circuit_tripped)
-            except Exception:
-                logger.debug("netra.audio: failed to stamp stats on session span", exc_info=True)
-
-    instance._netra_audio_sender = None
-    instance._netra_audio_hooks = None
+    await stop_audio_capture(trace_id, session_span=session_span)
 
 
 # ---------------------------------------------------------------------------
@@ -648,11 +245,6 @@ async def wrap_start(
     tree, not the whole job. Code running in the entrypoint task *after*
     ``await session.start(...)`` carries no session id; a user who wants that
     calls ``Netra.set_session_id()``, which is process-wide by design.
-
-    Once ``start()`` has returned, ``_after_start`` runs the per-session wiring —
-    audio capture included. It is awaited *after* the detach so its own failures
-    cannot leak session context, and it is isolated so it can never surface in the
-    user's ``start()`` call.
 
     Args:
         wrapped: LiveKit's ``AgentSession.start``.
@@ -685,10 +277,12 @@ async def wrap_start(
         except Exception:
             logger.debug("netra.livekit: session context detach failed", exc_info=True)
 
+    # Awaited after the detach so its own failures cannot leak session context,
+    # and isolated so they can never surface in the user's start() call.
     try:
         await _after_start(instance, session_id)
-    except Exception as exc:
-        logger.warning("netra.livekit: post-start wiring failed: %s", exc)
+    except Exception:
+        logger.warning("netra.livekit: post-start wiring failed", exc_info=True)
 
     return result
 
@@ -718,7 +312,7 @@ async def wrap_aclose(
     """
     try:
         await _before_close(instance)
-    except Exception as exc:
-        logger.warning("netra.livekit: pre-close teardown failed: %s", exc)
+    except Exception:
+        logger.warning("netra.livekit: pre-close teardown failed", exc_info=True)
 
     return await wrapped(*args, **kwargs)

@@ -11,8 +11,9 @@ from opentelemetry.sdk import trace as trace_sdk
 from wrapt import wrap_function_wrapper
 
 from netra.config import Config, get_active_config
-from netra.instrumentation.livekit.processors import AudioSpanProcessor, LiveKitSpanProcessor
+from netra.instrumentation.livekit.audio_processor import AudioSpanProcessor
 from netra.instrumentation.livekit.provider_binding import bind_livekit_tracer
+from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.livekit.wrappers import wrap_aclose, wrap_start
 
 logger = logging.getLogger(__name__)
@@ -148,7 +149,7 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         want, without ``netra/tracer.py`` having to reimplement it.
 
         These are appended *after* ``BatchSpanProcessor``; see the module
-        docstring in ``processors.py`` for the invariant that makes it safe before
+        docstring in ``trace_processor.py`` for the invariant that makes it safe before
         adding a third.
 
         Args:
@@ -161,8 +162,8 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         if getattr(provider, _PROCESSORS_FLAG, False):
             return
 
-        provider.add_span_processor(LiveKitSpanProcessor())
-        logger.debug("netra.livekit: registered LiveKitSpanProcessor")
+        provider.add_span_processor(SpanMappingProcessor())
+        logger.debug("netra.livekit: registered SpanMappingProcessor")
 
         if config.audio_capture_enabled:
             provider.add_span_processor(AudioSpanProcessor())

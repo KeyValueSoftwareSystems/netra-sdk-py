@@ -266,33 +266,16 @@ class Netra:
                         meter_provider.shutdown()
                 except Exception:
                     pass
-            # Clean up any lingering audio senders (backstop for sessions that
-            # did not close before Netra.shutdown).
+            # Backstop for LiveKit calls whose session never closed cleanly, so
+            # their captured audio is flushed rather than abandoned in a queue.
             try:
-                from netra.instrumentation.livekit.processors import pop_all_audio_hooks
+                from netra.instrumentation.livekit.audio_capture import close_all_audio_capture
 
-                lingering_hooks = pop_all_audio_hooks()
-                if lingering_hooks:
-                    import asyncio
-
-                    async def _drain_senders() -> None:
-                        for hooks in lingering_hooks:
-                            sender = getattr(hooks, "_sender", None)
-                            if sender is not None:
-                                try:
-                                    await sender.end_session()
-                                except Exception:
-                                    pass
-
-                    try:
-                        loop = asyncio.get_running_loop()
-                        loop.create_task(_drain_senders())
-                    except RuntimeError:
-                        asyncio.run(_drain_senders())
+                close_all_audio_capture()
             except ImportError:
                 pass
             except Exception:
-                pass
+                logger.warning("Failed to shut down LiveKit audio capture", exc_info=True)
             # Close simulation HTTP client
             if hasattr(cls, "simulation") and cls.simulation is not None:
                 try:

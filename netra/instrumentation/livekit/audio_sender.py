@@ -1,112 +1,232 @@
-"""Async HTTP sender — streams audio chunks to a backend in real time.
+"""Streams captured call audio to the Netra audio-ingest endpoint.
 
-Frames are enqueued from ``AudioHookManager``, batched internally, and
-POSTed with raw PCM in the body and metadata in ``x-audio-*`` HTTP headers.
+:class:`SessionAudioCoordinator` hands frames to :meth:`AudioChunkSender.enqueue`
+from the agent's event loop; a background task batches them and POSTs raw PCM
+with the metadata in ``x-audio-*`` headers. Enqueueing never blocks and never
+raises into the agent: a full queue drops the frame and a failing endpoint trips
+a circuit breaker for the rest of the call.
 
-Three request shapes:
+Three request shapes reach the endpoint, all defined in ``audio_types``:
 
-**Span chunk** (speech) — body = raw PCM::
+**Span chunk** — audio captured while a ``user_speaking``/``agent_speaking`` span
+was open. Body is raw PCM; carries ``x-audio-span-id`` and a per-span
+``x-audio-seq``, and the final one carries ``x-audio-last`` (plus
+``x-audio-heard-ms`` when the utterance was interrupted).
 
-    x-audio-session-id, x-audio-trace-id, x-audio-span-id
-    x-audio-role: user|agent
-    x-audio-start-ms   (epoch ms)
-    x-audio-seq        (0-based, per-span)
-    x-audio-last: true (final chunk only)
-    x-audio-heard-ms   (only on interrupted last chunk — ms of audio actually heard)
-    x-audio-sample-rate / channels / bit-depth
+**Noise chunk** — audio captured between speaking spans. Same shape without the
+span headers, so it can be laid out on the call timeline but belongs to no turn.
 
-**Noise chunk** (unspanned audio) — same but ``x-audio-span-id``,
-``x-audio-seq``, ``x-audio-last`` are omitted.
-
-**Session end** — bodyless::
-
-    x-audio-session-id, x-audio-session-last: true
+**Session end** — one bodyless request carrying ``x-audio-session-last``.
 """
 
 from __future__ import annotations
 
 import asyncio
 import logging
+import random
 import time
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, Dict, Optional, Set
+from typing import TYPE_CHECKING, Dict, List, Optional, Union
 
+import httpx
 from opentelemetry import context as otel_context
+
+from netra.instrumentation.livekit.audio_types import (
+    CONTENT_TYPE_PCM,
+    DEFAULT_CHANNEL_COUNT,
+    DEFAULT_SAMPLE_RATE_HZ,
+    HEADER_API_KEY,
+    HEADER_BIT_DEPTH,
+    HEADER_CHANNELS,
+    HEADER_CONTENT_TYPE,
+    HEADER_HEARD_MS,
+    HEADER_LAST_CHUNK,
+    HEADER_ROLE,
+    HEADER_SAMPLE_RATE,
+    HEADER_SEQUENCE,
+    HEADER_SESSION_ID,
+    HEADER_SESSION_LAST,
+    HEADER_SPAN_ID,
+    HEADER_START_MS,
+    HEADER_TRACE_ID,
+    HEADER_VALUE_TRUE,
+    PCM_BIT_DEPTH,
+    SpeakerRole,
+    pcm_byte_offset_at,
+)
 
 if TYPE_CHECKING:
     from livekit.rtc import AudioFrame
 
 logger = logging.getLogger(__name__)
 
-_BATCH_INTERVAL_S = 0.5
-_MAX_BATCH_FRAMES = 200
-_HTTP_TIMEOUT_S = 5.0
-_POST_RETRIES = 2
+# Defaults for the knobs ``Config`` does not resolve. Every other limit reaches
+# the sender from ``Config`` — see ``audio_capture.start_audio_capture``.
+DEFAULT_BATCH_INTERVAL_SECONDS = 0.5
+DEFAULT_MAX_BATCH_FRAMES = 200
+DEFAULT_FLUSH_AT_BYTES = 32768
+DEFAULT_MAX_REQUEST_BYTES = 262144
+
+_HTTP_TIMEOUT_SECONDS = 5.0
+
+# Attempts per chunk, total. A chunk POST is safe to repeat: the endpoint keys on
+# (session, span, sequence) and the sequence only advances once a chunk has been
+# accepted, so a retry re-sends identical bytes under an identical key.
+_POST_ATTEMPTS = 2
+_RETRY_BASE_DELAY_SECONDS = 0.05
+
+# Consecutive failed chunks after which the rest of the call is abandoned. Audio
+# is best-effort: a backend that has been failing this long will not be fixed by
+# the next frame, and retrying every 20ms frame for a 10-minute call is worse for
+# the agent than sending nothing.
 _MAX_CONSECUTIVE_FAILURES = 5
 
+# How long ``end_session`` waits for the queue to drain before cancelling. Long
+# enough for a full queue of pending chunks at a degraded latency, short enough
+# that it cannot hold up the agent's own shutdown indefinitely.
+_DRAIN_TIMEOUT_SECONDS = 30.0
 
-@dataclass
-class _QueueItem:
-    """Single frame waiting to be batched."""
+_HTTP_STATUS_BAD_REQUEST = 400
+_UNAUTHENTICATED_STATUSES = frozenset({401, 403})
+
+
+# ---------------------------------------------------------------------------
+# Queue messages
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class _FrameMessage:
+    """One captured audio frame awaiting batching."""
 
     pcm_bytes: bytes
-    kind: str
+    role: SpeakerRole
     span_id: str
     trace_id: str
-    sample_rate: int
-    num_channels: int
+    sample_rate_hz: int
+    channel_count: int
     timestamp_ns: int
 
 
-@dataclass
-class _AudioEndMarker:
-    """Signals that a span recording is complete."""
+@dataclass(frozen=True)
+class _SpanEndMarker:
+    """A speaking span closed normally; its recording is complete."""
 
-    kind: str
+    role: SpeakerRole
     span_id: str
 
 
-@dataclass
-class _InterruptMarker:
-    """Signals that an agent span was interrupted at a given playback position."""
+@dataclass(frozen=True)
+class _SpanInterruptMarker:
+    """An agent utterance was cut off after *playback_ms* of audible playback."""
 
     span_id: str
     playback_ms: int
 
 
+@dataclass(frozen=True)
+class _SessionEndMarker:
+    """The session is closing; drain everything and stop the loop."""
+
+
+_QueueMessage = Union[_FrameMessage, _SpanEndMarker, _SpanInterruptMarker, _SessionEndMarker]
+
+
+# ---------------------------------------------------------------------------
+# Sender state
+# ---------------------------------------------------------------------------
+
+
 @dataclass
 class _PendingBatch:
-    """Accumulator for frames of the same kind + span_id until flush."""
+    """Frames of one speaker accumulating until a flush condition is met.
 
-    kind: str
+    Reused in place across flushes rather than reallocated, so the send loop can
+    hold one per :class:`SpeakerRole` in a plain dict with no rebinding.
+    """
+
+    role: SpeakerRole
     span_id: str = ""
     trace_id: str = ""
-    sample_rate: int = 0
-    num_channels: int = 0
+    sample_rate_hz: int = 0
+    channel_count: int = 0
     start_ms: int = 0
-    pcm_parts: list[bytes] = field(default_factory=list)
     frame_count: int = 0
+    byte_count: int = 0
+    _pcm_parts: List[bytes] = field(default_factory=list)
 
-    def add(self, item: _QueueItem) -> None:
-        if not self.pcm_parts:
-            self.span_id = item.span_id
-            self.trace_id = item.trace_id
-            self.sample_rate = item.sample_rate
-            self.num_channels = item.num_channels
-            self.start_ms = item.timestamp_ns // 1_000_000
-        self.pcm_parts.append(item.pcm_bytes)
-        self.frame_count += 1
+    @property
+    def is_empty(self) -> bool:
+        """Whether the batch holds no frames yet."""
+        return self.frame_count == 0
 
     @property
     def pcm_bytes(self) -> bytes:
-        return b"".join(self.pcm_parts)
+        """The accumulated frames as one contiguous PCM buffer."""
+        return b"".join(self._pcm_parts)
+
+    def add(self, frame: _FrameMessage) -> None:
+        """Append *frame*, adopting its span and format if this is the first one.
+
+        Args:
+            frame: The frame to accumulate.
+        """
+        if self.is_empty:
+            self.span_id = frame.span_id
+            self.trace_id = frame.trace_id
+            self.sample_rate_hz = frame.sample_rate_hz
+            self.channel_count = frame.channel_count
+            self.start_ms = frame.timestamp_ns // 1_000_000
+        self._pcm_parts.append(frame.pcm_bytes)
+        self.frame_count += 1
+        self.byte_count += len(frame.pcm_bytes)
+
+    def clear(self) -> None:
+        """Discard the accumulated frames, keeping the batch's speaker role."""
+        self.span_id = ""
+        self.trace_id = ""
+        self.sample_rate_hz = 0
+        self.channel_count = 0
+        self.start_ms = 0
+        self.frame_count = 0
+        self.byte_count = 0
+        self._pcm_parts.clear()
 
 
-_QueueItemType = _QueueItem | _AudioEndMarker | _InterruptMarker
+@dataclass
+class _SpanAudioState:
+    """Everything the sender tracks about one speaking span's audio stream.
+
+    One record per span replaces the parallel per-span dictionaries this class
+    used to keep, so a span's sequence number, delivered byte count and terminal
+    state cannot disagree about which spans exist.
+    """
+
+    role: SpeakerRole
+    trace_id: str = ""
+    next_sequence: int = 0
+    bytes_delivered: int = 0
+    is_finalized: bool = False
+    is_interrupted: bool = False
 
 
 @dataclass
 class AudioSenderStats:
+    """Delivery counters for one call, stamped onto the ``agent_session`` span.
+
+    The ``sent`` counters record what the endpoint *accepted*: a chunk that
+    failed every attempt raises ``errors``, never ``chunks_sent``.
+
+    Attributes:
+        chunks_sent: Accepted HTTP requests carrying audio or a terminal marker.
+        frames_sent: Captured frames inside those accepted requests.
+        bytes_sent: PCM bytes inside those accepted requests.
+        frames_dropped: Frames discarded because the queue was full.
+        errors: Failed POST attempts, including ones a retry then recovered.
+        circuit_tripped: Whether the call gave up on the endpoint entirely.
+        total_send_time_ms: Wall-clock spent inside POSTs, for the average below.
+    """
+
     chunks_sent: int = 0
     frames_sent: int = 0
     bytes_sent: int = 0
@@ -116,27 +236,27 @@ class AudioSenderStats:
     total_send_time_ms: float = 0.0
 
     def __str__(self) -> str:
-        avg = self.total_send_time_ms / self.chunks_sent if self.chunks_sent else 0.0
+        """Render the counters as a single log-friendly line."""
+        average_ms = self.total_send_time_ms / self.chunks_sent if self.chunks_sent else 0.0
         return (
             f"chunks={self.chunks_sent} frames={self.frames_sent} "
             f"bytes={self.bytes_sent} dropped={self.frames_dropped} "
-            f"errors={self.errors} avg_latency={avg:.1f}ms"
+            f"errors={self.errors} avg_latency={average_ms:.1f}ms"
         )
 
 
-class AudioChunkSender:
-    """Streams audio frames to a backend endpoint via HTTP POST.
+# ---------------------------------------------------------------------------
+# Sender
+# ---------------------------------------------------------------------------
 
-    Args:
-        url: Full audio ingest URL (e.g.
-            ``http://localhost:3000/telemetry/v1/audio/chunk``).
-            Comes from ``Config.audio_endpoint()``.
-        session_id: Session-level identifier — sent as ``x-audio-session-id``.
-        api_key: API key for authentication.
-        auth_headers: Additional auth headers from the Netra config.
-        batch_interval: Seconds between automatic flushes.
-        max_batch_frames: Flush when this many frames accumulate.
-        max_queue_size: Bounded queue size; frames are dropped when full.
+
+class AudioChunkSender:
+    """Batches captured frames and POSTs them to the audio-ingest endpoint.
+
+    Single-consumer by construction: :meth:`enqueue` and the marker methods are
+    called from the agent's event loop and only hand work to a bounded queue, and
+    exactly one background task drains it. Nothing here is safe to call from
+    another thread.
     """
 
     def __init__(
@@ -146,498 +266,795 @@ class AudioChunkSender:
         session_id: str,
         api_key: str = "",
         auth_headers: Optional[Dict[str, str]] = None,
-        batch_interval: float = _BATCH_INTERVAL_S,
-        max_batch_frames: int = _MAX_BATCH_FRAMES,
-        max_queue_size: int = 0,
+        batch_interval_seconds: float = DEFAULT_BATCH_INTERVAL_SECONDS,
+        max_batch_frames: int = DEFAULT_MAX_BATCH_FRAMES,
+        flush_at_bytes: int = DEFAULT_FLUSH_AT_BYTES,
+        max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
+        max_queue_frames: int = 0,
     ) -> None:
+        """Configure the sender without starting it.
+
+        Args:
+            url: Absolute audio-ingest URL, from ``Config.audio_endpoint()``.
+            session_id: Identifies the call; sent as ``x-audio-session-id``.
+            api_key: Credential sent as ``x-api-key`` when non-empty.
+            auth_headers: Further credential headers from the Netra config.
+                Applied only where they do not already have a value.
+            batch_interval_seconds: Longest a frame waits before being flushed.
+            max_batch_frames: Flush once this many frames have accumulated.
+            flush_at_bytes: Target request size — flush once this many PCM bytes
+                have accumulated.
+            max_request_bytes: Hard ceiling on one request body. A frame that
+                would push the batch past it flushes the batch first, so the
+                ceiling holds even when it sits just above *flush_at_bytes*.
+            max_queue_frames: Bound on frames awaiting batching; further frames
+                are dropped rather than queued. 0 means unbounded.
+        """
         self._url = url.rstrip("/")
         self._session_id = session_id
         self._api_key = api_key
         self._auth_headers = auth_headers or {}
-        self._batch_interval = batch_interval
+        self._batch_interval_seconds = batch_interval_seconds
         self._max_batch_frames = max_batch_frames
+        self._flush_at_bytes = flush_at_bytes
+        self._max_request_bytes = max(flush_at_bytes, max_request_bytes)
 
-        queue_bound = max_queue_size if max_queue_size > 0 else 0
-        self._queue: asyncio.Queue[_QueueItemType | None] = asyncio.Queue(maxsize=queue_bound)
-        self._seq: Dict[str, int] = {}
-        self._sent_span_ids: Set[str] = set()
-        self._finalized_span_ids: Set[str] = set()
-        self._span_trace_ids: Dict[str, str] = {}
-        self._span_roles: Dict[str, str] = {}
-        self._known_span_ids: Set[str] = set()
-        self._span_bytes_sent: Dict[str, int] = {}
-        self._interrupted_spans: Set[str] = set()
-        self._task: Optional[asyncio.Task[None]] = None
-        self._client: Any = None
-        self._closed = False
+        self._queue: asyncio.Queue[_QueueMessage] = asyncio.Queue(maxsize=max(0, max_queue_frames))
+        self._span_states: Dict[str, _SpanAudioState] = {}
+        self._send_task: Optional[asyncio.Task[None]] = None
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
+        self._client: Optional[httpx.AsyncClient] = None
+        self._is_closed = False
 
         self._consecutive_failures = 0
         self._circuit_tripped = False
-        self._drop_warned = False
+        self._has_warned_about_drops = False
 
         self.stats = AudioSenderStats()
 
-    async def start(self) -> None:
-        """Start the background send loop."""
-        import httpx
+    # -- lifecycle ----------------------------------------------------------
 
-        self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_S)
-        self._task = asyncio.create_task(self._send_loop(), name="netra-audio-chunk-sender")
+    @property
+    def loop(self) -> Optional[asyncio.AbstractEventLoop]:
+        """The event loop this sender's queue and task belong to, once started.
+
+        Everything here is bound to that loop, so a shutdown path reaching the
+        sender from elsewhere has to drive it through this rather than awaiting
+        it directly. ``None`` before :meth:`start`.
+        """
+        return self._loop
+
+    async def start(self) -> None:
+        """Open the HTTP client and start the background send loop."""
+        self._loop = asyncio.get_running_loop()
+        self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
+        self._send_task = asyncio.create_task(self._run_send_loop(), name="netra-audio-chunk-sender")
         logger.info(
-            "netra.audio: sender started -> %s (batch=%.1fs, max_frames=%d)",
+            "netra.audio: sender started -> %s (batch=%.1fs, max_frames=%d, flush_at=%dB, max_request=%dB)",
             self._url,
-            self._batch_interval,
+            self._batch_interval_seconds,
             self._max_batch_frames,
+            self._flush_at_bytes,
+            self._max_request_bytes,
         )
+
+    async def end_session(self) -> None:
+        """Drain the queue, close every open span, and signal the session's end.
+
+        Idempotent: a second call returns immediately. Once this has been called
+        no further frames are accepted, so a late frame from a task that has not
+        noticed the shutdown is dropped rather than queued behind the terminal
+        marker it would never get past.
+        """
+        if self._is_closed:
+            return
+        self._is_closed = True
+
+        await self._enqueue_session_end()
+        if self._send_task is not None:
+            await self._await_send_task()
+        if self._client is not None:
+            await self._client.aclose()
+        logger.info("netra.audio: sender closed — %s", self.stats)
+
+    async def _enqueue_session_end(self) -> None:
+        """Get the terminal marker onto the queue, waiting for room if need be.
+
+        ``put_nowait`` is wrong here: on a bounded queue that is currently full
+        the marker would be dropped and the send loop would never learn to stop,
+        so the drain below would spend its whole timeout before cancelling. No
+        producer can refill the queue at this point — ``_is_closed`` is already
+        set — so waiting for the consumer to make room terminates.
+        """
+        try:
+            await asyncio.wait_for(self._queue.put(_SessionEndMarker()), timeout=_DRAIN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("netra.audio: could not signal session end within %.0fs", _DRAIN_TIMEOUT_SECONDS)
+
+    async def _await_send_task(self) -> None:
+        """Wait for the send loop to drain, cancelling it if it overruns."""
+        task = self._send_task
+        if task is None:
+            return
+        try:
+            await asyncio.wait_for(task, timeout=_DRAIN_TIMEOUT_SECONDS)
+        except asyncio.TimeoutError:
+            logger.warning("netra.audio: send loop did not drain within %.0fs; cancelling", _DRAIN_TIMEOUT_SECONDS)
+            task.cancel()
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            logger.warning("netra.audio: send loop ended with an error", exc_info=True)
+
+    # -- producer side (agent event loop) -----------------------------------
 
     def enqueue(
         self,
         frame: "AudioFrame",
         *,
-        kind: str,
+        role: SpeakerRole,
         trace_id: str,
         span_id: str = "",
         timestamp_ns: Optional[int] = None,
     ) -> None:
-        """Enqueue a single audio frame for streaming.
+        """Queue one captured frame. Never blocks, never raises into the agent.
 
-        Uses ``bytes(frame.data)`` — the public memoryview API — to copy
-        frame data.  LiveKit reuses the underlying buffer so the copy is
-        mandatory.
+        Copies the PCM out of the frame via the public ``frame.data``
+        memoryview: LiveKit reuses the underlying buffer for the next frame, so
+        holding a reference would corrupt the batch.
 
-        Drops the frame (never blocks) when the queue is full or the
-        circuit breaker has tripped.
+        Args:
+            frame: The LiveKit frame just captured.
+            role: Which speaker produced it.
+            trace_id: Hex trace id to attribute the audio to.
+            span_id: Hex id of the open speaking span, or ``""`` for audio
+                captured between turns.
+            timestamp_ns: Capture time, defaulting to now. Passed in by the
+                coordinator so the timestamp is taken at capture rather than
+                after any queuing delay.
         """
-        if self._closed or self._circuit_tripped:
+        if self._is_closed or self._circuit_tripped:
             return
         try:
-            pcm = bytes(frame.data)
-            self._queue.put_nowait(
-                _QueueItem(
-                    pcm_bytes=pcm,
-                    kind=kind,
-                    span_id=span_id,
-                    trace_id=trace_id,
-                    sample_rate=frame.sample_rate,
-                    num_channels=frame.num_channels,
-                    timestamp_ns=timestamp_ns if timestamp_ns is not None else time.time_ns(),
-                )
+            message = _FrameMessage(
+                pcm_bytes=bytes(frame.data),
+                role=role,
+                span_id=span_id,
+                trace_id=trace_id,
+                sample_rate_hz=frame.sample_rate,
+                channel_count=frame.num_channels,
+                timestamp_ns=timestamp_ns if timestamp_ns is not None else time.time_ns(),
             )
-        except asyncio.QueueFull:
+        except (AttributeError, TypeError, ValueError):
+            # A frame shaped differently from what livekit-agents documents. Not
+            # recoverable and not the agent's problem — drop this one frame.
+            logger.debug("netra.audio: unreadable audio frame dropped", exc_info=True)
             self.stats.frames_dropped += 1
-            if not self._drop_warned:
-                self._drop_warned = True
-                logger.warning(
-                    "netra.audio: queue full, dropping frames (session=%s). " "This is logged once per session",
-                    self._session_id,
-                )
-        except Exception as exc:
-            logger.debug("netra.audio: failed to enqueue audio frame: %s", exc)
-
-    def mark_audio_end(self, kind: str, span_id: str) -> None:
-        """Signal that the span recording for *span_id* is complete."""
-        if self._closed or not span_id:
             return
-        if span_id in self._finalized_span_ids:
-            return
-        try:
-            self._queue.put_nowait(_AudioEndMarker(kind=kind, span_id=span_id))
-        except asyncio.QueueFull:
-            logger.debug("netra.audio: could not enqueue audio-end marker for span=%s", span_id)
 
-    def interrupt_agent_span(self, span_id: str, playback_ms: int) -> None:
-        """Signal that an agent span was interrupted after *playback_ms* of heard audio.
+        if not self._offer(message):
+            self.stats.frames_dropped += 1
+            self._warn_about_drops_once()
 
-        Enqueues a marker for the send loop to truncate the pending batch to only
-        the audio the user actually heard, then finalize the span with
-        ``x-audio-heard-ms``.
+    def mark_audio_end(self, *, role: SpeakerRole, span_id: str) -> None:
+        """Signal that the recording for *span_id* is complete.
 
-        This works even if the span was already finalized by the normal
-        ``mark_audio_end`` path (which fires when the OTel span ends before
-        clear_buffer). In that case, the send loop sends a correction chunk
-        with just the ``x-audio-heard-ms`` header.
+        Args:
+            role: The speaker whose span closed.
+            span_id: Hex id of the closed speaking span.
         """
-        if self._closed or not span_id:
+        if self._is_closed or not span_id:
             return
-        try:
-            self._queue.put_nowait(_InterruptMarker(span_id=span_id, playback_ms=playback_ms))
-        except asyncio.QueueFull:
-            logger.debug("netra.audio: could not enqueue interrupt marker for span=%s", span_id)
-
-    async def end_session(self) -> None:
-        """Flush remaining frames, finalize open spans, signal session end."""
-        if self._closed:
+        state = self._span_states.get(span_id)
+        if state is not None and state.is_finalized:
             return
-        self._closed = True
+        if not self._offer(_SpanEndMarker(role=role, span_id=span_id)):
+            logger.debug("netra.audio: queue full; end marker for span=%s dropped", span_id)
+
+    def interrupt_agent_span(self, *, span_id: str, playback_ms: int) -> None:
+        """Signal that an agent utterance was cut off *playback_ms* into playback.
+
+        The send loop trims the pending audio for the span to what was heard and
+        finalizes it. This is still correct when the span was already finalized
+        through :meth:`mark_audio_end` — LiveKit routinely ends the
+        ``agent_speaking`` span before it reports the interrupt — in which case a
+        bodyless correction carrying only ``x-audio-heard-ms`` follows.
+
+        Args:
+            span_id: Hex id of the interrupted ``agent_speaking`` span.
+            playback_ms: Milliseconds of the utterance the caller heard.
+        """
+        if self._is_closed or not span_id:
+            return
+        if not self._offer(_SpanInterruptMarker(span_id=span_id, playback_ms=playback_ms)):
+            logger.debug("netra.audio: queue full; interrupt marker for span=%s dropped", span_id)
+
+    def _offer(self, message: _QueueMessage) -> bool:
+        """Hand *message* to the send loop without ever blocking the caller.
+
+        Args:
+            message: The message to enqueue.
+
+        Returns:
+            True when it was queued, False when the queue is at its bound. The
+            caller decides how a drop is accounted for — a dropped frame is a
+            statistic, a dropped marker is not.
+        """
         try:
-            self._queue.put_nowait(None)
+            self._queue.put_nowait(message)
         except asyncio.QueueFull:
-            pass
-        if self._task:
-            try:
-                await asyncio.wait_for(self._task, timeout=30.0)
-            except asyncio.TimeoutError:
-                logger.warning("netra.audio: send loop timed out on close")
-                self._task.cancel()
-        if self._client:
-            await self._client.aclose()
-        logger.info("netra.audio: sender closed — %s", self.stats)
+            return False
+        return True
 
-    # -- background send loop -----------------------------------------------
+    def _warn_about_drops_once(self) -> None:
+        """Warn that frames are being dropped, at most once per session."""
+        if self._has_warned_about_drops:
+            return
+        self._has_warned_about_drops = True
+        logger.warning(
+            "netra.audio: queue full, dropping frames (session=%s). This is logged once per session",
+            self._session_id,
+        )
 
-    async def _send_loop(self) -> None:
+    # -- consumer side (background task) ------------------------------------
+
+    async def _run_send_loop(self) -> None:
+        """Drain the queue until the session ends, with instrumentation muted.
+
+        The loop's own HTTP calls run under ``_SUPPRESS_INSTRUMENTATION_KEY`` so
+        Netra's httpx instrumentation does not trace them: every audio chunk
+        would otherwise produce a span, inside the very trace the audio belongs
+        to.
+        """
         from opentelemetry.context import _SUPPRESS_INSTRUMENTATION_KEY
 
         token = otel_context.attach(otel_context.set_value(_SUPPRESS_INSTRUMENTATION_KEY, True))
         try:
-            await self._send_loop_inner()
+            await self._consume_queue()
         finally:
             otel_context.detach(token)
 
-    async def _send_loop_inner(self) -> None:
-        user_batch = _PendingBatch(kind="user")
-        agent_batch = _PendingBatch(kind="agent")
-
-        def _batch_for(kind: str) -> _PendingBatch:
-            return user_batch if kind == "user" else agent_batch
-
-        def _reset_batch(kind: str) -> None:
-            nonlocal user_batch, agent_batch
-            if kind == "user":
-                user_batch = _PendingBatch(kind="user")
-            else:
-                agent_batch = _PendingBatch(kind="agent")
+    async def _consume_queue(self) -> None:
+        """Batch queued frames and post them until the session-end marker."""
+        batches = {role: _PendingBatch(role=role) for role in SpeakerRole}
 
         while True:
             try:
-                item = await asyncio.wait_for(self._queue.get(), timeout=self._batch_interval)
+                message = await asyncio.wait_for(self._queue.get(), timeout=self._batch_interval_seconds)
             except asyncio.TimeoutError:
-                await self._flush_batch(user_batch)
-                await self._flush_batch(agent_batch)
-                _reset_batch("user")
-                _reset_batch("agent")
+                await self._flush_idle_batches(batches)
                 continue
 
-            if item is None:
-                for kind in ("user", "agent"):
-                    batch = _batch_for(kind)
-                    is_last = bool(batch.span_id)
-                    await self._flush_batch(batch, is_last=is_last)
-                    _reset_batch(kind)
-                await self._finalize_open_spans()
-                await self._post_session_last()
-                break
+            if isinstance(message, _SessionEndMarker):
+                await self._drain_batches(batches)
+                return
 
-            if isinstance(item, _AudioEndMarker):
-                if item.span_id in self._finalized_span_ids:
-                    continue
-                batch = _batch_for(item.kind)
-                if batch.span_id == item.span_id and batch.pcm_parts:
-                    await self._flush_batch(batch, is_last=True)
-                    _reset_batch(item.kind)
-                else:
-                    if batch.span_id == item.span_id:
-                        _reset_batch(item.kind)
-                    await self._send_span_last(
-                        kind=item.kind,
-                        span_id=item.span_id,
-                        trace_id=self._span_trace_ids.get(item.span_id, ""),
-                    )
-                continue
+            await self._handle_message(message, batches)
 
-            if isinstance(item, _InterruptMarker):
-                self._interrupted_spans.add(item.span_id)
-                batch = agent_batch
-                if batch.span_id == item.span_id and batch.pcm_parts:
-                    await self._truncate_and_finalize(batch, item.playback_ms)
-                    _reset_batch("agent")
-                else:
-                    await self._send_span_last(
-                        kind=self._span_roles.get(item.span_id, "agent"),
-                        span_id=item.span_id,
-                        trace_id=self._span_trace_ids.get(item.span_id, ""),
-                        heard_ms=item.playback_ms,
-                        force=True,
-                    )
-                continue
+    async def _handle_message(self, message: _QueueMessage, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
+        """Dispatch one queued message to its handler.
 
-            if item.span_id in self._interrupted_spans:
-                continue
+        Args:
+            message: The message the loop dequeued.
+            batches: The pending batch for each speaker.
+        """
+        if isinstance(message, _FrameMessage):
+            await self._handle_frame(message, batches[message.role])
+        elif isinstance(message, _SpanEndMarker):
+            await self._handle_span_end(message, batches[message.role])
+        elif isinstance(message, _SpanInterruptMarker):
+            await self._handle_span_interrupt(message, batches[SpeakerRole.AGENT])
 
-            batch = _batch_for(item.kind)
+    async def _handle_frame(self, frame: _FrameMessage, batch: _PendingBatch) -> None:
+        """Accumulate one frame, flushing first or after if a boundary is hit.
 
-            if batch.pcm_parts and batch.span_id != item.span_id:
-                await self._flush_batch(batch)
-                _reset_batch(item.kind)
-                batch = _batch_for(item.kind)
+        Args:
+            frame: The frame to accumulate.
+            batch: The pending batch for that frame's speaker.
+        """
+        state = self._span_states.get(frame.span_id) if frame.span_id else None
+        if state is not None and state.is_interrupted:
+            # Queued before the interrupt was observed but captured after the
+            # caller cut in — this audio was never heard.
+            return
 
-            batch.add(item)
+        # A batch holds one span's audio: the chunk's span id is a single header.
+        # It also has to stay under the request ceiling, so a frame that would
+        # burst it closes the batch instead of joining it.
+        spans_differ = not batch.is_empty and batch.span_id != frame.span_id
+        would_overflow = batch.byte_count + len(frame.pcm_bytes) > self._max_request_bytes
+        if spans_differ or would_overflow:
+            await self._flush(batch)
 
-            if batch.frame_count >= self._max_batch_frames:
-                await self._flush_batch(batch)
-                _reset_batch(item.kind)
+        batch.add(frame)
+
+        if batch.frame_count >= self._max_batch_frames or batch.byte_count >= self._flush_at_bytes:
+            await self._flush(batch)
+
+    async def _handle_span_end(self, marker: _SpanEndMarker, batch: _PendingBatch) -> None:
+        """Finalize a speaking span, flushing whatever audio is still pending.
+
+        Args:
+            marker: The end marker for the span.
+            batch: The pending batch for that span's speaker.
+        """
+        state = self._span_states.get(marker.span_id)
+        if state is not None and state.is_finalized:
+            return
+
+        if batch.span_id == marker.span_id and not batch.is_empty:
+            await self._flush(batch, is_final=True)
+            return
+
+        if batch.span_id == marker.span_id:
+            batch.clear()
+        await self._post_span_terminator(role=marker.role, span_id=marker.span_id)
+
+    async def _handle_span_interrupt(self, marker: _SpanInterruptMarker, batch: _PendingBatch) -> None:
+        """Trim an interrupted agent span to the audio heard, then finalize it.
+
+        Args:
+            marker: The interrupt marker, carrying the playback position.
+            batch: The pending agent batch.
+        """
+        state = self._state_for(marker.span_id, SpeakerRole.AGENT)
+        state.is_interrupted = True
+
+        if batch.span_id != marker.span_id or batch.is_empty:
+            # Nothing pending: the audio already went out, so all the endpoint
+            # needs is where to cut it. Forced, because the normal end marker has
+            # usually finalized the span by now.
+            await self._post_span_terminator(
+                role=state.role,
+                span_id=marker.span_id,
+                heard_ms=marker.playback_ms,
+                force=True,
+            )
+            return
+
+        await self._flush_heard_prefix(batch, marker.playback_ms)
+
+    async def _flush_heard_prefix(self, batch: _PendingBatch, playback_ms: int) -> None:
+        """Post only the part of *batch* the caller heard, marked final.
+
+        The heard prefix is measured from the start of the *span*, so whatever
+        earlier chunks already delivered for it has to come off the offset before
+        the pending batch can be trimmed.
+
+        Args:
+            batch: The pending agent batch, known to hold audio for the span.
+            playback_ms: Milliseconds of the utterance the caller heard.
+        """
+        heard_offset = pcm_byte_offset_at(
+            playback_ms=playback_ms,
+            sample_rate_hz=batch.sample_rate_hz or DEFAULT_SAMPLE_RATE_HZ,
+            channel_count=batch.channel_count or DEFAULT_CHANNEL_COUNT,
+        )
+        already_delivered = self._state_for(batch.span_id, batch.role).bytes_delivered
+        remaining = heard_offset - already_delivered
+
+        if remaining <= 0:
+            # Everything heard has already been sent; the endpoint only needs the
+            # cut point so it can discard the overshoot.
+            batch.clear()
+            await self._post_span_terminator(role=batch.role, span_id=batch.span_id, heard_ms=playback_ms)
+            return
+
+        heard_pcm = batch.pcm_bytes[:remaining]
+        logger.debug(
+            "netra.audio: trimmed interrupted span=%s to %d of %d pending bytes (heard=%dms, delivered=%d)",
+            batch.span_id,
+            len(heard_pcm),
+            batch.byte_count,
+            playback_ms,
+            already_delivered,
+        )
+        await self._post_chunk(
+            role=batch.role,
+            span_id=batch.span_id,
+            trace_id=batch.trace_id,
+            sample_rate_hz=batch.sample_rate_hz,
+            channel_count=batch.channel_count,
+            pcm=heard_pcm,
+            frame_count=batch.frame_count,
+            start_ms=batch.start_ms,
+            is_last=True,
+            heard_ms=playback_ms,
+        )
+        batch.clear()
+
+    async def _flush_idle_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
+        """Flush both speakers' pending audio after an idle interval.
+
+        Args:
+            batches: The pending batch for each speaker.
+        """
+        for batch in batches.values():
+            await self._flush(batch)
+
+    async def _drain_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
+        """Send everything still held, then close the session on the wire.
+
+        Args:
+            batches: The pending batch for each speaker.
+        """
+        for batch in batches.values():
+            await self._flush(batch, is_final=bool(batch.span_id))
+        await self._finalize_open_spans()
+        await self._post_session_terminator()
+
+    async def _flush(self, batch: _PendingBatch, *, is_final: bool = False) -> None:
+        """Post *batch*'s audio and clear it.
+
+        A final flush is two requests, not one: the audio chunk, then an empty
+        chunk carrying ``x-audio-last``. Keeping the terminator separate means
+        the span closes the same way whether or not audio happened to be pending
+        when it ended.
+
+        Args:
+            batch: The batch to send.
+            is_final: Whether this closes the batch's span.
+        """
+        if batch.is_empty and not is_final:
+            return
+
+        span_id = batch.span_id
+        role = batch.role
+        trace_id = batch.trace_id
+
+        if not batch.is_empty:
+            await self._post_chunk(
+                role=role,
+                span_id=span_id,
+                trace_id=trace_id,
+                sample_rate_hz=batch.sample_rate_hz,
+                channel_count=batch.channel_count,
+                pcm=batch.pcm_bytes,
+                frame_count=batch.frame_count,
+                start_ms=batch.start_ms,
+                is_last=False,
+            )
+        batch.clear()
+
+        if is_final and span_id:
+            await self._post_span_terminator(role=role, span_id=span_id)
 
     async def _finalize_open_spans(self) -> None:
-        """Send ``x-audio-last`` for every span that was never finalized."""
-        open_spans = (self._known_span_ids | self._sent_span_ids) - self._finalized_span_ids
-        for span_id in sorted(open_spans):
-            kind = self._span_roles.get(span_id, "user")
+        """Close any span that never received an end marker.
+
+        A span left open would leave the endpoint waiting for audio that is
+        never coming, so this is a backstop rather than a normal path — hence
+        the warning.
+        """
+        open_span_ids = sorted(span_id for span_id, state in self._span_states.items() if not state.is_finalized)
+        for span_id in open_span_ids:
+            state = self._span_states[span_id]
             logger.warning(
-                "netra.audio: finalizing open span without mark_audio_end: span_id=%s role=%s",
+                "netra.audio: finalizing span left open at session end: span_id=%s role=%s",
                 span_id,
-                kind,
+                state.role.value,
             )
-            await self._send_span_last(
-                kind=kind,
-                span_id=span_id,
-                trace_id=self._span_trace_ids.get(span_id, ""),
-            )
+            await self._post_span_terminator(role=state.role, span_id=span_id)
 
-    async def _send_span_last(
-        self, *, kind: str, span_id: str, trace_id: str, heard_ms: int = 0, force: bool = False
+    # -- requests -----------------------------------------------------------
+
+    async def _post_span_terminator(
+        self,
+        *,
+        role: SpeakerRole,
+        span_id: str,
+        heard_ms: int = 0,
+        force: bool = False,
     ) -> None:
-        """Send an empty terminal chunk with ``x-audio-last: true``.
+        """Post the empty chunk that closes a span.
 
-        When *force* is True, send even if the span was already finalized.
-        This allows interrupt corrections (``x-audio-heard-ms``) to reach the
-        backend after the normal last-marker was already sent.
+        Args:
+            role: The speaker the span belongs to.
+            span_id: Hex id of the span to close.
+            heard_ms: Milliseconds heard, for an interrupted agent span only.
+            force: Send even though the span is already finalized. Used for an
+                interrupt correction arriving after the normal terminator.
         """
         if not span_id:
             return
-        if not force and span_id in self._finalized_span_ids:
+        state = self._span_states.get(span_id)
+        if state is not None and state.is_finalized and not force:
             return
+
         await self._post_chunk(
-            kind=kind,
+            role=role,
             span_id=span_id,
-            trace_id=trace_id,
-            sample_rate=16000,
-            num_channels=1,
+            trace_id=state.trace_id if state is not None else "",
+            sample_rate_hz=DEFAULT_SAMPLE_RATE_HZ,
+            channel_count=DEFAULT_CHANNEL_COUNT,
             pcm=b"",
             frame_count=0,
-            is_last=True,
             start_ms=0,
+            is_last=True,
             heard_ms=heard_ms,
         )
 
-    async def _flush_batch(self, batch: _PendingBatch, *, is_last: bool = False) -> None:
-        if batch.frame_count == 0 and not is_last:
-            return
+    async def _post_session_terminator(self) -> None:
+        """Post the bodyless request that marks the whole session complete.
 
-        if batch.frame_count > 0:
-            if batch.span_id:
-                self._known_span_ids.add(batch.span_id)
-                self._span_roles[batch.span_id] = batch.kind
-                if batch.trace_id:
-                    self._span_trace_ids[batch.span_id] = batch.trace_id
-            await self._post_chunk(
-                kind=batch.kind,
-                span_id=batch.span_id,
-                trace_id=batch.trace_id,
-                sample_rate=batch.sample_rate,
-                num_channels=batch.num_channels,
-                pcm=batch.pcm_bytes,
-                frame_count=batch.frame_count,
-                is_last=False,
-                start_ms=batch.start_ms,
-            )
-
-        if is_last and batch.span_id:
-            await self._send_span_last(
-                kind=batch.kind,
-                span_id=batch.span_id,
-                trace_id=batch.trace_id or self._span_trace_ids.get(batch.span_id, ""),
-            )
-
-    async def _truncate_and_finalize(self, batch: _PendingBatch, playback_ms: int) -> None:
-        """Truncate *batch* to only the audio heard before interrupt, then finalize.
-
-        Calculates how many PCM bytes correspond to *playback_ms* of audio,
-        subtracts bytes already sent in prior flushes for this span, and trims
-        the pending batch accordingly. Sends the result with ``x-audio-last: true``
-        and ``x-audio-heard-ms`` so the backend can trim precisely.
+        Skipped once the circuit has tripped: "no further audio will be sent for
+        this session" has to include this request, or a session abandoned over a
+        rejected credential would still end with one more rejected POST.
         """
-        sample_rate = batch.sample_rate or 16000
-        channels = batch.num_channels or 1
-        bytes_per_ms = (sample_rate * channels * 2) / 1000
-
-        total_heard_bytes = int(playback_ms * bytes_per_ms)
-        already_sent = self._span_bytes_sent.get(batch.span_id, 0)
-        remaining_to_send = total_heard_bytes - already_sent
-
-        if remaining_to_send <= 0:
-            await self._send_span_last(
-                kind=batch.kind,
-                span_id=batch.span_id,
-                trace_id=batch.trace_id or self._span_trace_ids.get(batch.span_id, ""),
-                heard_ms=playback_ms,
-            )
+        if self._circuit_tripped:
             return
 
-        full_pcm = batch.pcm_bytes
-        if remaining_to_send < len(full_pcm):
-            frame_size = channels * 2
-            remaining_to_send = (remaining_to_send // frame_size) * frame_size
-            truncated = full_pcm[:remaining_to_send]
-        else:
-            truncated = full_pcm
-
-        await self._post_chunk(
-            kind=batch.kind,
-            span_id=batch.span_id,
-            trace_id=batch.trace_id,
-            sample_rate=batch.sample_rate,
-            num_channels=batch.num_channels,
-            pcm=truncated,
-            frame_count=batch.frame_count,
-            is_last=True,
-            start_ms=batch.start_ms,
-            heard_ms=playback_ms,
-        )
-        logger.debug(
-            "netra.audio: truncated interrupted span=%s to %d bytes (heard=%dms, already_sent=%d)",
-            batch.span_id,
-            len(truncated),
-            playback_ms,
-            already_sent,
-        )
+        headers = {
+            HEADER_SESSION_ID: self._session_id,
+            HEADER_SESSION_LAST: HEADER_VALUE_TRUE,
+        }
+        self._apply_credentials(headers)
+        await self._post(b"", headers)
 
     async def _post_chunk(
         self,
         *,
-        kind: str,
+        role: SpeakerRole,
         span_id: str,
         trace_id: str,
-        sample_rate: int,
-        num_channels: int,
+        sample_rate_hz: int,
+        channel_count: int,
         pcm: bytes,
         frame_count: int,
+        start_ms: int,
         is_last: bool,
-        start_ms: int = 0,
         heard_ms: int = 0,
     ) -> None:
+        """Send one chunk and record what it did to the span's state.
+
+        Args:
+            role: The speaker the audio came from.
+            span_id: Hex id of the speaking span, or ``""`` for between-turn audio.
+            trace_id: Hex trace id the audio belongs to.
+            sample_rate_hz: Samples per second, per channel.
+            channel_count: Interleaved channel count.
+            pcm: The body — signed 16-bit little-endian PCM.
+            frame_count: How many captured frames the body holds, for the stats.
+            start_ms: Epoch milliseconds of the body's first frame.
+            is_last: Whether this closes the span.
+            heard_ms: Milliseconds heard, for an interrupted agent span only.
+        """
         if self._circuit_tripped:
             return
 
-        is_span = bool(span_id)
+        state = self._state_for(span_id, role, trace_id) if span_id else None
+        headers = self._chunk_headers(
+            role=role,
+            span_id=span_id,
+            trace_id=trace_id,
+            sample_rate_hz=sample_rate_hz,
+            channel_count=channel_count,
+            start_ms=start_ms,
+            is_last=is_last,
+            heard_ms=heard_ms,
+            state=state,
+        )
 
-        headers: Dict[str, str] = {
-            "Content-Type": "application/octet-stream",
-            "x-audio-session-id": self._session_id,
-            "x-audio-trace-id": trace_id,
-            "x-audio-role": kind,
-            "x-audio-start-ms": str(start_ms),
-            "x-audio-sample-rate": str(sample_rate or 16000),
-            "x-audio-channels": str(num_channels or 1),
-            "x-audio-bit-depth": "16",
-        }
-        if self._api_key:
-            headers["x-api-key"] = self._api_key
-        for k, v in self._auth_headers.items():
-            headers.setdefault(k, v)
+        accepted = await self._post(pcm, headers)
 
-        if is_span:
-            headers["x-audio-span-id"] = span_id
-            seq = self._seq.get(span_id, 0)
-            headers["x-audio-seq"] = str(seq)
-            if is_last:
-                headers["x-audio-last"] = "true"
-                if heard_ms > 0:
-                    headers["x-audio-heard-ms"] = str(heard_ms)
-            self._known_span_ids.add(span_id)
-            self._span_roles[span_id] = kind
-            if trace_id:
-                self._span_trace_ids[span_id] = trace_id
+        logger.debug(
+            "netra.audio: chunk span_id=%s role=%s frames=%d bytes=%d last=%s accepted=%s",
+            span_id or "(between turns)",
+            role.value,
+            frame_count,
+            len(pcm),
+            is_last,
+            accepted,
+        )
+        if not accepted:
+            return
 
         self.stats.chunks_sent += 1
         self.stats.frames_sent += frame_count
         self.stats.bytes_sent += len(pcm)
 
-        ok = await self._post_one(pcm, headers)
-
-        if is_span and ok:
-            self._seq[span_id] = self._seq.get(span_id, 0) + 1
-            self._sent_span_ids.add(span_id)
-            self._span_bytes_sent[span_id] = self._span_bytes_sent.get(span_id, 0) + len(pcm)
+        if state is not None:
+            state.next_sequence += 1
+            state.bytes_delivered += len(pcm)
             if is_last:
-                self._finalized_span_ids.add(span_id)
+                state.is_finalized = True
 
-        logger.debug(
-            "netra.audio: sent chunk span_id=%s role=%s frames=%d bytes=%d last=%s start_ms=%d",
-            span_id or "(noise)",
-            kind,
-            frame_count,
-            len(pcm),
-            is_last,
-            start_ms,
-        )
+    def _chunk_headers(
+        self,
+        *,
+        role: SpeakerRole,
+        span_id: str,
+        trace_id: str,
+        sample_rate_hz: int,
+        channel_count: int,
+        start_ms: int,
+        is_last: bool,
+        heard_ms: int,
+        state: Optional[_SpanAudioState],
+    ) -> Dict[str, str]:
+        """Build the ``x-audio-*`` headers describing one chunk.
 
-    async def _post_one(self, pcm: bytes, headers: Dict[str, str]) -> bool:
-        """POST to the endpoint with a short retry.  Returns True on 2xx."""
-        last_exc: Optional[Exception] = None
-        for attempt in range(_POST_RETRIES):
-            try:
-                t0 = time.monotonic()
-                resp = await self._client.post(self._url, content=pcm, headers=headers)
-                elapsed_ms = (time.monotonic() - t0) * 1000
-                self.stats.total_send_time_ms += elapsed_ms
+        Args:
+            role: The speaker the audio came from.
+            span_id: Hex span id, or ``""`` for between-turn audio.
+            trace_id: Hex trace id the audio belongs to.
+            sample_rate_hz: Samples per second, per channel.
+            channel_count: Interleaved channel count.
+            start_ms: Epoch milliseconds of the first frame.
+            is_last: Whether this closes the span.
+            heard_ms: Milliseconds heard, for an interrupted agent span only.
+            state: The span's state, or ``None`` for between-turn audio.
 
-                if resp.status_code < 400:
-                    self._consecutive_failures = 0
-                    return True
+        Returns:
+            The complete header set for the request.
+        """
+        headers = {
+            HEADER_CONTENT_TYPE: CONTENT_TYPE_PCM,
+            HEADER_SESSION_ID: self._session_id,
+            HEADER_TRACE_ID: trace_id,
+            HEADER_ROLE: role.value,
+            HEADER_START_MS: str(start_ms),
+            HEADER_SAMPLE_RATE: str(sample_rate_hz or DEFAULT_SAMPLE_RATE_HZ),
+            HEADER_CHANNELS: str(channel_count or DEFAULT_CHANNEL_COUNT),
+            HEADER_BIT_DEPTH: str(PCM_BIT_DEPTH),
+        }
+        self._apply_credentials(headers)
 
-                self.stats.errors += 1
-                if resp.status_code in (401, 403):
-                    self._trip_circuit(f"HTTP {resp.status_code} — credentials will not fix themselves mid-call")
-                    return False
-                self._consecutive_failures += 1
-                self._check_circuit()
-                logger.warning(
-                    "netra.audio: chunk POST failed (attempt=%d): %d %s",
-                    attempt + 1,
-                    resp.status_code,
-                    resp.text[:200],
-                )
-            except Exception as exc:
-                last_exc = exc
-                self.stats.errors += 1
-                self._consecutive_failures += 1
-                self._check_circuit()
-                logger.warning(
-                    "netra.audio: chunk POST error (attempt=%d): %s",
-                    attempt + 1,
-                    exc,
-                )
+        if state is not None:
+            headers[HEADER_SPAN_ID] = span_id
+            headers[HEADER_SEQUENCE] = str(state.next_sequence)
+            if is_last:
+                headers[HEADER_LAST_CHUNK] = HEADER_VALUE_TRUE
+                if heard_ms > 0:
+                    headers[HEADER_HEARD_MS] = str(heard_ms)
+        return headers
 
-            if attempt < _POST_RETRIES - 1:
-                await asyncio.sleep(0.05 * (attempt + 1))
+    def _apply_credentials(self, headers: Dict[str, str]) -> None:
+        """Add the configured credential headers, without overwriting any.
 
-        if last_exc:
-            logger.warning("netra.audio: giving up after retries")
+        Args:
+            headers: The header set being built, mutated in place.
+        """
+        if self._api_key:
+            headers[HEADER_API_KEY] = self._api_key
+        for name, value in self._auth_headers.items():
+            headers.setdefault(name, value)
+
+    async def _post(self, pcm: bytes, headers: Dict[str, str]) -> bool:
+        """POST one request, retrying a transient failure.
+
+        Args:
+            pcm: The request body.
+            headers: The request headers.
+
+        Returns:
+            True when the endpoint accepted the request.
+        """
+        client = self._client
+        if client is None:
+            logger.debug("netra.audio: post attempted before start(); dropping chunk")
+            return False
+
+        for attempt in range(_POST_ATTEMPTS):
+            accepted, is_fatal = await self._post_once(client, pcm, headers, attempt)
+            if accepted or is_fatal:
+                return accepted
+            if attempt < _POST_ATTEMPTS - 1:
+                await asyncio.sleep(_retry_delay_seconds(attempt))
+
+        logger.warning("netra.audio: giving up on a chunk after %d attempts", _POST_ATTEMPTS)
         return False
 
-    async def _post_session_last(self) -> None:
-        """Send a bodyless request with ``x-audio-session-last: true``."""
-        headers: Dict[str, str] = {
-            "x-audio-session-id": self._session_id,
-            "x-audio-session-last": "true",
-        }
-        if self._api_key:
-            headers["x-api-key"] = self._api_key
-        for k, v in self._auth_headers.items():
-            headers.setdefault(k, v)
-        await self._post_one(b"", headers)
+    async def _post_once(
+        self,
+        client: httpx.AsyncClient,
+        pcm: bytes,
+        headers: Dict[str, str],
+        attempt: int,
+    ) -> tuple[bool, bool]:
+        """Make one POST attempt and account for its outcome.
 
-    def _trip_circuit(self, reason: str) -> None:
-        if not self._circuit_tripped:
-            self._circuit_tripped = True
-            self.stats.circuit_tripped = True
-            logger.warning(
-                "netra.audio: circuit breaker tripped (session=%s): %s. "
-                "No further audio will be sent for this session",
-                self._session_id,
-                reason,
-            )
+        Args:
+            client: The open HTTP client.
+            pcm: The request body.
+            headers: The request headers.
+            attempt: 0-based attempt number, for the log line.
 
-    def _check_circuit(self) -> None:
+        Returns:
+            ``(accepted, is_fatal)`` — ``is_fatal`` means retrying cannot help,
+            either because the credential was rejected or because the circuit
+            breaker has now tripped.
+        """
+        started_at = time.monotonic()
+        try:
+            response = await client.post(self._url, content=pcm, headers=headers)
+        except httpx.HTTPError as exc:
+            self.stats.total_send_time_ms += (time.monotonic() - started_at) * 1000
+            self.stats.errors += 1
+            logger.warning("netra.audio: chunk POST error (attempt=%d): %s", attempt + 1, exc)
+            return False, self._record_failure()
+
+        self.stats.total_send_time_ms += (time.monotonic() - started_at) * 1000
+
+        if response.status_code < _HTTP_STATUS_BAD_REQUEST:
+            self._consecutive_failures = 0
+            return True, False
+
+        self.stats.errors += 1
+        if response.status_code in _UNAUTHENTICATED_STATUSES:
+            self._trip_circuit(f"HTTP {response.status_code} — a credential will not become valid mid-call")
+            return False, True
+
+        logger.warning(
+            "netra.audio: chunk POST rejected (attempt=%d): %d %s",
+            attempt + 1,
+            response.status_code,
+            response.text[:200],
+        )
+        return False, self._record_failure()
+
+    # -- failure handling ---------------------------------------------------
+
+    def _record_failure(self) -> bool:
+        """Count one failure and trip the circuit if the run is long enough.
+
+        Returns:
+            True when the circuit is now open, meaning retrying is pointless.
+        """
+        self._consecutive_failures += 1
         if self._consecutive_failures >= _MAX_CONSECUTIVE_FAILURES:
             self._trip_circuit(f"{self._consecutive_failures} consecutive failures")
+        return self._circuit_tripped
+
+    def _trip_circuit(self, reason: str) -> None:
+        """Abandon audio for the rest of the call.
+
+        Args:
+            reason: What went wrong, for the operator-facing log line.
+        """
+        if self._circuit_tripped:
+            return
+        self._circuit_tripped = True
+        self.stats.circuit_tripped = True
+        logger.warning(
+            "netra.audio: circuit breaker tripped (session=%s): %s. "
+            "No further audio will be sent for this session; traces are unaffected",
+            self._session_id,
+            reason,
+        )
+
+    # -- span state ---------------------------------------------------------
+
+    def _state_for(self, span_id: str, role: SpeakerRole, trace_id: str = "") -> _SpanAudioState:
+        """Return the state record for *span_id*, creating it on first sight.
+
+        Args:
+            span_id: Hex id of a speaking span.
+            role: The speaker it belongs to.
+            trace_id: Hex trace id, remembered so a later terminator for this
+                span can still be attributed once the batch holding it is gone.
+
+        Returns:
+            The span's mutable state record.
+        """
+        state = self._span_states.get(span_id)
+        if state is None:
+            state = _SpanAudioState(role=role, trace_id=trace_id)
+            self._span_states[span_id] = state
+        elif trace_id and not state.trace_id:
+            state.trace_id = trace_id
+        return state
+
+
+def _retry_delay_seconds(attempt: int) -> float:
+    """Return the backoff before retrying, exponential with full jitter.
+
+    Args:
+        attempt: 0-based number of the attempt that just failed.
+
+    Returns:
+        Seconds to wait. Jittered so that a backend recovering from an outage is
+        not hit by every concurrent call's sender at the same instant.
+    """
+    ceiling = _RETRY_BASE_DELAY_SECONDS * (2**attempt)
+    return random.uniform(0.0, ceiling)
