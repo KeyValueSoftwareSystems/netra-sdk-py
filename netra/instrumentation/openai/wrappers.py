@@ -289,6 +289,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
+        self._span_ended: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -319,10 +320,14 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
     def __exit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if hasattr(self.__wrapped__, "__exit__"):
             self.__wrapped__.__exit__(exc_type, exc_val, exc_tb)
-        if exc_type is not None:
-            self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
-            self._span.record_exception(exc_val)
-            self._span.end()
+        if not self._span_ended:
+            if exc_type is not None:
+                self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+                self._span.record_exception(exc_val)
+                self._span_ended = True
+                self._span.end()
+            else:
+                self._finalize_span()
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -335,6 +340,19 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         except StopIteration:
             self._finalize_span()
             raise
+
+    def close(self) -> None:
+        """Close the stream and ensure the span is finalized."""
+        self._finalize_span()
+        wrapped_close = getattr(self.__wrapped__, "close", None)
+        if callable(wrapped_close):
+            wrapped_close()
+
+    def __del__(self) -> None:
+        try:
+            self._finalize_span()
+        except Exception:
+            pass
 
     def _process_chunk(self, chunk: Any) -> None:
         """Process streaming chunk"""
@@ -417,15 +435,26 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        for choice in self._complete_response.get("choices", []):
-            msg = choice.get("message", {})
-            if isinstance(msg.get("tool_calls"), dict):
-                msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
-        record_span_timing(self._span, LLM_RESPONSE_DURATION)
-        set_response_attributes(self._span, self._complete_response)
-        self._netra_output = self._extract_content_text()
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
+        if self._span_ended:
+            return
+        self._span_ended = True
+        try:
+            for choice in self._complete_response.get("choices", []):
+                msg = choice.get("message", {})
+                if isinstance(msg.get("tool_calls"), dict):
+                    msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
+            record_span_timing(self._span, LLM_RESPONSE_DURATION)
+            set_response_attributes(self._span, self._complete_response)
+            self._netra_output = self._extract_content_text()
+            self._span.set_status(Status(StatusCode.OK))
+        except Exception as e:
+            try:
+                self._span.record_exception(e)
+                self._span.set_status(Status(StatusCode.ERROR, "span finalization error"))
+            except Exception:
+                pass
+        finally:
+            self._span.end()
 
 
 class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
@@ -439,6 +468,7 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         self._request_kwargs = request_kwargs
         self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
         self._first_content_recorded: bool = False
+        self._span_ended: bool = False
 
     def _is_chat(self) -> bool:
         """Determine if the request is a chat request."""
@@ -469,10 +499,14 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
     async def __aexit__(self, exc_type: Any, exc_val: Any, exc_tb: Any) -> None:
         if hasattr(self.__wrapped__, "__aexit__"):
             await self.__wrapped__.__aexit__(exc_type, exc_val, exc_tb)
-        if exc_type is not None:
-            self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
-            self._span.record_exception(exc_val)
-            self._span.end()
+        if not self._span_ended:
+            if exc_type is not None:
+                self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
+                self._span.record_exception(exc_val)
+                self._span_ended = True
+                self._span.end()
+            else:
+                self._finalize_span()
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self
@@ -485,6 +519,29 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
         except StopAsyncIteration:
             self._finalize_span()
             raise
+
+    async def aclose(self) -> None:
+        """Close the async stream and ensure the span is finalized."""
+        self._finalize_span()
+        wrapped_aclose = getattr(self.__wrapped__, "aclose", None)
+        if callable(wrapped_aclose):
+            await wrapped_aclose()
+        else:
+            wrapped_close = getattr(self.__wrapped__, "close", None)
+            if callable(wrapped_close):
+                result = wrapped_close()
+                if hasattr(result, "__await__"):
+                    await result
+
+    async def close(self) -> None:
+        """Alias for aclose() for compatibility with OpenAI's AsyncStream."""
+        await self.aclose()
+
+    def __del__(self) -> None:
+        try:
+            self._finalize_span()
+        except Exception:
+            pass
 
     def _process_chunk(self, chunk: Any) -> None:
         """Process streaming chunk"""
@@ -567,12 +624,22 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
 
     def _finalize_span(self) -> None:
         """Finalize span when streaming is complete"""
-        for choice in self._complete_response.get("choices", []):
-            msg = choice.get("message", {})
-            if isinstance(msg.get("tool_calls"), dict):
-                msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
-        record_span_timing(self._span, LLM_RESPONSE_DURATION)
-        set_response_attributes(self._span, self._complete_response)
-        self._netra_output = self._extract_content_text()
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
+        if self._span_ended:
+            return
+        self._span_ended = True
+        try:
+            for choice in self._complete_response.get("choices", []):
+                msg = choice.get("message", {})
+                if isinstance(msg.get("tool_calls"), dict):
+                    msg["tool_calls"] = [msg["tool_calls"][i] for i in sorted(msg["tool_calls"].keys())]
+            record_span_timing(self._span, LLM_RESPONSE_DURATION)
+            set_response_attributes(self._span, self._complete_response)
+            self._netra_output = self._extract_content_text()
+            self._span.set_status(Status(StatusCode.OK))
+        except Exception:
+            try:
+                self._span.set_status(Status(StatusCode.ERROR, "span finalization error"))
+            except Exception:
+                pass
+        finally:
+            self._span.end()

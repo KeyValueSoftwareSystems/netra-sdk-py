@@ -18,6 +18,7 @@ from netra.instrumentation.hermes_agent.wrappers import (
     handle_function_call_wrapper,
     run_conversation_wrapper,
     skill_invocation_wrapper,
+    title_generation_wrapper,
     tool_execution_middleware_wrapper,
 )
 
@@ -105,6 +106,7 @@ class NetraHermesAgentInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         self._instrument_tool_execution_middleware(tracer)
         self._instrument_skill_invocation(tracer)
         self._instrument_approval_gate(tracer)
+        self._instrument_title_generation(tracer)
 
     def _uninstrument(self, **kwargs: Any) -> None:
         """
@@ -121,6 +123,7 @@ class NetraHermesAgentInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         self._uninstrument_tool_execution_middleware()
         self._uninstrument_skill_invocation()
         self._uninstrument_approval_gate()
+        self._uninstrument_title_generation()
 
     def _instrument_run_conversation(self, tracer: Tracer) -> None:
         """
@@ -316,3 +319,39 @@ class NetraHermesAgentInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             unwrap(approval, "_run_approval_gate")
         except (AttributeError, ImportError):
             logger.error("Failed to uninstrument hermes-agent approval gate")
+
+    def _instrument_title_generation(self, tracer: Tracer) -> None:
+        """
+        Wrap agent.title_generator.generate_title with a workflow span wrapper.
+
+        Title generation runs in a daemon thread with no parent context, so the
+        wrapper's span becomes the trace root — identifying the trace as a
+        title-generation workflow.
+
+        Args:
+            tracer (Tracer): The OpenTelemetry tracer to pass to the wrapper.
+
+        Returns:
+            None
+        """
+        try:
+            wrapt.wrap_function_wrapper("agent.title_generator", "generate_title", title_generation_wrapper(tracer))
+        except Exception as e:
+            logger.error(f"Failed to instrument hermes-agent title generation: {e}")
+
+    def _uninstrument_title_generation(self) -> None:
+        """
+        Remove the tracing wrapper from agent.title_generator.generate_title.
+
+        Args:
+            None
+
+        Returns:
+            None
+        """
+        try:
+            import agent.title_generator as title_generator
+
+            unwrap(title_generator, "generate_title")
+        except (AttributeError, ImportError):
+            logger.error("Failed to uninstrument hermes-agent title generation")
