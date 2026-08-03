@@ -50,11 +50,13 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
 
-## [0.1.97] -
-
 - **Add simulation lifecycle hooks** - Prescript/postscript support for multi-turn simulations via `SimulationHooks` (`before_all`, `before`, `after`, `after_all`). Hooks can return setup context passed into `BaseTask.run`, and the run uses a two-phase initialize / first-turn flow so hooks execute before any LLM spend. `before_all` failure aborts the run as `prescript_failed`; item `before` failure marks only that scenario; `after` / `after_all` failures are logged and do not affect status.
+
 - **Add simulation `before_each` / `after_each` hooks** - Per-item lifecycle hooks that run for every dataset item. Execution order is `before_all` → `before_each` → item-specific `before` → task → item-specific `after` → `after_each` → `after_all`.
+
 - **Use explicit `.description` for simulation hook metadata** - Hook descriptions sent to the backend now come from an explicit `.description` attribute on each hook function (aligned with the TypeScript SDK), instead of reading Python docstrings.
+
+- **Fix OpenAI Responses API stream handling** — `Response API` instrumentation spans now include token usage and completion output when a stream ends due to reaching the token limit (`incomplete` status).
 
 ## [0.1.96] - 2026-07-23
 
