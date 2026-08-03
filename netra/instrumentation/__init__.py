@@ -196,6 +196,10 @@ def init_instrumentations(
     if CustomInstruments.DEEPGRAM in netra_custom_instruments:
         init_deepgram_instrumentation()
 
+    # Initialize LiveKit voice-agent instrumentation.
+    if CustomInstruments.LIVEKIT in netra_custom_instruments:
+        init_livekit_instrumentation()
+
     # Initialize ADK instrumentation.
     if CustomInstruments.ADK in netra_custom_instruments:
         init_adk_instrumentation()
@@ -427,6 +431,25 @@ def init_deepgram_instrumentation() -> bool:
         return True
     except Exception:
         logging.exception("Error initializing Deepgram instrumentor")
+        return False
+
+
+def init_livekit_instrumentation() -> bool:
+    """Initialize LiveKit voice-agent instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("livekit-agents"):
+            from netra.instrumentation.livekit import NetraLiveKitInstrumentor
+
+            instrumentor = NetraLiveKitInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception:
+        logging.exception("Error initializing LiveKit instrumentor")
         return False
 
 

@@ -112,6 +112,59 @@ class _JsonOTLPMetricExporter(OTLPMetricExporter):  # type: ignore[misc]
         return MetricExportResult.FAILURE
 
 
+class _NetraOwnedMeterProvider(MeterProvider):  # type: ignore[misc]
+    """A MeterProvider only Netra may shut down.
+
+    Third-party teardown paths call ``shutdown()`` on the global meter provider.
+    ``livekit-agents`` does it on every job cleanup
+    (``telemetry/traces.py:_shutdown_telemetry``, reached unconditionally from
+    ``ipc/job.py``'s ``_on_cleanup``), which would permanently stop Netra's
+    metrics pipeline for the rest of the process — including every later job in
+    a multi-job worker.
+
+    This cannot be retrofitted by wrapping the provider after the fact: OTel's
+    ``set_meter_provider`` is set-once and merely logs *"Overriding of current
+    MeterProvider is not allowed"* on a second call.  The guard therefore has to
+    live where the provider is constructed.
+
+    ``Netra.shutdown()`` calls :meth:`shutdown_as_owner`, which is the only way
+    to actually tear this provider down.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        """Build the provider with shutdown locked to Netra's own teardown.
+
+        Args:
+            *args: Positional arguments forwarded to ``MeterProvider``.
+            **kwargs: Keyword arguments forwarded to ``MeterProvider``.
+        """
+        super().__init__(*args, **kwargs)
+        self._netra_shutdown_allowed = False
+
+    def shutdown(self, timeout_millis: float = 30_000, **kwargs: Any) -> None:
+        """Ignore shutdown requests that do not come from Netra's own teardown.
+
+        Args:
+            timeout_millis: Maximum time to wait for the shutdown, forwarded to
+                ``MeterProvider.shutdown`` only when the caller is Netra itself.
+            **kwargs: Additional arguments forwarded to ``MeterProvider.shutdown``.
+        """
+        if not self._netra_shutdown_allowed:
+            logger.debug("Ignoring third-party MeterProvider shutdown; Netra owns this provider's lifecycle")
+            return
+        super().shutdown(timeout_millis=timeout_millis, **kwargs)
+
+    def shutdown_as_owner(self, timeout_millis: float = 30_000) -> None:
+        """Shut the provider down for real. Called only by ``Netra.shutdown()``.
+
+        Args:
+            timeout_millis: Maximum time to wait for the metric readers to flush
+                and shut down.
+        """
+        self._netra_shutdown_allowed = True
+        super().shutdown(timeout_millis=timeout_millis)
+
+
 class MetricsSetup:
     """
     Configures Netra's OpenTelemetry metrics pipeline.
@@ -194,7 +247,7 @@ class MetricsSetup:
 
             views = self._build_views()
 
-            provider = MeterProvider(
+            provider = _NetraOwnedMeterProvider(
                 resource=resource,
                 metric_readers=[reader],
                 views=views,
