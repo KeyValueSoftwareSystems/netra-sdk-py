@@ -23,10 +23,11 @@ from __future__ import annotations
 import asyncio
 import functools
 import logging
+import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Any, Callable, Dict, FrozenSet, List, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
 from netra.instrumentation.livekit.audio_sender import AudioChunkSender
 from netra.instrumentation.livekit.audio_types import (
@@ -37,7 +38,6 @@ from netra.instrumentation.livekit.audio_types import (
     NETRA_AUDIO_SENT_BYTES,
     NETRA_AUDIO_SENT_CHUNKS,
     SpeakerRole,
-    speaker_roles_from,
 )
 
 if TYPE_CHECKING:
@@ -56,6 +56,10 @@ logger = logging.getLogger(__name__)
 _NOMINAL_FRAME_BYTES = 960
 
 _MILLISECONDS_PER_SECOND = 1000
+
+# Slack added to the wait in ``_close_from_outside`` on top of the drain budget it
+# hands the coordinator, so the coordinator's own deadline is the one that fires.
+_TEARDOWN_GRACE_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -87,23 +91,15 @@ class SessionAudioCoordinator:
     Confined to the agent's event loop, like the sender it feeds.
     """
 
-    def __init__(
-        self,
-        *,
-        sender: Optional[AudioChunkSender] = None,
-        enabled_roles: Optional[FrozenSet[SpeakerRole]] = None,
-    ) -> None:
-        """Bind the coordinator to a sender and the roles it may capture.
+    def __init__(self, *, sender: Optional[AudioChunkSender] = None) -> None:
+        """Bind the coordinator to a sender.
 
         Args:
             sender: Where frames are handed off. ``None`` makes the coordinator
                 inert, which is what the span processor's callbacks expect when
                 audio capture is off.
-            enabled_roles: The speakers whose audio may leave the process, from
-                ``NETRA_AUDIO_ROLES``. Defaults to every role.
         """
         self._sender = sender
-        self._enabled_roles = enabled_roles if enabled_roles is not None else frozenset(SpeakerRole)
 
         self._active_speech: Dict[SpeakerRole, Optional[_ActiveSpeech]] = {role: None for role in SpeakerRole}
         self._session_trace_id = ""
@@ -179,7 +175,7 @@ class SessionAudioCoordinator:
             role: The speaker the frame came from.
             frame: The frame LiveKit just captured.
         """
-        if self._sender is None or role not in self._enabled_roles:
+        if self._sender is None:
             return
         if role is SpeakerRole.AGENT and self._is_agent_interrupted:
             # Produced after the caller cut in, so never played out.
@@ -244,11 +240,22 @@ class SessionAudioCoordinator:
         for role in SpeakerRole:
             self.on_speaking_end(role)
 
-    async def aclose(self) -> None:
-        """Close the open recordings and shut the sender down."""
+    async def aclose(self, *, drain_timeout_seconds: Optional[float] = None) -> None:
+        """Close the open recordings and shut the sender down.
+
+        Args:
+            drain_timeout_seconds: Total budget for the sender's drain. ``None``
+                leaves the sender's own default in place, which is what the normal
+                per-session teardown wants; ``Netra.shutdown()`` passes the budget
+                it is willing to wait so the two cannot disagree.
+        """
         self.close()
-        if self._sender is not None:
+        if self._sender is None:
+            return
+        if drain_timeout_seconds is None:
             await self._sender.end_session()
+        else:
+            await self._sender.end_session(drain_timeout_seconds=drain_timeout_seconds)
 
     @property
     def sender(self) -> Optional[AudioChunkSender]:
@@ -308,7 +315,7 @@ class SessionAudioCoordinator:
 
         @functools.wraps(original)
         async def capture_frame(frame: "AudioFrame") -> Any:
-            run_hook_safely(lambda: self.on_frame(SpeakerRole.AGENT, frame), "agent frame")
+            _run_hook_safely(lambda: self.on_frame(SpeakerRole.AGENT, frame), "agent frame")
             return await original(frame)
 
         audio_output.capture_frame = capture_frame
@@ -327,7 +334,7 @@ class SessionAudioCoordinator:
 
         @functools.wraps(original)
         def clear_buffer() -> Any:
-            run_hook_safely(self.on_output_buffer_cleared, "clear_buffer")
+            _run_hook_safely(self.on_output_buffer_cleared, "clear_buffer")
             return original()
 
         audio_output.clear_buffer = clear_buffer
@@ -356,7 +363,7 @@ class SessionAudioCoordinator:
 # ---------------------------------------------------------------------------
 
 
-def run_hook_safely(action: Callable[[], None], description: str) -> None:
+def _run_hook_safely(action: Callable[[], None], description: str) -> None:
     """Run one of our own hooks without letting it reach the user's agent.
 
     The one place this package swallows an exception, and deliberately: these
@@ -403,7 +410,7 @@ class _AudioInputProxy:
             The frame, untouched.
         """
         frame: "AudioFrame" = await self._source.__anext__()
-        run_hook_safely(lambda: self._coordinator.on_frame(SpeakerRole.USER, frame), "caller frame")
+        _run_hook_safely(lambda: self._coordinator.on_frame(SpeakerRole.USER, frame), "caller frame")
         return frame
 
     def __getattr__(self, name: str) -> Any:
@@ -506,7 +513,7 @@ def _patch_anext(leaf: Any, coordinator: SessionAudioCoordinator) -> None:
     @functools.wraps(original)
     async def traced_anext() -> "AudioFrame":
         frame = await original()
-        run_hook_safely(lambda: coordinator.on_frame(SpeakerRole.USER, frame), "caller frame")
+        _run_hook_safely(lambda: coordinator.on_frame(SpeakerRole.USER, frame), "caller frame")
         return frame
 
     if not _try_set(leaf, "__anext__", traced_anext):
@@ -541,13 +548,18 @@ class AudioCoordinatorRegistry:
     spans arrive for every concurrent call, so the span's trace id is what says
     which call's audio a span delimits.
 
-    Confined to the agent's event loop: registration happens in the session
-    wrapper and lookups happen in span callbacks, all on that loop.
+    Locked rather than loop-confined. Most traffic is on the agent's event loop —
+    registration from the session wrapper, lookups from span callbacks — but
+    ``Netra.shutdown()`` reaches :meth:`pop_all` from whichever thread called it,
+    and that has to be atomic against a concurrent :meth:`register` or a call's
+    coordinator is dropped on the floor with its audio still queued. Contention is
+    a handful of operations per call, so a plain lock costs nothing measurable.
     """
 
     def __init__(self) -> None:
         """Start with no calls registered."""
         self._by_trace_id: Dict[int, SessionAudioCoordinator] = {}
+        self._lock = threading.Lock()
 
     def register(self, trace_id: int, coordinator: SessionAudioCoordinator) -> None:
         """Record the coordinator capturing audio for a call.
@@ -556,7 +568,8 @@ class AudioCoordinatorRegistry:
             trace_id: The ``agent_session`` span's trace id.
             coordinator: The call's coordinator.
         """
-        self._by_trace_id[trace_id] = coordinator
+        with self._lock:
+            self._by_trace_id[trace_id] = coordinator
 
     def get(self, trace_id: int) -> Optional[SessionAudioCoordinator]:
         """Return the coordinator for a call, or ``None`` if it is not capturing.
@@ -567,7 +580,8 @@ class AudioCoordinatorRegistry:
         Returns:
             The call's coordinator, if one is registered.
         """
-        return self._by_trace_id.get(trace_id)
+        with self._lock:
+            return self._by_trace_id.get(trace_id)
 
     def unregister(self, trace_id: int) -> Optional[SessionAudioCoordinator]:
         """Remove and return a call's coordinator. Idempotent.
@@ -578,19 +592,23 @@ class AudioCoordinatorRegistry:
         Returns:
             The coordinator that was registered, if any.
         """
-        return self._by_trace_id.pop(trace_id, None)
+        with self._lock:
+            return self._by_trace_id.pop(trace_id, None)
 
     def pop_all(self) -> List[SessionAudioCoordinator]:
         """Remove and return every registered coordinator.
 
         Used by ``Netra.shutdown()`` as a backstop for calls whose session never
-        closed cleanly.
+        closed cleanly. Atomic, so a call registering concurrently is either
+        returned here or left registered — never lost between the read and the
+        clear.
 
         Returns:
             The coordinators that were registered.
         """
-        coordinators = list(self._by_trace_id.values())
-        self._by_trace_id.clear()
+        with self._lock:
+            coordinators = list(self._by_trace_id.values())
+            self._by_trace_id.clear()
         return coordinators
 
 
@@ -650,13 +668,21 @@ async def start_audio_capture(session: Any, *, config: "Config", session_id: str
         if sender is None:
             return
 
-        coordinator = SessionAudioCoordinator(
-            sender=sender,
-            enabled_roles=speaker_roles_from(config.audio_roles),
-        )
+        coordinator = SessionAudioCoordinator(sender=sender)
         await sender.start()
-        coordinator.attach(session)
+
+        # Registered before attaching, not after: from here on the sender owns a
+        # background task and an HTTP client, and the registry is the only handle
+        # anything has for closing them. ``attach`` patches third-party objects
+        # that may refuse assignment, so it is exactly the step that can raise —
+        # and a raise between start() and register() would strand both resources
+        # for the life of the process. ``attach`` does not need the registry.
         audio_coordinators.register(trace_id, coordinator)
+        try:
+            coordinator.attach(session)
+        except Exception:
+            await stop_audio_capture(trace_id)
+            raise
         logger.debug("netra.audio: capture attached for trace_id=%032x", trace_id)
     except Exception:
         logger.warning("netra.livekit: audio capture setup failed; the call is traced without audio", exc_info=True)
@@ -697,7 +723,10 @@ def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
 
     Args:
         timeout_seconds: How long to wait for one call's audio to drain when
-            shutting it down from outside its event loop.
+            shutting it down from outside its event loop. Passed down as the
+            sender's own drain budget too, so the inner deadline expires first and
+            a timeout here means the audio really could not be delivered rather
+            than that the two limits were set inconsistently.
     """
     coordinators = audio_coordinators.pop_all()
     if not coordinators:
@@ -723,7 +752,8 @@ def _close_from_outside(
     Args:
         coordinator: The coordinator to shut down.
         current_loop: The loop the caller is running on, if any.
-        timeout_seconds: How long to wait when driving another loop.
+        timeout_seconds: How long to wait when driving another loop, and the drain
+            budget handed to the coordinator either way.
     """
     sender = coordinator.sender
     target_loop = sender.loop if sender is not None else None
@@ -733,13 +763,23 @@ def _close_from_outside(
         return
 
     if target_loop is current_loop:
-        # Cannot block the loop we are on; hand the teardown to it and move on.
-        target_loop.create_task(coordinator.aclose())
+        # Cannot block the loop we are on, so this is scheduled and not awaited:
+        # whether it finishes depends on the caller keeping the loop alive, which
+        # a synchronous shutdown() cannot promise. Said plainly rather than left
+        # looking like a completed teardown.
+        target_loop.create_task(coordinator.aclose(drain_timeout_seconds=timeout_seconds))
+        logger.warning(
+            "netra.audio: shutdown was called from a call's own event loop; its drain is scheduled "
+            "but cannot be awaited. Await AgentSession.aclose() before Netra.shutdown() to be sure "
+            "the audio is delivered"
+        )
         return
 
-    future = asyncio.run_coroutine_threadsafe(coordinator.aclose(), target_loop)
+    future = asyncio.run_coroutine_threadsafe(coordinator.aclose(drain_timeout_seconds=timeout_seconds), target_loop)
     try:
-        future.result(timeout=timeout_seconds)
+        # A shade past the inner budget, so the coordinator's own deadline is what
+        # gives up and it still gets to log its statistics.
+        future.result(timeout=timeout_seconds + _TEARDOWN_GRACE_SECONDS)
     except FuturesTimeoutError:
         logger.warning("netra.audio: a call did not finish sending within %.0fs", timeout_seconds)
     except Exception:

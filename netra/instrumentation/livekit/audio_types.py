@@ -16,7 +16,7 @@ in tests without a tracer or a livekit-agents install.
 """
 
 from enum import Enum
-from typing import Dict, FrozenSet, Iterable
+from typing import Dict
 
 # ---------------------------------------------------------------------------
 # Speakers
@@ -27,28 +27,11 @@ class SpeakerRole(str, Enum):
     """Which side of the call a run of audio came from.
 
     A ``str`` enum because the value is also the wire value of the
-    ``x-audio-role`` header and the value ``NETRA_AUDIO_ROLES`` is parsed into,
-    so the three cannot drift apart.
+    ``x-audio-role`` header, so the two cannot drift apart.
     """
 
     USER = "user"
     AGENT = "agent"
-
-
-def speaker_roles_from(names: Iterable[str]) -> FrozenSet[SpeakerRole]:
-    """Convert configured role names into :class:`SpeakerRole` members.
-
-    ``Config`` has already dropped unrecognised names and warned about them, so
-    an unknown name reaching here is not worth a second warning — it is skipped.
-
-    Args:
-        names: The role names resolved from ``NETRA_AUDIO_ROLES``.
-
-    Returns:
-        The recognised roles.
-    """
-    known = {role.value: role for role in SpeakerRole}
-    return frozenset(known[name] for name in names if name in known)
 
 
 # LiveKit span name -> the speaker whose audio that span delimits. The audio for
@@ -88,18 +71,27 @@ def pcm_byte_offset_at(*, playback_ms: int, sample_rate_hz: int, channel_count: 
     its whole remaining length.
 
     Args:
-        playback_ms: Milliseconds of audio played out.
-        sample_rate_hz: Samples per second, per channel.
-        channel_count: Number of interleaved channels.
+        playback_ms: Milliseconds of audio played out. A non-positive value means
+            nothing was heard and yields 0.
+        sample_rate_hz: Samples per second, per channel. Must be positive.
+        channel_count: Number of interleaved channels. Must be positive.
 
     Returns:
         The byte offset, never negative and always a multiple of the frame size.
+
+    Raises:
+        ValueError: If the PCM format is not playable. Callers substitute
+            :data:`DEFAULT_SAMPLE_RATE_HZ` / :data:`DEFAULT_CHANNEL_COUNT` for a
+            frame that reported neither, so reaching this is a programming error
+            rather than bad input.
     """
+    if sample_rate_hz <= 0 or channel_count <= 0:
+        raise ValueError(f"unplayable PCM format: sample_rate_hz={sample_rate_hz} channel_count={channel_count}")
     if playback_ms <= 0:
         return 0
 
-    frame_size = max(1, channel_count) * PCM_BYTES_PER_SAMPLE
-    bytes_per_ms = max(1, sample_rate_hz) * frame_size / _MILLISECONDS_PER_SECOND
+    frame_size = channel_count * PCM_BYTES_PER_SAMPLE
+    bytes_per_ms = sample_rate_hz * frame_size / _MILLISECONDS_PER_SECOND
     return int(playback_ms * bytes_per_ms) // frame_size * frame_size
 
 
@@ -123,9 +115,15 @@ HEADER_BIT_DEPTH = "x-audio-bit-depth"
 # Epoch milliseconds at which the first frame of this chunk was captured.
 HEADER_START_MS = "x-audio-start-ms"
 
-# 0-based and monotonic *per span*, advanced only once a chunk has been accepted
-# — so a retried POST re-sends the same sequence number with the same bytes and
-# the endpoint can treat the pair as idempotent.
+# 0-based and monotonic *per span* — a chunk's position in that span's stream,
+# not a count of what arrived. Two properties follow, and the endpoint depends on
+# both:
+#
+# * the retries of a single chunk all carry the same number and the same bytes,
+#   so the endpoint can treat them as idempotent;
+# * a chunk the sender gave up on still consumes its number, so a gap in the
+#   sequence is the endpoint's signal that audio was lost — never a number
+#   reused for different bytes.
 HEADER_SEQUENCE = "x-audio-seq"
 
 # Present on the final chunk of a span, and on that chunk only.

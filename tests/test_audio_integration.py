@@ -9,7 +9,9 @@ the span processor are tested directly, with a stub sender.
 from __future__ import annotations
 
 import asyncio
+import os
 import threading
+import time
 from dataclasses import dataclass, field
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Dict, List, Optional
@@ -17,11 +19,13 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from netra.config import Config
 from netra.instrumentation.livekit.audio_capture import (
     AudioCoordinatorRegistry,
     SessionAudioCoordinator,
     audio_coordinators,
     build_audio_sender,
+    start_audio_capture,
     stop_audio_capture,
 )
 from netra.instrumentation.livekit.audio_processor import AudioSpanProcessor
@@ -40,7 +44,6 @@ from netra.instrumentation.livekit.audio_types import (
     NETRA_AUDIO_SENT_CHUNKS,
     SpeakerRole,
     pcm_byte_offset_at,
-    speaker_roles_from,
 )
 
 # 24kHz mono 16-bit — what livekit-agents delivers by default.
@@ -108,6 +111,9 @@ class IngestRecorder:
     """Thread-safe record of what the ingest server received."""
 
     status_code: int = 200
+    # Held before replying, so a test can stall the send loop mid-POST the way a
+    # degraded backend would. Only the teardown-budget tests set it.
+    delay_seconds: float = 0.0
     requests: List[RecordedRequest] = field(default_factory=list)
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
@@ -140,6 +146,8 @@ class _IngestHandler(BaseHTTPRequestHandler):
                 body=body,
             )
         )
+        if self.recorder.delay_seconds:
+            time.sleep(self.recorder.delay_seconds)
         self.send_response(self.recorder.status_code)
         self.send_header("Content-Length", "0")
         self.end_headers()
@@ -238,10 +246,10 @@ class TestAudioTypes:
         assert offset % frame_size == 0
         assert offset == 308
 
-    def test_speaker_roles_from_keeps_known_roles_and_drops_the_rest(self) -> None:
-        assert speaker_roles_from(["user", "agent"]) == frozenset(SpeakerRole)
-        assert speaker_roles_from(["user"]) == frozenset({SpeakerRole.USER})
-        assert speaker_roles_from(["hold_music"]) == frozenset()
+    @pytest.mark.parametrize("sample_rate_hz,channel_count", [(0, 1), (24000, 0), (-1, 1)])
+    def test_pcm_byte_offset_rejects_an_unplayable_format(self, sample_rate_hz: int, channel_count: int) -> None:
+        with pytest.raises(ValueError, match="unplayable PCM format"):
+            pcm_byte_offset_at(playback_ms=100, sample_rate_hz=sample_rate_hz, channel_count=channel_count)
 
 
 # ---------------------------------------------------------------------------
@@ -425,6 +433,39 @@ class TestAudioChunkSenderInterrupts:
         assert terminators[0].body == b"", "nothing more to send; the endpoint trims"
         assert terminators[0].headers[HEADER_HEARD_MS] == str(FRAME_MS)
 
+    def test_interrupt_marks_the_cut_when_a_pending_batch_is_past_the_heard_point(self, ingest_server) -> None:
+        url, recorder = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            # Two frames flush on the batch boundary, so they are already
+            # delivered; a third stays pending.
+            enqueue_frames(sender, 3, role=SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+            await asyncio.sleep(0.1)
+            # Only the first frame was heard, which is behind what already went
+            # out — so the pending batch trims to nothing but the endpoint still
+            # has to be told where to cut.
+            sender.interrupt_agent_span(span_id=AGENT_SPAN_ID, playback_ms=FRAME_MS)
+
+        run_call(url, scenario, max_batch_frames=2)
+
+        terminators = [r for r in recorder.chunks_for(AGENT_SPAN_ID) if r.is_last]
+        assert len(terminators) == 1, "the span must be terminated, not left open until session end"
+        assert terminators[0].headers[HEADER_HEARD_MS] == str(FRAME_MS)
+        assert terminators[0].headers[HEADER_SPAN_ID] == AGENT_SPAN_ID
+
+    def test_a_trimmed_chunk_counts_only_the_frames_it_actually_sent(self, ingest_server) -> None:
+        url, _ = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            # 5 frames pending, of which 2 frames' worth was heard.
+            enqueue_frames(sender, 5, role=SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+            sender.interrupt_agent_span(span_id=AGENT_SPAN_ID, playback_ms=FRAME_MS * 2)
+
+        sender = run_call(url, scenario)
+
+        assert sender.stats.bytes_sent == FRAME_BYTES * 2
+        assert sender.stats.frames_sent == 2, "the untrimmed frame count would report 5"
+
 
 # ---------------------------------------------------------------------------
 # Sender: failure handling
@@ -483,6 +524,103 @@ class TestAudioChunkSenderFailures:
         session_ends = [r for r in recorder.snapshot() if r.headers.get(HEADER_SESSION_LAST) == "true"]
         assert len(session_ends) == 1
 
+    def test_a_given_up_chunk_does_not_leave_its_sequence_number_to_the_next_chunk(self, ingest_server) -> None:
+        url, recorder = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            recorder.status_code = 500
+            sender.enqueue(make_frame(value=1111), role=SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+            await asyncio.sleep(0.3)  # both attempts fail; the chunk is given up on
+            recorder.status_code = 200
+            sender.enqueue(make_frame(value=2222), role=SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+            await asyncio.sleep(0.3)
+
+        run_call(url, scenario, max_batch_frames=1)
+
+        # A number may repeat only across retries of the *same* bytes: that is what
+        # makes it an idempotency key. Reusing it for different audio would have the
+        # endpoint either drop the new chunk as a duplicate or overwrite the old.
+        audio_by_sequence: Dict[str, set] = {}
+        for request in recorder.chunks_for(AGENT_SPAN_ID):
+            if request.body:
+                audio_by_sequence.setdefault(request.headers[HEADER_SEQUENCE], set()).add(request.body)
+        reused = {seq: len(bodies) for seq, bodies in audio_by_sequence.items() if len(bodies) > 1}
+        assert not reused, f"sequence reused across distinct audio: {reused}"
+        # The lost chunk still consumed its slot, so the gap is visible.
+        assert sorted(audio_by_sequence) == ["0", "1"]
+
+    def test_end_session_spends_one_total_budget_not_one_per_wait(self, ingest_server) -> None:
+        url, recorder = ingest_server
+        recorder.delay_seconds = 2.0
+
+        async def drive() -> float:
+            sender = build_sender(url, max_batch_frames=1)
+            await sender.start()
+            enqueue_frames(sender, 4, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+            started_at = time.monotonic()
+            await sender.end_session(drain_timeout_seconds=0.5)
+            return time.monotonic() - started_at
+
+        elapsed = asyncio.run(drive())
+
+        # The two internal waits share the 0.5s deadline. Taking it each would put
+        # this at 1s+, and the pre-fix 30s-per-wait default at a minute.
+        assert elapsed < 1.5, f"teardown took {elapsed:.2f}s for a 0.5s budget"
+
+    def test_a_tripped_circuit_does_not_warn_once_per_open_span(self, ingest_server, caplog) -> None:
+        url, recorder = ingest_server
+        recorder.status_code = 500
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            for index in range(8):
+                span_id = f"{index:016x}"
+                enqueue_frames(sender, 1, role=SpeakerRole.USER, span_id=span_id)
+                await asyncio.sleep(0.05)
+
+        with caplog.at_level("WARNING"):
+            sender = run_call(url, scenario, max_batch_frames=1)
+
+        assert sender.stats.circuit_tripped is True
+        left_open = [r for r in caplog.records if "finalizing span left open" in r.getMessage()]
+        assert left_open == [], "the circuit breaker already said why once; per-span warnings bury it"
+
+    def test_a_marker_from_another_thread_is_enqueued_on_the_loop_thread(self, ingest_server) -> None:
+        url, recorder = ingest_server
+        threads: Dict[str, Any] = {}
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            # OTel invokes span callbacks on whichever thread ended the span, and
+            # asyncio.Queue is not thread-safe. The marker must therefore reach the
+            # queue from the loop's own thread, never from the foreign one.
+            threads["loop"] = threading.get_ident()
+            enqueued_from: List[int] = []
+            original_put = sender._queue.put_nowait
+
+            def recording_put(message: Any) -> None:
+                enqueued_from.append(threading.get_ident())
+                original_put(message)
+
+            sender._queue.put_nowait = recording_put  # type: ignore[method-assign]
+            worker = threading.Thread(
+                target=lambda: sender.mark_audio_end(role=SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+            )
+            worker.start()
+            await asyncio.to_thread(worker.join)
+            threads["worker"] = worker.ident
+            await asyncio.sleep(0.1)
+            threads["enqueued_from"] = enqueued_from
+
+        run_call(url, scenario)
+
+        assert threads["enqueued_from"], "the marker never reached the queue"
+        off_loop = [ident for ident in threads["enqueued_from"] if ident != threads["loop"]]
+        assert off_loop == [], (
+            f"queue touched from thread(s) {off_loop} instead of the loop thread "
+            f"{threads['loop']} (the worker was {threads['worker']})"
+        )
+        terminators = [r for r in recorder.chunks_for(AGENT_SPAN_ID) if r.is_last]
+        assert len(terminators) == 1
+
 
 # ---------------------------------------------------------------------------
 # Coordinator
@@ -513,16 +651,19 @@ class TestSessionAudioCoordinator:
         assert kwargs["span_id"] == ""
         assert kwargs["trace_id"] == TRACE_ID
 
-    def test_a_disabled_role_is_never_streamed(self) -> None:
+    def test_both_speakers_are_streamed(self) -> None:
         sender = MagicMock()
-        coordinator = SessionAudioCoordinator(sender=sender, enabled_roles=frozenset({SpeakerRole.USER}))
+        coordinator = SessionAudioCoordinator(sender=sender)
         coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        coordinator.on_speaking_start(SpeakerRole.USER, trace_id=TRACE_ID, span_id=USER_SPAN_ID)
 
         coordinator.on_frame(SpeakerRole.AGENT, make_frame())
         coordinator.on_frame(SpeakerRole.USER, make_frame())
 
-        assert sender.enqueue.call_count == 1
-        assert sender.enqueue.call_args.kwargs["role"] is SpeakerRole.USER
+        # Capture is all of the call's audio or none of it — there is no per-role
+        # gate to leave one side out.
+        streamed = [call.kwargs["role"] for call in sender.enqueue.call_args_list]
+        assert streamed == [SpeakerRole.AGENT, SpeakerRole.USER]
 
     def test_closing_a_span_finalizes_its_recording(self) -> None:
         sender = MagicMock()
@@ -753,3 +894,74 @@ class TestSessionWiring:
         asyncio.run(stop_audio_capture(0x99, session_span=session_span))
 
         assert session_span.set_attributes.call_count == 1
+
+    def test_a_failed_attach_leaves_no_sender_running(self, ingest_server) -> None:
+        url, _ = ingest_server
+        config = MagicMock(
+            api_key="key",
+            headers={"x-api-key": "key"},
+            audio_batch_interval_ms=1000,
+            audio_batch_bytes=32768,
+            audio_max_request_bytes=262144,
+            audio_buffer_bytes=2097152,
+        )
+        config.audio_endpoint.return_value = url
+
+        # A custom AudioOutput whose capture_frame cannot be reassigned, which is
+        # what attach() trips over.
+        session = MagicMock()
+        session.input.audio = None
+        unpatchable = MagicMock()
+        type(unpatchable).capture_frame = property(lambda self: _async_noop)
+        session.output.audio = unpatchable
+
+        async def drive() -> List[asyncio.Task]:
+            await start_audio_capture(session, config=config, session_id="s", trace_id=0xABC)
+            await asyncio.sleep(0.05)
+            return [task for task in asyncio.all_tasks() if task.get_name() == "netra-audio-chunk-sender"]
+
+        leaked = asyncio.run(drive())
+
+        # The sender owns a background task and an HTTP client from start()
+        # onwards; if attach() fails after that, nothing else can ever close them.
+        assert leaked == [], "a started sender was stranded with no coordinator registered to close it"
+        assert audio_coordinators.get(0xABC) is None
+
+
+# ---------------------------------------------------------------------------
+# Config
+# ---------------------------------------------------------------------------
+
+
+class TestAudioConfigResolution:
+    def test_a_missing_credential_is_reported_once_not_once_per_session(self, monkeypatch, caplog) -> None:
+        for name in list(os.environ):
+            if name.startswith(("NETRA_", "OTEL_")):
+                monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("NETRA_AUDIO_ENDPOINT", "https://ingest.example/v1/audio/chunk")
+
+        with caplog.at_level("WARNING"):
+            config = Config()
+            # Every per-session hook asks; the answer is fixed at init time.
+            for _ in range(5):
+                assert config.audio_endpoint() is None
+                assert config.audio_capture_enabled is False
+
+        missing_credential = [r for r in caplog.records if "no credential is configured" in r.getMessage()]
+        assert len(missing_credential) == 1
+
+    def test_a_resolved_endpoint_is_the_whole_gate(self, monkeypatch) -> None:
+        for name in list(os.environ):
+            if name.startswith(("NETRA_", "OTEL_")):
+                monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.getnetra.com")
+        monkeypatch.setenv("NETRA_AUDIO_ENDPOINT", "https://ingest.example/v1/audio/chunk")
+        monkeypatch.setenv("NETRA_API_KEY", "key")
+        # A leftover role list from before capture became all-or-nothing must not
+        # still gate anything.
+        monkeypatch.setenv("NETRA_AUDIO_ROLES", "")
+
+        config = Config()
+
+        assert config.audio_capture_enabled is True
+        assert not hasattr(config, "audio_roles")

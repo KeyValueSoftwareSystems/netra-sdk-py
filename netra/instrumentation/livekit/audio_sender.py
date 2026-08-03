@@ -81,10 +81,12 @@ _RETRY_BASE_DELAY_SECONDS = 0.05
 # the agent than sending nothing.
 _MAX_CONSECUTIVE_FAILURES = 5
 
-# How long ``end_session`` waits for the queue to drain before cancelling. Long
-# enough for a full queue of pending chunks at a degraded latency, short enough
-# that it cannot hold up the agent's own shutdown indefinitely.
-_DRAIN_TIMEOUT_SECONDS = 30.0
+# How long ``end_session`` spends draining, in total, before giving up. It runs
+# inline in ``AgentSession._aclose_impl``, so this delays the caller's own session
+# teardown — a few seconds of best-effort audio is worth that, half a minute is
+# not. A backend too slow to drain inside it has usually tripped the circuit
+# already.
+_DEFAULT_DRAIN_TIMEOUT_SECONDS = 5.0
 
 _HTTP_STATUS_BAD_REQUEST = 400
 _UNAUTHENTICATED_STATUSES = frozenset({401, 403})
@@ -165,6 +167,25 @@ class _PendingBatch:
         """The accumulated frames as one contiguous PCM buffer."""
         return b"".join(self._pcm_parts)
 
+    def frames_within(self, byte_count: int) -> int:
+        """Estimate how many accumulated frames fit in the first *byte_count* bytes.
+
+        Used only for the ``frames_sent`` statistic when an interrupt trims the
+        batch: pro-rating by the mean frame size is accurate whenever the frames
+        are uniformly sized, which is every case livekit-agents produces, and is
+        never worse than reporting the untrimmed count.
+
+        Args:
+            byte_count: Length of the prefix actually being sent.
+
+        Returns:
+            The frame count attributable to that prefix.
+        """
+        if self.byte_count <= 0:
+            return 0
+        capped = min(max(byte_count, 0), self.byte_count)
+        return round(self.frame_count * capped / self.byte_count)
+
     def add(self, frame: _FrameMessage) -> None:
         """Append *frame*, adopting its span and format if this is the first one.
 
@@ -198,14 +219,27 @@ class _SpanAudioState:
     """Everything the sender tracks about one speaking span's audio stream.
 
     One record per span replaces the parallel per-span dictionaries this class
-    used to keep, so a span's sequence number, delivered byte count and terminal
-    state cannot disagree about which spans exist.
+    used to keep, so a span's sequence number, byte position and terminal state
+    cannot disagree about which spans exist.
+
+    Attributes:
+        role: The speaker the span belongs to.
+        trace_id: Hex trace id, so a terminator posted after the batch holding the
+            span is gone can still be attributed.
+        next_sequence: The number the span's next chunk will carry.
+        bytes_consumed: How many PCM bytes of this span have already left the
+            pending batch — a *position* in the span's stream, so it counts a
+            chunk the sender gave up on as well as an accepted one. Trimming an
+            interrupted utterance measures against this; counting bytes actually
+            delivered here would make the trim offset drift by whatever was lost.
+        is_finalized: Whether the span's terminal chunk has been accepted.
+        is_interrupted: Whether the caller cut this utterance short.
     """
 
     role: SpeakerRole
     trace_id: str = ""
     next_sequence: int = 0
-    bytes_delivered: int = 0
+    bytes_consumed: int = 0
     is_finalized: bool = False
     is_interrupted: bool = False
 
@@ -338,26 +372,33 @@ class AudioChunkSender:
             self._max_request_bytes,
         )
 
-    async def end_session(self) -> None:
+    async def end_session(self, *, drain_timeout_seconds: float = _DEFAULT_DRAIN_TIMEOUT_SECONDS) -> None:
         """Drain the queue, close every open span, and signal the session's end.
 
         Idempotent: a second call returns immediately. Once this has been called
         no further frames are accepted, so a late frame from a task that has not
         noticed the shutdown is dropped rather than queued behind the terminal
         marker it would never get past.
+
+        Args:
+            drain_timeout_seconds: Total budget for the whole teardown. The two
+                waits inside share one deadline rather than each taking the full
+                timeout, because a caller that allowed *n* seconds for the session
+                to close means *n* seconds, not 2*n*.
         """
         if self._is_closed:
             return
         self._is_closed = True
 
-        await self._enqueue_session_end()
+        deadline = time.monotonic() + max(0.0, drain_timeout_seconds)
+        await self._enqueue_session_end(deadline)
         if self._send_task is not None:
-            await self._await_send_task()
+            await self._await_send_task(deadline)
         if self._client is not None:
             await self._client.aclose()
         logger.info("netra.audio: sender closed — %s", self.stats)
 
-    async def _enqueue_session_end(self) -> None:
+    async def _enqueue_session_end(self, deadline: float) -> None:
         """Get the terminal marker onto the queue, waiting for room if need be.
 
         ``put_nowait`` is wrong here: on a bounded queue that is currently full
@@ -365,22 +406,34 @@ class AudioChunkSender:
         so the drain below would spend its whole timeout before cancelling. No
         producer can refill the queue at this point — ``_is_closed`` is already
         set — so waiting for the consumer to make room terminates.
+
+        Args:
+            deadline: ``time.monotonic()`` value the whole teardown must finish by.
         """
         try:
-            await asyncio.wait_for(self._queue.put(_SessionEndMarker()), timeout=_DRAIN_TIMEOUT_SECONDS)
+            await asyncio.wait_for(self._queue.put(_SessionEndMarker()), timeout=_seconds_until(deadline))
         except asyncio.TimeoutError:
-            logger.warning("netra.audio: could not signal session end within %.0fs", _DRAIN_TIMEOUT_SECONDS)
+            logger.warning("netra.audio: could not signal session end before the teardown deadline")
 
-    async def _await_send_task(self) -> None:
-        """Wait for the send loop to drain, cancelling it if it overruns."""
+    async def _await_send_task(self, deadline: float) -> None:
+        """Wait for the send loop to drain, cancelling it if it overruns.
+
+        The cancellation is awaited rather than merely requested: ``end_session``
+        closes the HTTP client next, and a send loop still inside a POST would
+        otherwise find the client shut from under it.
+
+        Args:
+            deadline: ``time.monotonic()`` value the whole teardown must finish by.
+        """
         task = self._send_task
         if task is None:
             return
         try:
-            await asyncio.wait_for(task, timeout=_DRAIN_TIMEOUT_SECONDS)
+            await asyncio.wait_for(task, timeout=_seconds_until(deadline))
         except asyncio.TimeoutError:
-            logger.warning("netra.audio: send loop did not drain within %.0fs; cancelling", _DRAIN_TIMEOUT_SECONDS)
+            logger.warning("netra.audio: send loop did not drain before the teardown deadline; cancelling")
             task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
         except asyncio.CancelledError:
             raise
         except Exception:
@@ -472,13 +525,45 @@ class AudioChunkSender:
     def _offer(self, message: _QueueMessage) -> bool:
         """Hand *message* to the send loop without ever blocking the caller.
 
+        ``asyncio.Queue`` is not thread-safe, and the marker methods are reachable
+        from :class:`AudioSpanProcessor`, which OTel invokes on whichever thread
+        ends the span — normally the agent's loop thread, but nothing enforces
+        that. An off-loop caller is therefore bounced onto the sender's own loop
+        instead of corrupting the queue.
+
         Args:
             message: The message to enqueue.
 
         Returns:
-            True when it was queued, False when the queue is at its bound. The
-            caller decides how a drop is accounted for — a dropped frame is a
-            statistic, a dropped marker is not.
+            True when it was queued or handed to the loop, False when the queue is
+            at its bound. The caller decides how a drop is accounted for — a
+            dropped frame is a statistic, a dropped marker is not.
+        """
+        loop = self._loop
+        if loop is not None and loop is not _running_loop():
+            # Whether the queue had room is not knowable from here; the hop itself
+            # succeeding is all this can report.
+            loop.call_soon_threadsafe(self._offer_on_loop, message)
+            return True
+        return self._put_nowait(message)
+
+    def _offer_on_loop(self, message: _QueueMessage) -> None:
+        """Enqueue a message that arrived from another thread. Runs on the loop.
+
+        Args:
+            message: The message to enqueue.
+        """
+        if not self._put_nowait(message):
+            logger.debug("netra.audio: queue full; cross-thread %s dropped", type(message).__name__)
+
+    def _put_nowait(self, message: _QueueMessage) -> bool:
+        """Put *message* on the queue if it has room.
+
+        Args:
+            message: The message to enqueue.
+
+        Returns:
+            True when it was queued, False when the queue is at its bound.
         """
         try:
             self._queue.put_nowait(message)
@@ -618,50 +703,66 @@ class AudioChunkSender:
         """Post only the part of *batch* the caller heard, marked final.
 
         The heard prefix is measured from the start of the *span*, so whatever
-        earlier chunks already delivered for it has to come off the offset before
+        earlier chunks already consumed of it has to come off the offset before
         the pending batch can be trimmed.
 
         Args:
             batch: The pending agent batch, known to hold audio for the span.
             playback_ms: Milliseconds of the utterance the caller heard.
         """
+        # Read the batch's identity out before any flush: ``_PendingBatch.clear``
+        # resets ``span_id``, so a terminator addressed from a cleared batch would
+        # carry ``""`` and be silently dropped by ``_post_span_terminator``.
+        span_id = batch.span_id
+        role = batch.role
         heard_offset = pcm_byte_offset_at(
             playback_ms=playback_ms,
             sample_rate_hz=batch.sample_rate_hz or DEFAULT_SAMPLE_RATE_HZ,
             channel_count=batch.channel_count or DEFAULT_CHANNEL_COUNT,
         )
-        already_delivered = self._state_for(batch.span_id, batch.role).bytes_delivered
-        remaining = heard_offset - already_delivered
+        already_consumed = self._state_for(span_id, role).bytes_consumed
+        remaining = heard_offset - already_consumed
 
         if remaining <= 0:
             # Everything heard has already been sent; the endpoint only needs the
-            # cut point so it can discard the overshoot.
+            # cut point so it can discard the overshoot. Forced, because the normal
+            # end marker may already have finalized the span.
             batch.clear()
-            await self._post_span_terminator(role=batch.role, span_id=batch.span_id, heard_ms=playback_ms)
+            await self._post_span_terminator(
+                role=role,
+                span_id=span_id,
+                heard_ms=playback_ms,
+                force=True,
+            )
             return
 
         heard_pcm = batch.pcm_bytes[:remaining]
         logger.debug(
-            "netra.audio: trimmed interrupted span=%s to %d of %d pending bytes (heard=%dms, delivered=%d)",
-            batch.span_id,
+            "netra.audio: trimmed interrupted span=%s to %d of %d pending bytes (heard=%dms, consumed=%d)",
+            span_id,
             len(heard_pcm),
             batch.byte_count,
             playback_ms,
-            already_delivered,
+            already_consumed,
         )
+        frame_count = batch.frames_within(len(heard_pcm))
+        start_ms = batch.start_ms
+        sample_rate_hz = batch.sample_rate_hz
+        channel_count = batch.channel_count
+        trace_id = batch.trace_id
+        batch.clear()
         await self._post_chunk(
-            role=batch.role,
-            span_id=batch.span_id,
-            trace_id=batch.trace_id,
-            sample_rate_hz=batch.sample_rate_hz,
-            channel_count=batch.channel_count,
+            role=role,
+            span_id=span_id,
+            trace_id=trace_id,
+            sample_rate_hz=sample_rate_hz,
+            channel_count=channel_count,
             pcm=heard_pcm,
-            frame_count=batch.frame_count,
-            start_ms=batch.start_ms,
+            frame_count=frame_count,
+            start_ms=start_ms,
             is_last=True,
             heard_ms=playback_ms,
         )
-        batch.clear()
 
     async def _flush_idle_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
         """Flush both speakers' pending audio after an idle interval.
@@ -725,7 +826,14 @@ class AudioChunkSender:
         A span left open would leave the endpoint waiting for audio that is
         never coming, so this is a backstop rather than a normal path — hence
         the warning.
+
+        Skipped entirely once the circuit has tripped: every span is open in that
+        case, by definition, and ``_trip_circuit`` has already said why once.
+        Warning per span would bury it under hundreds of lines.
         """
+        if self._circuit_tripped:
+            return
+
         open_span_ids = sorted(span_id for span_id, state in self._span_states.items() if not state.is_finalized)
         for span_id in open_span_ids:
             state = self._span_states[span_id]
@@ -846,18 +954,24 @@ class AudioChunkSender:
             is_last,
             accepted,
         )
+
+        if state is not None:
+            # Advanced whether or not the chunk landed. Both are positions in the
+            # span's stream, not delivery counts: a chunk the sender gave up on
+            # still occupied its slot, so reusing its number for the *next*,
+            # different audio would break the idempotency key the endpoint dedupes
+            # on. A gap is how the endpoint learns audio was lost.
+            state.next_sequence += 1
+            state.bytes_consumed += len(pcm)
+            if accepted and is_last:
+                state.is_finalized = True
+
         if not accepted:
             return
 
         self.stats.chunks_sent += 1
         self.stats.frames_sent += frame_count
         self.stats.bytes_sent += len(pcm)
-
-        if state is not None:
-            state.next_sequence += 1
-            state.bytes_delivered += len(pcm)
-            if is_last:
-                state.is_finalized = True
 
     def _chunk_headers(
         self,
@@ -1044,6 +1158,32 @@ class AudioChunkSender:
         elif trace_id and not state.trace_id:
             state.trace_id = trace_id
         return state
+
+
+def _running_loop() -> Optional[asyncio.AbstractEventLoop]:
+    """Return the loop running on this thread, or ``None`` on a plain thread.
+
+    Returns:
+        The current event loop, if there is one.
+    """
+    try:
+        return asyncio.get_running_loop()
+    except RuntimeError:
+        return None
+
+
+def _seconds_until(deadline: float) -> float:
+    """Return the time left before *deadline*, never negative.
+
+    Args:
+        deadline: A ``time.monotonic()`` value.
+
+    Returns:
+        Seconds remaining. 0.0 once the deadline has passed, which makes the
+        ``wait_for`` it is handed to give up immediately rather than restart the
+        full budget.
+    """
+    return max(0.0, deadline - time.monotonic())
 
 
 def _retry_delay_seconds(attempt: int) -> float:

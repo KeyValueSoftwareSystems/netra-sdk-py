@@ -186,15 +186,14 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             if not config.audio_capture_enabled:
                 logger.info(
                     "netra.livekit: call audio capture is OFF (no authenticated audio endpoint "
-                    "resolved, or NETRA_AUDIO_ROLES is empty). Traces are unaffected"
+                    "resolved). Traces are unaffected"
                 )
                 return
 
             endpoint = config.audio_endpoint() or ""
             host = endpoint.split("://")[-1].split("/")[0]
             logger.info(
-                "netra.livekit: call audio capture is ON for role(s) %s, streaming to host %s",
-                ",".join(sorted(config.audio_roles)),
+                "netra.livekit: call audio capture is ON for both speakers, streaming to host %s",
                 host,
             )
         except Exception:
