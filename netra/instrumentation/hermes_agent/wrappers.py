@@ -396,14 +396,12 @@ def title_generation_wrapper(tracer: Tracer) -> Callable[..., Any]:
         with tracer.start_as_current_span(
             "hermes-agent.title_generation",
             kind=SpanKind.CLIENT,
-            attributes={
-                "hermes.workflow": "title_generation",
-                "netra.span.type": "WORKFLOW",
-            },
+            attributes={"hermes.workflow": "title_generation"},
         ) as span:
             try:
                 result = wrapped(*args, **kwargs)
                 set_title_generation_response_attributes(span, result)
+                span.set_status(Status(StatusCode.OK))
                 return result
             except Exception as e:
                 span.record_exception(e)

@@ -324,7 +324,10 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             if exc_type is not None:
                 self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
                 self._span.record_exception(exc_val)
-            self._finalize_span()
+                self._span_ended = True
+                self._span.end()
+            else:
+                self._finalize_span()
 
     def __iter__(self) -> Iterator[Any]:
         return self
@@ -444,8 +447,9 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             set_response_attributes(self._span, self._complete_response)
             self._netra_output = self._extract_content_text()
             self._span.set_status(Status(StatusCode.OK))
-        except Exception:
+        except Exception as e:
             try:
+                self._span.record_exception(e)
                 self._span.set_status(Status(StatusCode.ERROR, "span finalization error"))
             except Exception:
                 pass
@@ -499,7 +503,10 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             if exc_type is not None:
                 self._span.set_status(Status(StatusCode.ERROR, str(exc_val)))
                 self._span.record_exception(exc_val)
-            self._finalize_span()
+                self._span_ended = True
+                self._span.end()
+            else:
+                self._finalize_span()
 
     def __aiter__(self) -> AsyncIterator[Any]:
         return self

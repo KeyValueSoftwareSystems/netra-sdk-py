@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.97] -
+## [0.1.97] - Unreleased
 
 - **Add `get_session_detail` dashboard wrapper** - New `Netra.dashboard.get_session_detail(session_id)` method that calls the public session details endpoint and returns session traces with tokens, cost, models, and tool calls.
 

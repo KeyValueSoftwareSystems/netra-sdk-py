@@ -364,5 +364,3 @@ def set_title_generation_response_attributes(span: Span, result: Any) -> None:
     """
     if result:
         span.set_attribute("hermes.title", _serialize(result))
-    span.set_attribute(NETRA_SPAN_TYPE_ATTR, SpanType.SPAN.value)
-    span.set_status(Status(StatusCode.OK))
