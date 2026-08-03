@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.98] - 2026-08-03
+
+- **Add `set_root_output_stream` utility for streaming output on root span** - New `Netra.set_root_output_stream(stream)` method that wraps a sync or async iterable so the accumulated output is automatically written to the root span's `netra.user.output` attribute when iteration ends. Works transparently with Netra-instrumented stream wrappers (extracting `_netra_output`) and generic iterables (concatenating chunks). All instrumentation streaming wrappers (OpenAI, Cerebras, Groq, LiteLLM, Google GenAI, Agno) now expose `_netra_stream_wrapper` and `_netra_output` for content extraction.
+
+- **Refactor `SessionManager` input/output methods to use shared `serialize_value` utility** - Extracted a common `serialize_value` helper in `netra/utils.py` that serializes a value to a JSON string (for dicts/lists) or plain string, capped at `Config.ATTRIBUTE_MAX_LEN`. `set_input`, `set_output`, `set_root_input`, and `set_root_output` now use this instead of duplicating serialization logic inline.
+
 ## [0.1.97] - 2026-08-03
 
 - **Add simulation lifecycle hooks** - Prescript/postscript support for multi-turn simulations via `SimulationHooks` (`before_all`, `before`, `after`, `after_all`). Hooks can return setup context passed into `BaseTask.run`, and the run uses a two-phase initialize / first-turn flow so hooks execute before any LLM spend. `before_all` failure aborts the run as `prescript_failed`; item `before` failure marks only that scenario; `after` / `after_all` failures are logged and do not affect status.
@@ -341,4 +347,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.97]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.98]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
