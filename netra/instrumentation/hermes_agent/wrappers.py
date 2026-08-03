@@ -274,12 +274,22 @@ def handle_function_call_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
         # If middleware already created a span for this tool_call_id, pass through.
         if tool_call_id and tool_call_id in _middleware_traced_ids.get():
+            logger.debug(
+                "Skipping handle_function_call span for %s (tool_call_id=%s): already traced by middleware",
+                function_name,
+                tool_call_id,
+            )
             return wrapped(*args, **kwargs)
 
         # Recursion guard: tool_search bridge unwraps tool_call to the
         # underlying tool with the same tool_call_id.
         active_ids = _active_tool_call_ids.get()
         if tool_call_id and tool_call_id in active_ids:
+            logger.debug(
+                "Skipping handle_function_call span for %s (tool_call_id=%s): recursion guard",
+                function_name,
+                tool_call_id,
+            )
             return wrapped(*args, **kwargs)
 
         reset_token: Optional[Token[frozenset[str]]] = None
