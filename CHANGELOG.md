@@ -54,6 +54,16 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
 
+- **Fix set_root_output_stream handling** - `set_root_output_stream` now reliably commits output for streams, even when iteration ends early (for example, via `break` or `.close()`), and correctly handles plain iterables by setting their output immediately with a warning recommending `Netra.set_root_output()`. Only true single-pass iterators are wrapped as streams.
+
+- **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
+
+- **Add simulation lifecycle hooks** - Prescript/postscript support for multi-turn simulations via `SimulationHooks` (`before_all`, `before`, `after`, `after_all`). Hooks can return setup context passed into `BaseTask.run`, and the run uses a two-phase initialize / first-turn flow so hooks execute before any LLM spend. `before_all` failure aborts the run as `prescript_failed`; item `before` failure marks only that scenario; `after` / `after_all` failures are logged and do not affect status.
+
+- **Add simulation `before_each` / `after_each` hooks** - Per-item lifecycle hooks that run for every dataset item. Execution order is `before_all` → `before_each` → item-specific `before` → task → item-specific `after` → `after_each` → `after_all`.
+
+- **Use explicit `.description` for simulation hook metadata** - Hook descriptions sent to the backend now come from an explicit `.description` attribute on each hook function (aligned with the TypeScript SDK), instead of reading Python docstrings.
+
 ## [0.1.96] - 2026-07-23
 
 - **Reparent children of blocked root instruments instead of dropping the subtree** - When an instrumentation is not allowed to emit root-level spans, its children are now re-parented onto the nearest valid ancestor rather than dropping the entire subtree, so downstream spans are preserved.
