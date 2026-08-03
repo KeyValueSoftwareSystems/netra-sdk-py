@@ -440,8 +440,8 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             try:
                 self._span.record_exception(e)
                 self._span.set_status(Status(StatusCode.ERROR, "span finalization error"))
-            except Exception:
-                pass
+            except Exception as err:
+                logger.debug("Could not record exception in span finalization: %s", err)
         finally:
             self._span.end()
 
