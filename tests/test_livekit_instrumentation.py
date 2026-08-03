@@ -20,8 +20,8 @@ from wrapt import ObjectProxy
 
 from netra.instrumentation import livekit as livekit_instrumentation
 from netra.instrumentation.livekit import NetraLiveKitInstrumentor
-from netra.instrumentation.livekit.processors import LiveKitSpanProcessor
 from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvider
+from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.livekit.utils import (
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
@@ -52,7 +52,7 @@ class _Harness:
         # Registration order mirrors production: the exporting processor is
         # installed by netra/tracer.py first, the LiveKit one by _instrument().
         self.provider.add_span_processor(SimpleSpanProcessor(self.exporter))
-        self.provider.add_span_processor(LiveKitSpanProcessor())
+        self.provider.add_span_processor(SpanMappingProcessor())
         self.livekit_tracer = self.provider.get_tracer(LIVEKIT_SCOPE_NAME)
 
     def tracer(self, scope_name: str) -> Any:

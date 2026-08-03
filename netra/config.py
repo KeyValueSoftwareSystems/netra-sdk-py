@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, List, Optional
 
 from opentelemetry.util.re import parse_env_headers
 
@@ -25,9 +25,6 @@ _AUDIO_CHUNK_PATH = "/v1/audio/chunk"
 # Header names that count as an audio-ingest credential. An unauthenticated PCM
 # POST is never attempted.
 _AUDIO_AUTH_HEADERS = ("x-api-key", "Authorization")
-
-# The only recognised speaker roles.
-AUDIO_ROLES: FrozenSet[str] = frozenset({"user", "agent"})
 
 _DEFAULT_AUDIO_BATCH_BYTES = 32768
 _DEFAULT_AUDIO_BATCH_INTERVAL_MS = 1000
@@ -150,8 +147,6 @@ class Config:
         self.audio_max_request_bytes = self._get_int_config(
             None, "NETRA_AUDIO_MAX_REQUEST_BYTES", default=_DEFAULT_AUDIO_MAX_REQUEST_BYTES
         )
-        self.audio_roles = self._get_role_set("NETRA_AUDIO_ROLES")
-        self.audio_save_local = self._get_bool_config(None, "NETRA_AUDIO_SAVE_LOCAL", default=False)
 
         # Order matters: audio_batch_bytes is clamped against the resolved
         # max-request size first, then the two ceilings are raised to whatever
@@ -206,48 +201,12 @@ class Config:
             )
             self.audio_max_request_bytes = self.audio_batch_bytes
 
-        if not self.audio_roles:
-            logger.warning(
-                "netra.audio: NETRA_AUDIO_ROLES resolved empty; no call audio will be captured. "
-                "Traces are unaffected."
-            )
-
-        if self.audio_save_local:
-            logger.warning(
-                "netra.audio: NETRA_AUDIO_SAVE_LOCAL is enabled. Local WAV capture is a "
-                "development-only aid and retains full-session PCM in memory."
-            )
-
-    def _get_role_set(self, env_var: str) -> FrozenSet[str]:
-        """Parse a comma-separated speaker-role list, dropping unknown roles.
-
-        An explicitly empty value (``NETRA_AUDIO_ROLES=``) is the documented way
-        to disable audio capture without affecting traces, so it resolves to an
-        empty set rather than the default.
-
-        Args:
-            env_var: Name of the environment variable holding the role list.
-
-        Returns:
-            The recognised roles, or the full default set when *env_var* is unset.
-        """
-        raw = os.getenv(env_var)
-        if raw is None:
-            return AUDIO_ROLES
-
-        requested = {part.strip().lower() for part in raw.split(",") if part.strip()}
-        unknown = requested - AUDIO_ROLES
-        if unknown:
-            logger.warning(
-                "netra.audio: %s contains unknown role(s) %s; recognised roles are %s",
-                env_var,
-                sorted(unknown),
-                sorted(AUDIO_ROLES),
-            )
-        return frozenset(requested & AUDIO_ROLES)
+        # Last, so it sees the settled endpoint override, and once, so the
+        # missing-credential warning is not re-emitted per LiveKit session.
+        self._audio_endpoint: Optional[str] = self._resolve_audio_endpoint()
 
     def audio_endpoint(self) -> Optional[str]:
-        """Resolve the audio ingest URL, or None if audio must not be sent.
+        """Return the audio ingest URL, or None if audio must not be sent.
 
         This is the ONLY gate on audio capture: there is no ``capture_audio``
         flag.  A non-None return means audio WILL be captured and streamed once a
@@ -256,7 +215,17 @@ class Config:
 
         Callers treat None as "disable capture entirely", not "retry later" — the
         result is resolved from init-time state and does not change during the
-        process.
+        process. Resolved once in ``_resolve_audio_settings`` for that reason: the
+        instrumentor, the per-session hook and the startup log line all ask, and a
+        misconfiguration should be reported once rather than once per call.
+
+        Returns:
+            The absolute audio ingest URL, or ``None`` when audio must not be sent.
+        """
+        return self._audio_endpoint
+
+    def _resolve_audio_endpoint(self) -> Optional[str]:
+        """Work out the audio ingest URL, warning if a credential is missing.
 
         Returns:
             The absolute audio ingest URL, or ``None`` when audio must not be sent.
@@ -282,13 +251,15 @@ class Config:
         """Whether call audio will be captured and streamed.
 
         The single derived predicate behind audio capture, so the instrumentor,
-        the session hooks and the startup log line cannot disagree about it.
+        the session hooks and the startup log line cannot disagree about it. A
+        resolved endpoint is the whole of it: capture is all of the call's audio or
+        none of it, never one speaker.
 
         Returns:
-            True when an audio endpoint resolves and at least one speaker role is
-            enabled; False otherwise, meaning no audio is captured or streamed.
+            True when an audio endpoint resolves; False otherwise, meaning no
+            audio is captured or streamed.
         """
-        return self.audio_endpoint() is not None and bool(self.audio_roles)
+        return self.audio_endpoint() is not None
 
     def _get_app_name(self, app_name: Optional[str]) -> str:
         """Get application name from param or environment variables."""

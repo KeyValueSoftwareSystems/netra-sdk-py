@@ -1,4 +1,10 @@
-"""Span processors that normalise livekit-agents spans into Netra's conventions.
+"""Normalises the shape of livekit-agents' trace into Netra's conventions.
+
+The trace half of this package's two span processors: it rewrites what LiveKit
+puts *on* a span — the ``lk.*`` attributes, the conversation events, the
+classification markers a span's name implies. The audio half,
+``audio_processor.py``, uses spans only as timing boundaries for captured PCM
+and shares none of this module's machinery.
 
 INVARIANT for anything added here: ``on_end`` must never mutate the span that is
 ending. By the time it runs, ``BatchSpanProcessor`` — registered earlier in the
@@ -6,6 +12,8 @@ chain — has already queued that span, and the exporter serialises it on anothe
 thread. ``on_end`` may only mutate *other* spans that are still recording, which is
 exactly what the parent-ward content propagation below does.
 """
+
+from __future__ import annotations
 
 import itertools
 import logging
@@ -67,7 +75,7 @@ _KEYS_BY_SIDE: Dict[ConversationSide, Tuple[str, str]] = {
 }
 
 # Instance attribute holding a span's ``_ConversationRecorder``. Stored on the span
-# itself so the registry in ``LiveKitSpanProcessor`` can stay a
+# itself so the registry in ``SpanMappingProcessor`` can stay a
 # ``WeakValueDictionary`` keyed on span id: the span's own lifetime then decides how
 # long the entry lives, with no risk of the processor pinning finished spans in
 # memory.
@@ -136,7 +144,7 @@ class _ConversationRecorder:
     that contributes to a span — mapped ``lk.*`` attributes, an expanded chat
     context, conversation events, and a child span's content — advances the same
     counters and cannot overwrite another source's entries. One instance per
-    LiveKit span, created in ``LiveKitSpanProcessor.on_start``.
+    LiveKit span, created in ``SpanMappingProcessor.on_start``.
     """
 
     __slots__ = ("_span", "_next_index", "_truncated")
@@ -266,7 +274,7 @@ class _ConversationRecorder:
             self.append(message.side, message.role, message.content)
 
 
-class LiveKitSpanProcessor(SpanProcessor):  # type: ignore[misc]
+class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
     """Mirrors LiveKit's ``lk.*`` attributes and conversation events into Netra keys.
 
     Additive throughout: an ``lk.*`` attribute is never deleted or rewritten, and a
