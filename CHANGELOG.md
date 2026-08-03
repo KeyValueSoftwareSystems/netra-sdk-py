@@ -4,17 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.97] - Unreleased
+## [0.1.97] - 2026-08-03
 
 - **Fix Hermes Agent tool call duplication** - Registry tools that pass through both `_run_agent_tool_execution_middleware` and `handle_function_call` no longer produce duplicate spans. The middleware wrapper now claims tool_call_ids in a `_middleware_traced_ids` context var; `handle_function_call_wrapper` checks this set and passes through when the ID is already traced. Also updated result extraction to handle the `_ManagedToolResult` dataclass in addition to legacy tuples.
 
 - **Hide empty user and assistant messages from OpenAI span preview** - OpenAI instrumentation now skips emitting prompt attributes for messages with empty or null content, empty function call entries, and reasoning/reasoning_summary items, keeping span previews clean and only showing meaningful conversation turns.
 
-- **Add `get_session_detail` dashboard wrapper** - New `Netra.dashboard.get_session_detail(session_id)` method that calls the public session details endpoint and returns session traces with tokens, cost, models, and tool calls.
+- **Add title generation instrumentation to Hermes Agent** - New `title_generation_wrapper` traces `agent.title_generator.generate_title` as a `hermes-agent.title_generation` workflow span. Since title generation runs in a daemon thread with no parent context, the wrapper's span becomes the trace root, correctly identifying these traces as title-generation workflows.
+
+- **Add `get_session_details` dashboard wrapper** - New `Netra.dashboard.get_session_details(session_id)` method that calls the public session details endpoint and returns session traces with tokens, cost, models, and tool calls.
 
 - **Add `USER_ID` to `SessionFilterField`** - Session stats and session summary queries can now filter by `user_id`.
-
-- **Add title generation instrumentation to Hermes Agent** - New `title_generation_wrapper` traces `agent.title_generator.generate_title` as a `hermes-agent.title_generation` workflow span. Since title generation runs in a daemon thread with no parent context, the wrapper's span becomes the trace root, correctly identifying these traces as title-generation workflows.
 
 - **Fix OpenAI streaming wrapper span lifecycle** - Made `_finalize_span()` idempotent with a `_span_ended` guard, added `close()` and `__del__()` to both sync and async wrappers so spans are properly finalized even on early exit or GC. `AsyncStreamingWrapper` now exposes `aclose()` per the async iterator protocol, with `close()` as an async alias for OpenAI SDK compatibility.
 
