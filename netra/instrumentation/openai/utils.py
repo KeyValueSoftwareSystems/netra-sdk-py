@@ -128,23 +128,31 @@ def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
                     if msg_type == "function_call":
                         name = message.get("name", "")
                         arguments = message.get("arguments", "")
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "assistant")
-                        span.set_attribute(
-                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
-                            json.dumps({"name": name, "arguments": arguments}),
-                        )
+                        if name or arguments:
+                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "assistant")
+                            span.set_attribute(
+                                f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
+                                json.dumps({"name": name, "arguments": arguments}),
+                            )
+                            message_index += 1
                     elif msg_type == "function_call_output":
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "tool")
-                        span.set_attribute(
-                            f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
-                            str(message.get("output", "")),
-                        )
+                        output_val = str(message.get("output", ""))
+                        if output_val:
+                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "tool")
+                            span.set_attribute(
+                                f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
+                                output_val,
+                            )
+                            message_index += 1
+                    elif msg_type in ("reasoning", "reasoning_summary"):
+                        continue
                     else:
                         role = message.get("role", "user")
-                        content = str(message.get("content", ""))
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
-                        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", content)
-                    message_index += 1
+                        content = message.get("content")
+                        if content:
+                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
+                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", str(content))
+                            message_index += 1
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
