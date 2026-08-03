@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.97] - 2026-08-03
 
+- **Fix OpenAI Responses API stream handling** — `Response API` instrumentation spans now include token usage and completion output when a stream ends due to reaching the token limit (`incomplete` status).
+
 - **Fix Hermes Agent tool call duplication** - Registry tools that pass through both `_run_agent_tool_execution_middleware` and `handle_function_call` no longer produce duplicate spans. The middleware wrapper now claims tool_call_ids in a `_middleware_traced_ids` context var; `handle_function_call_wrapper` checks this set and passes through when the ID is already traced. Also updated result extraction to handle the `_ManagedToolResult` dataclass in addition to legacy tuples.
 
 - **Hide empty user and assistant messages from OpenAI span preview** - OpenAI instrumentation now skips emitting prompt attributes for messages with empty or null content, empty function call entries, and reasoning/reasoning_summary items, keeping span previews clean and only showing meaningful conversation turns.
