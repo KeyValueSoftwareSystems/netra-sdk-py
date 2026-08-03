@@ -54,6 +54,7 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     # langchain_core, which is installed even when `langchain` is not.
     InstrumentSet.LANGCHAIN: ("langchain_core", "langgraph", "langchain"),
     InstrumentSet.LITELLM: ("litellm",),
+    InstrumentSet.LIVEKIT: ("livekit.agents",),
     InstrumentSet.LLAMA_INDEX: ("llama_index",),
     InstrumentSet.MCP: ("mcp",),
     InstrumentSet.MISTRALAI: ("mistralai",),

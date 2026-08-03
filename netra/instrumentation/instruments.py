@@ -88,6 +88,7 @@ class CustomInstruments(Enum):
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
     HERMES_AGENT = "hermes_agent"
     HONCHO = "honcho"
+    LIVEKIT = "livekit"
 
 
 class _Origin(Enum):
@@ -174,6 +175,7 @@ class InstrumentSet(Enum):
     LANCEDB = ("lancedb", _Origin.TRACELOOP)
     LANGCHAIN = ("langchain", _Origin.TRACELOOP)
     LITELLM = ("litellm", _Origin.CUSTOM)
+    LIVEKIT = ("livekit", _Origin.CUSTOM)
     LLAMA_INDEX = ("llama_index", _Origin.TRACELOOP)
     LOGGING = ("logging", _Origin.CUSTOM)
     MARQO = ("marqo", _Origin.TRACELOOP)
@@ -231,6 +233,23 @@ ALL_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
 )
 
 
+# Instrumentation scopes that Netra enables but does not author, so their scope
+# name does not follow the ``netra.instrumentation.*`` /
+# ``opentelemetry.instrumentation.*`` convention that the span processors key
+# off.  Mapping the scope to its ``InstrumentSet`` value is what puts these
+# spans under the same instrument-name machinery as every other
+# instrumentation — ``root_instruments`` filtering and the
+# ``netra.instrumentation.name`` attribute.
+#
+# Matched exactly, never as a prefix: an alias claims one specific scope, and a
+# prefix match here would start pulling in unrelated third-party tracers.
+THIRD_PARTY_INSTRUMENTATION_SCOPES: dict[str, str] = {
+    # livekit-agents emits its own span tree (agent_session -> agent_turn ->
+    # llm_node / tts_node / function_tool) under this scope.
+    "livekit-agents": InstrumentSet.LIVEKIT.value,
+}
+
+
 # Default instrument sets
 #
 # These two sets are intentionally independent.  Removing an instrument from
@@ -254,6 +273,7 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.GROQ,
         InstrumentSet.LANGCHAIN,
         InstrumentSet.LITELLM,
+        InstrumentSet.LIVEKIT,
         InstrumentSet.CEREBRAS,
         InstrumentSet.MISTRALAI,
         InstrumentSet.OPENAI,
@@ -296,6 +316,11 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
 )
 
 # Subset of DEFAULT_INSTRUMENTS allowed to produce root-level spans.
+#
+# InstrumentSet.LIVEKIT must stay listed here: ``agent_session`` is the root of
+# every voice trace, so dropping LiveKit from the root allow-list peels that
+# span, then recursively peels ``agent_turn`` / ``llm_node`` / ... — the whole
+# voice tree — leaving only the provider spans underneath as orphaned roots.
 DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
     {
         InstrumentSet.ANTHROPIC,
@@ -310,6 +335,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.GROQ,
         InstrumentSet.LANGCHAIN,
         InstrumentSet.LITELLM,
+        InstrumentSet.LIVEKIT,
         InstrumentSet.CEREBRAS,
         InstrumentSet.MISTRALAI,
         InstrumentSet.OPENAI,

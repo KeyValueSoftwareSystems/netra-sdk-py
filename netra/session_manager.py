@@ -1,8 +1,9 @@
 import contextvars
 import logging
+from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
-from typing import Any, Dict, List, Optional, Tuple, Union, cast
+from typing import Any, Dict, Iterator, List, Optional, Tuple, Union, cast
 
 from opentelemetry import baggage
 from opentelemetry import context as otel_context
@@ -104,6 +105,43 @@ def _current_entity_name(entity_type: str) -> Optional[str]:
     """
     frames = _read_entity_frames(entity_type)
     return frames[-1][1] if frames else None
+
+
+# The baggage keys that carry session identity. ``SessionSpanProcessor.on_start``
+# reads exactly these names off the ambient context, so every writer must go
+# through ``_build_session_context`` rather than calling ``set_baggage`` inline —
+# otherwise the global setter and the scoped attach can drift apart. Derived from
+# _SESSION_ATTR_KEYS so the baggage keys and the span-attribute keys stay in step.
+_SESSION_BAGGAGE_KEYS: Tuple[str, ...] = tuple(_SESSION_ATTR_KEYS)
+
+
+def _build_session_context(
+    ctx: otel_context.Context,
+    *,
+    session_id: Optional[str] = None,
+    user_id: Optional[str] = None,
+    tenant_id: Optional[str] = None,
+) -> Optional[otel_context.Context]:
+    """Return *ctx* with the supplied session fields set as baggage.
+
+    Args:
+        ctx: The context to derive from. Not mutated.
+        session_id: Session identifier, or ``None`` to leave unset.
+        user_id: User identifier, or ``None`` to leave unset.
+        tenant_id: Tenant identifier, or ``None`` to leave unset.
+
+    Returns:
+        A new ``Context`` carrying the supplied fields, or ``None`` when every
+        field was ``None`` or empty — signalling that there is nothing to attach.
+    """
+    values = {"session_id": session_id, "user_id": user_id, "tenant_id": tenant_id}
+    changed = False
+    for key in _SESSION_BAGGAGE_KEYS:
+        value = values[key]
+        if isinstance(value, str) and value:
+            ctx = baggage.set_baggage(key, value, ctx)
+            changed = True
+    return ctx if changed else None
 
 
 class ConversationType(str, Enum):
@@ -361,6 +399,12 @@ class SessionManager:
           2. Sets the corresponding span attribute on the currently active span
              (if one exists), so the caller's span also carries the value.
 
+        The attach is deliberately never detached: ``Netra.set_session_id()`` and
+        friends are documented as process-sticky, and existing users rely on the
+        session id outliving the call that set it. For a scoped session id that
+        is restored on exit — what instrumentation wants — use
+        :meth:`attach_session_context` or :meth:`session_scope` instead.
+
         Args:
             session_key: Key to set (``"session_id"``, ``"user_id"``, or ``"tenant_id"``)
             value: Value to set for the key
@@ -374,9 +418,9 @@ class SessionManager:
                 return
 
             # Propagate to descendant spans via baggage
-            ctx = otel_context.get_current()
-            ctx = baggage.set_baggage(session_key, value, ctx)
-            otel_context.attach(ctx)
+            ctx = _build_session_context(otel_context.get_current(), **{session_key: value})
+            if ctx is not None:
+                otel_context.attach(ctx)
 
             # Stamp the active span immediately
             span = trace.get_current_span()
@@ -384,6 +428,80 @@ class SessionManager:
                 span.set_attribute(attr_key, value)
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
+
+    @staticmethod
+    def attach_session_context(
+        *,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Optional[object]:
+        """Attach session baggage to the current OTel context and return its token.
+
+        Unlike :meth:`set_session_context`, the caller owns the returned token and
+        MUST detach it — in the same context it was attached in, as OTel requires.
+        Prefer :meth:`session_scope` where the scope is lexical.
+
+        Args:
+            session_id: Session identifier to put in baggage, if any.
+            user_id: User identifier to put in baggage, if any.
+            tenant_id: Tenant identifier to put in baggage, if any.
+
+        Returns:
+            The token to pass to ``opentelemetry.context.detach``, or ``None``
+            when no field was supplied — nothing was attached, so there is
+            nothing to detach and callers need no emptiness branch.
+        """
+        ctx = _build_session_context(
+            otel_context.get_current(),
+            session_id=session_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+        )
+        if ctx is None:
+            return None
+        # Declared as ``object`` so the public signature does not leak OTel's
+        # Token generic; callers only ever hand it back to ``otel_context.detach``.
+        token: object = otel_context.attach(ctx)
+        return token
+
+    @staticmethod
+    @contextmanager
+    def session_scope(
+        *,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Iterator[None]:
+        """Scoped form of :meth:`attach_session_context`.
+
+        Detaches on exit, including when the body raises.
+
+        Args:
+            session_id: Session identifier to put in baggage, if any.
+            user_id: User identifier to put in baggage, if any.
+            tenant_id: Tenant identifier to put in baggage, if any.
+
+        Yields:
+            None. The session baggage is active for the duration of the block.
+        """
+        # Attaches directly rather than via attach_session_context() so the token
+        # keeps its concrete OTel type here; both paths share _build_session_context,
+        # which is what keeps the baggage keys from drifting.
+        ctx = _build_session_context(
+            otel_context.get_current(),
+            session_id=session_id,
+            user_id=user_id,
+            tenant_id=tenant_id,
+        )
+        if ctx is None:
+            yield
+            return
+        token = otel_context.attach(ctx)
+        try:
+            yield
+        finally:
+            otel_context.detach(token)
 
     @staticmethod
     def set_custom_event(name: str, attributes: Dict[str, Any]) -> None:
