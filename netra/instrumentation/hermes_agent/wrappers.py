@@ -17,6 +17,7 @@ from netra.instrumentation.hermes_agent.utils import (
     set_approval_response_attributes,
     set_skill_request_attributes,
     set_skill_response_attributes,
+    set_title_generation_response_attributes,
     set_tool_request_attributes,
     set_tool_response_attributes,
     set_turn_request_attributes,
@@ -355,6 +356,57 @@ def skill_invocation_wrapper(tracer: Tracer, kind: str, target_arg: str) -> Call
                 logger.error("Failed to set hermes-agent skill response attributes: %s", e)
             span.set_status(Status(StatusCode.OK))
             return result
+
+    return wrapper
+
+
+def title_generation_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """
+    Return a wrapper that traces agent.title_generator.generate_title as a workflow span.
+
+    Title generation runs in a daemon thread with no parent OTel context, so this
+    span becomes the root of its own trace — identifying it as a title-generation
+    workflow rather than an anonymous OpenAI call.
+
+    Args:
+        tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
+
+    Returns:
+        Callable: A sync wrapper function for generate_title.
+    """
+
+    def wrapper(
+        wrapped: Callable[..., Any],
+        instance: Any,
+        args: Tuple[Any, ...],
+        kwargs: dict[str, Any],
+    ) -> Any:
+        """
+        Wrap generate_title in a hermes-agent.title_generation workflow span.
+
+        Args:
+            wrapped (Callable): The original generate_title function.
+            instance (Any): Unused; generate_title is a module-level function.
+            args (Tuple): Positional arguments.
+            kwargs (dict): Keyword arguments of the call.
+
+        Returns:
+            Any: The title string (or None) returned by generate_title.
+        """
+        with tracer.start_as_current_span(
+            "hermes-agent.title_generation",
+            kind=SpanKind.CLIENT,
+            attributes={"hermes.workflow": "title_generation"},
+        ) as span:
+            try:
+                result = wrapped(*args, **kwargs)
+                set_title_generation_response_attributes(span, result)
+                span.set_status(Status(StatusCode.OK))
+                return result
+            except Exception as e:
+                span.record_exception(e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
     return wrapper
 
