@@ -136,7 +136,7 @@ def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
                             )
                             message_index += 1
                     elif msg_type == "function_call_output":
-                        output_val = str(message.get("output", ""))
+                        output_val = str(message.get("output") or "")
                         if output_val:
                             span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "tool")
                             span.set_attribute(
