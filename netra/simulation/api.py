@@ -11,8 +11,10 @@ from netra.simulation.hooks import (
     SimulationHooks,
     run_after,
     run_after_all,
+    run_after_each,
     run_before,
     run_before_all,
+    run_before_each,
 )
 from netra.simulation.models import ConversationStatus, FileData, SimulationItem
 from netra.simulation.task import BaseTask
@@ -73,17 +75,24 @@ class Simulation:
             max_turns: Maximum conversation turns per item before aborting
                 (default: 50).
             hooks: Optional :class:`~netra.simulation.hooks.SimulationHooks`
-                with ``before_all``, ``before``, ``after``, and ``after_all``
-                callables. Scripts live entirely on the SDK side; only
-                lightweight metadata is forwarded to the backend for UI display.
+                with ``before_all``, ``before_each``, ``before``, ``after``,
+                ``after_each``, and ``after_all`` callables. Scripts live
+                entirely on the SDK side; only lightweight metadata is
+                forwarded to the backend for UI display.
 
                 - ``before_all`` runs once before any scenario. If it raises,
                   the entire run is marked failed and no scenarios execute.
+                - ``before_each`` runs before every scenario. If it raises,
+                  that scenario is marked ``prescript_failed`` and skipped;
+                  other scenarios continue.
                 - ``before`` runs before each scenario. If it raises, that
                   scenario is marked ``prescript_failed`` and skipped; other
                   scenarios continue.
-                - ``after`` / ``after_all`` failures are logged but do not
-                  affect scenario or run status.
+                - ``after`` / ``after_each`` always both attempt to run. A failure
+                  marks that scenario as ``postscript_failed`` only if it otherwise
+                  succeeded; an already-failed scenario keeps its original status.
+                - ``after_all`` failure marks successfully completed scenarios as
+                  ``postscript_failed``; already-failed scenarios keep their status.
 
         Returns:
             Dictionary with simulation results, or None on failure.
@@ -124,13 +133,13 @@ class Simulation:
                     exc,
                     exc_info=True,
                 )
-                for item in items:
-                    self._client.report_failure(
-                        run_id=run_id,
-                        run_item_id=item["test_run_item_id"],
-                        error=f"before_all hook failed: {exc}",
-                        status="prescript_failed",
-                    )
+                self._report_failures(
+                    run_id,
+                    [item["test_run_item_id"] for item in items],
+                    f"before_all hook failed: {exc}",
+                    "prescript_failed",
+                    max_concurrency,
+                )
                 self._client.post_run_status(run_id, "completed")
                 return {
                     "success": False,
@@ -151,28 +160,31 @@ class Simulation:
         setup_contexts: dict[str, Optional[dict[str, Any]]] = {}
         failed_items: list[dict[str, Any]] = []
 
-        async def run_before_and_generate_first_turn(
-            item: dict[str, str],
-            loop: asyncio.AbstractEventLoop,
-            executor: concurrent.futures.ThreadPoolExecutor,
-        ) -> Optional[SimulationItem]:
-            """Execute the before hook and generate the first turn for a single item.
+        def _setup_item_in_thread(item: dict[str, str]) -> Optional[SimulationItem]:
+            """Run hooks + first-turn generation for one item in a dedicated thread.
 
-            The before hook runs on the event loop (it may be async). The
-            ``generate_first_turn`` HTTP call is offloaded to *executor* so
-            it does not block the loop.
-
-            Returns:
-                SimulationItem if successful, None if failed (failure recorded in failed_items).
+            Each thread gets its own event loop via ``run_async_safely`` so
+            sync and async hooks both work without blocking the orchestrator.
+            Concurrency is bounded by the enclosing ThreadPoolExecutor.
             """
+            return run_async_safely(_setup_item_async(item))
+
+        async def _setup_item_async(item: dict[str, str]) -> Optional[SimulationItem]:
+            """Async body executed inside its own event loop per thread."""
             run_item_id = item["test_run_item_id"]
             dataset_item_id = item["dataset_item_id"]
 
             has_before_hook = hooks and hooks.before and dataset_item_id in hooks.before
-            if has_before_hook:
+            has_before_each_hook = hooks and hooks.before_each is not None
+
+            # Track the furthest successfully built context so teardown can
+            # clean up anything before_each created even if before fails.
+            setup_context: Optional[dict[str, Any]] = shared_context
+            if has_before_each_hook or has_before_hook:
                 try:
-                    item_context = await run_before(hooks, dataset_item_id, shared_context)
-                    setup_contexts[run_item_id] = item_context
+                    setup_context = await run_before_each(hooks, dataset_item_id, setup_context)
+                    setup_context = await run_before(hooks, dataset_item_id, setup_context)
+                    setup_contexts[run_item_id] = setup_context
                 except Exception as exc:
                     error_msg = f"before hook failed: {exc}"
                     logger.error(
@@ -194,16 +206,14 @@ class Simulation:
                         "error": error_msg,
                     }
                     failed_items.append(item_result)
-                    await run_after(hooks, dataset_item_id, item_result, shared_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return None
             else:
-                setup_contexts[run_item_id] = shared_context
+                setup_contexts[run_item_id] = setup_context
 
-            sim_item = await loop.run_in_executor(
-                executor,
-                self._client.generate_first_turn,
-                run_id,
-                run_item_id,
+            sim_item = self._client.generate_first_turn(
+                run_id=run_id,
+                run_item_id=run_item_id,
             )
             if sim_item is None:
                 logger.warning(
@@ -222,18 +232,19 @@ class Simulation:
                     "error": "Failed to generate first user message",
                 }
                 failed_items.append(item_result)
-                await run_after(hooks, dataset_item_id, item_result, setup_contexts[run_item_id])
+                await self._run_after_hooks(
+                    run_id, run_item_id, dataset_item_id, hooks, item_result, setup_contexts[run_item_id]
+                )
                 return None
             return sim_item
 
-        async def _run_all_before_and_first_turns() -> list[Optional[SimulationItem]]:
+        async def _run_all_setup() -> list[Optional[SimulationItem]]:
             loop = asyncio.get_running_loop()
             with concurrent.futures.ThreadPoolExecutor(max_workers=max_concurrency) as executor:
-                return list(
-                    await asyncio.gather(*[run_before_and_generate_first_turn(item, loop, executor) for item in items])
-                )
+                futures = [loop.run_in_executor(executor, _setup_item_in_thread, item) for item in items]
+                return list(await asyncio.gather(*futures))
 
-        setup_results = run_async_safely(_run_all_before_and_first_turns())
+        setup_results = run_async_safely(_run_all_setup())
         simulation_items = [item for item in setup_results if item is not None]
 
         if not simulation_items:
@@ -244,7 +255,12 @@ class Simulation:
                 "failed": failed_items,
                 "total_items": len(items),
             }
-            run_async_safely(run_after_all(hooks, results, shared_context))
+            try:
+                run_async_safely(run_after_all(hooks, results, shared_context))
+            except Exception as exc:
+                # All items already failed during setup — do not overwrite status.
+                error_msg = f"after_all hook failed: {exc}"
+                logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
             self._client.post_run_status(run_id, "completed")
             return results
 
@@ -371,7 +387,29 @@ class Simulation:
             results.setdefault("failed", []).extend(setup_failed_items)
 
         # --- after_all ---
-        await run_after_all(hooks, results, shared_context)
+        try:
+            await run_after_all(hooks, results, shared_context)
+        except Exception as exc:
+            error_msg = f"after_all hook failed: {exc}"
+            logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
+            # Only mark successfully completed items — do not overwrite real failures.
+            completed = results.get("completed", [])
+            successful_ids = [item["run_item_id"] for item in completed if "run_item_id" in item]
+            self._report_failures(
+                run_id,
+                successful_ids,
+                error_msg,
+                "postscript_failed",
+                max_concurrency,
+            )
+            for item in completed:
+                item["success"] = False
+                item["error"] = error_msg
+                item["status"] = "postscript_failed"
+            results.setdefault("failed", []).extend(completed)
+            results["completed"] = []
+
+        results["success"] = len(results["failed"]) == 0
 
         logger.info(
             "%s: Completed=%d, Failed=%d",
@@ -380,6 +418,85 @@ class Simulation:
             len(results["failed"]),
         )
         return results
+
+    def _report_failures(
+        self,
+        run_id: str,
+        run_item_ids: list[str],
+        error: str,
+        status: str,
+        max_concurrency: int = 5,
+    ) -> None:
+        """Report failures for many items concurrently, capped like other paths."""
+        if not run_item_ids:
+            return
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(len(run_item_ids), max_concurrency)) as executor:
+            futures = [
+                executor.submit(
+                    self._client.report_failure,
+                    run_id,
+                    rid,
+                    error,
+                    status,
+                )
+                for rid in run_item_ids
+            ]
+            concurrent.futures.wait(futures)
+
+    async def _run_after_hooks(
+        self,
+        run_id: str,
+        run_item_id: str,
+        dataset_item_id: str,
+        hooks: Optional[SimulationHooks],
+        item_result: dict[str, Any],
+        setup_context: Optional[dict[str, Any]],
+    ) -> None:
+        """Run after/after_each hooks independently.
+
+        Both hooks always attempt to run. ``postscript_failed`` is reported only
+        when the item otherwise succeeded — an existing failure status/reason is
+        never overwritten.
+        """
+        errors: list[str] = []
+
+        try:
+            await run_after(hooks, dataset_item_id, item_result, setup_context)
+        except Exception as exc:
+            error_msg = f"after hook failed: {exc}"
+            logger.error(
+                "%s: %s for run_item_id=%s",
+                LOG_PREFIX,
+                error_msg,
+                run_item_id,
+                exc_info=True,
+            )
+            errors.append(error_msg)
+
+        try:
+            await run_after_each(hooks, dataset_item_id, item_result, setup_context)
+        except Exception as exc:
+            error_msg = f"after_each hook failed: {exc}"
+            logger.error(
+                "%s: %s for run_item_id=%s",
+                LOG_PREFIX,
+                error_msg,
+                run_item_id,
+                exc_info=True,
+            )
+            errors.append(error_msg)
+
+        if errors and item_result.get("success"):
+            error = "; ".join(errors)
+            self._client.report_failure(
+                run_id=run_id,
+                run_item_id=run_item_id,
+                error=error,
+                status="postscript_failed",
+            )
+            item_result["success"] = False
+            item_result["error"] = error
+            item_result["status"] = "postscript_failed"
 
     async def _execute_conversation(
         self,
@@ -450,7 +567,7 @@ class Simulation:
                         "error": error_msg,
                         "turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, setup_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return item_result
 
                 if response.decision == ConversationStatus.STOP:
@@ -465,7 +582,7 @@ class Simulation:
                         "success": True,
                         "final_turn_id": turn_id,
                     }
-                    await run_after(hooks, dataset_item_id, item_result, setup_context)
+                    await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                     return item_result
 
                 message = response.next_user_message  # type:ignore[assignment]
@@ -488,7 +605,7 @@ class Simulation:
                     "error": error_msg,
                     "turn_id": turn_id,
                 }
-                await run_after(hooks, dataset_item_id, item_result, setup_context)
+                await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
@@ -500,5 +617,5 @@ class Simulation:
             "error": error_msg,
             "turn_id": turn_id,
         }
-        await run_after(hooks, dataset_item_id, item_result, setup_context)
+        await self._run_after_hooks(run_id, run_item_id, dataset_item_id, hooks, item_result, setup_context)
         return item_result

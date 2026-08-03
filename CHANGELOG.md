@@ -6,6 +6,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.97] - 2026-08-03
 
+- **Add simulation lifecycle hooks** - Prescript/postscript support for multi-turn simulations via `SimulationHooks` (`before_all`, `before`, `after`, `after_all`). Hooks can return setup context passed into `BaseTask.run`, and the run uses a two-phase initialize / first-turn flow so hooks execute before any LLM spend. `before_all` failure aborts the run as `prescript_failed`; item `before` failure marks only that scenario; `after` / `after_all` failures are logged and do not affect status.
+
+- **Add simulation `before_each` / `after_each` hooks** - Per-item lifecycle hooks that run for every dataset item. Execution order is `before_all` → `before_each` → item-specific `before` → task → item-specific `after` → `after_each` → `after_all`.
+
+- **Use explicit `.description` for simulation hook metadata** - Hook descriptions sent to the backend now come from an explicit `.description` attribute on each hook function (aligned with the TypeScript SDK), instead of reading Python docstrings.
+
 - **Fix OpenAI Responses API stream handling** — `Response API` instrumentation spans now include token usage and completion output when a stream ends due to reaching the token limit (`incomplete` status).
 
 - **Fix Hermes Agent tool call duplication** - Registry tools that pass through both `_run_agent_tool_execution_middleware` and `handle_function_call` no longer produce duplicate spans. The middleware wrapper now claims tool_call_ids in a `_middleware_traced_ids` context var; `handle_function_call_wrapper` checks this set and passes through when the ID is already traced. Also updated result extraction to handle the `_ManagedToolResult` dataclass in addition to legacy tuples.
