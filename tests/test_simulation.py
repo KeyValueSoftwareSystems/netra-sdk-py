@@ -602,6 +602,7 @@ class TestSimulation:
 
         assert result is not None
         assert result["total_items"] == 1
+        assert result["success"] is True
         assert len(result["completed"]) == 1
         assert len(result["failed"]) == 0
 
@@ -639,8 +640,132 @@ class TestSimulation:
         result = sim.run_simulation(name="test", dataset_id="ds-1", task=SyncTask())
 
         assert result is not None
+        assert result["success"] is False
         assert len(result["failed"]) == 1
         assert result["failed"][0]["error"] == "backend down"
+
+    @patch("netra.simulation.api.SpanWrapper")
+    @patch("netra.simulation.api.SimulationHttpClient")
+    def test_after_hook_failure_moves_item_to_failed(
+        self, mock_client_cls: MagicMock, mock_span_wrapper: MagicMock
+    ) -> None:
+        from netra.simulation.api import Simulation
+        from netra.simulation.hooks import SimulationHooks
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_span.get_current_span.return_value = None
+        mock_span_wrapper.return_value = mock_span
+
+        stop_response = ConversationResponse(
+            decision=ConversationStatus.STOP,
+            reason="done",
+        )
+
+        mock_client = MagicMock()
+        mock_client.initialize_run.return_value = {
+            "run_id": "run-1",
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
+            ],
+        }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
+        mock_client.trigger_conversation.return_value = stop_response
+        mock_client.post_run_status.return_value = {"status": "completed"}
+        mock_client_cls.return_value = mock_client
+
+        def after_hook(result: dict, setup_context: Optional[dict]) -> None:
+            raise RuntimeError("teardown blew up")
+
+        hooks = SimulationHooks(after_each=after_hook)
+        sim = Simulation(self._make_config())
+        result = sim.run_simulation(
+            name="test",
+            dataset_id="ds-1",
+            task=SyncTask(),
+            hooks=hooks,
+        )
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["completed"] == []
+        assert len(result["failed"]) == 1
+        assert result["failed"][0]["success"] is False
+        assert result["failed"][0]["status"] == "postscript_failed"
+        assert "after_each hook failed" in result["failed"][0]["error"]
+        mock_client.report_failure.assert_called_with(
+            run_id="run-1",
+            run_item_id="item-1",
+            error=result["failed"][0]["error"],
+            status="postscript_failed",
+        )
+
+    @patch("netra.simulation.api.SpanWrapper")
+    @patch("netra.simulation.api.SimulationHttpClient")
+    def test_after_all_failure_moves_completed_to_failed(
+        self, mock_client_cls: MagicMock, mock_span_wrapper: MagicMock
+    ) -> None:
+        from netra.simulation.api import Simulation
+        from netra.simulation.hooks import SimulationHooks
+
+        mock_span = MagicMock()
+        mock_span.__enter__ = MagicMock(return_value=mock_span)
+        mock_span.__exit__ = MagicMock(return_value=False)
+        mock_span.get_current_span.return_value = None
+        mock_span_wrapper.return_value = mock_span
+
+        stop_response = ConversationResponse(
+            decision=ConversationStatus.STOP,
+            reason="done",
+        )
+
+        mock_client = MagicMock()
+        mock_client.initialize_run.return_value = {
+            "run_id": "run-1",
+            "items": [
+                {"test_run_item_id": "item-1", "dataset_item_id": "ds-item-1"},
+            ],
+        }
+        mock_client.generate_first_turn.return_value = SimulationItem(
+            run_item_id="item-1",
+            dataset_item_id="ds-item-1",
+            message="hello",
+            turn_id="turn-1",
+        )
+        mock_client.trigger_conversation.return_value = stop_response
+        mock_client.post_run_status.return_value = {"status": "completed"}
+        mock_client_cls.return_value = mock_client
+
+        def after_all(results: dict, shared_context: Optional[dict]) -> None:
+            raise RuntimeError("global teardown failed")
+
+        hooks = SimulationHooks(after_all=after_all)
+        sim = Simulation(self._make_config())
+        result = sim.run_simulation(
+            name="test",
+            dataset_id="ds-1",
+            task=SyncTask(),
+            hooks=hooks,
+        )
+
+        assert result is not None
+        assert result["success"] is False
+        assert result["completed"] == []
+        assert len(result["failed"]) == 1
+        assert result["failed"][0]["success"] is False
+        assert result["failed"][0]["status"] == "postscript_failed"
+        assert "after_all hook failed" in result["failed"][0]["error"]
+        mock_client.report_failure.assert_called()
+        call_kwargs = mock_client.report_failure.call_args
+        assert call_kwargs.kwargs.get("status") == "postscript_failed" or (
+            len(call_kwargs.args) >= 4 and call_kwargs.args[3] == "postscript_failed"
+        )
 
     @patch("netra.simulation.api.SpanWrapper")
     @patch("netra.simulation.api.SimulationHttpClient")
@@ -849,18 +974,24 @@ class TestSimulationHooks:
         from netra.simulation.hooks import SimulationHooks
 
         def setup_all() -> dict:
-            """Setup shared resources."""
             return {}
+
+        setup_all.description = "Setup shared resources."  # type: ignore[attr-defined]
 
         def setup_refund(shared_context: Optional[dict]) -> dict:
-            """Setup refund scenario."""
             return {}
 
+        setup_refund.description = "Setup refund scenario."  # type: ignore[attr-defined]
+
         def teardown_refund(result: dict, setup_context: Optional[dict]) -> None:
-            """Teardown refund scenario."""
+            pass
+
+        teardown_refund.description = "Teardown refund scenario."  # type: ignore[attr-defined]
 
         def teardown_all(results: dict, shared_context: Optional[dict]) -> None:
-            """Teardown shared resources."""
+            pass
+
+        teardown_all.description = "Teardown shared resources."  # type: ignore[attr-defined]
 
         hooks = SimulationHooks(
             before_all=setup_all,
@@ -892,6 +1023,33 @@ class TestSimulationHooks:
         assert item["after"]["name"] == "teardown_refund"
         assert item["after"]["description"] == "Teardown refund scenario."
 
+    def test_hooks_describe_no_description(self) -> None:
+        """Hooks without an explicit .description produce None."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_all() -> dict:
+            return {}
+
+        hooks = SimulationHooks(before_all=setup_all)
+        meta = hooks.describe()
+
+        assert meta["beforeAll"]["name"] == "setup_all"
+        assert meta["beforeAll"]["description"] is None
+
+    def test_hooks_describe_truncates_description(self) -> None:
+        """Explicit descriptions are truncated to 200 characters."""
+        from netra.simulation.hooks import SimulationHooks
+
+        def setup_all() -> dict:
+            return {}
+
+        setup_all.description = "x" * 250  # type: ignore[attr-defined]
+
+        hooks = SimulationHooks(before_all=setup_all)
+        meta = hooks.describe()
+
+        assert meta["beforeAll"]["description"] == "x" * 200
+
     def test_hooks_describe_empty(self) -> None:
         """Test that hooks.describe() returns empty dict when no hooks configured."""
         from netra.simulation.hooks import SimulationHooks
@@ -906,11 +1064,10 @@ class TestSimulationHooks:
         from netra.simulation.hooks import SimulationHooks
 
         def setup_scenario(shared_context: Optional[dict]) -> dict:
-            """Setup for any scenario."""
             return {}
 
         def teardown_scenario(result: dict, setup_context: Optional[dict]) -> None:
-            """Teardown for any scenario."""
+            pass
 
         hooks = SimulationHooks(
             before={
@@ -932,6 +1089,7 @@ class TestSimulationHooks:
 
         for item_id in ("item-1", "item-2"):
             assert by_id[item_id]["before"]["name"] == "setup_scenario"
+            assert by_id[item_id]["before"]["description"] is None
             assert by_id[item_id]["after"]["name"] == "teardown_scenario"
 
         # item-3 has before only
