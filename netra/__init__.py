@@ -266,6 +266,16 @@ class Netra:
                         meter_provider.shutdown()
                 except Exception:
                     pass
+            # Backstop for LiveKit calls whose session never closed cleanly, so
+            # their captured audio is flushed rather than abandoned in a queue.
+            try:
+                from netra.instrumentation.livekit.audio_capture import close_all_audio_capture
+
+                close_all_audio_capture()
+            except ImportError:
+                pass
+            except Exception:
+                logger.warning("Failed to shut down LiveKit audio capture", exc_info=True)
             # Close simulation HTTP client
             if hasattr(cls, "simulation") and cls.simulation is not None:
                 try:

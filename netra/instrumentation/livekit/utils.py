@@ -111,7 +111,7 @@ FALLBACK_COMPLETION_ROLE = "assistant"
 # default 128 — and OTel's ``BoundedAttributes`` evicts the *oldest* entry on
 # overflow. So an unbounded conversation does not merely truncate itself: it
 # silently deletes the attributes written earliest, which are exactly the markers
-# ``LiveKitSpanProcessor.on_start`` and ``SessionSpanProcessor`` stamp
+# ``SpanMappingProcessor.on_start`` and ``SessionSpanProcessor`` stamp
 # (``netra.span.type``, ``netra.instrumentation.name``, ``netra.session_id``).
 #
 # Two LiveKit sources grow with the length of the call, both verified against
@@ -325,7 +325,7 @@ AUDIO_TYPE_BY_SPAN_NAME: Dict[str, str] = {
 # only on a direct child. ``llm_request_run`` wraps the provider call, so the
 # prompt and completion are on the provider's own span (``openai.chat`` and
 # friends, a *non*-LiveKit scope); ``tts_node`` wraps the synthesis, so the text
-# is on ``tts_request``. See ``LiveKitSpanProcessor.on_end``.
+# is on ``tts_request``. See ``SpanMappingProcessor.on_end``.
 #
 # Verified against livekit-agents 1.6.7 that in both cases the child ends while
 # the parent is still recording: the provider span ends inside

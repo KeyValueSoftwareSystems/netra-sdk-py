@@ -1,27 +1,43 @@
 """wrapt wrappers for LiveKit's ``AgentSession`` lifecycle.
 
-The session id — the LiveKit room SID, falling back to the room name — is attached
-as OTel baggage *around* ``AgentSession.start`` so that the ``agent_session`` root
-span, created inside ``start()``, carries it, then detached so the caller's context
-is restored. See ``wrap_start`` and ``_resolve_session_id``.
+Two things hang off the session's lifecycle, and this module is where both are
+bolted on:
 
-Nothing in here may change the behaviour of the user's application: the hook calls
-the wrapped function even if our own logic raises, and exceptions raised by the
-user's code propagate untouched.
+* **the Netra session id** — the LiveKit room SID, falling back to the room name
+  — attached as OTel baggage *around* ``AgentSession.start`` so the
+  ``agent_session`` root span created inside it carries the id, then detached so
+  the caller's context is restored. See :func:`wrap_start` and
+  :func:`_resolve_session_id`;
+* **call-audio capture** — started once ``start()`` has returned and torn down
+  before the session closes. The capture itself lives in ``audio_capture.py``;
+  this module only decides when it begins and ends.
+
+Nothing in here may change the behaviour of the user's application: every hook
+runs the wrapped function whether or not our own logic succeeded, and exceptions
+raised by the user's code propagate untouched.
 """
+
+from __future__ import annotations
 
 import logging
 from contextlib import ExitStack
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
+from netra.config import get_active_config
+from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
 from netra.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
 
-# The wrapt quadruple: (wrapped, instance, args, kwargs). ``instance`` is a
-# livekit AgentSession, which is not importable at module scope — the SDK must
+# The wrapt quadruple is (wrapped, instance, args, kwargs). ``instance`` is a
+# livekit AgentSession, which cannot be imported at module scope — the SDK must
 # stay importable with livekit-agents absent.
 WrappedAsync = Callable[..., Awaitable[Any]]
+
+
+# ---------------------------------------------------------------------------
+# Session-id resolution
+# ---------------------------------------------------------------------------
 
 
 def _resolve_session_id(kwargs: Dict[str, Any]) -> Optional[str]:
@@ -109,6 +125,104 @@ def _room_name(kwargs: Dict[str, Any]) -> Optional[str]:
     return None
 
 
+# ---------------------------------------------------------------------------
+# Session-span helpers
+# ---------------------------------------------------------------------------
+
+
+def _session_span(instance: Any) -> Optional[Any]:
+    """Return the live ``agent_session`` span, or ``None`` once it is gone.
+
+    Args:
+        instance: The ``AgentSession``.
+
+    Returns:
+        LiveKit's own session span while the session is open.
+    """
+    return getattr(instance, "_session_span", None)
+
+
+def _trace_id_of(session_span: Optional[Any]) -> Optional[int]:
+    """Read the trace id off the ``agent_session`` span.
+
+    Args:
+        session_span: The session span, or ``None``.
+
+    Returns:
+        The trace id, or ``None`` when there is no usable span context. This is
+        the key every per-session resource is filed under, so ``None`` means the
+        session gets no session-scoped wiring at all.
+    """
+    if session_span is None:
+        return None
+    try:
+        span_context = session_span.get_span_context()
+    except Exception:
+        logger.debug("netra.livekit: could not read the session span context", exc_info=True)
+        return None
+    if span_context is None or not span_context.trace_id:
+        return None
+    return int(span_context.trace_id)
+
+
+# ---------------------------------------------------------------------------
+# Session lifecycle hooks
+# ---------------------------------------------------------------------------
+
+
+async def _after_start(instance: Any, session_id: Optional[str]) -> None:
+    """Run the per-session wiring, now that ``start()`` has returned.
+
+    Args:
+        instance: The ``AgentSession`` that has started.
+        session_id: The Netra session id resolved for it, if any.
+    """
+    trace_id = _trace_id_of(_session_span(instance))
+    if trace_id is None:
+        logger.debug(
+            "netra.livekit: no agent_session span after start(); session-scoped wiring skipped "
+            "(session_id=%s). Spans still flow normally",
+            session_id,
+        )
+        return
+
+    logger.debug("netra.livekit: agent session started session_id=%s trace_id=%032x", session_id, trace_id)
+
+    config = get_active_config()
+    if config is None or not config.audio_capture_enabled:
+        return
+
+    await start_audio_capture(instance, config=config, session_id=session_id or "", trace_id=trace_id)
+
+
+async def _before_close(instance: Any) -> None:
+    """Run the per-session teardown, *before* LiveKit closes the session.
+
+    Ordering is load-bearing: ``_aclose_impl`` ends ``_session_span`` before it
+    emits ``close``, after which the span is gone and its trace id — the key
+    every per-session resource is filed under — is unreachable.
+
+    Idempotent, in two layers: a second call finds no ``_session_span``, and the
+    coordinator registry only hands out a coordinator once.
+
+    Args:
+        instance: The ``AgentSession`` that is closing.
+    """
+    session_span = _session_span(instance)
+    trace_id = _trace_id_of(session_span)
+    if trace_id is None:
+        logger.debug("netra.livekit: session close with no live agent_session span; nothing to tear down")
+        return
+
+    logger.debug("netra.livekit: agent session closing trace_id=%032x", trace_id)
+    await stop_audio_capture(trace_id, session_span=session_span)
+
+
+# ---------------------------------------------------------------------------
+# wrapt wrapper functions (public — referenced from __init__.py)
+# ---------------------------------------------------------------------------
+
+
 async def wrap_start(
     wrapped: WrappedAsync,
     instance: Any,
@@ -134,7 +248,8 @@ async def wrap_start(
 
     Args:
         wrapped: LiveKit's ``AgentSession.start``.
-        instance: The ``AgentSession``. Unused; part of the wrapt contract.
+        instance: The ``AgentSession``, needed by ``_after_start`` to reach the
+            session span and the session's audio I/O.
         args: Positional arguments (``agent``).
         kwargs: Keyword arguments, including the keyword-only ``room``.
 
@@ -155,9 +270,49 @@ async def wrap_start(
             logger.warning("netra.livekit: could not attach session context", exc_info=True)
 
     try:
-        return await wrapped(*args, **kwargs)
+        result = await wrapped(*args, **kwargs)
     finally:
         try:
             scope.close()
         except Exception:
             logger.debug("netra.livekit: session context detach failed", exc_info=True)
+
+    # Awaited after the detach so its own failures cannot leak session context,
+    # and isolated so they can never surface in the user's start() call.
+    try:
+        await _after_start(instance, session_id)
+    except Exception:
+        logger.warning("netra.livekit: post-start wiring failed", exc_info=True)
+
+    return result
+
+
+async def wrap_aclose(
+    wrapped: WrappedAsync,
+    instance: Any,
+    args: Tuple[Any, ...],
+    kwargs: Dict[str, Any],
+) -> Any:
+    """Run per-session teardown before LiveKit closes the session.
+
+    Wraps ``_aclose_impl`` rather than ``aclose``: ``aclose()`` covers only the
+    ``USER_INITIATED`` close reason, while the other four — including
+    ``PARTICIPANT_DISCONNECTED``, i.e. the caller hanging up — reach
+    ``_aclose_impl`` directly. Wrapping ``aclose`` would mean the teardown never
+    runs on a normal phone call.
+
+    Args:
+        wrapped: LiveKit's ``AgentSession._aclose_impl``.
+        instance: The ``AgentSession``.
+        args: Positional arguments.
+        kwargs: Keyword arguments, including the ``reason``.
+
+    Returns:
+        Whatever ``_aclose_impl`` returns, untouched.
+    """
+    try:
+        await _before_close(instance)
+    except Exception:
+        logger.warning("netra.livekit: pre-close teardown failed", exc_info=True)
+
+    return await wrapped(*args, **kwargs)
