@@ -1,10 +1,13 @@
 import json
+import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from opentelemetry.util.re import parse_env_headers
 
 from netra.version import __version__
+
+logger = logging.getLogger(__name__)
 
 # Fallback limits used when no Config has been activated yet (e.g. code paths that
 # run before ``Netra.init()``, or tests that never call it). Once ``init()`` runs,
@@ -12,6 +15,28 @@ from netra.version import __version__
 _DEFAULT_ATTRIBUTE_MAX_LEN = 50000
 _DEFAULT_CONVERSATION_CONTENT_MAX_LEN = 50000
 _DEFAULT_TRIAL_BLOCK_DURATION_SECONDS = 15 * 60
+
+# --- Voice-agent audio capture (env-only; no Netra.init() parameter) ------------
+# The path segment appended to the OTLP endpoint when no explicit audio endpoint
+# is given. Deliberately not derived via UsageHttpClient._resolve_base_url, which
+# strips a "/telemetry" suffix — correct for the REST APIs, wrong here.
+_AUDIO_CHUNK_PATH = "/v1/audio/chunk"
+
+# Header names that count as an audio-ingest credential. An unauthenticated PCM
+# POST is never attempted.
+_AUDIO_AUTH_HEADERS = ("x-api-key", "Authorization")
+
+# The only recognised speaker roles.
+AUDIO_ROLES: FrozenSet[str] = frozenset({"user", "agent"})
+
+_DEFAULT_AUDIO_BATCH_BYTES = 32768
+_DEFAULT_AUDIO_BATCH_INTERVAL_MS = 1000
+_DEFAULT_AUDIO_BUFFER_BYTES = 2097152
+_DEFAULT_AUDIO_MAX_REQUEST_BYTES = 262144
+
+_MIN_AUDIO_BATCH_BYTES = 1024
+_MIN_AUDIO_BATCH_INTERVAL_MS = 100
+_MAX_AUDIO_BATCH_INTERVAL_MS = 30000
 
 
 class Config:
@@ -97,7 +122,173 @@ class Config:
             None, "TRIAL_BLOCK_DURATION_SECONDS", default=_DEFAULT_TRIAL_BLOCK_DURATION_SECONDS
         )
 
+        self._resolve_audio_settings()
+
         self._set_trace_content_env()
+
+    def _resolve_audio_settings(self) -> None:
+        """Resolve and validate the voice-agent audio-capture settings.
+
+        Env-only by design: there is no ``capture_audio`` parameter on
+        ``Netra.init()``.  Whether audio is captured at all is decided by
+        :attr:`audio_capture_enabled`, not by a flag.
+
+        Every validation failure logs a ``WARNING`` naming the setting and the
+        value actually used, then falls back to a safe value.  A bad number MUST
+        NOT raise out of ``Netra.init()``.
+        """
+        self.audio_endpoint_override = os.getenv("NETRA_AUDIO_ENDPOINT")
+        self.audio_batch_bytes = self._get_int_config(
+            None, "NETRA_AUDIO_BATCH_BYTES", default=_DEFAULT_AUDIO_BATCH_BYTES
+        )
+        self.audio_batch_interval_ms = self._get_int_config(
+            None, "NETRA_AUDIO_BATCH_INTERVAL_MS", default=_DEFAULT_AUDIO_BATCH_INTERVAL_MS
+        )
+        self.audio_buffer_bytes = self._get_int_config(
+            None, "NETRA_AUDIO_BUFFER_BYTES", default=_DEFAULT_AUDIO_BUFFER_BYTES
+        )
+        self.audio_max_request_bytes = self._get_int_config(
+            None, "NETRA_AUDIO_MAX_REQUEST_BYTES", default=_DEFAULT_AUDIO_MAX_REQUEST_BYTES
+        )
+        self.audio_roles = self._get_role_set("NETRA_AUDIO_ROLES")
+        self.audio_save_local = self._get_bool_config(None, "NETRA_AUDIO_SAVE_LOCAL", default=False)
+
+        # Order matters: audio_batch_bytes is clamped against the resolved
+        # max-request size first, then the two ceilings are raised to whatever
+        # batch size survived. Doing it the other way round lets a tiny
+        # max_request_bytes silently shrink the batch below its floor.
+        if self.audio_max_request_bytes < _MIN_AUDIO_BATCH_BYTES:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_MAX_REQUEST_BYTES=%d is below the minimum batch size; using %d",
+                self.audio_max_request_bytes,
+                _MIN_AUDIO_BATCH_BYTES,
+            )
+            self.audio_max_request_bytes = _MIN_AUDIO_BATCH_BYTES
+
+        clamped_batch = min(max(self.audio_batch_bytes, _MIN_AUDIO_BATCH_BYTES), self.audio_max_request_bytes)
+        if clamped_batch != self.audio_batch_bytes:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_BATCH_BYTES=%d out of range [%d, %d]; using %d",
+                self.audio_batch_bytes,
+                _MIN_AUDIO_BATCH_BYTES,
+                self.audio_max_request_bytes,
+                clamped_batch,
+            )
+            self.audio_batch_bytes = clamped_batch
+
+        clamped_interval = min(
+            max(self.audio_batch_interval_ms, _MIN_AUDIO_BATCH_INTERVAL_MS),
+            _MAX_AUDIO_BATCH_INTERVAL_MS,
+        )
+        if clamped_interval != self.audio_batch_interval_ms:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_BATCH_INTERVAL_MS=%d out of range [%d, %d]; using %d",
+                self.audio_batch_interval_ms,
+                _MIN_AUDIO_BATCH_INTERVAL_MS,
+                _MAX_AUDIO_BATCH_INTERVAL_MS,
+                clamped_interval,
+            )
+            self.audio_batch_interval_ms = clamped_interval
+
+        if self.audio_buffer_bytes < self.audio_batch_bytes:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_BUFFER_BYTES=%d is below the batch size; using %d",
+                self.audio_buffer_bytes,
+                self.audio_batch_bytes,
+            )
+            self.audio_buffer_bytes = self.audio_batch_bytes
+
+        if self.audio_max_request_bytes < self.audio_batch_bytes:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_MAX_REQUEST_BYTES=%d is below the batch size; using %d",
+                self.audio_max_request_bytes,
+                self.audio_batch_bytes,
+            )
+            self.audio_max_request_bytes = self.audio_batch_bytes
+
+        if not self.audio_roles:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_ROLES resolved empty; no call audio will be captured. "
+                "Traces are unaffected."
+            )
+
+        if self.audio_save_local:
+            logger.warning(
+                "netra.audio: NETRA_AUDIO_SAVE_LOCAL is enabled. Local WAV capture is a "
+                "development-only aid and retains full-session PCM in memory."
+            )
+
+    def _get_role_set(self, env_var: str) -> FrozenSet[str]:
+        """Parse a comma-separated speaker-role list, dropping unknown roles.
+
+        An explicitly empty value (``NETRA_AUDIO_ROLES=``) is the documented way
+        to disable audio capture without affecting traces, so it resolves to an
+        empty set rather than the default.
+
+        Args:
+            env_var: Name of the environment variable holding the role list.
+
+        Returns:
+            The recognised roles, or the full default set when *env_var* is unset.
+        """
+        raw = os.getenv(env_var)
+        if raw is None:
+            return AUDIO_ROLES
+
+        requested = {part.strip().lower() for part in raw.split(",") if part.strip()}
+        unknown = requested - AUDIO_ROLES
+        if unknown:
+            logger.warning(
+                "netra.audio: %s contains unknown role(s) %s; recognised roles are %s",
+                env_var,
+                sorted(unknown),
+                sorted(AUDIO_ROLES),
+            )
+        return frozenset(requested & AUDIO_ROLES)
+
+    def audio_endpoint(self) -> Optional[str]:
+        """Resolve the audio ingest URL, or None if audio must not be sent.
+
+        This is the ONLY gate on audio capture: there is no ``capture_audio``
+        flag.  A non-None return means audio WILL be captured and streamed once a
+        LiveKit session starts.  Returns None unless a concrete endpoint resolves
+        AND an auth header is present.
+
+        Callers treat None as "disable capture entirely", not "retry later" — the
+        result is resolved from init-time state and does not change during the
+        process.
+
+        Returns:
+            The absolute audio ingest URL, or ``None`` when audio must not be sent.
+        """
+        if self.audio_endpoint_override:
+            url = self.audio_endpoint_override
+        elif self.otlp_endpoint:
+            url = self.otlp_endpoint.rstrip("/") + _AUDIO_CHUNK_PATH
+        else:
+            return None
+
+        if not any(header in self.headers for header in _AUDIO_AUTH_HEADERS):
+            logger.warning(
+                "netra.audio: an audio endpoint resolved but no credential is configured; "
+                "audio capture is disabled. Set NETRA_API_KEY or pass an auth header."
+            )
+            return None
+
+        return url
+
+    @property
+    def audio_capture_enabled(self) -> bool:
+        """Whether call audio will be captured and streamed.
+
+        The single derived predicate behind audio capture, so the instrumentor,
+        the session hooks and the startup log line cannot disagree about it.
+
+        Returns:
+            True when an audio endpoint resolves and at least one speaker role is
+            enabled; False otherwise, meaning no audio is captured or streamed.
+        """
+        return self.audio_endpoint() is not None and bool(self.audio_roles)
 
     def _get_app_name(self, app_name: Optional[str]) -> str:
         """Get application name from param or environment variables."""
