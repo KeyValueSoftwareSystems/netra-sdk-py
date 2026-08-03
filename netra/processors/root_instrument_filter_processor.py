@@ -8,6 +8,8 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
+from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES
+
 logger = logging.getLogger(__name__)
 
 _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
@@ -100,8 +102,11 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
 
     Spans created directly through netra decorators or ``Netra.start_span``
     are never candidates — only spans from recognised auto-instrumentation
-    libraries (scope prefix ``opentelemetry.instrumentation.*`` or
-    ``netra.instrumentation.*``) are subject to the allow-list.
+    libraries are subject to the allow-list: those whose scope carries the
+    ``opentelemetry.instrumentation.*`` / ``netra.instrumentation.*`` prefix, plus
+    the third-party scopes named in ``THIRD_PARTY_INSTRUMENTATION_SCOPES`` (e.g.
+    ``livekit-agents``), which Netra enables but does not author and which
+    therefore do not follow that naming convention.
 
     Args:
         allowed_root_instrument_names: Instrumentation-name strings
@@ -185,10 +190,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         Args:
             span: The span that is being started.
         """
-        if not self._is_from_instrumentation_library(span):
-            return
-
-        instr_name = self._extract_instrumentation_name(span)
+        instr_name = self._resolve_instrument_name(span)
         if instr_name is None or instr_name in self._allowed:
             return
 
@@ -292,40 +294,28 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         return cast(Optional[SpanContext], parent)
 
     @staticmethod
-    def _is_from_instrumentation_library(span: Span) -> bool:
-        """Return ``True`` when *span* originates from a known
-        auto-instrumentation library.
+    def _resolve_instrument_name(span: Span) -> Optional[str]:
+        """Return the instrument name *span* is subject to, or ``None``.
 
-        Spans created by netra decorators or ``Netra.start_span`` use
-        arbitrary tracer names that do not match the instrumentation
-        naming convention and will return ``False``.
+        Answers both "did an auto-instrumentation library produce this span?" and
+        "which instrument is it?" from the single scope string, deliberately in
+        one function. As two separate predicates they could disagree about a
+        scope, and a scope that the first accepted but the second could not name
+        would slip past the allow-list unchecked.
 
-        Args:
-            span: The span to check.
-
-        Returns:
-            Whether the span's scope starts with a recognised prefix.
-        """
-        scope = getattr(span, "instrumentation_scope", None)
-        if scope is None:
-            return False
-        name = getattr(scope, "name", None)
-        if not isinstance(name, str) or not name:
-            return False
-        return name.startswith(_INSTRUMENTATION_PREFIXES)
-
-    @staticmethod
-    def _extract_instrumentation_name(span: Span) -> Optional[str]:
-        """Extract the short instrumentation name from *span*'s scope.
-
-        For a scope named ``netra.instrumentation.fastapi`` this returns
-        ``"fastapi"``.
+        A scope named ``netra.instrumentation.fastapi`` resolves to ``fastapi``.
+        A third-party scope registered in ``THIRD_PARTY_INSTRUMENTATION_SCOPES``
+        resolves to its ``InstrumentSet`` value — ``livekit-agents`` to
+        ``livekit`` — which is what brings those spans under ``root_instruments``
+        control despite the non-conforming scope name.
 
         Args:
             span: The span to inspect.
 
         Returns:
-            The short name, or ``None`` if extraction fails.
+            The short instrumentation name, or ``None`` when the scope belongs to
+            no recognised instrumentation — a netra decorator, ``Netra.start_span``
+            or any user tracer — in which case the span is never a candidate.
         """
         scope = getattr(span, "instrumentation_scope", None)
         if scope is None:
@@ -333,11 +323,18 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         name = getattr(scope, "name", None)
         if not isinstance(name, str) or not name:
             return None
-        for prefix in _INSTRUMENTATION_PREFIXES:
-            if name.startswith(prefix):
-                base = name.rsplit(".", 1)[-1].strip()
-                return base if base else name
-        return name
+
+        # Exact-match aliases first: a third-party scope carries no prefix, so
+        # the two branches cannot both claim the same name.
+        alias = THIRD_PARTY_INSTRUMENTATION_SCOPES.get(name)
+        if alias is not None:
+            return alias
+
+        if name.startswith(_INSTRUMENTATION_PREFIXES):
+            base = name.rsplit(".", 1)[-1].strip()
+            return base if base else name
+
+        return None
 
     def _evict_stale_candidates(self) -> None:
         """Evict entries whose span ended more than ``_ROOT_CANDIDATE_TTL_SECONDS`` ago.
