@@ -117,6 +117,9 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     InstrumentSet.DEEPGRAM: (
         InstrumentorSpec(("deepgram-sdk",), "netra.instrumentation.deepgram", "NetraDeepgramInstrumentor"),
     ),
+    InstrumentSet.LIVEKIT: (
+        InstrumentorSpec(("livekit-agents",), "netra.instrumentation.livekit", "NetraLiveKitInstrumentor"),
+    ),
     InstrumentSet.ADK: (
         InstrumentorSpec(("google-adk",), "netra.instrumentation.google_adk", "NetraGoogleADKInstrumentor"),
     ),
