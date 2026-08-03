@@ -37,6 +37,15 @@ _active_tool_call_ids: ContextVar[frozenset[str]] = ContextVar(
     "netra_hermes_agent_active_tool_call_ids", default=frozenset()
 )
 
+# Tool call ids already claimed by tool_execution_middleware_wrapper.
+# handle_function_call_wrapper checks this to avoid creating a duplicate child
+# span for registry tools that pass through both the middleware and
+# handle_function_call. Separate from _active_tool_call_ids which guards
+# tool_search bridge recursion within handle_function_call itself.
+_middleware_traced_ids: ContextVar[frozenset[str]] = ContextVar(
+    "netra_hermes_agent_middleware_traced_ids", default=frozenset()
+)
+
 
 def _get_arg(args: Tuple[Any, ...], kwargs: dict[str, Any], index: int, name: str) -> Any:
     """
@@ -144,13 +153,14 @@ def tool_execution_middleware_wrapper(tracer: Tracer) -> Callable[..., Any]:
     """
     Return a wrapper that traces agent.tool_executor._run_agent_tool_execution_middleware.
 
-    Hermes dispatches its agent-runtime tools (todo, session_search, memory,
-    clarify, read_terminal, delegate_task, context-engine and memory-manager
-    tools) inline, bypassing model_tools.handle_function_call — but every one
-    of those inline branches funnels through this middleware helper, so
-    wrapping it yields a tool span for the whole family. Registry-dispatched
-    tools never pass through it, so there is no overlap with
-    handle_function_call_wrapper.
+    Hermes dispatches all tool calls through this middleware (registry tools
+    and inline agent-runtime tools alike). Registry tools then delegate to
+    handle_function_call internally; inline tools (todo, session_search,
+    memory, clarify, delegate_task, etc.) execute directly without it.
+
+    To avoid duplicate spans for registry tools, this wrapper marks the
+    tool_call_id in _middleware_traced_ids; handle_function_call_wrapper
+    checks that set and passes through when the ID is already claimed.
 
     Args:
         tracer (Tracer): The OpenTelemetry tracer to use for creating spans.
@@ -166,7 +176,7 @@ def tool_execution_middleware_wrapper(tracer: Tracer) -> Callable[..., Any]:
         kwargs: dict[str, Any],
     ) -> Any:
         """
-        Wrap the inline-tool middleware in a tool span named after the dispatched tool.
+        Wrap the tool middleware in a tool span named after the dispatched tool.
 
         Args:
             wrapped (Callable): The original _run_agent_tool_execution_middleware.
@@ -176,7 +186,7 @@ def tool_execution_middleware_wrapper(tracer: Tracer) -> Callable[..., Any]:
                            effective_task_id, tool_call_id, execute).
 
         Returns:
-            Any: The (function_result, observed_args) tuple from the middleware.
+            Any: The _ManagedToolResult dataclass from the middleware.
         """
         agent = _get_arg(args, kwargs, 0, "agent")
         function_name = kwargs.get("function_name")
@@ -186,28 +196,39 @@ def tool_execution_middleware_wrapper(tracer: Tracer) -> Callable[..., Any]:
         turn_id = getattr(agent, "_current_turn_id", None)
         api_request_id = getattr(agent, "_current_api_request_id", None)
 
-        with tracer.start_as_current_span(str(function_name), kind=SpanKind.CLIENT) as span:
-            try:
-                set_tool_request_attributes(
-                    span, str(function_name), function_args, tool_call_id, session_id, turn_id, api_request_id
-                )
-            except Exception as e:
-                logger.error("Failed to set hermes-agent inline tool request attributes: %s", e)
+        mw_ids = _middleware_traced_ids.get()
+        mw_reset_token: Optional[Token[frozenset[str]]] = None
+        if tool_call_id:
+            mw_reset_token = _middleware_traced_ids.set(mw_ids | {tool_call_id})
 
-            try:
-                result = wrapped(*args, **kwargs)
-            except Exception as e:
-                span.record_exception(e)
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                raise
+        try:
+            with tracer.start_as_current_span(str(function_name), kind=SpanKind.CLIENT) as span:
+                try:
+                    set_tool_request_attributes(
+                        span, str(function_name), function_args, tool_call_id, session_id, turn_id, api_request_id
+                    )
+                except Exception as e:
+                    logger.error("Failed to set hermes-agent inline tool request attributes: %s", e)
 
-            try:
-                function_result = result[0] if isinstance(result, tuple) and result else None
-                set_tool_response_attributes(span, function_result)
-            except Exception as e:
-                logger.error("Failed to set hermes-agent inline tool response attributes: %s", e)
-            span.set_status(Status(StatusCode.OK))
-            return result
+                try:
+                    result = wrapped(*args, **kwargs)
+                except Exception as e:
+                    span.record_exception(e)
+                    span.set_status(Status(StatusCode.ERROR, str(e)))
+                    raise
+
+                try:
+                    function_result = getattr(result, "result", None)
+                    if function_result is None:
+                        function_result = result[0] if isinstance(result, tuple) and result else None
+                    set_tool_response_attributes(span, function_result)
+                except Exception as e:
+                    logger.error("Failed to set hermes-agent inline tool response attributes: %s", e)
+                span.set_status(Status(StatusCode.OK))
+                return result
+        finally:
+            if mw_reset_token is not None:
+                _middleware_traced_ids.reset(mw_reset_token)
 
     return wrapper
 
@@ -251,8 +272,24 @@ def handle_function_call_wrapper(tracer: Tracer) -> Callable[..., Any]:
         turn_id = _get_arg(args, kwargs, 5, "turn_id")
         api_request_id = _get_arg(args, kwargs, 6, "api_request_id")
 
+        # If middleware already created a span for this tool_call_id, pass through.
+        if tool_call_id and tool_call_id in _middleware_traced_ids.get():
+            logger.debug(
+                "Skipping handle_function_call span for %s (tool_call_id=%s): already traced by middleware",
+                function_name,
+                tool_call_id,
+            )
+            return wrapped(*args, **kwargs)
+
+        # Recursion guard: tool_search bridge unwraps tool_call to the
+        # underlying tool with the same tool_call_id.
         active_ids = _active_tool_call_ids.get()
         if tool_call_id and tool_call_id in active_ids:
+            logger.debug(
+                "Skipping handle_function_call span for %s (tool_call_id=%s): recursion guard",
+                function_name,
+                tool_call_id,
+            )
             return wrapped(*args, **kwargs)
 
         reset_token: Optional[Token[frozenset[str]]] = None
