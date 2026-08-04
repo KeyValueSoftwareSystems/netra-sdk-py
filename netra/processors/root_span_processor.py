@@ -69,6 +69,48 @@ class RootSpanProcessor(SpanProcessor):  # type: ignore[misc]
             return False
 
     @staticmethod
+    def replace_root_span(span: Span) -> bool:
+        """Record *span* as its trace's root span, replacing any existing entry.
+
+        ``on_start`` files the first parentless span it sees under a ``setdefault``,
+        which is correct for every instrumentation that lets a span's parent stand
+        as created.  An instrumentation that *re-roots* a trace after the fact —
+        by clearing a span's parent once the span has already started — leaves that
+        mapping naming a span which is no longer the root, so the LLM-call marker
+        and ``SessionManager``'s root-span helpers would write to the wrong span.
+        This is the seam for those instrumentations to correct it.
+
+        Only the mapping is updated; the caller owns the reparenting itself.  The
+        entry's lifecycle then follows the new root: ``on_end`` clears the mapping
+        when the *recorded* root ends, so the span that used to be the root ending
+        first no longer takes the entry with it.
+
+        The replacement is unconditional, so the caller — which is the only party
+        that knows whether the span it is holding really is the trace's new root —
+        owns the decision to call at all.  Calling it for each of several spans
+        that were re-rooted in the same trace leaves the mapping naming whichever
+        called last, and every root-span write for that trace then lands there.
+
+        Args:
+            span: The span that is now the root of its trace.
+
+        Returns:
+            True if the mapping was updated, False when *span* has no valid span
+            context to key it by.
+        """
+        try:
+            span_ctx = span.get_span_context()
+            if span_ctx is None or not span_ctx.is_valid:
+                return False
+
+            with RootSpanProcessor._lock:
+                RootSpanProcessor._root_spans[span_ctx.trace_id] = span
+            return True
+        except Exception:
+            logger.debug("RootSpanProcessor: failed to replace root span", exc_info=True)
+            return False
+
+    @staticmethod
     def get_root_span(span: Span) -> Optional[Span]:
         """
         Resolve the root span for a given span.

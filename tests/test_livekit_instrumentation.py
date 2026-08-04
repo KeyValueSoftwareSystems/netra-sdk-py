@@ -8,19 +8,22 @@ mocks: spans are created from a tracer whose instrumentation scope is
 
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Set, Tuple
 
 import pytest
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from wrapt import ObjectProxy
 
+from netra.exporters.filtering_span_exporter import FilteringSpanExporter
 from netra.instrumentation import livekit as livekit_instrumentation
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS_FOR_ROOT
 from netra.instrumentation.livekit import NetraLiveKitInstrumentor
 from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvider
+from netra.instrumentation.livekit.session_root_processor import SessionRootSpanProcessor
 from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.livekit.utils import (
     LIVEKIT_SCOPE_NAME,
@@ -38,9 +41,16 @@ from netra.instrumentation.livekit.utils import (
     role_of_choice_event,
     tts_pricing_attributes_from,
 )
+from netra.processors.llm_trace_identifier_span_processor import LlmTraceIdentifierSpanProcessor
+from netra.processors.root_instrument_filter_processor import RootInstrumentFilterProcessor
+from netra.processors.root_span_processor import RootSpanProcessor
 from netra.span_wrapper import SpanType
 
 pytestmark = pytest.mark.unit
+
+# The shipped root allow-list, as instrument-name strings. ``livekit`` is in it,
+# which is what keeps LiveKit's own spans out of the candidate registry.
+DEFAULT_ROOT_INSTRUMENT_NAMES = {instrument.value for instrument in DEFAULT_INSTRUMENTS_FOR_ROOT}
 
 
 class _Harness:
@@ -833,3 +843,368 @@ class TestSessionHookLifecycle:
         livekit_instrumentation._install_session_hook()
 
         assert not isinstance(fake_agent_session.start.__wrapped__, ObjectProxy)
+
+
+class _TraceShapeHarness:
+    """A provider wired for a trace's *shape* rather than its attributes.
+
+    Carries the processors that decide what a trace's root is, in the order
+    ``netra/tracer.py`` registers them — the root-instrument filter that owns the
+    candidate registry first, then the LLM-call marker before the root bookkeeping
+    it reads, the exporting processor after all three, and the LiveKit processors
+    last, as ``_instrument()`` appends them.
+
+    ``RootInstrumentFilterProcessor`` is not optional scenery. It is the owner of
+    ``ROOT_BLOCK_CANDIDATES``, which is the only thing the exporter consults about
+    candidacy, and it runs *before* the LiveKit processors — so it snapshots a
+    span's parent before any re-rooting rewrites it. A harness without it cannot
+    see that interaction at all.
+
+    The exporting processor defaults to a ``SimpleSpanProcessor``, so every span
+    exports in a batch of its own: the cross-batch case, where a child reaches the
+    exporter long before the span above it does, is the default here rather than a
+    special case to arrange. Pass ``batched=True`` for the shape netra actually
+    ships (``disable_batch=False``), where nothing reaches the exporter until the
+    flush and an ``on_end`` hook still has time to act.
+
+    Args:
+        root_instrument_names: Instruments allowed to emit root spans. Defaults to
+            the shipped set, which includes ``livekit``.
+        batched: Whether to buffer through a ``BatchSpanProcessor``.
+    """
+
+    def __init__(self, root_instrument_names: Optional[Set[str]] = None, batched: bool = False) -> None:
+        self.exporter = InMemorySpanExporter()
+        self.provider = TracerProvider()
+        allowed = DEFAULT_ROOT_INSTRUMENT_NAMES if root_instrument_names is None else root_instrument_names
+        self.provider.add_span_processor(RootInstrumentFilterProcessor(allowed))
+        self.provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
+        self.provider.add_span_processor(RootSpanProcessor())
+        exporting = FilteringSpanExporter(self.exporter, [])
+        self._batch_processor = BatchSpanProcessor(exporting) if batched else None
+        self.provider.add_span_processor(
+            self._batch_processor if self._batch_processor is not None else SimpleSpanProcessor(exporting)
+        )
+        self.provider.add_span_processor(SessionRootSpanProcessor())
+        self.livekit_tracer = self.provider.get_tracer(LIVEKIT_SCOPE_NAME)
+
+    def tracer(self, scope_name: str) -> Any:
+        """Return a tracer for some other instrumentation scope."""
+        return self.provider.get_tracer(scope_name)
+
+    def _flush(self) -> None:
+        """Drain the batch processor, if this harness has one."""
+        if self._batch_processor is not None:
+            self._batch_processor.force_flush()
+
+    def exported_names(self) -> List[str]:
+        """Return the names of every span that survived export."""
+        self._flush()
+        return [span.name for span in self.exporter.get_finished_spans()]
+
+    def exported_root_names(self) -> List[str]:
+        """Return the names of every exported span that has no parent left."""
+        self._flush()
+        return [span.name for span in self.exporter.get_finished_spans() if span.parent is None]
+
+    def exported(self, name: str) -> ReadableSpan:
+        """Return the single exported span called *name*."""
+        self._flush()
+        matches = [span for span in self.exporter.get_finished_spans() if span.name == name]
+        assert len(matches) == 1, f"expected exactly one exported {name!r} span, got {len(matches)}"
+        return matches[0]
+
+    def start_session(self) -> Any:
+        """Start an ``agent_session`` the way ``AgentSession.start`` does.
+
+        livekit-agents calls ``tracer.start_span`` with no explicit context and
+        attaches the result afterwards, so the parent is resolved from the ambient
+        context at ``on_start``.
+        """
+        return self.livekit_tracer.start_span("agent_session")
+
+
+def _reset_trace_shape_globals() -> None:
+    """Clear the process-global registries a trace's shape is decided from."""
+    from netra.processors import root_instrument_filter_processor as rifp
+
+    with rifp._root_candidates_lock:
+        rifp.ROOT_BLOCK_CANDIDATES.clear()
+        rifp.PINNED_ROOT_BLOCK_CANDIDATES.clear()
+    RootSpanProcessor().shutdown()
+
+
+@pytest.fixture
+def shape_harness() -> Any:
+    """A ``_TraceShapeHarness`` with every process-global registry isolated."""
+    _reset_trace_shape_globals()
+    yield _TraceShapeHarness()
+    _reset_trace_shape_globals()
+
+
+@pytest.fixture
+def batched_shape_harness() -> Any:
+    """A ``_TraceShapeHarness`` that buffers, as ``disable_batch=False`` does."""
+    _reset_trace_shape_globals()
+    yield _TraceShapeHarness(batched=True)
+    _reset_trace_shape_globals()
+
+
+class TestVoiceTraceRoot:
+    """``agent_session`` replaces ``job_entrypoint`` as the root of a job's trace."""
+
+    def test_agent_session_is_exported_as_a_root_span(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            session.end()
+
+        assert shape_harness.exported("agent_session").parent is None
+
+    def test_agent_session_keeps_the_trace_id_it_was_created_under(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint") as job:
+            job_trace_id = job.get_span_context().trace_id
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            session.end()
+
+        # The whole point of re-rooting at on_start rather than creating the session
+        # span in a cleared context: a new root would have been given a new trace id,
+        # and a trace already ingested under this one would split in two.
+        assert shape_harness.exported("agent_session").context.trace_id == job_trace_id
+
+    def test_job_entrypoint_is_never_exported(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            session.end()
+
+        assert shape_harness.exported_names() == ["agent_session"]
+
+    def test_entrypoint_children_exporting_before_the_drop_are_promoted_to_roots(self, shape_harness: Any) -> None:
+        """A span the user's entrypoint traced must not be left pointing at the dropped root.
+
+        It ends — and here, exports — while ``job_entrypoint`` is still open, so its
+        parent can only be rewritten from the cross-batch candidate registry.
+        """
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            with shape_harness.tracer("my.app").start_as_current_span("load_customer_record"):
+                pass
+
+        assert shape_harness.exported("load_customer_record").parent is None
+        assert "job_entrypoint" not in shape_harness.exported_names()
+
+    def test_agent_session_started_outside_a_job_keeps_its_parent(self, shape_harness: Any) -> None:
+        """Console mode, evals, or a session started inside the user's own span."""
+        with shape_harness.tracer("my.app").start_as_current_span("handle_request") as caller:
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            session.end()
+
+        exported = shape_harness.exported("agent_session")
+        assert exported.parent is not None
+        assert exported.parent.span_id == caller.get_span_context().span_id
+
+    def test_a_non_livekit_span_named_job_entrypoint_is_left_alone(self, shape_harness: Any) -> None:
+        """The scope check is what keeps this processor off another library's spans."""
+        with shape_harness.tracer("my.app").start_as_current_span("job_entrypoint"):
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            session.end()
+
+        assert "job_entrypoint" in shape_harness.exported_names()
+        assert shape_harness.exported("agent_session").parent is not None
+
+
+class TestVoiceTraceRootBookkeeping:
+    """``RootSpanProcessor`` must name ``agent_session``, not the span it replaced."""
+
+    def test_agent_session_is_recorded_as_the_trace_root(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint") as job:
+            trace_id = job.get_span_context().trace_id
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+
+            assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is session
+
+            session.end()
+
+    def test_the_root_survives_job_entrypoint_ending_mid_call(self, shape_harness: Any) -> None:
+        """The entrypoint returns seconds into a call; the session runs on for minutes.
+
+        ``Netra.set_attribute_on_root_span`` and the LLM-call marker resolve the root
+        through this mapping, so losing it here means losing them for the rest of the
+        call.
+        """
+        job = shape_harness.livekit_tracer.start_span("job_entrypoint")
+        with trace.use_span(job, end_on_exit=False):
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+        trace_id = job.get_span_context().trace_id
+
+        job.end()
+
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is session
+        session.end()
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is None
+
+    def test_llm_call_marker_lands_on_agent_session(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = shape_harness.livekit_tracer.start_span("agent_session")
+            with trace.use_span(session, end_on_exit=False):
+                completion = shape_harness.tracer("netra.instrumentation.openai").start_span("openai.chat")
+                completion.set_attribute("gen_ai.request.model", "gpt-4o")
+                completion.end()
+            session.end()
+
+        assert shape_harness.exported("agent_session").attributes.get("netra.trace.llm.call") is True
+
+
+class TestJobsThatOpenNoSession:
+    """``job_entrypoint`` is only dropped once an ``agent_session`` replaces it.
+
+    A LiveKit job need not be a voice job, and dropping the root of one that opened
+    no session leaves its spans as parentless siblings with nothing above them.
+    Exercised through the batched harness because that is netra's shipped default
+    (``disable_batch=False``) and the only configuration in which an ``on_end``
+    decision still lands before export.
+    """
+
+    def test_job_entrypoint_survives_when_no_agent_session_is_opened(self, batched_shape_harness: Any) -> None:
+        with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            with batched_shape_harness.tracer("my.app").start_as_current_span("load_customer_record"):
+                pass
+            with batched_shape_harness.tracer("my.app").start_as_current_span("send_summary_email"):
+                pass
+
+        assert batched_shape_harness.exported_root_names() == ["job_entrypoint"]
+        assert batched_shape_harness.exported("load_customer_record").parent is not None
+
+    def test_job_entrypoint_survives_when_session_start_raises(self, batched_shape_harness: Any) -> None:
+        """``start()`` can fail before livekit-agents ever opens the session span."""
+        with pytest.raises(RuntimeError):
+            with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+                raise RuntimeError("session.start() failed")
+
+        assert batched_shape_harness.exported_root_names() == ["job_entrypoint"]
+
+    def test_job_entrypoint_is_still_dropped_once_a_session_opens(self, batched_shape_harness: Any) -> None:
+        """The release must not fire for the case the drop exists for."""
+        with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = batched_shape_harness.start_session()
+            session.end()
+
+        assert batched_shape_harness.exported_root_names() == ["agent_session"]
+
+    def test_a_session_closing_before_the_entrypoint_returns_still_drops_it(self, batched_shape_harness: Any) -> None:
+        """A short call ends its session first, which empties the root mapping.
+
+        The promotion is therefore recorded on ``job_entrypoint`` itself rather than
+        inferred from ``RootSpanProcessor``, which by this point no longer names the
+        session — otherwise a brief call would look exactly like a job that opened
+        no session, and the entrypoint would come back as a second root.
+        """
+        with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = batched_shape_harness.start_session()
+            session.end()
+            # The entrypoint goes on doing work after the session has closed.
+            with batched_shape_harness.tracer("my.app").start_as_current_span("write_summary"):
+                pass
+
+        assert "job_entrypoint" not in batched_shape_harness.exported_names()
+        assert batched_shape_harness.exported_root_names() == ["agent_session", "write_summary"]
+
+    def test_entrypoint_children_are_never_left_pointing_at_a_dropped_parent(self, shape_harness: Any) -> None:
+        """The reason ``job_entrypoint`` is marked at its start rather than at promotion.
+
+        ``load_customer_record`` ends — and here, exports — while the entrypoint is
+        still running and before any session exists. Deferring the mark until a
+        session claimed the root would leave this span referencing a parent that
+        never arrives, which is worse than the stray root it becomes instead.
+        """
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            with shape_harness.tracer("my.app").start_as_current_span("load_customer_record"):
+                pass
+            session = shape_harness.start_session()
+            session.end()
+
+        exported_ids = {span.context.span_id for span in shape_harness.exporter.get_finished_spans()}
+        for span in shape_harness.exporter.get_finished_spans():
+            assert span.parent is None or span.parent.span_id in exported_ids
+
+
+class TestMultipleSessionsInOneJob:
+    """livekit-agents allows several ``AgentSession``\\ s per job; only one may re-root."""
+
+    def test_the_first_session_keeps_the_root_while_a_sibling_starts(self, shape_harness: Any) -> None:
+        """Promoting both would leave the bookkeeping naming whichever started last.
+
+        Every root-span write for the trace — the LLM-call marker,
+        ``Netra.set_attribute_on_root_span`` — resolves through that mapping, so the
+        first session's data would land on the second session's span.
+        """
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint") as job:
+            trace_id = job.get_span_context().trace_id
+            first = shape_harness.start_session()
+            second = shape_harness.start_session()
+
+            assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is first
+
+            first.end()
+            second.end()
+
+    def test_a_sibling_session_keeps_the_parent_it_was_created_with(self, shape_harness: Any) -> None:
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint") as job:
+            first = shape_harness.start_session()
+            second = shape_harness.start_session()
+            assert second.parent is not None
+            assert second.parent.span_id == job.get_span_context().span_id
+            first.end()
+            second.end()
+
+    def test_sessions_that_run_one_after_another_are_each_re_rooted(self, shape_harness: Any) -> None:
+        """The mapping is released when the recorded root ends, so the next one claims it."""
+        with shape_harness.livekit_tracer.start_as_current_span("job_entrypoint") as job:
+            trace_id = job.get_span_context().trace_id
+
+            first = shape_harness.start_session()
+            assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is first
+            first.end()
+
+            second = shape_harness.start_session()
+            assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is second
+            second.end()
+
+        assert shape_harness.exported_root_names() == ["agent_session", "agent_session"]
+
+
+class TestVoiceTraceRootUnderRegistryPressure:
+    """The drop must outlive a registry flooded by incidental candidates."""
+
+    def test_job_entrypoint_is_dropped_after_the_registry_overflows(self, batched_shape_harness: Any) -> None:
+        """Overflow eviction must not hand back the root the trace was re-rooted to lose.
+
+        ``ROOT_BLOCK_CANDIDATES`` evicts by insertion order and does not care whether
+        a span is still open, so ``job_entrypoint`` — recorded once, at the very start
+        of a job — is among the first to go when a burst of ``httpx`` spans (no HTTP
+        client is on the root allow-list) fills the registry. Losing that entry does
+        not merely skip a reparent: the entrypoint returns to the export as a second
+        root of the trace.
+        """
+        from netra.processors import root_instrument_filter_processor as rifp
+
+        http_tracer = batched_shape_harness.tracer("opentelemetry.instrumentation.httpx")
+        with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = batched_shape_harness.start_session()
+            for index in range(rifp._MAX_ROOT_CANDIDATES + 1):
+                http_tracer.start_span(f"GET /{index}").end()
+            session.end()
+
+        assert "job_entrypoint" not in batched_shape_harness.exported_names()
+        assert batched_shape_harness.exported_root_names() == ["agent_session"]
+
+    def test_the_registry_still_honours_its_size_cap(self, batched_shape_harness: Any) -> None:
+        """Pinning must not turn into an unbounded exemption."""
+        from netra.processors import root_instrument_filter_processor as rifp
+
+        http_tracer = batched_shape_harness.tracer("opentelemetry.instrumentation.httpx")
+        with batched_shape_harness.livekit_tracer.start_as_current_span("job_entrypoint"):
+            session = batched_shape_harness.start_session()
+            for index in range(rifp._MAX_ROOT_CANDIDATES * 2):
+                http_tracer.start_span(f"GET /{index}").end()
+            session.end()
+
+        assert len(rifp.ROOT_BLOCK_CANDIDATES) <= rifp._MAX_ROOT_CANDIDATES

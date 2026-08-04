@@ -343,10 +343,15 @@ def _collect_root_block_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, O
     """Merge in-batch candidacy markers with the cross-batch registry.
 
     The in-batch markers let a marked span be recognised even if its registry
-    entry was evicted or cleared before export. The registry is only consulted
-    for *cross-batch* ancestry — a batch parent whose candidacy was recorded in
-    an earlier batch. When no batch parent references such an entry, the full
-    (locked, O(registry)) snapshot is skipped entirely.
+    entry was evicted or cleared before export — but only where the exporter is
+    handed the live span. The OTel SDK is not such a caller: ``Span.end()`` passes
+    a fresh ``ReadableSpan`` built by ``_readable_span()``, which copies the span's
+    fields and not its instance attributes, so ``ROOT_BLOCK_CANDIDATE_FIELD`` does
+    not survive the hand-off. Under the SDK the registry is therefore the only
+    source of candidacy, and it MUST be consulted for a batch span's own id as well
+    as its parent's — a candidate root exporting in a batch that holds none of its
+    children (its own batch, if it ends well before or after them, or every batch
+    when ``disable_batch`` is set) would otherwise be exported as a root.
 
     Args:
         spans: The batch of spans being exported.
@@ -356,21 +361,23 @@ def _collect_root_block_candidates(spans: Sequence[ReadableSpan]) -> Dict[int, O
         with in-batch markers overriding the registry snapshot.
     """
     in_batch: Dict[int, Optional[SpanContext]] = {}
-    parent_ids: Set[int] = set()
+    referenced_ids: Set[int] = set()
     for span in spans:
         span_id = get_span_id(span)
-        if is_root_block_candidate(span) and span_id is not None and span_id != INVALID_SPAN_ID:
-            in_batch[span_id] = normalize_parent(getattr(span, "parent", None))
+        if span_id is not None and span_id != INVALID_SPAN_ID:
+            referenced_ids.add(span_id)
+            if is_root_block_candidate(span):
+                in_batch[span_id] = normalize_parent(getattr(span, "parent", None))
         parent = getattr(span, "parent", None)
         parent_id = getattr(parent, "span_id", None) if parent is not None else None
         if parent_id is not None and parent_id != INVALID_SPAN_ID:
-            parent_ids.add(parent_id)
+            referenced_ids.add(parent_id)
 
-    # A registry entry can only be walked if it is the parent of some batch span
-    # (every in-batch candidate contributes its own parent id here too, so
-    # multi-hop cross-batch chains are covered). Parents already resolvable
-    # in-batch never need the registry.
-    if not root_block_candidates_contains(parent_ids - set(in_batch)):
+    # A registry entry is only worth walking if it belongs to a span in this batch
+    # or is the parent of one (every in-batch candidate contributes its own parent
+    # id here too, so multi-hop cross-batch chains are covered). Candidates already
+    # resolvable in-batch never need the registry.
+    if not root_block_candidates_contains(referenced_ids - set(in_batch)):
         return in_batch
 
     candidates = get_root_block_candidates()

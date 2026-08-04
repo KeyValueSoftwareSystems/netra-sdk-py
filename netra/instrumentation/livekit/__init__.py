@@ -13,6 +13,7 @@ from wrapt import wrap_function_wrapper
 from netra.config import Config, get_active_config
 from netra.instrumentation.livekit.audio_processor import AudioSpanProcessor
 from netra.instrumentation.livekit.provider_binding import bind_livekit_tracer
+from netra.instrumentation.livekit.session_root_processor import SessionRootSpanProcessor
 from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.livekit.wrappers import wrap_aclose, wrap_start
 
@@ -50,8 +51,10 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     trace path — livekit-agents already emits a full span tree
     (``agent_session`` → ``agent_turn`` → ``llm_node`` / ``tts_node`` /
     ``function_tool``). Our job is to make that tree land in Netra's pipeline,
-    shield the providers from LiveKit's per-job telemetry teardown, and stamp the
-    Netra session id on the session root.
+    shield the providers from LiveKit's per-job telemetry teardown, stamp the
+    Netra session id on the session root, and root the trace at ``agent_session``
+    rather than at LiveKit's short-lived ``job_entrypoint`` (see
+    ``session_root_processor.py``).
 
     Note on session-id scope: the id is attached for the duration of
     ``AgentSession.start`` and inherited by every task LiveKit creates during it,
@@ -150,7 +153,7 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
 
         These are appended *after* ``BatchSpanProcessor``; see the module
         docstring in ``trace_processor.py`` for the invariant that makes it safe before
-        adding a third.
+        adding a fourth.
 
         Args:
             provider: The tracer provider to register on.
@@ -161,6 +164,16 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             return
         if getattr(provider, _PROCESSORS_FLAG, False):
             return
+
+        # Order against the *exporting* processor does not matter for this one: it
+        # decides everything at ``on_start``, and a span is only handed to the
+        # exporter when it ends. Order against ``RootInstrumentFilterProcessor``
+        # does: that one also runs at ``on_start``, earlier, and snapshots a
+        # candidate's parent before this processor rewrites it — which is why
+        # ``_promote_to_trace_root`` refreshes the registry entry rather than
+        # assuming its own write is the first.
+        provider.add_span_processor(SessionRootSpanProcessor())
+        logger.debug("netra.livekit: registered SessionRootSpanProcessor")
 
         provider.add_span_processor(SpanMappingProcessor())
         logger.debug("netra.livekit: registered SpanMappingProcessor")

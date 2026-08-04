@@ -29,6 +29,43 @@ from netra.span_wrapper import SpanType
 LIVEKIT_SCOPE_NAME = "livekit-agents"
 
 # ---------------------------------------------------------------------------
+# The two LiveKit span names that decide the shape of a voice trace
+# ---------------------------------------------------------------------------
+
+# livekit-agents wraps the user's entrypoint coroutine in this span
+# (``ipc/job_proc_lazy_main.py``: ``@tracer.start_as_current_span("job_entrypoint")``
+# around ``_traceable_entrypoint``), which makes it the trace root of every job.
+#
+# It is a poor root: the entrypoint returns as soon as it has called
+# ``session.start()`` and ``ctx.connect()``, so the span ends seconds into a call
+# that runs for minutes — a root that closes long before its own subtree, carrying
+# no session id and no conversation. ``SessionRootSpanProcessor`` re-roots the
+# trace onto ``agent_session`` and drops this span at export — but only for a job
+# that actually opens a session, so a non-voice job keeps the root it has.
+JOB_ENTRYPOINT_SPAN_NAME = "job_entrypoint"
+
+# The span livekit-agents opens inside ``AgentSession.start`` and ends when the
+# session closes (``voice/agent_session.py``: ``tracer.start_span("agent_session")``),
+# so it spans the whole call and every other LiveKit span sits beneath it. The
+# root a voice trace should have.
+AGENT_SESSION_SPAN_NAME = "agent_session"
+
+# Written on a ``job_entrypoint`` span the moment an ``agent_session`` under it takes
+# over as trace root, and read back when that span ends to decide whether its
+# provisional drop stands (see ``session_root_processor.py``).
+#
+# An OTel span attribute rather than an instance attribute, deliberately, and for
+# the one reason that governs this whole package: ``Span.end()`` hands the processor
+# chain a fresh ``ReadableSpan`` from ``Span._readable_span()``, which copies the
+# span's fields and not its instance attributes — so ``on_end`` can only read what
+# is on the attribute map. The same constraint ``LOCAL_BLOCKED_FLAG_ATTR`` is
+# written for.
+#
+# It costs one of the span's bounded attribute slots and is never seen by the
+# backend: the span carrying it is precisely the span that gets dropped.
+NETRA_LIVEKIT_REROOTED = "netra.livekit.rerooted"
+
+# ---------------------------------------------------------------------------
 # Netra target attribute keys
 # ---------------------------------------------------------------------------
 
@@ -303,12 +340,16 @@ NETRA_SPAN_TYPE_BY_NAME: Dict[str, SpanType] = {
     "tts_request": SpanType.GENERATION,
 }
 
-# span name -> ``netra.entity.type``. ``job_entrypoint`` is livekit-agents' own
-# root span for a job (``ipc/job_proc_lazy_main.py``: ``_traceable_entrypoint``),
-# so it wraps everything the user's entrypoint does — the agent session, and any
-# work before or after it — which is exactly a workflow.
+# span name -> ``netra.entity.type``. ``job_entrypoint`` wraps everything the
+# user's entrypoint does — the agent session, and any work before or after it —
+# which is exactly a workflow.
+#
+# The mapping applies to exactly the jobs whose ``job_entrypoint`` survives:
+# ``SessionRootSpanProcessor`` drops the span only once an ``AgentSession`` has
+# replaced it as the trace root, so a job that opens no session exports it, and
+# exports it classified as the workflow it is.
 NETRA_ENTITY_TYPE_BY_NAME: Dict[str, str] = {
-    "job_entrypoint": ENTITY_TYPE_WORKFLOW,
+    JOB_ENTRYPOINT_SPAN_NAME: ENTITY_TYPE_WORKFLOW,
 }
 
 # LiveKit span name -> the ``netra.audio.type`` value it carries. Matched against
@@ -316,7 +357,7 @@ NETRA_ENTITY_TYPE_BY_NAME: Dict[str, str] = {
 # ``livekit-agents``) are eligible — a nested provider span such as ``openai.chat``
 # never reaches the lookup.
 AUDIO_TYPE_BY_SPAN_NAME: Dict[str, str] = {
-    "agent_session": AUDIO_TYPE_SESSION,
+    AGENT_SESSION_SPAN_NAME: AUDIO_TYPE_SESSION,
     "agent_turn": AUDIO_TYPE_SPAN,
     "user_turn": AUDIO_TYPE_SPAN,
 }

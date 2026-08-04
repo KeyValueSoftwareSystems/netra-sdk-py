@@ -10,6 +10,7 @@ the drop + reparent decision), using lightweight span doubles so parent/scope
 wiring is explicit.
 """
 
+import copy
 import threading
 import time
 
@@ -98,6 +99,17 @@ def make_pipeline(allowed: set[str]):
 
 def exported_ids(recorder: RecordingExporter) -> set[int]:
     return {s.context.span_id for s in recorder.exported}
+
+
+def as_exported_by_sdk(span: FakeSpan) -> FakeSpan:
+    """Return *span* the way the OTel SDK hands it to an exporter: fields, no instance state.
+
+    ``Span.end()`` exports ``Span._readable_span()``, which copies the span's fields
+    into a new ``ReadableSpan`` and drops everything else the span object carried.
+    """
+    snapshot = copy.copy(span)
+    snapshot.__dict__.pop(ROOT_BLOCK_CANDIDATE_FIELD, None)
+    return snapshot
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +227,30 @@ def test_cross_batch_reparenting_via_registry():
     exporter.export([openai])
     assert exported_ids(recorder) == {2}
     assert openai.parent is None
+
+
+def test_drops_root_exporting_alone_when_the_candidacy_marker_did_not_survive():
+    """Candidacy must be resolvable from the registry alone, by the span's *own* id.
+
+    Every other test here exports the same object the processor marked, which the
+    OTel SDK never does: ``Span.end()`` hands the chain ``Span._readable_span()``, a
+    fresh ``ReadableSpan`` carrying the span's fields and none of its instance
+    attributes, so ``ROOT_BLOCK_CANDIDATE_FIELD`` does not reach the exporter in
+    production.  A blocked root then has to be recognised by its own span id — it
+    will not always share a batch with a child that points at it (it may end well
+    before or after them, and with ``disable_batch`` every span exports alone).
+    """
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    fastapi = FakeSpan(1, scope("fastapi"), parent_ctx=None)
+    openai = FakeSpan(2, scope("openai"), parent_ctx=fastapi.context)
+
+    processor.on_start(fastapi)
+    processor.on_start(openai)
+
+    exporter.export([as_exported_by_sdk(fastapi)])
+
+    assert exported_ids(recorder) == set()
 
 
 def test_remote_parent_root_is_not_dropped():
