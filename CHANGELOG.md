@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.99] - Unreleased
+
+- **Fix `set_session_id` / `set_user_id` / `set_tenant_id` not stamping the active span** — These methods previously only set OTel baggage but did not set the attribute on the span that was active at call time. `SessionManager.set_session_context` now also stamps the currently recording span immediately, so the caller's span carries the identity attribute without relying solely on processor-based propagation.
+
+- **Centralize session attribute key constants** — Introduced `ATTR_SESSION_ID`, `ATTR_USER_ID`, and `ATTR_TENANT_ID` constants in `session_manager.py` as the single source of truth for span-attribute keys. `SessionSpanProcessor` now imports these instead of constructing keys inline, eliminating duplication and divergence risk.
+
 ## [0.1.98] - 2026-08-03
 
 - **Add `set_root_output_stream` utility for streaming output on root span** - New `Netra.set_root_output_stream(stream)` method that wraps a sync or async iterable so the accumulated output is automatically written to the root span's `netra.user.output` attribute when iteration ends. Works transparently with Netra-instrumented stream wrappers (extracting `_netra_output`) and generic iterables (concatenating chunks). All instrumentation streaming wrappers (OpenAI, Cerebras, Groq, LiteLLM, Google GenAI, Agno) now expose `_netra_stream_wrapper` and `_netra_output` for content extraction.
@@ -370,4 +376,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.98]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.99]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main

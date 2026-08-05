@@ -7,7 +7,7 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
 from netra.config import Config
-from netra.session_manager import SessionManager
+from netra.session_manager import ATTR_SESSION_ID, ATTR_TENANT_ID, ATTR_USER_ID, SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -38,11 +38,11 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
             span.set_attribute("sdk.name", Config.SDK_NAME)
 
             if session_id:
-                span.set_attribute(f"{Config.LIBRARY_NAME}.session_id", session_id)
+                span.set_attribute(ATTR_SESSION_ID, session_id)
             if user_id:
-                span.set_attribute(f"{Config.LIBRARY_NAME}.user_id", user_id)
+                span.set_attribute(ATTR_USER_ID, user_id)
             if tenant_id:
-                span.set_attribute(f"{Config.LIBRARY_NAME}.tenant_id", tenant_id)
+                span.set_attribute(ATTR_TENANT_ID, tenant_id)
             if custom_keys:
                 for key in custom_keys.split(","):
                     value = baggage.get_baggage(f"custom.{key}", ctx)
