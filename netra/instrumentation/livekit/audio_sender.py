@@ -609,11 +609,7 @@ class AudioChunkSender:
         batches = {role: _PendingBatch(role=role) for role in SpeakerRole}
 
         while True:
-            try:
-                message = await asyncio.wait_for(self._queue.get(), timeout=self._batch_interval_seconds)
-            except asyncio.TimeoutError:
-                await self._flush_idle_batches(batches)
-                continue
+            message = await self._queue.get()
 
             if isinstance(message, _SessionEndMarker):
                 await self._drain_batches(batches)
@@ -683,8 +679,6 @@ class AudioChunkSender:
         if marker.role is SpeakerRole.AGENT:
             if batch.span_id == marker.span_id and not batch.is_empty:
                 await self._flush(batch)
-            elif batch.span_id == marker.span_id:
-                batch.clear()
             self._state_for(marker.span_id, marker.role).is_end_received = True
             return
 
@@ -692,8 +686,6 @@ class AudioChunkSender:
             await self._flush(batch, is_final=True)
             return
 
-        if batch.span_id == marker.span_id:
-            batch.clear()
         await self._post_span_terminator(role=marker.role, span_id=marker.span_id)
 
     async def _handle_span_interrupt(self, marker: _SpanInterruptMarker, batch: _PendingBatch) -> None:
@@ -786,16 +778,6 @@ class AudioChunkSender:
             heard_ms=playback_ms,
         )
 
-    async def _flush_idle_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
-        """Flush both speakers' pending audio after an idle interval.
-
-        Args:
-            batches: The pending batch for each speaker.
-        """
-        for batch in batches.values():
-            await self._flush(batch)
-        await self._finalize_deferred_agent_spans()
-
     async def _drain_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
         """Send everything still held, then close the session on the wire.
 
@@ -813,8 +795,7 @@ class AudioChunkSender:
 
         Agent spans defer their ``is_last`` chunk so that a closely-following
         interrupt marker can be the single terminator carrying ``heard_ms``.
-        Once a batch interval has passed without an interrupt, the span is
-        known to be uninterrupted and can be finalized normally.
+        Spans still open at drain are treated as uninterrupted and finalized here.
         """
         for span_id, state in list(self._span_states.items()):
             if (
