@@ -14,6 +14,10 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Resolve attribute/conversation truncation limits at init time instead of import time** - `NETRA_ATTRIBUTE_MAX_LEN`, `NETRA_CONVERSATION_CONTENT_MAX_LEN`, and `TRIAL_BLOCK_DURATION_SECONDS` are now resolved when `Netra.init()` builds the config rather than when `netra` is first imported. Overrides applied before `init()` — including a late `load_dotenv()` placed after the `netra` import — are now honored, so import order no longer affects these limits. Invalid values fall back to the defaults (50000/50000/900).
 
+- **Fix `set_session_id` / `set_user_id` / `set_tenant_id` not stamping the active span** — These methods previously only set OTel baggage but did not set the attribute on the span that was active at call time. `SessionManager.set_session_context` now also stamps the currently recording span immediately, so the caller's span carries the identity attribute without relying solely on processor-based propagation.
+
+- **Centralize session attribute key constants** — Introduced `ATTR_SESSION_ID`, `ATTR_USER_ID`, and `ATTR_TENANT_ID` constants in `session_manager.py` as the single source of truth for span-attribute keys. `SessionSpanProcessor` now imports these instead of constructing keys inline, eliminating duplication and divergence risk.
+
 ## [0.1.99] - 2026-08-19
 
 - **Add support to capture cache-write tokens in OpenAI instrumentation** — The OpenAI instrumentor now extracts `cache_write_tokens` from `prompt_tokens_details` (or `input_tokens_details` for the Responses API) and maps it to the `gen_ai.usage.cache_creation_input_tokens` span attribute. This enables accurate cost calculation for new OpenAI models that report cache-write tokens separately, as well as OpenAI-compatible proxies that expose cache-write usage.
