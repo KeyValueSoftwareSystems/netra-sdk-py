@@ -17,6 +17,18 @@ logger = logging.getLogger(__name__)
 NETRA_USER_INPUT = "netra.user.input"
 NETRA_USER_OUTPUT = "netra.user.output"
 
+# Canonical span-attribute keys for session identity fields.
+# Used by both set_session_context (active span) and SessionSpanProcessor (descendant spans).
+ATTR_SESSION_ID = f"{Config.LIBRARY_NAME}.session_id"
+ATTR_USER_ID = f"{Config.LIBRARY_NAME}.user_id"
+ATTR_TENANT_ID = f"{Config.LIBRARY_NAME}.tenant_id"
+
+_SESSION_ATTR_KEYS: Dict[str, str] = {
+    "session_id": ATTR_SESSION_ID,
+    "user_id": ATTR_USER_ID,
+    "tenant_id": ATTR_TENANT_ID,
+}
+
 # Entity stacks live in the OpenTelemetry *context* (not plain class variables
 # or ContextVars) so they propagate across thread boundaries: the threading
 # instrumentation re-attaches the active OTel context inside worker threads,
@@ -341,22 +353,35 @@ class SessionManager:
         attach_globally: bool = False,
     ) -> None:
         """
-        Set session context attributes in OpenTelemetry baggage.
+        Set a session identity attribute (session_id, user_id, or tenant_id).
+
+        This does two things atomically:
+          1. Sets the value as OTel baggage so other spans inherit it via
+             ``SessionSpanProcessor.on_start``.
+          2. Sets the corresponding span attribute on the currently active span
+             (if one exists), so the caller's span also carries the value.
 
         Args:
-            session_key: Key to set in baggage (session_id, user_id, tenant_id, or custom_attributes)
+            session_key: Key to set (``"session_id"``, ``"user_id"``, or ``"tenant_id"``)
             value: Value to set for the key
         """
         try:
+            if not (isinstance(value, str) and value):
+                return
+
+            attr_key = _SESSION_ATTR_KEYS.get(session_key)
+            if attr_key is None:
+                return
+
+            # Propagate to descendant spans via baggage
             ctx = otel_context.get_current()
-            if isinstance(value, str) and value:
-                if session_key == "session_id":
-                    ctx = baggage.set_baggage("session_id", value, ctx)
-                elif session_key == "user_id":
-                    ctx = baggage.set_baggage("user_id", value, ctx)
-                elif session_key == "tenant_id":
-                    ctx = baggage.set_baggage("tenant_id", value, ctx)
-                otel_context.attach(ctx)
+            ctx = baggage.set_baggage(session_key, value, ctx)
+            otel_context.attach(ctx)
+
+            # Stamp the active span immediately
+            span = trace.get_current_span()
+            if span and getattr(span, "is_recording", lambda: False)():
+                span.set_attribute(attr_key, value)
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
 
