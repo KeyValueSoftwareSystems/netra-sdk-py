@@ -234,6 +234,10 @@ class _SpanAudioState:
             delivered here would make the trim offset drift by whatever was lost.
         is_finalized: Whether the span's terminal chunk has been accepted.
         is_interrupted: Whether the caller cut this utterance short.
+        is_end_received: Whether the span-end marker has been processed. Agent
+            spans defer their ``is_last`` chunk until either an interrupt marker
+            arrives (carrying ``heard_ms``) or the next idle flush proves no
+            interrupt is coming.
     """
 
     role: SpeakerRole
@@ -242,6 +246,7 @@ class _SpanAudioState:
     bytes_consumed: int = 0
     is_finalized: bool = False
     is_interrupted: bool = False
+    is_end_received: bool = False
 
 
 @dataclass
@@ -508,10 +513,10 @@ class AudioChunkSender:
         """Signal that an agent utterance was cut off *playback_ms* into playback.
 
         The send loop trims the pending audio for the span to what was heard and
-        finalizes it. This is still correct when the span was already finalized
-        through :meth:`mark_audio_end` — LiveKit routinely ends the
-        ``agent_speaking`` span before it reports the interrupt — in which case a
-        bodyless correction carrying only ``x-audio-heard-ms`` follows.
+        finalizes it with a single ``is_last`` chunk carrying ``heard_ms``.
+        Agent span-end markers defer their terminator specifically so this
+        interrupt can be the sole ``is_last`` for the span, avoiding duplicate
+        terminators that would cause the backend to process prematurely.
 
         Args:
             span_id: Hex id of the interrupted ``agent_speaking`` span.
@@ -604,11 +609,7 @@ class AudioChunkSender:
         batches = {role: _PendingBatch(role=role) for role in SpeakerRole}
 
         while True:
-            try:
-                message = await asyncio.wait_for(self._queue.get(), timeout=self._batch_interval_seconds)
-            except asyncio.TimeoutError:
-                await self._flush_idle_batches(batches)
-                continue
+            message = await self._queue.get()
 
             if isinstance(message, _SessionEndMarker):
                 await self._drain_batches(batches)
@@ -659,6 +660,14 @@ class AudioChunkSender:
     async def _handle_span_end(self, marker: _SpanEndMarker, batch: _PendingBatch) -> None:
         """Finalize a speaking span, flushing whatever audio is still pending.
 
+        Agent spans defer their terminator: LiveKit routinely ends the
+        ``agent_speaking`` span before it reports an interrupt, and sending
+        ``is_last`` at span-end would cause the backend to start processing
+        the full audio before the interrupt's ``heard_ms`` arrives. Deferring
+        lets the interrupt marker be the single ``is_last`` for interrupted
+        spans; uninterrupted ones are finalized on the next idle flush or at
+        session drain.
+
         Args:
             marker: The end marker for the span.
             batch: The pending batch for that span's speaker.
@@ -667,33 +676,42 @@ class AudioChunkSender:
         if state is not None and state.is_finalized:
             return
 
+        if marker.role is SpeakerRole.AGENT:
+            if batch.span_id == marker.span_id and not batch.is_empty:
+                await self._flush(batch)
+            self._state_for(marker.span_id, marker.role).is_end_received = True
+            return
+
         if batch.span_id == marker.span_id and not batch.is_empty:
             await self._flush(batch, is_final=True)
             return
 
-        if batch.span_id == marker.span_id:
-            batch.clear()
         await self._post_span_terminator(role=marker.role, span_id=marker.span_id)
 
     async def _handle_span_interrupt(self, marker: _SpanInterruptMarker, batch: _PendingBatch) -> None:
         """Trim an interrupted agent span to the audio heard, then finalize it.
+
+        Agent span-end markers defer their ``is_last``, so this handler is
+        normally the one that sends the single terminator for the span — with
+        ``heard_ms`` attached. If the deferred finalization happened to run
+        first (edge case: the interrupt arrived more than one batch interval
+        after the span end), the span is already closed and nothing is sent.
 
         Args:
             marker: The interrupt marker, carrying the playback position.
             batch: The pending agent batch.
         """
         state = self._state_for(marker.span_id, SpeakerRole.AGENT)
+        if state.is_finalized:
+            state.is_interrupted = True
+            return
         state.is_interrupted = True
 
         if batch.span_id != marker.span_id or batch.is_empty:
-            # Nothing pending: the audio already went out, so all the endpoint
-            # needs is where to cut it. Forced, because the normal end marker has
-            # usually finalized the span by now.
             await self._post_span_terminator(
                 role=state.role,
                 span_id=marker.span_id,
                 heard_ms=marker.playback_ms,
-                force=True,
             )
             return
 
@@ -724,15 +742,11 @@ class AudioChunkSender:
         remaining = heard_offset - already_consumed
 
         if remaining <= 0:
-            # Everything heard has already been sent; the endpoint only needs the
-            # cut point so it can discard the overshoot. Forced, because the normal
-            # end marker may already have finalized the span.
             batch.clear()
             await self._post_span_terminator(
                 role=role,
                 span_id=span_id,
                 heard_ms=playback_ms,
-                force=True,
             )
             return
 
@@ -764,15 +778,6 @@ class AudioChunkSender:
             heard_ms=playback_ms,
         )
 
-    async def _flush_idle_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
-        """Flush both speakers' pending audio after an idle interval.
-
-        Args:
-            batches: The pending batch for each speaker.
-        """
-        for batch in batches.values():
-            await self._flush(batch)
-
     async def _drain_batches(self, batches: Dict[SpeakerRole, _PendingBatch]) -> None:
         """Send everything still held, then close the session on the wire.
 
@@ -781,8 +786,25 @@ class AudioChunkSender:
         """
         for batch in batches.values():
             await self._flush(batch, is_final=bool(batch.span_id))
+        await self._finalize_deferred_agent_spans()
         await self._finalize_open_spans()
         await self._post_session_terminator()
+
+    async def _finalize_deferred_agent_spans(self) -> None:
+        """Send the deferred terminator for agent spans that were not interrupted.
+
+        Agent spans defer their ``is_last`` chunk so that a closely-following
+        interrupt marker can be the single terminator carrying ``heard_ms``.
+        Spans still open at drain are treated as uninterrupted and finalized here.
+        """
+        for span_id, state in list(self._span_states.items()):
+            if (
+                state.role is SpeakerRole.AGENT
+                and state.is_end_received
+                and not state.is_finalized
+                and not state.is_interrupted
+            ):
+                await self._post_span_terminator(role=state.role, span_id=span_id)
 
     async def _flush(self, batch: _PendingBatch, *, is_final: bool = False) -> None:
         """Post *batch*'s audio and clear it.
@@ -852,7 +874,6 @@ class AudioChunkSender:
         role: SpeakerRole,
         span_id: str,
         heard_ms: int = 0,
-        force: bool = False,
     ) -> None:
         """Post the empty chunk that closes a span.
 
@@ -860,13 +881,11 @@ class AudioChunkSender:
             role: The speaker the span belongs to.
             span_id: Hex id of the span to close.
             heard_ms: Milliseconds heard, for an interrupted agent span only.
-            force: Send even though the span is already finalized. Used for an
-                interrupt correction arriving after the normal terminator.
         """
         if not span_id:
             return
         state = self._span_states.get(span_id)
-        if state is not None and state.is_finalized and not force:
+        if state is not None and state.is_finalized:
             return
 
         await self._post_chunk(

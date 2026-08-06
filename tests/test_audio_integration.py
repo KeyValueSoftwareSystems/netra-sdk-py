@@ -400,7 +400,7 @@ class TestAudioChunkSenderInterrupts:
 
         assert recorder.bytes_for(AGENT_SPAN_ID) == 50 * BYTES_PER_MS
 
-    def test_interrupt_after_the_span_closed_sends_a_correction(self, ingest_server) -> None:
+    def test_interrupt_after_the_span_closed_sends_a_single_is_last_with_heard_ms(self, ingest_server) -> None:
         url, recorder = ingest_server
 
         async def scenario(sender: AudioChunkSender) -> None:
@@ -411,10 +411,10 @@ class TestAudioChunkSenderInterrupts:
 
         run_call(url, scenario)
 
-        corrections = [r for r in recorder.chunks_for(AGENT_SPAN_ID) if HEADER_HEARD_MS in r.headers]
-        assert len(corrections) == 1
-        assert corrections[0].headers[HEADER_HEARD_MS] == "40"
-        assert corrections[0].headers[HEADER_LAST_CHUNK] == "true"
+        terminators = [r for r in recorder.chunks_for(AGENT_SPAN_ID) if r.is_last]
+        assert len(terminators) == 1, "agent span must produce exactly one is_last chunk"
+        assert terminators[0].headers[HEADER_HEARD_MS] == "40"
+        assert terminators[0].body == b""
 
     def test_interrupt_after_the_heard_audio_was_already_sent_only_marks_the_cut(self, ingest_server) -> None:
         url, recorder = ingest_server
