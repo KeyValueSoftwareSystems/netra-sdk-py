@@ -89,6 +89,33 @@ class RootSpanProcessor(SpanProcessor):  # type: ignore[misc]
             logger.debug("RootSpanProcessor: Failed to resolve root span", exc_info=True)
             return None
 
+    @staticmethod
+    def replace_root_span(span: Span) -> None:
+        """
+        Record ``span`` as the root span of its trace, replacing any earlier entry.
+
+        ``on_start`` records the first parentless span it sees per trace and uses
+        ``setdefault``, so an instrumentation that re-roots a trace *after* it began
+        cannot register its new root by starting it — the original root already owns
+        the slot. This is that instrumentation's way to say "the root moved".
+
+        Callers must have already made ``span`` the actual root of its trace (i.e.
+        rewritten the parents accordingly); this only updates the mapping the
+        lookup helpers and ``LlmTraceIdentifierSpanProcessor`` read.
+
+        Args:
+            span: The span that is now the trace's root.
+        """
+        try:
+            span_ctx = span.get_span_context()
+            if span_ctx is None or not span_ctx.is_valid:
+                return
+
+            with RootSpanProcessor._lock:
+                RootSpanProcessor._root_spans[span_ctx.trace_id] = span
+        except Exception:
+            logger.debug("RootSpanProcessor: failed to replace root span", exc_info=True)
+
     def _is_root_span(
         self,
         parent_context: Optional[context_api.Context],

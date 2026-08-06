@@ -242,6 +242,18 @@ class Netra:
                     pass
                 finally:
                     cls._subprocess_ctx_token = None
+            # Close the root span of any LiveKit call whose session never closed.
+            # MUST run before the tracer provider is flushed and shut down: a span
+            # ended after that point never reaches the exporter, and losing this one
+            # loses the whole call's root.
+            try:
+                from netra.instrumentation.livekit.call_span import end_all_call_spans
+
+                end_all_call_spans()
+            except ImportError:
+                pass
+            except Exception:
+                logger.warning("Failed to close open LiveKit call spans", exc_info=True)
             # Flush and shutdown the tracer provider
             try:
                 provider = trace.get_tracer_provider()
