@@ -1,10 +1,10 @@
 import logging
 import threading
 import time
-from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, cast
+from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
 
 from opentelemetry.sdk.trace import ReadableSpan
-from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
+from opentelemetry.trace import INVALID_SPAN_ID, Span, SpanContext
 
 from netra.config import get_trial_block_duration_seconds
 from netra.processors.root_instrument_filter_processor import (
@@ -498,8 +498,14 @@ def reparent_spans(spans: Sequence[ReadableSpan], dropped_span_parents: Dict[Any
             set_span_parent(span, new_parent)
 
 
-def set_span_parent(span: ReadableSpan, parent: Any) -> None:
+def set_span_parent(span: Union[ReadableSpan, Span], parent: Any) -> None:
     """Set *span*'s parent, preferring the private ``_parent`` slot.
+
+    Accepts a live ``Span`` as well as a ``ReadableSpan``: the SDK's ``Span`` *is* a
+    ``ReadableSpan``, and reparenting a still-recording span is how
+    ``netra/instrumentation/livekit/call_span.py`` re-roots a voice trace while the
+    call is in flight. Only the parent is written, so a recording span is otherwise
+    untouched, and nothing reads the parent before export.
 
     Args:
         span: The span to reparent.
