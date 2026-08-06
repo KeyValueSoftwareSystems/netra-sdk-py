@@ -39,16 +39,29 @@ a live, livekit-scoped ``job_entrypoint`` that has not already been re-rooted.
 use) and can be called inside a user's own ``@workflow`` span; in those cases
 ``livekit-call`` is an ordinary child of whatever is current and no other span is
 touched. A Netra decorator's root span stays the root.
+
+**Known limit: the end boundary is not enforced, only the start one.** The
+backdated ``start_time`` guarantees ``livekit-call`` begins no later than
+``job_entrypoint``. Nothing guarantees the reverse at the other end: the call span
+closes when the session closes, while ``job_entrypoint`` — now its child — closes
+when the user's entrypoint coroutine returns. An entrypoint that keeps working
+after ``await session.start(...)`` for longer than the call lasts therefore ends
+*after* its own parent, and the root's duration understates the trace. This is
+deliberately not compensated for: holding the root open until the entrypoint
+returns would reintroduce the very coupling to entrypoint lifetime that this span
+exists to break, and the ordinary LiveKit entrypoint returns long before the call
+ends. Assume the root covers the *call*, not every last thing the job does.
 """
 
 from __future__ import annotations
 
 import logging
 import threading
+from collections import OrderedDict
 from typing import Any, Dict, List, Optional
 
 from opentelemetry import trace
-from opentelemetry.trace import Span
+from opentelemetry.trace import Span, Status, StatusCode
 
 from netra.exporters.utils import set_span_parent
 from netra.instrumentation.livekit.utils import (
@@ -85,6 +98,24 @@ CALL_SPAN_FIELD = "_netra_livekit_call_span"
 # and a visible record on the span that its parent was rewritten.
 REROOTED_ATTRIBUTE = "netra.livekit.rerooted"
 
+# Hard cap on simultaneously-open call spans, mirroring the bound
+# ``RootInstrumentFilterProcessor`` puts on its own candidate registry.
+#
+# Entries leave the registry when the session closes, so a correct process holds
+# one per *concurrent* call — a handful even on a thread-executor worker running
+# many jobs in one process. The cap therefore never binds in normal operation; it
+# only stops a process from accumulating live ``Span`` objects forever when
+# sessions are abandoned without ever closing (a job that dies in-process, an
+# ``AgentSession`` dropped on the floor). No TTL: a call span legitimately stays
+# open for the whole call, so age says nothing about whether it leaked.
+_MAX_OPEN_CALL_SPANS = 256
+
+# Statuses for the two ways a call span can be closed by something other than its
+# own session ending. Both mean "this call did not end cleanly", and without them
+# an abandoned call is indistinguishable at the root from a healthy one.
+_SHUTDOWN_STATUS = Status(StatusCode.ERROR, "livekit-call: session never closed before Netra.shutdown()")
+_EVICTED_STATUS = Status(StatusCode.ERROR, f"livekit-call: evicted, more than {_MAX_OPEN_CALL_SPANS} open call spans")
+
 
 class _CallSpanRegistry:
     """Finds a call span from the span id of a child it parents.
@@ -97,6 +128,9 @@ class _CallSpanRegistry:
     spans in one trace, and a trace-keyed registry would let the second session's
     close end the first session's span.
 
+    Bounded at ``_MAX_OPEN_CALL_SPANS``, oldest first, because every entry pins a
+    live ``Span`` and nothing but a session close removes one.
+
     Locked because ``Netra.shutdown()`` reaches :meth:`pop_all` from whichever
     thread called it, while registration and lookup happen on the agent's event
     loop.
@@ -104,18 +138,33 @@ class _CallSpanRegistry:
 
     def __init__(self) -> None:
         """Start with no calls registered."""
-        self._by_span_id: Dict[int, Span] = {}
+        self._by_span_id: "OrderedDict[int, Span]" = OrderedDict()
         self._lock = threading.Lock()
 
-    def register(self, span_id: int, span: Span) -> None:
-        """Record a call span under its own span id.
+    def register(self, span_id: int, span: Span) -> List[Span]:
+        """Record a call span under its own span id, evicting the oldest if full.
 
         Args:
             span_id: The call span's own span id.
             span: The ``livekit-call`` span.
+
+        Returns:
+            The call spans evicted to make room, which the caller owns and must
+            end. Returned rather than ended here because ``Span.end()`` runs the
+            whole span-processor chain synchronously, and that chain reaches back
+            into this registry (``SpanMappingProcessor.on_end`` →
+            :func:`end_call_span_parenting` → :meth:`unregister`). Ending under
+            ``self._lock`` would make that re-entrant, which a plain
+            ``threading.Lock`` does not survive.
         """
         with self._lock:
             self._by_span_id[span_id] = span
+            self._by_span_id.move_to_end(span_id)
+            evicted: List[Span] = []
+            while len(self._by_span_id) > _MAX_OPEN_CALL_SPANS:
+                _oldest_span_id, oldest_span = self._by_span_id.popitem(last=False)
+                evicted.append(oldest_span)
+        return evicted
 
     def unregister(self, span_id: int) -> Optional[Span]:
         """Remove and return a call span. Idempotent.
@@ -185,7 +234,16 @@ def start_call_span(instance: Any, *, session_id: Optional[str] = None) -> Optio
 
     span_id = _span_id_of(span)
     if span_id is not None:
-        call_spans.register(span_id, span)
+        # Ended out here rather than inside ``register`` — see its docstring for
+        # why that would deadlock. Logged rather than dropped quietly: reaching
+        # the cap means calls are being abandoned, which is worth knowing about.
+        for evicted in call_spans.register(span_id, span):
+            logger.warning(
+                "netra.livekit: evicting an open %s span; more than %d calls started without ever closing",
+                CALL_SPAN_NAME,
+                _MAX_OPEN_CALL_SPANS,
+            )
+            _end_unclaimed(evicted, status=_EVICTED_STATUS)
     _store_on_session(instance, span)
 
     logger.debug(
@@ -261,7 +319,7 @@ def end_call_span_of_session(instance: Any) -> None:
     _end(span)
 
 
-def end_call_span_parenting(child_parent_span_id: Optional[int]) -> None:
+def end_call_span_parenting(child_parent_span_id: Optional[int], *, status: Optional[Status] = None) -> None:
     """End the call span whose own span id is *child_parent_span_id*, if any.
 
     The primary end path: called when a livekit ``agent_session`` span ends, which
@@ -271,13 +329,43 @@ def end_call_span_parenting(child_parent_span_id: Optional[int]) -> None:
 
     Args:
         child_parent_span_id: The parent span id of the ending ``agent_session``.
+        status: The status to close the call span with, from
+            :func:`failure_status_of` — ``None`` to leave it ``UNSET``, which is a
+            call that ended normally.
     """
     if child_parent_span_id is None:
         return
     span = call_spans.unregister(child_parent_span_id)
     if span is None:
         return
-    _end_unclaimed(span)
+    _end_unclaimed(span, status=status)
+
+
+def failure_status_of(span: Any) -> Optional[Status]:
+    """Mirror an ``agent_session`` that ended in error onto its call span.
+
+    The call span is the trace root, so it is what anything keyed on trace-level
+    health reads. Left to itself it always closes ``UNSET``, which would make a
+    call that died mid-way indistinguishable from a clean one without walking the
+    children.
+
+    Only the OTel status is mirrored, not LiveKit's close reason: the reason is
+    already on ``agent_session`` under LiveKit's own attribute key, and copying it
+    would mean hard-coding a key from a library this package deliberately reads
+    through name and scope only.
+
+    Args:
+        span: The ending ``agent_session`` span.
+
+    Returns:
+        An ``ERROR`` status carrying the child's description, or ``None`` when the
+        session did not end in error.
+    """
+    status = getattr(span, "status", None)
+    if getattr(status, "status_code", None) is not StatusCode.ERROR:
+        return None
+    description = getattr(status, "description", None)
+    return Status(StatusCode.ERROR, description or "livekit-call: agent_session ended in error")
 
 
 def end_all_call_spans() -> None:
@@ -286,6 +374,10 @@ def end_all_call_spans() -> None:
     Must run *before* the tracer provider is flushed and shut down, or the spans
     ended here never reach the exporter — and a process that exits mid-call would
     lose the call's root span, not merely close it late.
+
+    Anything closed here is closed with an ``ERROR`` status: reaching this path at
+    all means the process is exiting with a call still in flight, which is not a
+    clean end and should not be exported as one.
     """
     spans = call_spans.pop_all()
     if not spans:
@@ -293,7 +385,7 @@ def end_all_call_spans() -> None:
 
     logger.info("netra.livekit: closing %d call span(s) whose session never closed", len(spans))
     for span in spans:
-        _end_unclaimed(span)
+        _end_unclaimed(span, status=_SHUTDOWN_STATUS)
 
 
 def _end(span: Span) -> None:
@@ -312,12 +404,20 @@ def _end(span: Span) -> None:
     _end_unclaimed(span)
 
 
-def _end_unclaimed(span: Span) -> None:
+def _end_unclaimed(span: Span, *, status: Optional[Status] = None) -> None:
     """End a span whose registry entry the caller has already claimed.
 
     Args:
         span: The call span to end.
+        status: The status to set before ending, or ``None`` to leave whatever the
+            span already carries — which is ``UNSET`` for a clean call, and the
+            ``ERROR`` ``trace.use_span`` recorded for a ``start()`` that raised.
     """
+    if status is not None:
+        try:
+            span.set_status(status)
+        except Exception:
+            logger.debug("netra.livekit: could not set the %s span status", CALL_SPAN_NAME, exc_info=True)
     try:
         span.end()
     except Exception:
@@ -457,5 +557,6 @@ __all__ = [
     "end_all_call_spans",
     "end_call_span_of_session",
     "end_call_span_parenting",
+    "failure_status_of",
     "start_call_span",
 ]

@@ -21,6 +21,7 @@ from wrapt import ObjectProxy
 from netra.instrumentation import livekit as livekit_instrumentation
 from netra.instrumentation.livekit import NetraLiveKitInstrumentor
 from netra.instrumentation.livekit.call_span import (
+    _MAX_OPEN_CALL_SPANS,
     CALL_SPAN_FIELD,
     REROOTED_ATTRIBUTE,
     call_spans,
@@ -818,6 +819,21 @@ class _FakeAgentSession:
             self._session_span = None
 
 
+class _FailedAgentSession(_FakeAgentSession):
+    """A session whose ``agent_session`` span ends ``ERROR``, as a failed call's does.
+
+    LiveKit sets the status on its own session span; this reproduces just that, so
+    the mirroring onto the call span can be tested without a livekit-agents install.
+    """
+
+    CLOSE_ERROR = "the participant hung up mid-turn"
+
+    async def aclose_impl(self, **kwargs: Any) -> None:
+        if self._session_span is not None:
+            self._session_span.set_status(trace.Status(trace.StatusCode.ERROR, self.CLOSE_ERROR))
+        await super().aclose_impl(**kwargs)
+
+
 @pytest.fixture
 def call_harness(monkeypatch: pytest.MonkeyPatch) -> Any:
     """A ``_CallHarness`` whose provider is the one ``call_span.py`` creates from.
@@ -1109,6 +1125,102 @@ class TestCallSpanLifecycle:
         end_all_call_spans()
 
         assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+
+class TestCallSpanStatus:
+    """The call span is the trace root, so it is where trace-level health is read.
+
+    Left to itself an ended span is ``UNSET``, which would make a call that died
+    mid-way indistinguishable from a clean one without walking the children.
+    """
+
+    def test_a_clean_call_leaves_the_call_span_unset(self, call_harness: _CallHarness) -> None:
+        _run_call(call_harness)
+
+        assert call_harness.finished(CALL_SPAN_NAME).status.status_code is trace.StatusCode.UNSET
+
+    def test_a_session_that_ends_in_error_ends_the_call_span_in_error(self, call_harness: _CallHarness) -> None:
+        session = _FailedAgentSession(call_harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": None})
+            await wrap_aclose(session.aclose_impl, session, (), {})
+
+        asyncio.run(call())
+
+        status = call_harness.finished(CALL_SPAN_NAME).status
+        assert status.status_code is trace.StatusCode.ERROR
+        assert status.description == _FailedAgentSession.CLOSE_ERROR
+
+    def test_shutdown_marks_the_calls_it_closes_as_failed(self, call_harness: _CallHarness) -> None:
+        # Reaching the backstop at all means the process is exiting mid-call, which
+        # is not a clean end and must not be exported as one.
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+        asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+
+        end_all_call_spans()
+
+        status = call_harness.finished(CALL_SPAN_NAME).status
+        assert status.status_code is trace.StatusCode.ERROR
+        assert "never closed" in (status.description or "")
+
+
+class TestOpenCallSpansAreBounded:
+    """Every registry entry pins a live ``Span``, and only a session close frees one.
+
+    A session abandoned without ever closing therefore leaks one span object per
+    call for the process lifetime — invisible on a per-job worker process, but
+    unbounded on a thread-executor worker running many jobs in one process.
+    """
+
+    @staticmethod
+    def _start_abandoned_calls(harness: _CallHarness, count: int) -> None:
+        """Start *count* calls and never close any of them."""
+        for _ in range(count):
+            session = _FakeAgentSession(harness.livekit_tracer)
+            asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+
+    def test_the_registry_stops_growing_at_the_cap(self, call_harness: _CallHarness) -> None:
+        self._start_abandoned_calls(call_harness, _MAX_OPEN_CALL_SPANS + 5)
+
+        assert len(call_spans.pop_all()) == _MAX_OPEN_CALL_SPANS
+
+    def test_an_evicted_call_is_exported_rather_than_silently_dropped(self, call_harness: _CallHarness) -> None:
+        # Eviction has to *end* the span: an unended span never reaches the
+        # exporter, so releasing the reference alone would lose the call outright.
+        overflow = 3
+        self._start_abandoned_calls(call_harness, _MAX_OPEN_CALL_SPANS + overflow)
+
+        evicted = [span for span in call_harness.exporter.get_finished_spans() if span.name == CALL_SPAN_NAME]
+        assert len(evicted) == overflow
+        assert all(span.status.status_code is trace.StatusCode.ERROR for span in evicted)
+        assert all("evicted" in (span.status.description or "") for span in evicted)
+
+    def test_the_oldest_call_is_the_one_evicted(self, call_harness: _CallHarness) -> None:
+        first = _FakeAgentSession(call_harness.livekit_tracer)
+        asyncio.run(wrap_start(first.start, first, (), {"room": None}))
+        first_call_span = getattr(first, CALL_SPAN_FIELD)
+
+        self._start_abandoned_calls(call_harness, _MAX_OPEN_CALL_SPANS)
+
+        evicted = [span for span in call_harness.exporter.get_finished_spans() if span.name == CALL_SPAN_NAME]
+        assert len(evicted) == 1
+        assert evicted[0].context.span_id == first_call_span.get_span_context().span_id
+
+    def test_a_call_that_closes_normally_still_ends_normally_after_eviction(self, call_harness: _CallHarness) -> None:
+        # Eviction ends spans outside the registry lock because the processor chain
+        # reaches back into the registry; a survivor closing through that same
+        # chain afterwards proves the registry is still usable.
+        self._start_abandoned_calls(call_harness, _MAX_OPEN_CALL_SPANS + 1)
+
+        _run_call(call_harness)
+
+        clean = [
+            span
+            for span in call_harness.exporter.get_finished_spans()
+            if span.name == CALL_SPAN_NAME and span.status.status_code is trace.StatusCode.UNSET
+        ]
+        assert len(clean) == 1
 
 
 class TestSessionStartHook:

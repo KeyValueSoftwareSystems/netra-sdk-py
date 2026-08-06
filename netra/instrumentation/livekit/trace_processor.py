@@ -25,7 +25,7 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
-from netra.instrumentation.livekit.call_span import end_call_span_parenting
+from netra.instrumentation.livekit.call_span import end_call_span_parenting, failure_status_of
 from netra.instrumentation.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     ATTRIBUTE_MAP,
@@ -368,6 +368,9 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
         the call span's own span id — an exact match, so a job running two sessions
         cannot have one session's close end the other's call span.
 
+        A session that ended in error closes its call span in error too: the call
+        span is the trace root, so it is where trace-level health is read from.
+
         Args:
             span: The span that has ended.
         """
@@ -375,7 +378,7 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             return
 
         parent = getattr(span, "parent", None)
-        end_call_span_parenting(getattr(parent, "span_id", None))
+        end_call_span_parenting(getattr(parent, "span_id", None), status=failure_status_of(span))
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush.
