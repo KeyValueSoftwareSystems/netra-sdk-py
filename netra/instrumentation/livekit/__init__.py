@@ -46,12 +46,16 @@ _session_hook_installed = False
 class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """Binds livekit-agents' OTel tracer to Netra's provider and installs session hooks.
 
-    Unlike most Netra instrumentors this one creates no spans of its own on the
-    trace path — livekit-agents already emits a full span tree
-    (``agent_session`` → ``agent_turn`` → ``llm_node`` / ``tts_node`` /
-    ``function_tool``). Our job is to make that tree land in Netra's pipeline,
-    shield the providers from LiveKit's per-job telemetry teardown, and stamp the
-    Netra session id on the session root.
+    livekit-agents already emits a full span tree (``agent_session`` →
+    ``agent_turn`` → ``llm_node`` / ``tts_node`` / ``function_tool``), so this
+    instrumentor mostly annotates rather than creates: its job is to make that tree
+    land in Netra's pipeline, shield the providers from LiveKit's per-job telemetry
+    teardown, and stamp the Netra session id on it.
+
+    It creates exactly **one** span of its own, ``livekit-call``, which wraps the
+    whole call and becomes the trace root — LiveKit's own root, ``job_entrypoint``,
+    ends moments after ``session.start()`` and so cannot serve as one. See
+    ``call_span.py``.
 
     Note on session-id scope: the id is attached for the duration of
     ``AgentSession.start`` and inherited by every task LiveKit creates during it,
