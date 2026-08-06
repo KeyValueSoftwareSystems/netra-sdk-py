@@ -20,12 +20,22 @@ from wrapt import ObjectProxy
 
 from netra.instrumentation import livekit as livekit_instrumentation
 from netra.instrumentation.livekit import NetraLiveKitInstrumentor
+from netra.instrumentation.livekit.call_span import (
+    CALL_SPAN_FIELD,
+    REROOTED_ATTRIBUTE,
+    call_spans,
+    end_all_call_spans,
+)
 from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvider
 from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.livekit.utils import (
+    AGENT_SESSION_SPAN_NAME,
+    CALL_SPAN_NAME,
+    JOB_ENTRYPOINT_SPAN_NAME,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
     NETRA_CONVERSATION_TRUNCATED,
+    NETRA_ENTITY_TYPE,
     NETRA_SPAN_TYPE,
     ConversationSide,
     content_of_choice_event,
@@ -38,6 +48,9 @@ from netra.instrumentation.livekit.utils import (
     role_of_choice_event,
     tts_pricing_attributes_from,
 )
+from netra.instrumentation.livekit.wrappers import wrap_aclose, wrap_start
+from netra.processors.root_span_processor import RootSpanProcessor
+from netra.processors.session_span_processor import SessionSpanProcessor
 from netra.span_wrapper import SpanType
 
 pytestmark = pytest.mark.unit
@@ -115,8 +128,11 @@ class TestSpanTypeMapping:
     def test_span_type_is_stamped_on_livekit_spans(self, harness: _Harness) -> None:
         assert _record(harness, "agent_turn", {})["netra.span.type"] == SpanType.AGENT.value
 
-    def test_job_entrypoint_is_marked_as_a_workflow(self, harness: _Harness) -> None:
-        assert _record(harness, "job_entrypoint", {})["netra.entity.type"] == "workflow"
+    def test_job_entrypoint_is_no_longer_marked_as_a_workflow(self, harness: _Harness) -> None:
+        # The workflow entity moved onto ``livekit-call``, which is now the span
+        # wrapping the whole call. Two nested spans both claiming to be the
+        # workflow is what this asserts is gone.
+        assert "netra.entity.type" not in _record(harness, JOB_ENTRYPOINT_SPAN_NAME, {})
 
     def test_non_entity_spans_carry_no_entity_marker(self, harness: _Harness) -> None:
         assert "netra.entity.type" not in _record(harness, "agent_turn", {})
@@ -746,25 +762,382 @@ class TestShieldedTracerProvider:
         assert _ShieldedTracerProvider(_ApiOnlyProvider()).force_flush() is True  # type: ignore[arg-type]
 
 
-class TestSessionStartHook:
-    def test_start_result_is_returned_untouched(self) -> None:
-        from netra.instrumentation.livekit.wrappers import wrap_start
+class _CallHarness:
+    """A provider carrying the whole processor chain a call span depends on.
 
-        async def fake_start(**kwargs: Any) -> str:
-            return "started"
+    Registration order mirrors production (``netra/tracer.py`` then
+    ``_instrument()``): Netra's own processors, then the exporting processor, then
+    the LiveKit ones. That ordering is what makes ``SpanMappingProcessor.on_end``
+    the *later* hook, which is where the call span is closed.
+    """
 
-        result = asyncio.run(wrap_start(fake_start, object(), (), {"room": None}))
+    def __init__(self) -> None:
+        self.exporter = InMemorySpanExporter()
+        self.provider = TracerProvider()
+        self.provider.add_span_processor(SessionSpanProcessor())
+        self.provider.add_span_processor(RootSpanProcessor())
+        self.provider.add_span_processor(SimpleSpanProcessor(self.exporter))
+        self.provider.add_span_processor(SpanMappingProcessor())
+        self.livekit_tracer = self.provider.get_tracer(LIVEKIT_SCOPE_NAME)
 
-        assert result == "started"
+    def finished(self, name: str) -> ReadableSpan:
+        """Return the single finished span called *name*."""
+        matches = [span for span in self.exporter.get_finished_spans() if span.name == name]
+        assert len(matches) == 1, f"expected exactly one {name!r} span, got {len(matches)}"
+        return matches[0]
 
-    def test_start_exceptions_propagate_unchanged(self) -> None:
-        from netra.instrumentation.livekit.wrappers import wrap_start
+    def finished_count(self, name: str) -> int:
+        """Return how many finished spans are called *name*."""
+        return len([span for span in self.exporter.get_finished_spans() if span.name == name])
+
+    def attributes(self, name: str) -> Dict[str, Any]:
+        """Return the exported attributes of the finished span called *name*."""
+        return dict(self.finished(name).attributes or {})
+
+
+class _FakeAgentSession:
+    """Stand-in for LiveKit's ``AgentSession``, reproducing its span lifecycle.
+
+    Only the two things the wrappers actually depend on: ``start()`` opens the
+    ``agent_session`` span in whatever context is current — which is how it ends up
+    under the call span — and ``_aclose_impl()`` ends it, clearing
+    ``_session_span`` exactly as livekit-agents does (``agent_session.py:1148-1150``).
+    """
+
+    def __init__(self, tracer: Any) -> None:
+        self._tracer = tracer
+        self._session_span: Optional[Any] = None
+
+    async def start(self, **kwargs: Any) -> str:
+        self._session_span = self._tracer.start_span(AGENT_SESSION_SPAN_NAME)
+        return "started"
+
+    async def aclose_impl(self, **kwargs: Any) -> None:
+        if self._session_span is not None:
+            self._session_span.end()
+            self._session_span = None
+
+
+@pytest.fixture
+def call_harness(monkeypatch: pytest.MonkeyPatch) -> Any:
+    """A ``_CallHarness`` whose provider is the one ``call_span.py`` creates from.
+
+    ``start_call_span`` resolves its tracer off the global provider, which
+    ``Netra.init()`` installs in production. Redirecting ``get_tracer`` keeps the
+    harness self-contained rather than mutating global OTel state, and asserts the
+    real scope name reaches the provider.
+    """
+    harness = _CallHarness()
+
+    def get_tracer(name: str, *args: Any, **kwargs: Any) -> Any:
+        return harness.provider.get_tracer(name, *args, **kwargs)
+
+    monkeypatch.setattr(trace, "get_tracer", get_tracer)
+    # Both registries are process-global, so a leaked entry would surface as a
+    # phantom call span in a later test.
+    call_spans.pop_all()
+    RootSpanProcessor().shutdown()
+    yield harness
+    call_spans.pop_all()
+    RootSpanProcessor().shutdown()
+
+
+@pytest.fixture
+def fake_livekit_agents(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Install the minimum ``livekit.agents`` surface the wrappers read.
+
+    ``_resolve_session_id`` needs ``get_job_context`` and ``is_given`` to be
+    importable at all; without them it returns ``None`` and the session-id path is
+    never exercised. ``get_job_context`` returns ``None`` here — no job — so the id
+    falls back to the room name, which is the console/eval-mode path.
+    """
+    import sys
+    from types import ModuleType
+
+    livekit = ModuleType("livekit")
+    agents = ModuleType("livekit.agents")
+    utils = ModuleType("livekit.agents.utils")
+    agents.get_job_context = lambda required=True: None  # type: ignore[attr-defined]
+    utils.is_given = lambda value: value is not None  # type: ignore[attr-defined]
+    agents.utils = utils  # type: ignore[attr-defined]
+    livekit.agents = agents  # type: ignore[attr-defined]
+    for path, module in (("livekit", livekit), ("livekit.agents", agents), ("livekit.agents.utils", utils)):
+        monkeypatch.setitem(sys.modules, path, module)
+
+
+class _FakeRoom:
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+def _run_call(
+    harness: _CallHarness,
+    *,
+    parent: Optional[Any] = None,
+    room: Optional[Any] = None,
+) -> _FakeAgentSession:
+    """Run one whole call — start then close — and return the session.
+
+    Args:
+        harness: The provider to create spans from.
+        parent: The span to make current while ``start()`` runs, i.e. the span the
+            call span is created underneath. ``None`` for no ambient span.
+        room: The ``room`` kwarg ``start()`` is called with.
+    """
+    session = _FakeAgentSession(harness.livekit_tracer)
+
+    async def call() -> None:
+        await wrap_start(session.start, session, (), {"room": room})
+        await wrap_aclose(session.aclose_impl, session, (), {})
+
+    if parent is None:
+        asyncio.run(call())
+    else:
+        with trace.use_span(parent, end_on_exit=False):
+            asyncio.run(call())
+    return session
+
+
+class TestCallSpanRootsTheTrace:
+    """``livekit-call`` replaces ``job_entrypoint`` as the root of a voice trace."""
+
+    def test_call_span_becomes_the_trace_root(self, call_harness: _CallHarness) -> None:
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        _run_call(call_harness, parent=job)
+        job.end()
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        entrypoint = call_harness.finished(JOB_ENTRYPOINT_SPAN_NAME)
+        session_span = call_harness.finished(AGENT_SESSION_SPAN_NAME)
+
+        assert call.parent is None, "the call span must be the trace root"
+        assert entrypoint.parent is not None
+        assert entrypoint.parent.span_id == call.context.span_id
+        assert session_span.parent is not None
+        assert session_span.parent.span_id == call.context.span_id
+
+    def test_re_rooting_keeps_the_job_trace_id(self, call_harness: _CallHarness) -> None:
+        # A fresh trace would break audio capture, which reads the ambient trace id
+        # after start() has returned — when job_entrypoint is current again.
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        _run_call(call_harness, parent=job)
+        job.end()
+
+        trace_ids = {
+            call_harness.finished(name).context.trace_id
+            for name in (CALL_SPAN_NAME, JOB_ENTRYPOINT_SPAN_NAME, AGENT_SESSION_SPAN_NAME)
+        }
+        assert len(trace_ids) == 1
+
+    def test_call_span_encloses_both_of_its_children(self, call_harness: _CallHarness) -> None:
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        _run_call(call_harness, parent=job)
+        job.end()
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        entrypoint = call_harness.finished(JOB_ENTRYPOINT_SPAN_NAME)
+        session_span = call_harness.finished(AGENT_SESSION_SPAN_NAME)
+
+        # Backdated, so the child that started first does not begin before its parent.
+        assert call.start_time == entrypoint.start_time
+        assert call.start_time <= session_span.start_time
+        assert call.end_time is not None and session_span.end_time is not None
+        assert call.end_time >= session_span.end_time
+
+    def test_job_entrypoint_records_that_it_was_re_rooted(self, call_harness: _CallHarness) -> None:
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        _run_call(call_harness, parent=job)
+        job.end()
+
+        assert call_harness.attributes(JOB_ENTRYPOINT_SPAN_NAME)[REROOTED_ATTRIBUTE] is True
+
+    def test_call_span_is_registered_as_the_traces_root_span(self, call_harness: _CallHarness) -> None:
+        # RootSpanProcessor.on_start recorded job_entrypoint first and records with
+        # setdefault, so without an explicit replacement the LLM-call marker would
+        # keep landing on a span that has already ended.
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+        with trace.use_span(job, end_on_exit=False):
+            asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+
+        call_span = getattr(session, CALL_SPAN_FIELD)
+        trace_id = call_span.get_span_context().trace_id
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is call_span
+
+        asyncio.run(wrap_aclose(session.aclose_impl, session, (), {}))
+        job.end()
+
+    def test_call_span_carries_the_workflow_entity_marker(self, call_harness: _CallHarness) -> None:
+        _run_call(call_harness)
+
+        attributes = call_harness.attributes(CALL_SPAN_NAME)
+        assert attributes[NETRA_ENTITY_TYPE] == "workflow"
+        assert attributes[NETRA_SPAN_TYPE] == SpanType.SPAN.value
+
+    def test_call_span_carries_the_session_id(self, call_harness: _CallHarness, fake_livekit_agents: None) -> None:
+        # The root span was the one span missing netra.session_id, because the id is
+        # only resolvable once start() is called and job_entrypoint predates it.
+        _run_call(call_harness, room=_FakeRoom("console-abc123"))
+
+        assert call_harness.attributes(CALL_SPAN_NAME)["netra.session_id"] == "console-abc123"
+
+
+class TestCallSpanLeavesOtherTracesAlone:
+    """The re-rooting only fires on a live, livekit-scoped ``job_entrypoint``."""
+
+    def test_call_span_is_a_natural_root_with_no_ambient_span(self, call_harness: _CallHarness) -> None:
+        _run_call(call_harness)
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        session_span = call_harness.finished(AGENT_SESSION_SPAN_NAME)
+        assert call.parent is None
+        assert session_span.parent is not None
+        assert session_span.parent.span_id == call.context.span_id
+        assert REROOTED_ATTRIBUTE not in (call.attributes or {})
+
+    def test_a_user_span_stays_the_root(self, call_harness: _CallHarness) -> None:
+        # A netra decorator's or a user's own span owns its trace; hijacking it
+        # would move their root under ours.
+        user_span = call_harness.provider.get_tracer("my.app").start_span("checkout")
+        _run_call(call_harness, parent=user_span)
+        user_span.end()
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        user = call_harness.finished("checkout")
+        assert user.parent is None
+        assert call.parent is not None
+        assert call.parent.span_id == user.context.span_id
+
+    def test_a_job_entrypoint_from_another_scope_is_not_re_rooted(self, call_harness: _CallHarness) -> None:
+        # Name alone must not be enough: any library may name a span job_entrypoint.
+        impostor = call_harness.provider.get_tracer("some.other.sdk").start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        _run_call(call_harness, parent=impostor)
+        impostor.end()
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        assert call.parent is not None
+        assert call.parent.span_id == call_harness.finished(JOB_ENTRYPOINT_SPAN_NAME).context.span_id
+
+    def test_a_second_session_in_one_job_does_not_re_root_again(self, call_harness: _CallHarness) -> None:
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        first = _run_call(call_harness, parent=job)
+        second = _run_call(call_harness, parent=job)
+        job.end()
+
+        first_call = getattr(first, CALL_SPAN_FIELD)
+        second_call = getattr(second, CALL_SPAN_FIELD)
+        entrypoint = call_harness.finished(JOB_ENTRYPOINT_SPAN_NAME)
+
+        # job_entrypoint stays under the first call span; the second is an ordinary
+        # child rather than a competing root.
+        assert entrypoint.parent is not None
+        assert entrypoint.parent.span_id == first_call.get_span_context().span_id
+        assert second_call.parent is not None
+        assert second_call.parent.span_id == entrypoint.context.span_id
+
+
+class TestCallSpanLifecycle:
+    """The call span is closed exactly once, on every path that can close it."""
+
+    def test_agent_session_ending_closes_the_call_span(self, call_harness: _CallHarness) -> None:
+        # The primary path: no method wrap involved, so it survives a LiveKit rename
+        # of _aclose_impl.
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+        asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 0, "precondition: still open"
+
+        asyncio.run(session.aclose_impl())
+
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+    def test_call_span_is_ended_once_when_both_paths_run(self, call_harness: _CallHarness) -> None:
+        _run_call(call_harness)
+
+        # wrap_aclose runs after _aclose_impl, which already ended agent_session and
+        # so already triggered the processor path.
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+    def test_wrap_aclose_closes_the_call_span_without_the_processor(self) -> None:
+        # A provider that is not an SDK TracerProvider never gets the LiveKit
+        # processors registered, leaving wrap_aclose as the only end path.
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer(LIVEKIT_SCOPE_NAME)
+
+        session = _FakeAgentSession(tracer)
+        with pytest.MonkeyPatch.context() as patch:
+            patch.setattr(trace, "get_tracer", lambda name, *a, **k: provider.get_tracer(name, *a, **k))
+            call_spans.pop_all()
+            asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+            asyncio.run(wrap_aclose(session.aclose_impl, session, (), {}))
+
+        assert len([span for span in exporter.get_finished_spans() if span.name == CALL_SPAN_NAME]) == 1
+
+    def test_close_that_raises_still_closes_the_call_span(self, call_harness: _CallHarness) -> None:
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+        asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+
+        async def failing_close(**kwargs: Any) -> None:
+            raise RuntimeError("teardown blew up")
+
+        with pytest.raises(RuntimeError, match="teardown blew up"):
+            asyncio.run(wrap_aclose(failing_close, session, (), {}))
+
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+    def test_a_failing_start_ends_the_call_span_with_an_error(self, call_harness: _CallHarness) -> None:
+        session = _FakeAgentSession(call_harness.livekit_tracer)
 
         async def failing_start(**kwargs: Any) -> None:
             raise RuntimeError("livekit blew up")
 
         with pytest.raises(RuntimeError, match="livekit blew up"):
-            asyncio.run(wrap_start(failing_start, object(), (), {}))
+            asyncio.run(wrap_start(failing_start, session, (), {"room": None}))
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        assert call.status.status_code is trace.StatusCode.ERROR
+        assert [event.name for event in call.events] == ["exception"]
+
+    def test_shutdown_closes_a_call_whose_session_never_closed(self, call_harness: _CallHarness) -> None:
+        # The process-exit backstop: an unended span is never exported at all, so
+        # without this the whole call loses its root.
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+        asyncio.run(wrap_start(session.start, session, (), {"room": None}))
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 0, "precondition: still open"
+
+        end_all_call_spans()
+
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+
+class TestSessionStartHook:
+    def test_start_result_is_returned_untouched(self, call_harness: _CallHarness) -> None:
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+
+        async def fake_start(**kwargs: Any) -> str:
+            return "started"
+
+        result = asyncio.run(wrap_start(fake_start, session, (), {"room": None}))
+
+        assert result == "started"
+
+    def test_start_exceptions_propagate_unchanged(self, call_harness: _CallHarness) -> None:
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+
+        async def failing_start(**kwargs: Any) -> None:
+            raise RuntimeError("livekit blew up")
+
+        with pytest.raises(RuntimeError, match="livekit blew up"):
+            asyncio.run(wrap_start(failing_start, session, (), {}))
+
+    def test_start_result_is_returned_when_the_call_span_cannot_be_stored(self) -> None:
+        # An instance with no __dict__ cannot hold the call span. Netra must still
+        # not change what the user's start() returns.
+        async def fake_start(**kwargs: Any) -> str:
+            return "started"
+
+        assert asyncio.run(wrap_start(fake_start, object(), (), {"room": None})) == "started"
 
 
 @pytest.fixture

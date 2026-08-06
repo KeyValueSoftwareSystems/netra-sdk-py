@@ -1,13 +1,17 @@
 """wrapt wrappers for LiveKit's ``AgentSession`` lifecycle.
 
-Two things hang off the session's lifecycle, and this module is where both are
-bolted on:
+Three things hang off the session's lifecycle, and this module is where all of
+them are bolted on:
 
 * **the Netra session id** — the LiveKit room SID, falling back to the room name
-  — attached as OTel baggage *around* ``AgentSession.start`` so the
-  ``agent_session`` root span created inside it carries the id, then detached so
-  the caller's context is restored. See :func:`wrap_start` and
-  :func:`_resolve_session_id`;
+  — attached as OTel baggage *around* ``AgentSession.start`` so the spans created
+  inside it carry the id, then detached so the caller's context is restored. See
+  :func:`wrap_start` and :func:`_resolve_session_id`;
+* **the ``livekit-call`` span** — Netra's own root span for the call, opened
+  before ``start()`` runs and left open until the session closes, so LiveKit's
+  ``agent_session`` and everything under it nests inside it. The span itself, and
+  the trace re-rooting it performs, live in ``call_span.py``; this module only
+  decides when it opens and closes;
 * **call-audio capture** — started once ``start()`` has returned and torn down
   before the session closes. The capture itself lives in ``audio_capture.py``;
   this module only decides when it begins and ends.
@@ -23,8 +27,11 @@ import logging
 from contextlib import ExitStack
 from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
 
+from opentelemetry import trace
+
 from netra.config import get_active_config
 from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
+from netra.instrumentation.livekit.call_span import end_call_span_of_session, start_call_span
 from netra.session_manager import SessionManager
 
 logger = logging.getLogger(__name__)
@@ -229,17 +236,22 @@ async def wrap_start(
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
 ) -> Any:
-    """Attach the session id around ``AgentSession.start``.
+    """Open the call span and attach the session id around ``AgentSession.start``.
 
-    The attach happens **before** the await, because the ``agent_session`` span is
-    created inside ``start()`` and ``SessionSpanProcessor.on_start`` reads baggage
-    at that moment. Attaching afterwards would leave the trace's root span as the
-    one span missing ``netra.session_id``.
+    Both happen **before** the await, and in that order. The session id must be
+    attached first because ``SessionSpanProcessor.on_start`` reads baggage at span
+    creation, so anything created afterwards — the ``livekit-call`` span included —
+    carries ``netra.session_id``; attaching later would leave the trace's root span
+    as the one span missing it. The call span must then be made current before
+    ``start()`` runs, because LiveKit creates ``agent_session`` inside ``start()``
+    and it has to land underneath.
 
-    The detach happens in ``finally``, in the same task, as OTel requires. Every
-    LiveKit task that produces spans for this session is created *during*
-    ``start()`` and snapshots the context at creation, so those tasks keep the
-    baggage for their whole lifetime while the caller's context is restored.
+    Both are unwound through one ``ExitStack``, in this same coroutine, as OTel
+    requires of context tokens — innermost (the call span) first. Every LiveKit
+    task that produces spans for this session is created *during* ``start()`` and
+    snapshots the context at creation, so those tasks keep both the baggage and the
+    call span as an ancestor for their whole lifetime while the caller's context is
+    restored.
 
     Documented consequence: the session id is scoped to the LiveKit session's task
     tree, not the whole job. Code running in the entrypoint task *after*
@@ -249,7 +261,8 @@ async def wrap_start(
     Args:
         wrapped: LiveKit's ``AgentSession.start``.
         instance: The ``AgentSession``, needed by ``_after_start`` to reach the
-            session span and the session's audio I/O.
+            session span and the session's audio I/O, and the handle the call span
+            is stored on.
         args: Positional arguments (``agent``).
         kwargs: Keyword arguments, including the keyword-only ``room``.
 
@@ -258,24 +271,45 @@ async def wrap_start(
     """
     session_id = _resolve_session_id(kwargs)
 
-    # ExitStack rather than a bare token so the detach is ordinary context-manager
-    # unwinding: it runs in this same coroutine, on both the success and error
-    # paths, and an attach failure degrades to "no session id" instead of
-    # propagating into the user's start() call.
-    scope = ExitStack()
-    if session_id is not None:
-        try:
-            scope.enter_context(SessionManager.session_scope(session_id=session_id))
-        except Exception:
-            logger.warning("netra.livekit: could not attach session context", exc_info=True)
-
     try:
-        result = await wrapped(*args, **kwargs)
-    finally:
+        # ``with`` rather than a bare ``close()`` so the unwinding sees the
+        # exception: that is what lets ``use_span`` record a failing start() on the
+        # call span. Each attach is isolated, so a failure degrades to a missing
+        # session id or an un-nested call span instead of propagating into the
+        # user's start() call — and the detaches run in this same coroutine, in
+        # reverse order of attachment, as OTel requires of context tokens.
+        with ExitStack() as scope:
+            if session_id is not None:
+                try:
+                    scope.enter_context(SessionManager.session_scope(session_id=session_id))
+                except Exception:
+                    logger.warning("netra.livekit: could not attach session context", exc_info=True)
+
+            call_span = None
+            try:
+                call_span = start_call_span(instance, session_id=session_id)
+            except Exception:
+                logger.warning("netra.livekit: could not open the call span", exc_info=True)
+
+            if call_span is not None:
+                try:
+                    # end_on_exit=False: the span outlives start() by the whole
+                    # call. Exception recording is left on, so a start() that
+                    # raises marks the call span before it is ended below.
+                    scope.enter_context(trace.use_span(call_span, end_on_exit=False))
+                except Exception:
+                    logger.warning("netra.livekit: could not make the call span current", exc_info=True)
+
+            result = await wrapped(*args, **kwargs)
+    except BaseException:
+        # A session that never started will never be closed, so neither end path
+        # would ever run and the call span would be left open — and an unended span
+        # is never exported.
         try:
-            scope.close()
+            end_call_span_of_session(instance)
         except Exception:
-            logger.debug("netra.livekit: session context detach failed", exc_info=True)
+            logger.debug("netra.livekit: could not end the call span after a failed start", exc_info=True)
+        raise
 
     # Awaited after the detach so its own failures cannot leak session context,
     # and isolated so they can never surface in the user's start() call.
@@ -293,13 +327,24 @@ async def wrap_aclose(
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
 ) -> Any:
-    """Run per-session teardown before LiveKit closes the session.
+    """Run per-session teardown around LiveKit closing the session.
 
     Wraps ``_aclose_impl`` rather than ``aclose``: ``aclose()`` covers only the
     ``USER_INITIATED`` close reason, while the other four — including
     ``PARTICIPANT_DISCONNECTED``, i.e. the caller hanging up — reach
     ``_aclose_impl`` directly. Wrapping ``aclose`` would mean the teardown never
     runs on a normal phone call.
+
+    The two halves sit on opposite sides of the wrapped call, and both placements
+    are load-bearing. The audio teardown must run *first*, while ``_session_span``
+    still exists to key it by. Ending the call span must run *last*: LiveKit ends
+    ``agent_session`` inside ``_aclose_impl``, so ending the call span beforehand
+    would close a parent before its own child.
+
+    ``SpanMappingProcessor`` normally gets there first, off the ``agent_session``
+    span ending — that path needs no method wrap and so survives a LiveKit rename
+    of ``_aclose_impl``. This one is the fallback for a provider that never got the
+    processors registered; both are idempotent, and whichever runs first wins.
 
     Args:
         wrapped: LiveKit's ``AgentSession._aclose_impl``.
@@ -315,4 +360,12 @@ async def wrap_aclose(
     except Exception:
         logger.warning("netra.livekit: pre-close teardown failed", exc_info=True)
 
-    return await wrapped(*args, **kwargs)
+    try:
+        return await wrapped(*args, **kwargs)
+    finally:
+        # In ``finally`` so a close that raises still closes the call span rather
+        # than abandoning the trace's root.
+        try:
+            end_call_span_of_session(instance)
+        except Exception:
+            logger.warning("netra.livekit: could not end the call span", exc_info=True)
