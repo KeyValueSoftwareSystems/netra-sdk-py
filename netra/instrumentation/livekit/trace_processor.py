@@ -25,7 +25,9 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
+from netra.instrumentation.livekit.call_span import end_call_span_parenting, failure_status_of
 from netra.instrumentation.livekit.utils import (
+    AGENT_SESSION_SPAN_NAME,
     ATTRIBUTE_MAP,
     AUDIO_TYPE_BY_SPAN_NAME,
     CHAT_CTX_ATTRIBUTE,
@@ -328,14 +330,16 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             logger.warning("netra.livekit: span mapping could not be installed", exc_info=True)
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Copy a finished span's conversation content up to its parent, if wanted.
+        """Copy a finished span's conversation content up to its parent, if wanted,
+        and close the call span when a session ends.
 
         Deliberately *not* gated on ``_is_livekit_span``: the child holding the
         content is usually the provider's own span (``openai.chat`` and friends),
         which belongs to another instrumentation scope entirely.
 
         Never touches *this* span — see the module docstring. It only appends to a
-        still-recording parent, which the exporter has not seen yet.
+        still-recording parent, which the exporter has not seen yet, and ends the
+        call span, which is a different span again.
 
         Args:
             span: The span that has ended.
@@ -348,6 +352,33 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             self._deregister_io_parent(span)
         except Exception:
             logger.debug("netra.livekit: span could not be deregistered", exc_info=True)
+        try:
+            self._close_call_span(span)
+        except Exception:
+            logger.debug("netra.livekit: call span could not be closed", exc_info=True)
+
+    @staticmethod
+    def _close_call_span(span: ReadableSpan) -> None:
+        """End the ``livekit-call`` span wrapping *span*, when *span* ends a session.
+
+        ``agent_session`` ending is LiveKit's own authoritative "the call is over"
+        signal: it is emitted on all five close reasons and needs no method wrap, so
+        it is the primary end path for the call span (``wrap_aclose`` is the
+        fallback). The call span is looked up by *span*'s parent span id, which is
+        the call span's own span id — an exact match, so a job running two sessions
+        cannot have one session's close end the other's call span.
+
+        A session that ended in error closes its call span in error too: the call
+        span is the trace root, so it is where trace-level health is read from.
+
+        Args:
+            span: The span that has ended.
+        """
+        if span.name != AGENT_SESSION_SPAN_NAME or not _is_livekit_span(span):
+            return
+
+        parent = getattr(span, "parent", None)
+        end_call_span_parenting(getattr(parent, "span_id", None), status=failure_status_of(span))
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush.

@@ -29,6 +29,26 @@ from netra.span_wrapper import SpanType
 LIVEKIT_SCOPE_NAME = "livekit-agents"
 
 # ---------------------------------------------------------------------------
+# Span names
+# ---------------------------------------------------------------------------
+
+# Netra's own span for a whole call — the one span in this package Netra creates
+# rather than annotates. See ``call_span.py``. Kebab-case where every LiveKit span
+# is snake_case, deliberately: the name says at a glance which side authored it.
+CALL_SPAN_NAME = "livekit-call"
+
+# livekit-agents' own root span for a job (``ipc/job_proc_lazy_main.py``:
+# ``_traceable_entrypoint``). It ends when the user's entrypoint coroutine returns
+# — normally moments after ``session.start()`` — so it is a poor trace root for a
+# call that runs for minutes. ``call_span.py`` reparents it under ``livekit-call``.
+JOB_ENTRYPOINT_SPAN_NAME = "job_entrypoint"
+
+# livekit-agents' span for one ``AgentSession``, opened inside ``start()`` and
+# ended inside ``_aclose_impl``. Its end is the authoritative "the call is over"
+# signal this package ends ``livekit-call`` on.
+AGENT_SESSION_SPAN_NAME = "agent_session"
+
+# ---------------------------------------------------------------------------
 # Netra target attribute keys
 # ---------------------------------------------------------------------------
 
@@ -161,6 +181,13 @@ EVENT_CHOICE = "gen_ai.choice"
 
 # Role LiveKit puts on the choice event; only used if the event omits it.
 DEFAULT_CHOICE_ROLE = "assistant"
+
+# The job identifiers LiveKit stamps on ``job_entrypoint``
+# (``trace_types.ATTR_JOB_ID`` / ``ATTR_ROOM_NAME``). ``call_span.py`` writes the
+# same two keys on ``livekit-call`` so the call's own root names the job and room
+# it belongs to, read from the job context rather than copied off LiveKit's span.
+LK_JOB_ID_ATTRIBUTE = "lk.job_id"
+LK_ROOM_NAME_ATTRIBUTE = "lk.room_name"
 
 
 # ---------------------------------------------------------------------------
@@ -303,13 +330,15 @@ NETRA_SPAN_TYPE_BY_NAME: Dict[str, SpanType] = {
     "tts_request": SpanType.GENERATION,
 }
 
-# span name -> ``netra.entity.type``. ``job_entrypoint`` is livekit-agents' own
-# root span for a job (``ipc/job_proc_lazy_main.py``: ``_traceable_entrypoint``),
-# so it wraps everything the user's entrypoint does — the agent session, and any
-# work before or after it — which is exactly a workflow.
-NETRA_ENTITY_TYPE_BY_NAME: Dict[str, str] = {
-    "job_entrypoint": ENTITY_TYPE_WORKFLOW,
-}
+# span name -> ``netra.entity.type``. Empty by design, and kept rather than
+# removed because it is the hook for classifying a future LiveKit span.
+#
+# ``job_entrypoint`` used to be listed here as the workflow: it was the trace root,
+# so it was the one span wrapping everything the user's entrypoint did. It no
+# longer is — ``livekit-call`` roots the trace and ``job_entrypoint`` is one of its
+# two children — so the workflow marker moved onto ``livekit-call``
+# (``call_span.py``), leaving exactly one workflow entity per voice trace.
+NETRA_ENTITY_TYPE_BY_NAME: Dict[str, str] = {}
 
 # LiveKit span name -> the ``netra.audio.type`` value it carries. Matched against
 # the LiveKit span name, so only spans this package already gates on (scope
