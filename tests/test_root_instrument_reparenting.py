@@ -14,10 +14,20 @@ import threading
 import time
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import TracerProvider
 
 from netra.exporters.filtering_span_exporter import FilteringSpanExporter
+from netra.instrumentation.livekit.utils import (
+    AGENT_SESSION_SPAN_NAME,
+    CALL_SPAN_NAME,
+    JOB_ENTRYPOINT_SPAN_NAME,
+    LIVEKIT_SCOPE_NAME,
+)
 from netra.processors import root_instrument_filter_processor as rifp
+from netra.processors.llm_trace_identifier_span_processor import LlmTraceIdentifierSpanProcessor
 from netra.processors.root_instrument_filter_processor import ROOT_BLOCK_CANDIDATE_FIELD, RootInstrumentFilterProcessor
+from netra.processors.root_span_processor import RootSpanProcessor
 
 pytestmark = pytest.mark.unit
 
@@ -461,3 +471,116 @@ def test_candidate_marker_survives_span_attribute_limit():
 
     assert is_root_block_candidate(span) is True
     assert ROOT_BLOCK_CANDIDATE_FIELD not in dict(span.attributes or {})
+
+
+# ---------------------------------------------------------------------------
+# Third-party scopes: instrumentations Netra enables but does not author
+# ---------------------------------------------------------------------------
+
+
+def test_livekit_agents_scope_resolves_to_the_livekit_instrument():
+    # livekit-agents does not follow the netra.instrumentation.* naming convention,
+    # so THIRD_PARTY_INSTRUMENTATION_SCOPES is the only thing bringing its spans
+    # under root_instruments. Without it a LiveKit trace would be unfilterable —
+    # and the resolver would return None, silently exempting every LiveKit span.
+    processor, exporter, recorder = make_pipeline({"openai"})
+
+    call = FakeSpan(1, LIVEKIT_SCOPE_NAME, parent_ctx=None, name=CALL_SPAN_NAME)
+    session = FakeSpan(2, LIVEKIT_SCOPE_NAME, parent_ctx=call.context, name=AGENT_SESSION_SPAN_NAME)
+    generation = FakeSpan(3, scope("openai"), parent_ctx=session.context)
+
+    for span in (call, session, generation):
+        processor.on_start(span)
+    exporter.export([call, session, generation])
+
+    # livekit is not in the allow-list here, so the whole LiveKit tree is peeled
+    # and the first allowed descendant is promoted to root.
+    assert exported_ids(recorder) == {3}
+    assert generation.parent is None
+
+
+def test_livekit_call_span_survives_as_a_root_when_livekit_is_allowed():
+    # The production default: InstrumentSet.LIVEKIT is in DEFAULT_INSTRUMENTS_FOR_ROOT,
+    # so Netra's own livekit-call span is the exported root of a voice trace.
+    processor, exporter, recorder = make_pipeline({"livekit"})
+
+    call = FakeSpan(1, "netra.instrumentation.livekit", parent_ctx=None, name=CALL_SPAN_NAME)
+    entrypoint = FakeSpan(2, LIVEKIT_SCOPE_NAME, parent_ctx=call.context, name=JOB_ENTRYPOINT_SPAN_NAME)
+    session = FakeSpan(3, LIVEKIT_SCOPE_NAME, parent_ctx=call.context, name=AGENT_SESSION_SPAN_NAME)
+
+    for span in (call, entrypoint, session):
+        processor.on_start(span)
+    exporter.export([call, entrypoint, session])
+
+    assert exported_ids(recorder) == {1, 2, 3}
+    assert call.parent is None
+    assert entrypoint.parent is call.context
+
+
+# ---------------------------------------------------------------------------
+# Moving a trace's recorded root after the fact
+# ---------------------------------------------------------------------------
+
+
+class TestReplaceRootSpan:
+    """``RootSpanProcessor.replace_root_span`` for traces re-rooted mid-flight."""
+
+    @staticmethod
+    def _clear() -> None:
+        RootSpanProcessor().shutdown()
+
+    def setup_method(self) -> None:
+        self._clear()
+
+    def teardown_method(self) -> None:
+        self._clear()
+
+    def test_on_start_alone_cannot_move_a_recorded_root(self):
+        # The reason replace_root_span exists: on_start records with setdefault, so
+        # the first parentless span keeps the slot even once it is no longer the root.
+        provider = TracerProvider()
+        processor = RootSpanProcessor()
+        provider.add_span_processor(processor)
+        tracer = provider.get_tracer("livekit-agents")
+
+        entrypoint = tracer.start_span("job_entrypoint")
+        trace_id = entrypoint.get_span_context().trace_id
+        with trace.use_span(entrypoint, end_on_exit=False):
+            replacement = tracer.start_span("livekit-call")
+
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is entrypoint
+
+        RootSpanProcessor.replace_root_span(replacement)
+
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace_id) is replacement
+        assert RootSpanProcessor.is_root_span_for_trace(trace_id, replacement.get_span_context().span_id)
+        assert not RootSpanProcessor.is_root_span_for_trace(trace_id, entrypoint.get_span_context().span_id)
+
+    def test_the_replaced_root_is_the_one_marked_as_an_llm_trace(self):
+        # The defect this fixes: LlmTraceIdentifierSpanProcessor only marks a root
+        # that is still recording, and job_entrypoint ends long before the first LLM
+        # span in a voice call.
+        provider = TracerProvider()
+        provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
+        provider.add_span_processor(RootSpanProcessor())
+        tracer = provider.get_tracer("livekit-agents")
+
+        entrypoint = tracer.start_span("job_entrypoint")
+        with trace.use_span(entrypoint, end_on_exit=False):
+            call = tracer.start_span("livekit-call")
+        RootSpanProcessor.replace_root_span(call)
+        entrypoint.end()
+
+        with trace.use_span(call, end_on_exit=False):
+            generation = tracer.start_span("llm_request")
+            generation.set_attribute("gen_ai.request.model", "gpt-4o-mini")
+            generation.end()
+        call.end()
+
+        assert dict(call.attributes or {}).get("netra.trace.llm.call") is True
+        assert "netra.trace.llm.call" not in dict(entrypoint.attributes or {})
+
+    def test_replacing_with_an_invalid_span_context_is_a_no_op(self):
+        RootSpanProcessor.replace_root_span(trace.INVALID_SPAN)
+
+        assert RootSpanProcessor.get_root_span_by_trace_id(trace.INVALID_TRACE_ID) is None
