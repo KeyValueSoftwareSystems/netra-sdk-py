@@ -62,7 +62,6 @@ logger = logging.getLogger(__name__)
 
 # Defaults for the knobs ``Config`` does not resolve. Every other limit reaches
 # the sender from ``Config`` — see ``audio_capture.start_audio_capture``.
-DEFAULT_BATCH_INTERVAL_SECONDS = 0.5
 DEFAULT_MAX_BATCH_FRAMES = 200
 DEFAULT_FLUSH_AT_BYTES = 32768
 DEFAULT_MAX_REQUEST_BYTES = 262144
@@ -236,8 +235,7 @@ class _SpanAudioState:
         is_interrupted: Whether the caller cut this utterance short.
         is_end_received: Whether the span-end marker has been processed. Agent
             spans defer their ``is_last`` chunk until either an interrupt marker
-            arrives (carrying ``heard_ms``) or the next idle flush proves no
-            interrupt is coming.
+            arrives (carrying ``heard_ms``).
     """
 
     role: SpeakerRole
@@ -305,7 +303,6 @@ class AudioChunkSender:
         session_id: str,
         api_key: str = "",
         auth_headers: Optional[Dict[str, str]] = None,
-        batch_interval_seconds: float = DEFAULT_BATCH_INTERVAL_SECONDS,
         max_batch_frames: int = DEFAULT_MAX_BATCH_FRAMES,
         flush_at_bytes: int = DEFAULT_FLUSH_AT_BYTES,
         max_request_bytes: int = DEFAULT_MAX_REQUEST_BYTES,
@@ -319,7 +316,6 @@ class AudioChunkSender:
             api_key: Credential sent as ``x-api-key`` when non-empty.
             auth_headers: Further credential headers from the Netra config.
                 Applied only where they do not already have a value.
-            batch_interval_seconds: Longest a frame waits before being flushed.
             max_batch_frames: Flush once this many frames have accumulated.
             flush_at_bytes: Target request size — flush once this many PCM bytes
                 have accumulated.
@@ -333,7 +329,6 @@ class AudioChunkSender:
         self._session_id = session_id
         self._api_key = api_key
         self._auth_headers = auth_headers or {}
-        self._batch_interval_seconds = batch_interval_seconds
         self._max_batch_frames = max_batch_frames
         self._flush_at_bytes = flush_at_bytes
         self._max_request_bytes = max(flush_at_bytes, max_request_bytes)
@@ -369,15 +364,14 @@ class AudioChunkSender:
         self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
         self._send_task = asyncio.create_task(self._run_send_loop(), name="netra-audio-chunk-sender")
         logger.info(
-            "netra.audio: sender started -> %s (batch=%.1fs, max_frames=%d, flush_at=%dB, max_request=%dB)",
+            "netra.audio: sender started -> %s (max_frames=%d, flush_at=%dB, max_request=%dB)",
             self._url,
-            self._batch_interval_seconds,
             self._max_batch_frames,
             self._flush_at_bytes,
             self._max_request_bytes,
         )
 
-    async def end_session(self, *, drain_timeout_seconds: float = _DEFAULT_DRAIN_TIMEOUT_SECONDS) -> None:
+    async def end_session(self, *, drain_timeout_seconds: float | None = None) -> None:
         """Drain the queue, close every open span, and signal the session's end.
 
         Idempotent: a second call returns immediately. Once this has been called
@@ -395,7 +389,9 @@ class AudioChunkSender:
             return
         self._is_closed = True
 
-        deadline = time.monotonic() + max(0.0, drain_timeout_seconds)
+        deadline = time.monotonic() + max(
+            0.0, drain_timeout_seconds if drain_timeout_seconds is not None else _DEFAULT_DRAIN_TIMEOUT_SECONDS
+        )
         await self._enqueue_session_end(deadline)
         if self._send_task is not None:
             await self._await_send_task(deadline)
@@ -665,8 +661,7 @@ class AudioChunkSender:
         ``is_last`` at span-end would cause the backend to start processing
         the full audio before the interrupt's ``heard_ms`` arrives. Deferring
         lets the interrupt marker be the single ``is_last`` for interrupted
-        spans; uninterrupted ones are finalized on the next idle flush or at
-        session drain.
+        spans; uninterrupted ones are finalized at session drain.
 
         Args:
             marker: The end marker for the span.
@@ -702,10 +697,9 @@ class AudioChunkSender:
             batch: The pending agent batch.
         """
         state = self._state_for(marker.span_id, SpeakerRole.AGENT)
-        if state.is_finalized:
-            state.is_interrupted = True
-            return
         state.is_interrupted = True
+        if state.is_finalized:
+            return
 
         if batch.span_id != marker.span_id or batch.is_empty:
             await self._post_span_terminator(
