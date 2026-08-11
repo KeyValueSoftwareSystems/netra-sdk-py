@@ -33,6 +33,7 @@ from netra.instrumentation.livekit.audio_sender import AudioChunkSender
 from netra.instrumentation.livekit.audio_types import (
     HEADER_HEARD_MS,
     HEADER_LAST_CHUNK,
+    HEADER_PARENT_SPAN_ID,
     HEADER_ROLE,
     HEADER_SEQUENCE,
     HEADER_SESSION_ID,
@@ -55,12 +56,12 @@ FRAME_MS = FRAME_BYTES // BYTES_PER_MS
 
 USER_SPAN_ID = "aaaabbbbccccdddd"
 AGENT_SPAN_ID = "1111222233334444"
+PARENT_SPAN_ID = "ffffeeeebbbbcccc"
 TRACE_ID = "0123456789abcdef0123456789abcdef"
 
 # Large enough that no test hits a batch boundary it did not ask for.
 UNBOUNDED_BYTES = 10_000_000
 UNBOUNDED_FRAMES = 10_000
-LONG_INTERVAL_SECONDS = 30.0
 
 
 # ---------------------------------------------------------------------------
@@ -179,7 +180,6 @@ def build_sender(url: str, **overrides: Any) -> AudioChunkSender:
         "url": url,
         "session_id": "session-under-test",
         "api_key": "test-key",
-        "batch_interval_seconds": LONG_INTERVAL_SECONDS,
         "max_batch_frames": UNBOUNDED_FRAMES,
         "flush_at_bytes": UNBOUNDED_BYTES,
         "max_request_bytes": UNBOUNDED_BYTES,
@@ -188,10 +188,23 @@ def build_sender(url: str, **overrides: Any) -> AudioChunkSender:
     return AudioChunkSender(**settings)
 
 
-def enqueue_frames(sender: AudioChunkSender, count: int, *, role: SpeakerRole, span_id: str) -> None:
+def enqueue_frames(
+    sender: AudioChunkSender,
+    count: int,
+    *,
+    role: SpeakerRole,
+    span_id: str,
+    parent_span_id: str = "",
+) -> None:
     """Enqueue *count* identical frames for one span."""
     for _ in range(count):
-        sender.enqueue(make_frame(), role=role, trace_id=TRACE_ID, span_id=span_id)
+        sender.enqueue(
+            make_frame(),
+            role=role,
+            trace_id=TRACE_ID,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+        )
 
 
 def run_call(url: str, scenario: Callable[[AudioChunkSender], Awaitable[None]], **overrides: Any) -> AudioChunkSender:
@@ -345,9 +358,44 @@ class TestAudioChunkSenderWireContract:
         assert chunks
         for chunk in chunks:
             assert HEADER_SPAN_ID not in chunk.headers
+            assert HEADER_PARENT_SPAN_ID not in chunk.headers
             assert HEADER_SEQUENCE not in chunk.headers
             assert HEADER_LAST_CHUNK not in chunk.headers
             assert chunk.headers[HEADER_TRACE_ID] == TRACE_ID
+
+    def test_span_chunks_carry_the_parent_span_id(self, ingest_server) -> None:
+        url, recorder = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            enqueue_frames(
+                sender,
+                3,
+                role=SpeakerRole.USER,
+                span_id=USER_SPAN_ID,
+                parent_span_id=PARENT_SPAN_ID,
+            )
+            sender.mark_audio_end(
+                role=SpeakerRole.USER,
+                span_id=USER_SPAN_ID,
+                parent_span_id=PARENT_SPAN_ID,
+            )
+
+        run_call(url, scenario)
+
+        for request in recorder.chunks_for(USER_SPAN_ID):
+            assert request.headers[HEADER_PARENT_SPAN_ID] == PARENT_SPAN_ID
+
+    def test_span_chunks_omit_parent_when_the_speaking_span_is_a_root(self, ingest_server) -> None:
+        url, recorder = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            enqueue_frames(sender, 2, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+            sender.mark_audio_end(role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+
+        run_call(url, scenario)
+
+        for request in recorder.chunks_for(USER_SPAN_ID):
+            assert HEADER_PARENT_SPAN_ID not in request.headers
 
     def test_a_request_body_never_exceeds_the_configured_ceiling(self, ingest_server) -> None:
         url, recorder = ingest_server
@@ -631,13 +679,19 @@ class TestSessionAudioCoordinator:
     def test_a_frame_inside_a_speaking_span_carries_that_span_id(self) -> None:
         sender = MagicMock()
         coordinator = SessionAudioCoordinator(sender=sender)
-        coordinator.on_speaking_start(SpeakerRole.USER, trace_id=TRACE_ID, span_id=USER_SPAN_ID)
+        coordinator.on_speaking_start(
+            SpeakerRole.USER,
+            trace_id=TRACE_ID,
+            span_id=USER_SPAN_ID,
+            parent_span_id=PARENT_SPAN_ID,
+        )
 
         coordinator.on_frame(SpeakerRole.USER, make_frame())
 
         kwargs = sender.enqueue.call_args.kwargs
         assert kwargs["role"] is SpeakerRole.USER
         assert kwargs["span_id"] == USER_SPAN_ID
+        assert kwargs["parent_span_id"] == PARENT_SPAN_ID
         assert kwargs["trace_id"] == TRACE_ID
 
     def test_a_frame_between_turns_is_sent_with_no_span_id(self) -> None:
@@ -649,6 +703,7 @@ class TestSessionAudioCoordinator:
 
         kwargs = sender.enqueue.call_args.kwargs
         assert kwargs["span_id"] == ""
+        assert kwargs["parent_span_id"] == ""
         assert kwargs["trace_id"] == TRACE_ID
 
     def test_both_speakers_are_streamed(self) -> None:
@@ -672,7 +727,11 @@ class TestSessionAudioCoordinator:
 
         coordinator.on_speaking_end(SpeakerRole.USER)
 
-        sender.mark_audio_end.assert_called_once_with(role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+        sender.mark_audio_end.assert_called_once_with(
+            role=SpeakerRole.USER,
+            span_id=USER_SPAN_ID,
+            parent_span_id="",
+        )
 
     def test_close_finalizes_every_span_still_recording(self) -> None:
         sender = MagicMock()
@@ -719,7 +778,11 @@ class TestSessionAudioCoordinatorInterrupts:
         event = MagicMock(interrupted=True, playback_position=0.75)
         coordinator.on_playback_finished(event)
 
-        sender.interrupt_agent_span.assert_called_once_with(span_id=AGENT_SPAN_ID, playback_ms=750)
+        sender.interrupt_agent_span.assert_called_once_with(
+            span_id=AGENT_SPAN_ID,
+            playback_ms=750,
+            parent_span_id="",
+        )
 
     def test_an_interrupted_span_is_not_finalized_at_its_full_length(self) -> None:
         sender = MagicMock()
@@ -739,7 +802,11 @@ class TestSessionAudioCoordinatorInterrupts:
 
         coordinator.on_playback_finished(MagicMock(interrupted=True, playback_position=0.2))
 
-        sender.interrupt_agent_span.assert_called_once_with(span_id=AGENT_SPAN_ID, playback_ms=200)
+        sender.interrupt_agent_span.assert_called_once_with(
+            span_id=AGENT_SPAN_ID,
+            playback_ms=200,
+            parent_span_id="",
+        )
 
     def test_playback_that_was_not_interrupted_needs_no_correction(self) -> None:
         sender = MagicMock()
@@ -756,11 +823,21 @@ class TestSessionAudioCoordinatorInterrupts:
 # ---------------------------------------------------------------------------
 
 
-def make_span(name: str, *, trace_id: int, span_id: int = 0xABCD) -> MagicMock:
+def make_span(
+    name: str,
+    *,
+    trace_id: int,
+    span_id: int = 0xABCD,
+    parent_span_id: Optional[int] = None,
+) -> MagicMock:
     """Build a span whose context reports the given ids."""
     span = MagicMock()
     span.name = name
     span.get_span_context.return_value = MagicMock(is_valid=True, trace_id=trace_id, span_id=span_id)
+    if parent_span_id is None:
+        span.parent = None
+    else:
+        span.parent = MagicMock(is_valid=True, span_id=parent_span_id)
     return span
 
 
@@ -801,15 +878,25 @@ class TestAudioSpanProcessor:
         audio_coordinators.register(trace_id, coordinator)
         processor = AudioSpanProcessor()
 
-        span = make_span(span_name, trace_id=trace_id, span_id=0x1234567890ABCDEF)
+        span = make_span(
+            span_name,
+            trace_id=trace_id,
+            span_id=0x1234567890ABCDEF,
+            parent_span_id=0xFEDCBA0987654321,
+        )
         processor.on_start(span)
 
         assert sender.enqueue.call_count == 0
         coordinator.on_frame(role, make_frame())
         assert sender.enqueue.call_args.kwargs["span_id"] == format(0x1234567890ABCDEF, "016x")
+        assert sender.enqueue.call_args.kwargs["parent_span_id"] == format(0xFEDCBA0987654321, "016x")
 
         processor.on_end(span)
-        sender.mark_audio_end.assert_called_once_with(role=role, span_id=format(0x1234567890ABCDEF, "016x"))
+        sender.mark_audio_end.assert_called_once_with(
+            role=role,
+            span_id=format(0x1234567890ABCDEF, "016x"),
+            parent_span_id=format(0xFEDCBA0987654321, "016x"),
+        )
 
     def test_a_span_from_another_call_is_ignored(self) -> None:
         sender = MagicMock()
@@ -855,7 +942,6 @@ class TestSessionWiring:
         sender = build_audio_sender(config, "session-1")
 
         assert sender is not None
-        assert sender._batch_interval_seconds == 0.25
         assert sender._flush_at_bytes == 4096
         assert sender._max_request_bytes == 65536
         assert sender._queue.maxsize == 1000
