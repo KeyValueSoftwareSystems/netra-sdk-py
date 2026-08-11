@@ -35,11 +35,13 @@ class _SpeakingSpan(NamedTuple):
         role: The speaker the span delimits.
         coordinator: The coordinator capturing that call's audio.
         span_context: The span's own context, for its trace and span ids.
+        parent_span_id: Hex id of the speaking span's parent, or ``""`` if none.
     """
 
     role: SpeakerRole
     coordinator: SessionAudioCoordinator
     span_context: SpanContext
+    parent_span_id: str
 
 
 class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
@@ -60,6 +62,7 @@ class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
             speaking.role,
             trace_id=format(speaking.span_context.trace_id, _TRACE_ID_HEX_DIGITS),
             span_id=format(speaking.span_context.span_id, _SPAN_ID_HEX_DIGITS),
+            parent_span_id=speaking.parent_span_id,
         )
 
     def on_end(self, span: ReadableSpan) -> None:
@@ -114,7 +117,33 @@ def _resolve_speaking_span(span: Union[Span, ReadableSpan]) -> Optional[_Speakin
         coordinator = audio_coordinators.get(span_context.trace_id)
         if coordinator is None:
             return None
-        return _SpeakingSpan(role=role, coordinator=coordinator, span_context=span_context)
+        return _SpeakingSpan(
+            role=role,
+            coordinator=coordinator,
+            span_context=span_context,
+            parent_span_id=_parent_span_id_hex(span),
+        )
     except Exception:
         logger.debug("netra.audio: could not resolve a speaking span", exc_info=True)
         return None
+
+
+def _parent_span_id_hex(span: Union[Span, ReadableSpan]) -> str:
+    """Return the hex id of *span*'s parent, or ``""`` when there is none.
+
+    Args:
+        span: The speaking span whose parent to read.
+
+    Returns:
+        A 16-digit lowercase hex span id, or an empty string for a root span
+        or an invalid/missing parent context.
+    """
+    parent = getattr(span, "parent", None)
+    if parent is None:
+        return ""
+    if hasattr(parent, "is_valid") and not parent.is_valid:
+        return ""
+    parent_span_id = getattr(parent, "span_id", None)
+    if not isinstance(parent_span_id, int) or not parent_span_id:
+        return ""
+    return format(parent_span_id, _SPAN_ID_HEX_DIGITS)
