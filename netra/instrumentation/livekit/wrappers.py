@@ -25,7 +25,7 @@ from __future__ import annotations
 
 import logging
 from contextlib import ExitStack
-from typing import Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Tuple
 
 from opentelemetry import trace
 
@@ -33,6 +33,10 @@ from netra.config import get_active_config
 from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
 from netra.instrumentation.livekit.call_span import end_call_span_of_session, start_call_span
 from netra.session_manager import SessionManager
+
+if TYPE_CHECKING:
+    from livekit.agents import AgentSession
+    from opentelemetry.trace import Span
 
 logger = logging.getLogger(__name__)
 
@@ -137,7 +141,7 @@ def _room_name(kwargs: Dict[str, Any]) -> Optional[str]:
 # ---------------------------------------------------------------------------
 
 
-def _session_span(instance: Any) -> Optional[Any]:
+def _session_span(instance: "AgentSession") -> Optional["Span"]:
     """Return the live ``agent_session`` span, or ``None`` once it is gone.
 
     Args:
@@ -149,7 +153,7 @@ def _session_span(instance: Any) -> Optional[Any]:
     return getattr(instance, "_session_span", None)
 
 
-def _trace_id_of(session_span: Optional[Any]) -> Optional[int]:
+def _trace_id_of(session_span: Optional["Span"]) -> Optional[int]:
     """Read the trace id off the ``agent_session`` span.
 
     Args:
@@ -177,7 +181,7 @@ def _trace_id_of(session_span: Optional[Any]) -> Optional[int]:
 # ---------------------------------------------------------------------------
 
 
-async def _after_start(instance: Any, session_id: Optional[str]) -> None:
+async def _after_start(instance: "AgentSession", session_id: Optional[str]) -> None:
     """Run the per-session wiring, now that ``start()`` has returned.
 
     Args:
@@ -202,7 +206,7 @@ async def _after_start(instance: Any, session_id: Optional[str]) -> None:
     await start_audio_capture(instance, config=config, session_id=session_id or "", trace_id=trace_id)
 
 
-async def _before_close(instance: Any) -> None:
+async def _before_close(instance: "AgentSession") -> None:
     """Run the per-session teardown, *before* LiveKit closes the session.
 
     Ordering is load-bearing: ``_aclose_impl`` ends ``_session_span`` before it
@@ -232,7 +236,7 @@ async def _before_close(instance: Any) -> None:
 
 async def wrap_start(
     wrapped: WrappedAsync,
-    instance: Any,
+    instance: "AgentSession",
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
 ) -> Any:
@@ -323,7 +327,7 @@ async def wrap_start(
 
 async def wrap_aclose(
     wrapped: WrappedAsync,
-    instance: Any,
+    instance: "AgentSession",
     args: Tuple[Any, ...],
     kwargs: Dict[str, Any],
 ) -> Any:
