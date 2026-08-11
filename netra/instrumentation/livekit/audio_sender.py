@@ -9,9 +9,10 @@ a circuit breaker for the rest of the call.
 Three request shapes reach the endpoint, all defined in ``audio_types``:
 
 **Span chunk** — audio captured while a ``user_speaking``/``agent_speaking`` span
-was open. Body is raw PCM; carries ``x-audio-span-id`` and a per-span
-``x-audio-seq``, and the final one carries ``x-audio-last`` (plus
-``x-audio-heard-ms`` when the utterance was interrupted).
+was open. Body is raw PCM; carries ``x-audio-span-id``, ``x-audio-parent-span-id``
+(when the speaking span had a parent), and a per-span ``x-audio-seq``, and the
+final one carries ``x-audio-last`` (plus ``x-audio-heard-ms`` when the utterance
+was interrupted).
 
 **Noise chunk** — audio captured between speaking spans. Same shape without the
 span headers, so it can be laid out on the call timeline but belongs to no turn.
@@ -41,6 +42,7 @@ from netra.instrumentation.livekit.audio_types import (
     HEADER_CONTENT_TYPE,
     HEADER_HEARD_MS,
     HEADER_LAST_CHUNK,
+    HEADER_PARENT_SPAN_ID,
     HEADER_ROLE,
     HEADER_SAMPLE_RATE,
     HEADER_SEQUENCE,
@@ -109,6 +111,7 @@ class _FrameMessage:
     pcm_bytes: bytes
     role: SpeakerRole
     span_id: str
+    parent_span_id: str
     trace_id: str
     sample_rate_hz: int
     channel_count: int
@@ -121,6 +124,7 @@ class _SpanEndMarker:
 
     role: SpeakerRole
     span_id: str
+    parent_span_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -129,6 +133,7 @@ class _SpanInterruptMarker:
 
     span_id: str
     playback_ms: int
+    parent_span_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -154,6 +159,7 @@ class _PendingBatch:
 
     role: SpeakerRole
     span_id: str = ""
+    parent_span_id: str = ""
     trace_id: str = ""
     sample_rate_hz: int = 0
     channel_count: int = 0
@@ -199,6 +205,7 @@ class _PendingBatch:
         """
         if self.is_empty:
             self.span_id = frame.span_id
+            self.parent_span_id = frame.parent_span_id
             self.trace_id = frame.trace_id
             self.sample_rate_hz = frame.sample_rate_hz
             self.channel_count = frame.channel_count
@@ -210,6 +217,7 @@ class _PendingBatch:
     def clear(self) -> None:
         """Discard the accumulated frames, keeping the batch's speaker role."""
         self.span_id = ""
+        self.parent_span_id = ""
         self.trace_id = ""
         self.sample_rate_hz = 0
         self.channel_count = 0
@@ -231,6 +239,8 @@ class _SpanAudioState:
         role: The speaker the span belongs to.
         trace_id: Hex trace id, so a terminator posted after the batch holding the
             span is gone can still be attributed.
+        parent_span_id: Hex id of the speaking span's parent, remembered so a
+            later terminator can still carry it once the batch holding it is gone.
         next_sequence: The number the span's next chunk will carry.
         bytes_consumed: How many PCM bytes of this span have already left the
             pending batch — a *position* in the span's stream, so it counts a
@@ -246,6 +256,7 @@ class _SpanAudioState:
 
     role: SpeakerRole
     trace_id: str = ""
+    parent_span_id: str = ""
     next_sequence: int = 0
     bytes_consumed: int = 0
     is_finalized: bool = False
@@ -488,6 +499,7 @@ class AudioChunkSender:
         role: SpeakerRole,
         trace_id: str,
         span_id: str = "",
+        parent_span_id: str = "",
         timestamp_ns: Optional[int] = None,
     ) -> None:
         """Queue one captured frame. Never blocks, never raises into the agent.
@@ -502,6 +514,7 @@ class AudioChunkSender:
             trace_id: Hex trace id to attribute the audio to.
             span_id: Hex id of the open speaking span, or ``""`` for audio
                 captured between turns.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
             timestamp_ns: Capture time, defaulting to now. Passed in by the
                 coordinator so the timestamp is taken at capture rather than
                 after any queuing delay.
@@ -513,6 +526,7 @@ class AudioChunkSender:
                 pcm_bytes=bytes(frame.data),
                 role=role,
                 span_id=span_id,
+                parent_span_id=parent_span_id,
                 trace_id=trace_id,
                 sample_rate_hz=frame.sample_rate,
                 channel_count=frame.num_channels,
@@ -529,22 +543,23 @@ class AudioChunkSender:
             self.stats.frames_dropped += 1
             self._warn_about_drops_once()
 
-    def mark_audio_end(self, *, role: SpeakerRole, span_id: str) -> None:
+    def mark_audio_end(self, *, role: SpeakerRole, span_id: str, parent_span_id: str = "") -> None:
         """Signal that the recording for *span_id* is complete.
 
         Args:
             role: The speaker whose span closed.
             span_id: Hex id of the closed speaking span.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
         """
         if self._is_closed or not span_id:
             return
         state = self._span_states.get(span_id)
         if state is not None and state.is_finalized:
             return
-        if not self._offer(_SpanEndMarker(role=role, span_id=span_id)):
+        if not self._offer(_SpanEndMarker(role=role, span_id=span_id, parent_span_id=parent_span_id)):
             logger.debug("netra.audio: queue full; end marker for span=%s dropped", span_id)
 
-    def interrupt_agent_span(self, *, span_id: str, playback_ms: int) -> None:
+    def interrupt_agent_span(self, *, span_id: str, playback_ms: int, parent_span_id: str = "") -> None:
         """Signal that an agent utterance was cut off *playback_ms* into playback.
 
         The send loop trims the pending audio for the span to what was heard and
@@ -556,10 +571,13 @@ class AudioChunkSender:
         Args:
             span_id: Hex id of the interrupted ``agent_speaking`` span.
             playback_ms: Milliseconds of the utterance the caller heard.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
         """
         if self._is_closed or not span_id:
             return
-        if not self._offer(_SpanInterruptMarker(span_id=span_id, playback_ms=playback_ms)):
+        if not self._offer(
+            _SpanInterruptMarker(span_id=span_id, playback_ms=playback_ms, parent_span_id=parent_span_id)
+        ):
             logger.debug("netra.audio: queue full; interrupt marker for span=%s dropped", span_id)
 
     def _offer(self, message: _QueueMessage) -> bool:
@@ -714,14 +732,18 @@ class AudioChunkSender:
         if marker.role is SpeakerRole.AGENT:
             if batch.span_id == marker.span_id and not batch.is_empty:
                 await self._flush(batch)
-            self._state_for(marker.span_id, marker.role).is_end_received = True
+            self._state_for(marker.span_id, marker.role, parent_span_id=marker.parent_span_id).is_end_received = True
             return
 
         if batch.span_id == marker.span_id and not batch.is_empty:
             await self._flush(batch, is_final=True)
             return
 
-        await self._post_span_terminator(role=marker.role, span_id=marker.span_id)
+        await self._post_span_terminator(
+            role=marker.role,
+            span_id=marker.span_id,
+            parent_span_id=marker.parent_span_id,
+        )
 
     async def _handle_span_interrupt(self, marker: _SpanInterruptMarker, batch: _PendingBatch) -> None:
         """Trim an interrupted agent span to the audio heard, then finalize it.
@@ -736,7 +758,7 @@ class AudioChunkSender:
             marker: The interrupt marker, carrying the playback position.
             batch: The pending agent batch.
         """
-        state = self._state_for(marker.span_id, SpeakerRole.AGENT)
+        state = self._state_for(marker.span_id, SpeakerRole.AGENT, parent_span_id=marker.parent_span_id)
         state.is_interrupted = True
         if state.is_finalized:
             return
@@ -746,6 +768,7 @@ class AudioChunkSender:
                 role=state.role,
                 span_id=marker.span_id,
                 heard_ms=marker.playback_ms,
+                parent_span_id=marker.parent_span_id,
             )
             return
 
@@ -797,11 +820,13 @@ class AudioChunkSender:
         start_ms = batch.start_ms
         sample_rate_hz = batch.sample_rate_hz
         channel_count = batch.channel_count
+        parent_span_id = batch.parent_span_id
         trace_id = batch.trace_id
         batch.clear()
         await self._post_chunk(
             role=role,
             span_id=span_id,
+            parent_span_id=parent_span_id,
             trace_id=trace_id,
             sample_rate_hz=sample_rate_hz,
             channel_count=channel_count,
@@ -858,11 +883,13 @@ class AudioChunkSender:
         span_id = batch.span_id
         role = batch.role
         trace_id = batch.trace_id
+        parent_span_id = batch.parent_span_id
 
         if not batch.is_empty:
             await self._post_chunk(
                 role=role,
                 span_id=span_id,
+                parent_span_id=parent_span_id,
                 trace_id=trace_id,
                 sample_rate_hz=batch.sample_rate_hz,
                 channel_count=batch.channel_count,
@@ -908,6 +935,7 @@ class AudioChunkSender:
         role: SpeakerRole,
         span_id: str,
         heard_ms: int = 0,
+        parent_span_id: str = "",
     ) -> None:
         """Post the empty chunk that closes a span.
 
@@ -915,6 +943,7 @@ class AudioChunkSender:
             role: The speaker the span belongs to.
             span_id: Hex id of the span to close.
             heard_ms: Milliseconds heard, for an interrupted agent span only.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
         """
         if not span_id:
             return
@@ -925,6 +954,7 @@ class AudioChunkSender:
         await self._post_chunk(
             role=role,
             span_id=span_id,
+            parent_span_id=parent_span_id or (state.parent_span_id if state is not None else ""),
             trace_id=state.trace_id if state is not None else "",
             sample_rate_hz=DEFAULT_SAMPLE_RATE_HZ,
             channel_count=DEFAULT_CHANNEL_COUNT,
@@ -972,6 +1002,7 @@ class AudioChunkSender:
         start_ms: int,
         is_last: bool,
         heard_ms: int = 0,
+        parent_span_id: str = "",
     ) -> None:
         """Queue one chunk for concurrent upload and advance the span's state.
 
@@ -991,14 +1022,16 @@ class AudioChunkSender:
             start_ms: Epoch milliseconds of the body's first frame.
             is_last: Whether this closes the span.
             heard_ms: Milliseconds heard, for an interrupted agent span only.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
         """
         if self._circuit_tripped:
             return
 
-        state = self._state_for(span_id, role, trace_id) if span_id else None
+        state = self._state_for(span_id, role, trace_id, parent_span_id) if span_id else None
         headers = self._chunk_headers(
             role=role,
             span_id=span_id,
+            parent_span_id=(state.parent_span_id if state is not None else "") or parent_span_id,
             trace_id=trace_id,
             sample_rate_hz=sample_rate_hz,
             channel_count=channel_count,
@@ -1138,6 +1171,7 @@ class AudioChunkSender:
         *,
         role: SpeakerRole,
         span_id: str,
+        parent_span_id: str,
         trace_id: str,
         sample_rate_hz: int,
         channel_count: int,
@@ -1151,6 +1185,7 @@ class AudioChunkSender:
         Args:
             role: The speaker the audio came from.
             span_id: Hex span id, or ``""`` for between-turn audio.
+            parent_span_id: Hex parent span id, or ``""`` when unknown/root.
             trace_id: Hex trace id the audio belongs to.
             sample_rate_hz: Samples per second, per channel.
             channel_count: Interleaved channel count.
@@ -1176,6 +1211,8 @@ class AudioChunkSender:
 
         if state is not None:
             headers[HEADER_SPAN_ID] = span_id
+            if parent_span_id:
+                headers[HEADER_PARENT_SPAN_ID] = parent_span_id
             headers[HEADER_SEQUENCE] = str(state.next_sequence)
             if is_last:
                 headers[HEADER_LAST_CHUNK] = HEADER_VALUE_TRUE
@@ -1299,7 +1336,13 @@ class AudioChunkSender:
 
     # -- span state ---------------------------------------------------------
 
-    def _state_for(self, span_id: str, role: SpeakerRole, trace_id: str = "") -> _SpanAudioState:
+    def _state_for(
+        self,
+        span_id: str,
+        role: SpeakerRole,
+        trace_id: str = "",
+        parent_span_id: str = "",
+    ) -> _SpanAudioState:
         """Return the state record for *span_id*, creating it on first sight.
 
         Args:
@@ -1307,16 +1350,20 @@ class AudioChunkSender:
             role: The speaker it belongs to.
             trace_id: Hex trace id, remembered so a later terminator for this
                 span can still be attributed once the batch holding it is gone.
+            parent_span_id: Hex parent span id, remembered the same way.
 
         Returns:
             The span's mutable state record.
         """
         state = self._span_states.get(span_id)
         if state is None:
-            state = _SpanAudioState(role=role, trace_id=trace_id)
+            state = _SpanAudioState(role=role, trace_id=trace_id, parent_span_id=parent_span_id)
             self._span_states[span_id] = state
-        elif trace_id and not state.trace_id:
-            state.trace_id = trace_id
+        else:
+            if trace_id and not state.trace_id:
+                state.trace_id = trace_id
+            if parent_span_id and not state.parent_span_id:
+                state.parent_span_id = parent_span_id
         return state
 
 
