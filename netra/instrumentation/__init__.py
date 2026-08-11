@@ -396,6 +396,9 @@ def init_instrumentations(
     if CustomInstruments.HERMES_AGENT in netra_custom_instruments:
         init_hermes_agent_instrumentation()
 
+    if CustomInstruments.HONCHO in netra_custom_instruments:
+        init_honcho_instrumentation()
+
     # Subprocess instrumentation always enabled for
     # context propagation in subprocess
     init_subprocess_instrumentation()
@@ -1424,6 +1427,25 @@ def init_hermes_agent_instrumentation() -> bool:
         return True
     except Exception:
         logging.exception("Error initializing Hermes Agent instrumentor")
+        return False
+
+
+def init_honcho_instrumentation() -> bool:
+    """Initialize Honcho memory SDK instrumentation.
+
+    Returns:
+        bool: True if initialization was successful, False otherwise.
+    """
+    try:
+        if is_package_installed("honcho-ai"):
+            from netra.instrumentation.honcho import NetraHonchoInstrumentor
+
+            instrumentor = NetraHonchoInstrumentor()
+            if not instrumentor.is_instrumented_by_opentelemetry:
+                instrumentor.instrument()
+        return True
+    except Exception:
+        logging.exception("Error initializing Honcho instrumentor")
         return False
 
 

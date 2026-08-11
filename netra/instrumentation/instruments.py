@@ -74,6 +74,7 @@ class CustomInstruments(Enum):
     ELEVENLABS = "elevenlabs"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
     HERMES_AGENT = "hermes_agent"
+    HONCHO = "honcho"
 
 
 class InstrumentSet(Enum):
@@ -140,6 +141,7 @@ class InstrumentSet(Enum):
     GRPC = ("grpc", CustomInstruments)
     HAYSTACK = ("haystack", Instruments)
     HERMES_AGENT = ("hermes_agent", CustomInstruments)
+    HONCHO = ("honcho", CustomInstruments)
     HTTPX = ("httpx", CustomInstruments)
     JINJA2 = ("jinja2", CustomInstruments)
     KAFKA_PYTHON = ("kafka_python", CustomInstruments)
@@ -247,6 +249,8 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.MILVUS,
         InstrumentSet.LANCEDB,
         InstrumentSet.MARQO,
+        # Memory
+        InstrumentSet.HONCHO,
         # HTTP clients and database libraries
         InstrumentSet.HTTPX,
         InstrumentSet.REQUESTS,
