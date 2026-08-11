@@ -74,10 +74,12 @@ class _ActiveSpeech:
     Attributes:
         span_id: Hex id of the open ``*_speaking`` span.
         trace_id: Hex trace id of the call the span belongs to.
+        parent_span_id: Hex id of the speaking span's parent, or ``""`` if none.
     """
 
     span_id: str
     trace_id: str
+    parent_span_id: str = ""
 
 
 class SessionAudioCoordinator:
@@ -114,8 +116,10 @@ class SessionAudioCoordinator:
         # interrupt that cut it short, so the id would otherwise be gone by the
         # time there is something to report about it.
         self._last_agent_span_id = ""
+        self._last_agent_parent_span_id = ""
         self._is_agent_interrupted = False
         self._interrupted_agent_span_id = ""
+        self._interrupted_agent_parent_span_id = ""
 
     # -- attachment ---------------------------------------------------------
 
@@ -134,20 +138,39 @@ class SessionAudioCoordinator:
 
     # -- span callbacks -----------------------------------------------------
 
-    def on_speaking_start(self, role: SpeakerRole, *, trace_id: str, span_id: str) -> None:
+    def on_speaking_start(
+        self,
+        role: SpeakerRole,
+        *,
+        trace_id: str,
+        span_id: str,
+        parent_span_id: str = "",
+    ) -> None:
         """Attribute subsequent frames from *role* to a newly opened span.
 
         Args:
             role: The speaker whose span opened.
             trace_id: Hex trace id of the span.
             span_id: Hex id of the span.
+            parent_span_id: Hex id of the speaking span's parent, or ``""``.
         """
-        self._active_speech[role] = _ActiveSpeech(span_id=span_id, trace_id=trace_id)
+        self._active_speech[role] = _ActiveSpeech(
+            span_id=span_id,
+            trace_id=trace_id,
+            parent_span_id=parent_span_id,
+        )
         if role is SpeakerRole.AGENT:
             self._last_agent_span_id = span_id
+            self._last_agent_parent_span_id = parent_span_id
             self._is_agent_interrupted = False
             self._interrupted_agent_span_id = ""
-        logger.debug("netra.audio: %s speaking started — span_id=%s", role.value, span_id)
+            self._interrupted_agent_parent_span_id = ""
+        logger.debug(
+            "netra.audio: %s speaking started — span_id=%s parent_span_id=%s",
+            role.value,
+            span_id,
+            parent_span_id or "(none)",
+        )
 
     def on_speaking_end(self, role: SpeakerRole) -> None:
         """Close the recording for *role*'s open span.
@@ -166,7 +189,11 @@ class SessionAudioCoordinator:
         if role is SpeakerRole.AGENT and self._is_agent_interrupted:
             return
         if self._sender is not None:
-            self._sender.mark_audio_end(role=role, span_id=active.span_id)
+            self._sender.mark_audio_end(
+                role=role,
+                span_id=active.span_id,
+                parent_span_id=active.parent_span_id,
+            )
 
     # -- frame callbacks ----------------------------------------------------
 
@@ -191,6 +218,7 @@ class SessionAudioCoordinator:
             frame,
             role=role,
             span_id=active.span_id if active is not None else "",
+            parent_span_id=active.parent_span_id if active is not None else "",
             trace_id=(active.trace_id if active is not None else "") or self._session_trace_id,
             timestamp_ns=time.time_ns(),
         )
@@ -205,7 +233,12 @@ class SessionAudioCoordinator:
         """
         active = self._active_speech[SpeakerRole.AGENT]
         self._is_agent_interrupted = True
-        self._interrupted_agent_span_id = active.span_id if active is not None else self._last_agent_span_id
+        if active is not None:
+            self._interrupted_agent_span_id = active.span_id
+            self._interrupted_agent_parent_span_id = active.parent_span_id
+        else:
+            self._interrupted_agent_span_id = self._last_agent_span_id
+            self._interrupted_agent_parent_span_id = self._last_agent_parent_span_id
         logger.debug(
             "netra.audio: agent audio buffer cleared — utterance interrupted (span_id=%s)",
             self._interrupted_agent_span_id,
@@ -226,7 +259,11 @@ class SessionAudioCoordinator:
             return
 
         playback_ms = int(getattr(event, "playback_position", 0.0) * _MILLISECONDS_PER_SECOND)
-        self._sender.interrupt_agent_span(span_id=span_id, playback_ms=playback_ms)
+        self._sender.interrupt_agent_span(
+            span_id=span_id,
+            playback_ms=playback_ms,
+            parent_span_id=self._interrupted_agent_parent_span_id,
+        )
         logger.debug(
             "netra.audio: interrupted playback finished — span_id=%s heard=%dms",
             span_id,
