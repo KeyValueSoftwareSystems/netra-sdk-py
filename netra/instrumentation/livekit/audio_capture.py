@@ -29,7 +29,10 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-from netra.instrumentation.livekit.audio_sender import AudioChunkSender
+from netra.instrumentation.livekit.audio_sender import (
+    _MAX_DRAIN_TIMEOUT_SECONDS,
+    AudioChunkSender,
+)
 from netra.instrumentation.livekit.audio_types import (
     CREDENTIAL_HEADER_NAMES,
     NETRA_AUDIO_CIRCUIT_TRIPPED,
@@ -246,10 +249,10 @@ class SessionAudioCoordinator:
         """Close the open recordings and shut the sender down.
 
         Args:
-            drain_timeout_seconds: Total budget for the sender's drain. ``None``
-                leaves the sender's own default in place, which is what the normal
-                per-session teardown wants; ``Netra.shutdown()`` passes the budget
-                it is willing to wait so the two cannot disagree.
+            drain_timeout_seconds: Explicit total budget for the sender's drain.
+                When set, that value is used as the hard deadline. When ``None``
+                (the default), the sender computes a dynamic budget from the
+                remaining queue depth and open spans.
         """
         self.close()
         if self._sender is None:
@@ -712,7 +715,7 @@ async def stop_audio_capture(trace_id: int, session_span: Optional["Span"] = Non
         _stamp_audio_stats(session_span, sender)
 
 
-def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
+def close_all_audio_capture(timeout_seconds: Optional[float] = None) -> None:
     """Shut down every call still capturing audio. Backstop for ``Netra.shutdown()``.
 
     A sender's queue and task belong to the event loop its call was running on,
@@ -722,11 +725,12 @@ def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
     audio is genuinely lost.
 
     Args:
-        timeout_seconds: How long to wait for one call's audio to drain when
-            shutting it down from outside its event loop. Passed down as the
-            sender's own drain budget too, so the inner deadline expires first and
-            a timeout here means the audio really could not be delivered rather
-            than that the two limits were set inconsistently.
+        timeout_seconds: Explicit drain budget for each call, forwarded as the
+            sender's ``drain_timeout_seconds``. When set, that hard deadline is
+            used. When ``None`` (the default), each sender computes a dynamic
+            budget from its remaining queue depth and open spans. The outer wait
+            when driving another loop is then capped at the sender's maximum
+            dynamic budget plus a small grace.
     """
     coordinators = audio_coordinators.pop_all()
     if not coordinators:
@@ -745,15 +749,16 @@ def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
 def _close_from_outside(
     coordinator: SessionAudioCoordinator,
     current_loop: Optional["asyncio.AbstractEventLoop"],
-    timeout_seconds: float,
+    timeout_seconds: Optional[float],
 ) -> None:
     """Drive one coordinator's teardown from whichever loop is available.
 
     Args:
         coordinator: The coordinator to shut down.
         current_loop: The loop the caller is running on, if any.
-        timeout_seconds: How long to wait when driving another loop, and the drain
-            budget handed to the coordinator either way.
+        timeout_seconds: Explicit drain budget handed to the coordinator, or
+            ``None`` to let the sender pick a dynamic budget. Also bounds how
+            long this function waits when driving another loop.
     """
     sender = coordinator.sender
     target_loop = sender.loop if sender is not None else None
@@ -776,12 +781,19 @@ def _close_from_outside(
         return
 
     future = asyncio.run_coroutine_threadsafe(coordinator.aclose(drain_timeout_seconds=timeout_seconds), target_loop)
+    # A shade past the inner budget, so the coordinator's own deadline is what
+    # gives up and it still gets to log its statistics. When the budget is
+    # dynamic, bound the outer wait by the sender's maximum dynamic timeout.
+    outer_timeout = (
+        timeout_seconds if timeout_seconds is not None else _MAX_DRAIN_TIMEOUT_SECONDS
+    ) + _TEARDOWN_GRACE_SECONDS
     try:
-        # A shade past the inner budget, so the coordinator's own deadline is what
-        # gives up and it still gets to log its statistics.
-        future.result(timeout=timeout_seconds + _TEARDOWN_GRACE_SECONDS)
+        future.result(timeout=outer_timeout)
     except FuturesTimeoutError:
-        logger.warning("netra.audio: a call did not finish sending within %.0fs", timeout_seconds)
+        logger.warning(
+            "netra.audio: a call did not finish sending within %.0fs",
+            outer_timeout - _TEARDOWN_GRACE_SECONDS,
+        )
     except Exception:
         logger.warning("netra.audio: a call failed to shut down cleanly", exc_info=True)
 

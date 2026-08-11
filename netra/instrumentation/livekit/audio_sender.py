@@ -80,12 +80,18 @@ _RETRY_BASE_DELAY_SECONDS = 0.05
 # the agent than sending nothing.
 _MAX_CONSECUTIVE_FAILURES = 5
 
-# How long ``end_session`` spends draining, in total, before giving up. It runs
-# inline in ``AgentSession._aclose_impl``, so this delays the caller's own session
-# teardown — a few seconds of best-effort audio is worth that, half a minute is
-# not. A backend too slow to drain inside it has usually tripped the circuit
-# already.
-_DEFAULT_DRAIN_TIMEOUT_SECONDS = 5.0
+# Dynamic drain budget: scales with the actual work remaining in the queue rather
+# than imposing a fixed wall-clock timeout. Each expected HTTP POST gets
+# ``_DRAIN_SECONDS_PER_POST`` of budget, clamped between the floor and ceiling.
+_MIN_DRAIN_TIMEOUT_SECONDS = 2.0
+_MAX_DRAIN_TIMEOUT_SECONDS = 30.0
+_DRAIN_SECONDS_PER_POST = 1.0
+_ESTIMATED_FRAME_BYTES = 960
+
+# How many chunk POSTs may be in flight at once. The consume loop keeps batching
+# while earlier POSTs wait on the network, bounded so a slow endpoint cannot
+# unbounded-grow outstanding requests.
+_MAX_INFLIGHT_POSTS = 4
 
 _HTTP_STATUS_BAD_REQUEST = 400
 _UNAUTHENTICATED_STATUSES = frozenset({401, 403})
@@ -290,10 +296,12 @@ class AudioSenderStats:
 class AudioChunkSender:
     """Batches captured frames and POSTs them to the audio-ingest endpoint.
 
-    Single-consumer by construction: :meth:`enqueue` and the marker methods are
-    called from the agent's event loop and only hand work to a bounded queue, and
-    exactly one background task drains it. Nothing here is safe to call from
-    another thread.
+    Single-consumer by construction for the queue: :meth:`enqueue` and the marker
+    methods only hand work to a bounded queue, and exactly one background task
+    drains it. Completed batches are uploaded concurrently — up to
+    ``_MAX_INFLIGHT_POSTS`` HTTP POSTs may be in flight at once — so a slow
+    endpoint does not stall further batching. Queue mutation is still confined
+    to the sender's event loop.
     """
 
     def __init__(
@@ -339,6 +347,8 @@ class AudioChunkSender:
         self._loop: Optional[asyncio.AbstractEventLoop] = None
         self._client: Optional[httpx.AsyncClient] = None
         self._is_closed = False
+        self._send_semaphore: Optional[asyncio.Semaphore] = None
+        self._inflight_posts: set[asyncio.Task[None]] = set()
 
         self._consecutive_failures = 0
         self._circuit_tripped = False
@@ -362,13 +372,15 @@ class AudioChunkSender:
         """Open the HTTP client and start the background send loop."""
         self._loop = asyncio.get_running_loop()
         self._client = httpx.AsyncClient(timeout=_HTTP_TIMEOUT_SECONDS)
+        self._send_semaphore = asyncio.Semaphore(_MAX_INFLIGHT_POSTS)
         self._send_task = asyncio.create_task(self._run_send_loop(), name="netra-audio-chunk-sender")
         logger.info(
-            "netra.audio: sender started -> %s (max_frames=%d, flush_at=%dB, max_request=%dB)",
+            "netra.audio: sender started -> %s (max_frames=%d, flush_at=%dB, max_request=%dB, inflight=%d)",
             self._url,
             self._max_batch_frames,
             self._flush_at_bytes,
             self._max_request_bytes,
+            _MAX_INFLIGHT_POSTS,
         )
 
     async def end_session(self, *, drain_timeout_seconds: float | None = None) -> None:
@@ -380,21 +392,31 @@ class AudioChunkSender:
         marker it would never get past.
 
         Args:
-            drain_timeout_seconds: Total budget for the whole teardown. The two
-                waits inside share one deadline rather than each taking the full
-                timeout, because a caller that allowed *n* seconds for the session
-                to close means *n* seconds, not 2*n*.
+            drain_timeout_seconds: Total budget for the whole teardown. When
+                ``None``, a dynamic budget is computed from the queue depth and
+                the number of open spans. The two waits inside share one
+                deadline rather than each taking the full timeout, because a
+                caller that allowed *n* seconds for the session to close means
+                *n* seconds, not 2*n*.
         """
         if self._is_closed:
             return
         self._is_closed = True
 
-        deadline = time.monotonic() + max(
-            0.0, drain_timeout_seconds if drain_timeout_seconds is not None else _DEFAULT_DRAIN_TIMEOUT_SECONDS
+        timeout = (
+            max(0.0, drain_timeout_seconds) if drain_timeout_seconds is not None else self._estimate_drain_timeout()
         )
+        logger.debug(
+            "netra.audio: drain budget=%.1fs (queued=%d, explicit=%s)",
+            timeout,
+            self._queue.qsize(),
+            drain_timeout_seconds is not None,
+        )
+        deadline = time.monotonic() + timeout
         await self._enqueue_session_end(deadline)
         if self._send_task is not None:
             await self._await_send_task(deadline)
+        await self._shutdown_inflight_posts()
         if self._client is not None:
             await self._client.aclose()
         logger.info("netra.audio: sender closed — %s", self.stats)
@@ -439,6 +461,23 @@ class AudioChunkSender:
             raise
         except Exception:
             logger.warning("netra.audio: send loop ended with an error", exc_info=True)
+
+    def _estimate_drain_timeout(self) -> float:
+        """Compute a drain budget proportional to the work still queued.
+
+        Estimates the number of HTTP POSTs the send loop will make — one per
+        ``flush_at_bytes`` worth of queued audio, plus one terminator per open
+        span and one for the session — and budgets each at
+        ``_DRAIN_SECONDS_PER_POST``.  The result is clamped to
+        ``[_MIN_DRAIN_TIMEOUT_SECONDS, _MAX_DRAIN_TIMEOUT_SECONDS]``.
+        """
+        pending = self._queue.qsize()
+        estimated_bytes = pending * _ESTIMATED_FRAME_BYTES
+        estimated_flushes = max(1, estimated_bytes // self._flush_at_bytes)
+        open_spans = sum(1 for s in self._span_states.values() if not s.is_finalized)
+        total_posts = estimated_flushes + open_spans + 1
+        budget = total_posts * _DRAIN_SECONDS_PER_POST
+        return max(_MIN_DRAIN_TIMEOUT_SECONDS, min(budget, _MAX_DRAIN_TIMEOUT_SECONDS))
 
     # -- producer side (agent event loop) -----------------------------------
 
@@ -609,6 +648,7 @@ class AudioChunkSender:
 
             if isinstance(message, _SessionEndMarker):
                 await self._drain_batches(batches)
+                await self._await_inflight_posts()
                 return
 
             await self._handle_message(message, batches)
@@ -910,7 +950,14 @@ class AudioChunkSender:
             HEADER_SESSION_LAST: HEADER_VALUE_TRUE,
         }
         self._apply_credentials(headers)
-        await self._post(b"", headers)
+        await self._schedule_post(
+            pcm=b"",
+            headers=headers,
+            frame_count=0,
+            role="",
+            span_id="",
+            is_last=True,
+        )
 
     async def _post_chunk(
         self,
@@ -926,7 +973,12 @@ class AudioChunkSender:
         is_last: bool,
         heard_ms: int = 0,
     ) -> None:
-        """Send one chunk and record what it did to the span's state.
+        """Queue one chunk for concurrent upload and advance the span's state.
+
+        Sequence / consumed-byte counters are updated *before* the POST is
+        scheduled so concurrent inflight requests cannot reuse a sequence number.
+        ``is_finalized`` is also set on dispatch for ``is_last`` chunks so a later
+        terminator cannot race a still-inflight one.
 
         Args:
             role: The speaker the audio came from.
@@ -956,35 +1008,130 @@ class AudioChunkSender:
             state=state,
         )
 
-        accepted = await self._post(pcm, headers)
-
-        logger.debug(
-            "netra.audio: chunk span_id=%s role=%s frames=%d bytes=%d last=%s accepted=%s",
-            span_id or "(between turns)",
-            role.value,
-            frame_count,
-            len(pcm),
-            is_last,
-            accepted,
-        )
-
         if state is not None:
-            # Advanced whether or not the chunk landed. Both are positions in the
+            # Advanced whether or not the chunk lands. Both are positions in the
             # span's stream, not delivery counts: a chunk the sender gave up on
             # still occupied its slot, so reusing its number for the *next*,
             # different audio would break the idempotency key the endpoint dedupes
             # on. A gap is how the endpoint learns audio was lost.
             state.next_sequence += 1
             state.bytes_consumed += len(pcm)
-            if accepted and is_last:
+            if is_last:
                 state.is_finalized = True
 
-        if not accepted:
+        await self._schedule_post(
+            pcm=pcm,
+            headers=headers,
+            frame_count=frame_count,
+            role=role.value,
+            span_id=span_id,
+            is_last=is_last,
+        )
+
+    async def _schedule_post(
+        self,
+        *,
+        pcm: bytes,
+        headers: Dict[str, str],
+        frame_count: int,
+        role: str,
+        span_id: str,
+        is_last: bool,
+    ) -> None:
+        """Acquire an inflight slot and fire the POST without awaiting its result.
+
+        The consume loop only waits here when all ``_MAX_INFLIGHT_POSTS`` slots are
+        busy, so batching can continue while earlier requests are still on the
+        wire.
+
+        Args:
+            pcm: The request body.
+            headers: The request headers.
+            frame_count: Frames represented by *pcm*, for stats on accept.
+            role: Speaker role value, for the debug log.
+            span_id: Hex span id, for the debug log.
+            is_last: Whether this closes a span, for the debug log.
+        """
+        semaphore = self._send_semaphore
+        if semaphore is None:
+            logger.debug("netra.audio: post scheduled before start(); dropping chunk")
             return
 
-        self.stats.chunks_sent += 1
-        self.stats.frames_sent += frame_count
-        self.stats.bytes_sent += len(pcm)
+        await semaphore.acquire()
+        task = asyncio.create_task(
+            self._run_inflight_post(
+                pcm=pcm,
+                headers=headers,
+                frame_count=frame_count,
+                role=role,
+                span_id=span_id,
+                is_last=is_last,
+            ),
+            name="netra-audio-inflight-post",
+        )
+        self._inflight_posts.add(task)
+        task.add_done_callback(self._inflight_posts.discard)
+
+    async def _run_inflight_post(
+        self,
+        *,
+        pcm: bytes,
+        headers: Dict[str, str],
+        frame_count: int,
+        role: str,
+        span_id: str,
+        is_last: bool,
+    ) -> None:
+        """Execute one scheduled POST and release its inflight slot.
+
+        Args:
+            pcm: The request body.
+            headers: The request headers.
+            frame_count: Frames represented by *pcm*, for stats on accept.
+            role: Speaker role value, for the debug log.
+            span_id: Hex span id, for the debug log.
+            is_last: Whether this closes a span, for the debug log.
+        """
+        semaphore = self._send_semaphore
+        try:
+            accepted = await self._post(pcm, headers)
+            logger.debug(
+                "netra.audio: chunk span_id=%s role=%s frames=%d bytes=%d last=%s accepted=%s",
+                span_id or "(between turns)",
+                role or "(session)",
+                frame_count,
+                len(pcm),
+                is_last,
+                accepted,
+            )
+            if not accepted:
+                return
+            self.stats.chunks_sent += 1
+            self.stats.frames_sent += frame_count
+            self.stats.bytes_sent += len(pcm)
+        finally:
+            if semaphore is not None:
+                semaphore.release()
+
+    async def _await_inflight_posts(self) -> None:
+        """Wait for every scheduled POST to finish."""
+        if not self._inflight_posts:
+            return
+        await asyncio.gather(*list(self._inflight_posts), return_exceptions=True)
+
+    async def _shutdown_inflight_posts(self) -> None:
+        """Cancel any POSTs still running after the send loop has stopped.
+
+        On the happy path :meth:`_consume_queue` already awaited them; this is the
+        backstop for a cancelled or timed-out drain so the HTTP client is not
+        closed underneath a live request.
+        """
+        pending = [task for task in self._inflight_posts if not task.done()]
+        if not pending:
+            return
+        for task in pending:
+            task.cancel()
+        await asyncio.gather(*pending, return_exceptions=True)
 
     def _chunk_headers(
         self,
