@@ -29,7 +29,10 @@ from concurrent.futures import TimeoutError as FuturesTimeoutError
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any, Callable, Dict, List, Optional, Tuple
 
-from netra.instrumentation.livekit.audio_sender import AudioChunkSender
+from netra.instrumentation.livekit.audio_sender import (
+    _MAX_DRAIN_TIMEOUT_SECONDS,
+    AudioChunkSender,
+)
 from netra.instrumentation.livekit.audio_types import (
     CREDENTIAL_HEADER_NAMES,
     NETRA_AUDIO_CIRCUIT_TRIPPED,
@@ -42,7 +45,9 @@ from netra.instrumentation.livekit.audio_types import (
 
 if TYPE_CHECKING:
     from livekit.agents import AgentSession
+    from livekit.agents.voice.io import AgentInput, AudioInput, AudioOutput, PlaybackFinishedEvent
     from livekit.rtc import AudioFrame
+    from opentelemetry.trace import Span
 
     from netra.config import Config
 
@@ -206,7 +211,7 @@ class SessionAudioCoordinator:
             self._interrupted_agent_span_id,
         )
 
-    def on_playback_finished(self, event: Any) -> None:
+    def on_playback_finished(self, event: "PlaybackFinishedEvent") -> None:
         """Trim an interrupted utterance to the audio that was played out.
 
         Args:
@@ -244,18 +249,15 @@ class SessionAudioCoordinator:
         """Close the open recordings and shut the sender down.
 
         Args:
-            drain_timeout_seconds: Total budget for the sender's drain. ``None``
-                leaves the sender's own default in place, which is what the normal
-                per-session teardown wants; ``Netra.shutdown()`` passes the budget
-                it is willing to wait so the two cannot disagree.
+            drain_timeout_seconds: Explicit total budget for the sender's drain.
+                When set, that value is used as the hard deadline. When ``None``
+                (the default), the sender computes a dynamic budget from the
+                remaining queue depth and open spans.
         """
         self.close()
         if self._sender is None:
             return
-        if drain_timeout_seconds is None:
-            await self._sender.end_session()
-        else:
-            await self._sender.end_session(drain_timeout_seconds=drain_timeout_seconds)
+        await self._sender.end_session(drain_timeout_seconds=drain_timeout_seconds)
 
     @property
     def sender(self) -> Optional[AudioChunkSender]:
@@ -305,7 +307,7 @@ class SessionAudioCoordinator:
         self._patch_clear_buffer(audio_output)
         self._subscribe_to_playback_finished(audio_output)
 
-    def _patch_capture_frame(self, audio_output: Any) -> None:
+    def _patch_capture_frame(self, audio_output: "AudioOutput") -> None:
         """Wrap ``capture_frame`` so every outgoing frame is seen.
 
         Args:
@@ -321,7 +323,7 @@ class SessionAudioCoordinator:
         audio_output.capture_frame = capture_frame
         logger.debug("netra.audio: wrapped agent capture_frame")
 
-    def _patch_clear_buffer(self, audio_output: Any) -> None:
+    def _patch_clear_buffer(self, audio_output: "AudioOutput") -> None:
         """Wrap ``clear_buffer``, LiveKit's signal that the caller interrupted.
 
         Args:
@@ -340,7 +342,7 @@ class SessionAudioCoordinator:
         audio_output.clear_buffer = clear_buffer
         logger.debug("netra.audio: wrapped clear_buffer for interrupt detection")
 
-    def _subscribe_to_playback_finished(self, audio_output: Any) -> None:
+    def _subscribe_to_playback_finished(self, audio_output: "AudioOutput") -> None:
         """Listen for playback reports, which say how much audio was heard.
 
         Args:
@@ -389,7 +391,7 @@ class _AudioInputProxy:
     attribute would simply be ignored.
     """
 
-    def __init__(self, source: Any, coordinator: SessionAudioCoordinator) -> None:
+    def __init__(self, source: "AudioInput", coordinator: SessionAudioCoordinator) -> None:
         """Wrap *source*, reporting each frame it yields to *coordinator*.
 
         Args:
@@ -425,7 +427,7 @@ class _AudioInputProxy:
         return getattr(self._source, name)
 
 
-def _leaf_audio_source(audio_input: Any) -> Any:
+def _leaf_audio_source(audio_input: "AudioInput") -> "AudioInput":
     """Follow the ``.source`` chain to the object actually producing frames.
 
     LiveKit stacks audio streams (resamplers, buffers) each holding the next in
@@ -444,7 +446,9 @@ def _leaf_audio_source(audio_input: Any) -> Any:
     return current
 
 
-def _proxy_mount_points(session_input: Any, audio_input: Any, leaf: Any) -> List[Tuple[Any, str]]:
+def _proxy_mount_points(
+    session_input: "AgentInput", audio_input: "AudioInput", leaf: "AudioInput"
+) -> List[Tuple[Any, str]]:
     """Return the places a proxy over *leaf* could be installed, best first.
 
     Args:
@@ -462,7 +466,7 @@ def _proxy_mount_points(session_input: Any, audio_input: Any, leaf: Any) -> List
     return [(parent, "source")] if parent is not None else []
 
 
-def _parent_of(audio_input: Any, leaf: Any) -> Optional[Any]:
+def _parent_of(audio_input: "AudioInput", leaf: "AudioInput") -> Optional["AudioInput"]:
     """Return the object whose ``.source`` is *leaf*.
 
     Args:
@@ -498,7 +502,7 @@ def _try_set(holder: Any, attribute: str, value: Any) -> bool:
     return True
 
 
-def _patch_anext(leaf: Any, coordinator: SessionAudioCoordinator) -> None:
+def _patch_anext(leaf: "AudioInput", coordinator: SessionAudioCoordinator) -> None:
     """Tap frames by replacing ``__anext__`` on the leaf instance itself.
 
     Last resort: it only works for code that calls ``leaf.__anext__()``
@@ -643,14 +647,13 @@ def build_audio_sender(config: "Config", session_id: str) -> Optional[AudioChunk
         session_id=session_id,
         api_key=config.api_key or "",
         auth_headers=credential_headers,
-        batch_interval_seconds=config.audio_batch_interval_ms / _MILLISECONDS_PER_SECOND,
         flush_at_bytes=config.audio_batch_bytes,
         max_request_bytes=config.audio_max_request_bytes,
         max_queue_frames=max(1, config.audio_buffer_bytes // _NOMINAL_FRAME_BYTES),
     )
 
 
-async def start_audio_capture(session: Any, *, config: "Config", session_id: str, trace_id: int) -> None:
+async def start_audio_capture(session: "AgentSession", *, config: "Config", session_id: str, trace_id: int) -> None:
     """Begin capturing a started session's call audio.
 
     Isolated from the caller by design: audio capture failing must never make
@@ -688,7 +691,7 @@ async def start_audio_capture(session: Any, *, config: "Config", session_id: str
         logger.warning("netra.livekit: audio capture setup failed; the call is traced without audio", exc_info=True)
 
 
-async def stop_audio_capture(trace_id: int, session_span: Optional[Any] = None) -> None:
+async def stop_audio_capture(trace_id: int, session_span: Optional["Span"] = None) -> None:
     """Stop capturing a call's audio and record what was delivered.
 
     Idempotent: a call whose coordinator has already been removed does nothing.
@@ -712,7 +715,7 @@ async def stop_audio_capture(trace_id: int, session_span: Optional[Any] = None) 
         _stamp_audio_stats(session_span, sender)
 
 
-def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
+def close_all_audio_capture(timeout_seconds: Optional[float] = None) -> None:
     """Shut down every call still capturing audio. Backstop for ``Netra.shutdown()``.
 
     A sender's queue and task belong to the event loop its call was running on,
@@ -722,11 +725,12 @@ def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
     audio is genuinely lost.
 
     Args:
-        timeout_seconds: How long to wait for one call's audio to drain when
-            shutting it down from outside its event loop. Passed down as the
-            sender's own drain budget too, so the inner deadline expires first and
-            a timeout here means the audio really could not be delivered rather
-            than that the two limits were set inconsistently.
+        timeout_seconds: Explicit drain budget for each call, forwarded as the
+            sender's ``drain_timeout_seconds``. When set, that hard deadline is
+            used. When ``None`` (the default), each sender computes a dynamic
+            budget from its remaining queue depth and open spans. The outer wait
+            when driving another loop is then capped at the sender's maximum
+            dynamic budget plus a small grace.
     """
     coordinators = audio_coordinators.pop_all()
     if not coordinators:
@@ -745,15 +749,16 @@ def close_all_audio_capture(timeout_seconds: float = 5.0) -> None:
 def _close_from_outside(
     coordinator: SessionAudioCoordinator,
     current_loop: Optional["asyncio.AbstractEventLoop"],
-    timeout_seconds: float,
+    timeout_seconds: Optional[float],
 ) -> None:
     """Drive one coordinator's teardown from whichever loop is available.
 
     Args:
         coordinator: The coordinator to shut down.
         current_loop: The loop the caller is running on, if any.
-        timeout_seconds: How long to wait when driving another loop, and the drain
-            budget handed to the coordinator either way.
+        timeout_seconds: Explicit drain budget handed to the coordinator, or
+            ``None`` to let the sender pick a dynamic budget. Also bounds how
+            long this function waits when driving another loop.
     """
     sender = coordinator.sender
     target_loop = sender.loop if sender is not None else None
@@ -776,17 +781,24 @@ def _close_from_outside(
         return
 
     future = asyncio.run_coroutine_threadsafe(coordinator.aclose(drain_timeout_seconds=timeout_seconds), target_loop)
+    # A shade past the inner budget, so the coordinator's own deadline is what
+    # gives up and it still gets to log its statistics. When the budget is
+    # dynamic, bound the outer wait by the sender's maximum dynamic timeout.
+    outer_timeout = (
+        timeout_seconds if timeout_seconds is not None else _MAX_DRAIN_TIMEOUT_SECONDS
+    ) + _TEARDOWN_GRACE_SECONDS
     try:
-        # A shade past the inner budget, so the coordinator's own deadline is what
-        # gives up and it still gets to log its statistics.
-        future.result(timeout=timeout_seconds + _TEARDOWN_GRACE_SECONDS)
+        future.result(timeout=outer_timeout)
     except FuturesTimeoutError:
-        logger.warning("netra.audio: a call did not finish sending within %.0fs", timeout_seconds)
+        logger.warning(
+            "netra.audio: a call did not finish sending within %.0fs",
+            outer_timeout - _TEARDOWN_GRACE_SECONDS,
+        )
     except Exception:
         logger.warning("netra.audio: a call failed to shut down cleanly", exc_info=True)
 
 
-def _stamp_audio_stats(session_span: Any, sender: AudioChunkSender) -> None:
+def _stamp_audio_stats(session_span: "Span", sender: AudioChunkSender) -> None:
     """Record the call's audio delivery counters on its session span.
 
     Args:
