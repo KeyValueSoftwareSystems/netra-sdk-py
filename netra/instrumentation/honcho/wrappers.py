@@ -46,6 +46,7 @@ class _BaseStreamingWrapper:
         self._span = span
         self._response = response
         self._span_ended = False
+        self._iterator: Any = None
 
     def get_final_response(self) -> Dict[str, str]:
         result: Dict[str, str] = self._response.get_final_response()
@@ -85,11 +86,15 @@ class StreamingChatWrapper(_BaseStreamingWrapper):
     """Wraps a sync DialecticStreamResponse to finalize the span after iteration."""
 
     def __iter__(self) -> "StreamingChatWrapper":
+        if self._iterator is None:
+            self._iterator = iter(self._response)
         return self
 
     def __next__(self) -> str:
+        if self._iterator is None:
+            self._iterator = iter(self._response)
         try:
-            chunk: str = next(self._response)
+            chunk: str = next(self._iterator)
             return chunk
         except StopIteration:
             self._finalize_span()
@@ -103,11 +108,15 @@ class AsyncStreamingChatWrapper(_BaseStreamingWrapper):
     """Wraps an async DialecticStreamResponse to finalize the span after iteration."""
 
     def __aiter__(self) -> "AsyncStreamingChatWrapper":
+        if self._iterator is None:
+            self._iterator = self._response.__aiter__()
         return self
 
     async def __anext__(self) -> str:
+        if self._iterator is None:
+            self._iterator = self._response.__aiter__()
         try:
-            chunk: str = await self._response.__anext__()
+            chunk: str = await self._iterator.__anext__()
             return chunk
         except StopAsyncIteration:
             self._finalize_span()
