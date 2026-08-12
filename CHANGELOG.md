@@ -6,6 +6,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [0.1.99] - Unreleased
 
+- **Add Honcho memory SDK instrumentation** — Added automatic sync, async, and streaming instrumentation for `honcho-ai` (>= 2.0.0), with declarative patching, unified wrappers, dynamic response serialization, OTel GenAI semantic conventions, and centralized instrumentation constants.
+
 - **Fix `set_session_id` / `set_user_id` / `set_tenant_id` not stamping the active span** — These methods previously only set OTel baggage but did not set the attribute on the span that was active at call time. `SessionManager.set_session_context` now also stamps the currently recording span immediately, so the caller's span carries the identity attribute without relying solely on processor-based propagation.
 
 - **Centralize session attribute key constants** — Introduced `ATTR_SESSION_ID`, `ATTR_USER_ID`, and `ATTR_TENANT_ID` constants in `session_manager.py` as the single source of truth for span-attribute keys. `SessionSpanProcessor` now imports these instead of constructing keys inline, eliminating duplication and divergence risk.
