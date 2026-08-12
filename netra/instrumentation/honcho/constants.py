@@ -6,6 +6,8 @@ import from a single source of truth.
 
 LOG_PREFIX = "netra.instrumentation.honcho"
 
+MAX_SERIALIZE_DEPTH = 5
+
 # SDK module / class mapping (used by PatchSpec for monkey-patching)
 ASYNC_MODULE = "honcho.aio"
 
@@ -76,7 +78,7 @@ PAGE_SIZE = "gen_ai.honcho.page_size"
 PROVIDER_VALUE = "honcho"
 
 # Operation name values (gen_ai.operation.name values)
-OP_CHAT = "chat"
+OP_CHAT = "honcho.chat"
 OP_CREATE_MEMORY = "create_memory"
 OP_SEARCH_MEMORY = "search_memory"
 OP_DELETE_MEMORY = "delete_memory"

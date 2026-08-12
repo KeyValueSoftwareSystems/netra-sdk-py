@@ -103,6 +103,13 @@ class StreamingChatWrapper(_BaseStreamingWrapper):
             self._finalize_span(error=e)
             raise
 
+    def close(self) -> None:
+        """Close the stream and finalize the span."""
+        self._finalize_span()
+        wrapped_close = getattr(self._response, "close", None)
+        if callable(wrapped_close):
+            wrapped_close()
+
 
 class AsyncStreamingChatWrapper(_BaseStreamingWrapper):
     """Wraps an async DialecticStreamResponse to finalize the span after iteration."""
@@ -124,6 +131,21 @@ class AsyncStreamingChatWrapper(_BaseStreamingWrapper):
         except Exception as e:
             self._finalize_span(error=e)
             raise
+
+    async def aclose(self) -> None:
+        """Close the async stream and finalize the span."""
+        self._finalize_span()
+        wrapped_aclose = getattr(self._response, "aclose", None)
+        if callable(wrapped_aclose):
+            await wrapped_aclose()
+        else:
+            wrapped_close = getattr(self._response, "close", None)
+            if callable(wrapped_close):
+                wrapped_close()
+
+    async def close(self) -> None:
+        """Alias for aclose() for compatibility."""
+        await self.aclose()
 
 
 def make_sync_wrapper(

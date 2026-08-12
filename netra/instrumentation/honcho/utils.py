@@ -6,7 +6,9 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.config import get_attribute_max_len
 from netra.instrumentation.honcho import constants as attrs
+from netra.utils import truncate_string
 
 logger = logging.getLogger(__name__)
 
@@ -49,8 +51,10 @@ def _extract_id(obj: Any) -> Optional[str]:
     return getattr(obj, "id", str(obj))
 
 
-def _jsonify_value(v: Any) -> Any:
+def _jsonify_value(v: Any, _depth: int = 0) -> Any:
     """Convert a single value to a JSON-safe type, recursing into objects."""
+    if _depth >= attrs.MAX_SERIALIZE_DEPTH:
+        return str(v)
     if v is None:
         return None
     if isinstance(v, (str, int, float, bool)):
@@ -58,30 +62,35 @@ def _jsonify_value(v: Any) -> Any:
     if hasattr(v, "isoformat"):
         return v.isoformat()
     if isinstance(v, dict):
-        return {k: _jsonify_value(val) for k, val in v.items() if val is not None}
+        return {k: _jsonify_value(val, _depth + 1) for k, val in v.items() if val is not None}
     if isinstance(v, list):
-        return [_jsonify_value(item) for item in v]
+        return [_jsonify_value(item, _depth + 1) for item in v]
     try:
-        nested = _serialize_obj(v)
+        nested = _serialize_obj(v, _depth + 1)
         return nested if nested is not None else str(v)
     except Exception:
         return str(v)
 
 
-def _serialize_obj(obj: Any) -> Optional[Dict[str, Any]]:
+def _serialize_obj(obj: Any, _depth: int = 0) -> Optional[Dict[str, Any]]:
     """Serialize any Honcho response object to a JSON-safe dict.
 
     Tries ``model_dump(mode='json')`` for Pydantic types, then falls
     back to ``vars()`` for plain classes (Message, Conclusion).  For
     Pydantic types that store extra data in private attrs (Peer,
     Session) the private attrs are included automatically.
+
+    A *_depth* counter prevents unbounded recursion on circular or
+    deeply nested object graphs (capped at ``MAX_SERIALIZE_DEPTH``).
     """
+    if _depth >= attrs.MAX_SERIALIZE_DEPTH:
+        return None
     if obj is None:
         return None
     if isinstance(obj, (str, int, float, bool)):
         return None
     if isinstance(obj, dict):
-        return {k: _jsonify_value(v) for k, v in obj.items() if v is not None} or None
+        return {k: _jsonify_value(v, _depth + 1) for k, v in obj.items() if v is not None} or None
 
     data: Dict[str, Any] = {}
 
@@ -92,7 +101,7 @@ def _serialize_obj(obj: Any) -> Optional[Dict[str, Any]]:
             try:
                 data = obj.model_dump()
             except Exception:
-                pass
+                logger.debug("model_dump failed for %s", type(obj).__name__, exc_info=True)
         for k, v in (getattr(obj, "__pydantic_private__", None) or {}).items():
             clean = k.lstrip("_")
             if v is not None and clean not in data and clean not in _SKIP_PRIVATE:
@@ -107,7 +116,7 @@ def _serialize_obj(obj: Any) -> Optional[Dict[str, Any]]:
         return None
 
     try:
-        return {k: _jsonify_value(v) for k, v in data.items() if v is not None}
+        return {k: _jsonify_value(v, _depth + 1) for k, v in data.items() if v is not None}
     except Exception:
         logger.debug("Failed to serialize object %s", type(obj).__name__, exc_info=True)
         return None
@@ -121,7 +130,8 @@ def _set_input(span: Span, data: Dict[str, Any]) -> None:
     """Set the ``input`` span attribute as a JSON string, omitting None values."""
     filtered = {k: v for k, v in data.items() if v is not None}
     if filtered:
-        _safe_set(span, attrs.INPUT, _safe_json(filtered))
+        serialized = _safe_json(filtered)
+        _safe_set(span, attrs.INPUT, truncate_string(serialized, get_attribute_max_len()))
 
 
 def _set_output(span: Span, data: Any) -> None:
@@ -129,20 +139,33 @@ def _set_output(span: Span, data: Any) -> None:
     if data is None:
         return
     try:
+        max_len = get_attribute_max_len()
         if isinstance(data, str):
-            _safe_set(span, attrs.OUTPUT, data)
+            _safe_set(span, attrs.OUTPUT, truncate_string(data, max_len))
         elif isinstance(data, (dict, list)):
-            _safe_set(span, attrs.OUTPUT, _safe_json(data))
+            _safe_set(span, attrs.OUTPUT, truncate_string(_safe_json(data), max_len))
         else:
-            _safe_set(span, attrs.OUTPUT, str(data))
+            _safe_set(span, attrs.OUTPUT, truncate_string(str(data), max_len))
     except Exception:
         logger.debug("Failed to serialize output for span", exc_info=True)
 
 
 def _is_page(obj: Any) -> bool:
-    """Check if an object is a Honcho paginated response (SyncPage / AsyncPage)."""
-    cls_name = type(obj).__name__
-    return cls_name in ("SyncPage", "AsyncPage")
+    """Check if an object is a Honcho paginated response (SyncPage / AsyncPage).
+
+    Prefers ``isinstance`` against the real Honcho page classes when
+    importable.  Falls back to structural duck-typing (``items`` +
+    ``page`` attributes) so the check survives SDK class renames,
+    subclassing, or test mocks.
+    """
+    try:
+        from honcho.pagination import AsyncPage, SyncPage
+
+        if isinstance(obj, (SyncPage, AsyncPage)):
+            return True
+    except Exception:
+        pass
+    return hasattr(obj, "items") and hasattr(obj, "page")
 
 
 def _coerce_to_items(response: Any) -> Optional[List[Any]]:
@@ -410,7 +433,7 @@ def set_card_response_attrs(span: Span, response: Any) -> None:
     items = _coerce_to_items(response)
     if items is not None:
         _safe_set(span, attrs.RESPONSE_CARD_ITEM_COUNT, len(items))
-        _set_output(span, {"card_item_count": len(items), "items": items})
+        _set_output(span, {"card_item_count": len(items), "items": _serialize_items(items)})
 
 
 def set_set_card_request_attrs(span: Span, instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> None:

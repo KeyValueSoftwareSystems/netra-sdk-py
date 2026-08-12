@@ -1139,6 +1139,113 @@ class TestInputOutputAttributes:
         assert captured.get("output") == "Hello world"
 
 
+class TestSerializationEdgeCases:
+    """Test edge cases in _serialize_obj and _jsonify_value."""
+
+    def test_circular_reference_does_not_crash(self):
+        from netra.instrumentation.honcho.utils import _serialize_obj
+
+        a = _FakeObj(name="a")
+        b = _FakeObj(name="b", parent=a)
+        a.child = b  # circular: a -> b -> a
+
+        result = _serialize_obj(a)
+        assert result is not None
+        assert result["name"] == "a"
+
+    def test_deeply_nested_object_degrades_gracefully(self):
+        from netra.instrumentation.honcho.utils import _serialize_obj
+
+        current = _FakeObj(value="leaf")
+        for i in range(20):
+            current = _FakeObj(value=f"level-{i}", child=current)
+
+        result = _serialize_obj(current)
+        assert result is not None
+        assert result["value"] == "level-19"
+
+    def test_serialize_obj_with_none(self):
+        from netra.instrumentation.honcho.utils import _serialize_obj
+
+        assert _serialize_obj(None) is None
+
+    def test_serialize_obj_with_primitive(self):
+        from netra.instrumentation.honcho.utils import _serialize_obj
+
+        assert _serialize_obj("hello") is None
+        assert _serialize_obj(42) is None
+
+    def test_card_response_serializes_items(self):
+        """S4: set_card_response_attrs should serialize items, not pass raw objects."""
+        from netra.instrumentation.honcho.utils import set_card_response_attrs
+
+        span = Mock()
+        span.is_recording.return_value = True
+        captured = {}
+        span.set_attribute.side_effect = lambda k, v: captured.__setitem__(k, v)
+
+        items = [_FakeObj(key="color", value="blue"), _FakeObj(key="lang", value="en")]
+        set_card_response_attrs(span, items)
+
+        assert captured[attrs.RESPONSE_CARD_ITEM_COUNT] == 2
+        import json
+
+        output = json.loads(captured["output"])
+        assert output["items"][0]["key"] == "color"
+        assert output["items"][1]["value"] == "en"
+
+    def test_streaming_close_finalizes_span(self):
+        """S1: close() should finalize the span without consuming remaining chunks."""
+        from netra.instrumentation.honcho.wrappers import StreamingChatWrapper
+
+        span = Mock()
+
+        class FakeStream:
+            def __iter__(self):
+                return iter(["a", "b", "c"])
+
+            def get_final_response(self):
+                return {"content": "abc"}
+
+            @property
+            def is_complete(self):
+                return True
+
+        wrapper = StreamingChatWrapper(span, FakeStream())
+        wrapper.close()
+
+        span.end.assert_called_once()
+
+    def test_async_streaming_aclose_finalizes_span(self):
+        """S1: aclose() should finalize the span."""
+        import asyncio
+
+        from netra.instrumentation.honcho.wrappers import AsyncStreamingChatWrapper
+
+        span = Mock()
+
+        class FakeAsyncStream:
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                raise StopAsyncIteration
+
+            def get_final_response(self):
+                return {"content": ""}
+
+            @property
+            def is_complete(self):
+                return True
+
+        async def run():
+            wrapper = AsyncStreamingChatWrapper(span, FakeAsyncStream())
+            await wrapper.aclose()
+
+        asyncio.run(run())
+        span.end.assert_called_once()
+
+
 class TestIntegration:
     """Integration tests verifying instrument/uninstrument cycle."""
 
