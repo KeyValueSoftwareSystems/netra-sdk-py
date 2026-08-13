@@ -28,7 +28,7 @@ from netra.instrumentation.livekit.call_span import (
     end_all_call_spans,
 )
 from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvider
-from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor
+from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor, record_stt_usage
 from netra.instrumentation.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     CALL_SPAN_NAME,
@@ -38,6 +38,7 @@ from netra.instrumentation.livekit.utils import (
     NETRA_CONVERSATION_TRUNCATED,
     NETRA_ENTITY_TYPE,
     NETRA_SPAN_TYPE,
+    USER_TURN_SPAN_NAME,
     ConversationSide,
     content_of_choice_event,
     content_of_event,
@@ -47,9 +48,10 @@ from netra.instrumentation.livekit.utils import (
     messages_from_chat_ctx,
     netra_span_type_for,
     role_of_choice_event,
+    stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
-from netra.instrumentation.livekit.wrappers import wrap_aclose, wrap_start
+from netra.instrumentation.livekit.wrappers import _listen_for_metrics, wrap_aclose, wrap_start
 from netra.processors.root_span_processor import RootSpanProcessor
 from netra.processors.session_span_processor import SessionSpanProcessor
 from netra.span_wrapper import SpanType
@@ -495,6 +497,162 @@ class TestTtsPricing:
 
         assert tts_pricing_attributes_from(payload) == tts_pricing_attributes_from(json.dumps(payload))
 
+    def test_token_counts_are_lifted_for_a_token_priced_model(self, harness: _Harness) -> None:
+        # The gpt-4o-mini-tts shape: priced on tokens, so the character count alone
+        # would leave the call billing nothing.
+        metrics = json.dumps(
+            {
+                "characters_count": 38,
+                "input_tokens": 8,
+                "output_tokens": 85,
+                "audio_duration": 3.288,
+                "metadata": {"model_name": "gpt-4o-mini-tts"},
+            }
+        )
+        attributes = _record(harness, "tts_request", {"lk.tts_metrics": metrics})
+
+        assert attributes["gen_ai.usage.prompt_tokens"] == 8
+        assert attributes["gen_ai.usage.completion_tokens"] == 85
+        assert attributes["gen_ai.audio.duration"] == pytest.approx(3.288)
+        assert attributes["gen_ai.usage.prompt.character_count"] == 38
+        assert attributes["netra.usage.source"] == "framework"
+
+    def test_zero_token_counts_are_dropped_rather_than_claimed(self, harness: _Harness) -> None:
+        # The cartesia/sonic-3 shape: billed on characters, reporting 0 tokens.
+        metrics = json.dumps(
+            {
+                "characters_count": 87,
+                "input_tokens": 0,
+                "output_tokens": 0,
+                "audio_duration": 4.736875,
+                "metadata": {"model_name": "cartesia/sonic-3"},
+            }
+        )
+        attributes = _record(harness, "tts_request", {"lk.tts_metrics": metrics})
+
+        assert "gen_ai.usage.prompt_tokens" not in attributes
+        assert "gen_ai.usage.completion_tokens" not in attributes
+        assert attributes["gen_ai.usage.prompt.character_count"] == 87
+        assert attributes["gen_ai.audio.duration"] == pytest.approx(4.736875)
+
+
+class TestSttPricing:
+    """STT usage arrives out-of-band — see ``record_stt_usage``."""
+
+    @staticmethod
+    def _metrics(**overrides: Any) -> Dict[str, Any]:
+        """A serialised ``STTMetrics`` for a streaming recognition."""
+        payload: Dict[str, Any] = {
+            "type": "stt_metrics",
+            "request_id": "019ff5ed-0bb4-7ea0",
+            "audio_duration": 2.5,
+            "input_tokens": 0,
+            "output_tokens": 0,
+            "streamed": True,
+            "metadata": {"model_name": "deepgram/nova-3"},
+        }
+        payload.update(overrides)
+        return payload
+
+    @staticmethod
+    def _turn(harness: _Harness) -> Tuple[Any, int]:
+        """Start a ``user_turn`` span and return it with its trace id."""
+        span = harness.livekit_tracer.start_span("user_turn")
+        return span, span.get_span_context().trace_id
+
+    def test_reported_usage_lands_on_the_recording_turn(self, harness: _Harness) -> None:
+        span, trace_id = self._turn(harness)
+        record_stt_usage(trace_id, self._metrics(input_tokens=12, output_tokens=4))
+        span.end()
+
+        attributes = harness.attributes("user_turn")
+        assert attributes["gen_ai.audio.duration"] == pytest.approx(2.5)
+        assert attributes["gen_ai.usage.prompt_tokens"] == 12
+        assert attributes["gen_ai.usage.completion_tokens"] == 4
+        assert attributes["gen_ai.request.model"] == "deepgram/nova-3"
+        assert attributes["netra.usage.source"] == "framework"
+
+    def test_incremental_samples_accumulate_over_a_turn(self, harness: _Harness) -> None:
+        # A streaming STT emits RECOGNITION_USAGE per final transcript, each
+        # carrying only the audio since the last one.
+        span, trace_id = self._turn(harness)
+        record_stt_usage(trace_id, self._metrics(audio_duration=2.5, input_tokens=12))
+        record_stt_usage(trace_id, self._metrics(audio_duration=1.25, input_tokens=3))
+        span.end()
+
+        attributes = harness.attributes("user_turn")
+        assert attributes["gen_ai.audio.duration"] == pytest.approx(3.75)
+        assert attributes["gen_ai.usage.prompt_tokens"] == 15
+
+    def test_a_json_string_is_accepted_like_a_mapping(self, harness: _Harness) -> None:
+        span, trace_id = self._turn(harness)
+        record_stt_usage(trace_id, json.dumps(self._metrics()))
+        span.end()
+
+        assert harness.attributes("user_turn")["gen_ai.audio.duration"] == pytest.approx(2.5)
+
+    def test_connection_timing_sample_writes_no_usage(self, harness: _Harness) -> None:
+        # ``_report_connection_acquired`` reports a zero-duration sample purely to
+        # record when the socket was acquired.
+        span, trace_id = self._turn(harness)
+        record_stt_usage(trace_id, self._metrics(request_id="", audio_duration=0.0, acquire_time=0.4))
+        span.end()
+
+        attributes = harness.attributes("user_turn")
+        assert "gen_ai.audio.duration" not in attributes
+        assert "netra.usage.source" not in attributes
+
+    def test_usage_arriving_after_the_turn_ended_is_dropped(self, harness: _Harness) -> None:
+        span, trace_id = self._turn(harness)
+        span.end()
+
+        record_stt_usage(trace_id, self._metrics())
+
+        assert "gen_ai.audio.duration" not in harness.attributes("user_turn")
+
+    def test_a_late_turn_end_does_not_evict_its_successor(self, harness: _Harness) -> None:
+        first, trace_id = self._turn(harness)
+        second = harness.livekit_tracer.start_span("user_turn", context=trace.set_span_in_context(first))
+        first.end()
+
+        record_stt_usage(trace_id, self._metrics())
+        second.end()
+
+        exported = [span for span in harness.exporter.get_finished_spans() if span.name == "user_turn"]
+        by_id = {span.get_span_context().span_id: dict(span.attributes or {}) for span in exported}
+        assert by_id[second.get_span_context().span_id]["gen_ai.audio.duration"] == pytest.approx(2.5)
+        assert "gen_ai.audio.duration" not in by_id[first.get_span_context().span_id]
+
+    @pytest.mark.parametrize("payload", ["not json", None, [], {"metadata": "not a mapping"}])
+    def test_a_malformed_payload_is_dropped_without_raising(self, harness: _Harness, payload: Any) -> None:
+        span, trace_id = self._turn(harness)
+        record_stt_usage(trace_id, payload)
+        span.end()
+
+        attributes = harness.attributes("user_turn")
+        assert "gen_ai.audio.duration" not in attributes
+        assert "gen_ai.request.model" not in attributes
+
+    def test_usage_for_an_unknown_trace_is_dropped_without_raising(self) -> None:
+        record_stt_usage(0xDEADBEEF, self._metrics())
+
+    @pytest.mark.parametrize(
+        "payload,expected",
+        [
+            ({"audio_duration": 2.5}, 2.5),
+            ({"audio_duration": 0.0}, None),
+            ({"audio_duration": -1.0}, None),
+            ({"audio_duration": True}, None),
+            ({"audio_duration": 3}, 3.0),
+            ({}, None),
+        ],
+    )
+    def test_duration_extraction_tolerates_every_shape(self, payload: Any, expected: Optional[float]) -> None:
+        assert stt_pricing_attributes_from(payload).audio_duration == expected
+
+    def test_transcription_reports_no_character_count(self) -> None:
+        assert stt_pricing_attributes_from(self._metrics(characters_count=99)).character_count is None
+
 
 class TestChildToParentPropagation:
     def _child_under(self, harness: _Harness, parent_name: str, scope: str, attributes: Dict[str, Any]) -> None:
@@ -819,6 +977,50 @@ class _FakeAgentSession:
             self._session_span = None
 
 
+class _SpeakingAgentSession(_FakeAgentSession):
+    """A session that opens a ``user_turn`` span and emits metrics, as LiveKit does.
+
+    The turn is opened *inside* ``start()``, under the session span, because that is
+    where livekit-agents opens it: from the audio-recognition task, which snapshots
+    the context ``wrap_start`` made current. ``on``/``emit`` reproduce the
+    ``EventEmitter`` surface the metrics subscription is registered on.
+    """
+
+    def __init__(self, tracer: Any) -> None:
+        super().__init__(tracer)
+        self.user_turn: Optional[Any] = None
+        self._listeners: Dict[str, List[Any]] = {}
+
+    def on(self, event: str, callback: Any) -> Any:
+        self._listeners.setdefault(event, []).append(callback)
+        return callback
+
+    def emit(self, event: str, argument: Any) -> None:
+        for callback in self._listeners.get(event, []):
+            callback(argument)
+
+    async def start(self, **kwargs: Any) -> str:
+        result = await super().start(**kwargs)
+        with trace.use_span(self._session_span, end_on_exit=False):
+            self.user_turn = self._tracer.start_span(USER_TURN_SPAN_NAME)
+        return result
+
+
+class _FakeMetricsEvent:
+    """LiveKit's ``MetricsCollectedEvent``: a wrapper around one pydantic metrics model."""
+
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        self.metrics = _FakeMetrics(payload)
+
+
+class _FakeMetrics:
+    def __init__(self, payload: Dict[str, Any]) -> None:
+        self._payload = payload
+
+    def model_dump(self) -> Dict[str, Any]:
+        return dict(self._payload)
+
+
 class _FailedAgentSession(_FakeAgentSession):
     """A session whose ``agent_session`` span ends ``ERROR``, as a failed call's does.
 
@@ -912,6 +1114,81 @@ def _run_call(
         with trace.use_span(parent, end_on_exit=False):
             asyncio.run(call())
     return session
+
+
+class TestSttUsageWiring:
+    """``wrap_start`` routes the session's STT metrics onto its ``user_turn`` spans."""
+
+    STT_METRICS = {
+        "type": "stt_metrics",
+        "audio_duration": 2.5,
+        "input_tokens": 0,
+        "output_tokens": 0,
+        "metadata": {"model_name": "deepgram/nova-3"},
+    }
+
+    @staticmethod
+    def _call(harness: _CallHarness, *events: Dict[str, Any]) -> None:
+        """Run one call, emitting *events* while the user turn is open."""
+        session = _SpeakingAgentSession(harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": _FakeRoom("console-stt")})
+            for payload in events:
+                session.emit("metrics_collected", _FakeMetricsEvent(payload))
+            assert session.user_turn is not None
+            session.user_turn.end()
+            await wrap_aclose(session.aclose_impl, session, (), {})
+
+        asyncio.run(call())
+
+    def test_emitted_stt_metrics_price_the_open_user_turn(self, call_harness: _CallHarness) -> None:
+        self._call(call_harness, self.STT_METRICS)
+
+        attributes = call_harness.attributes(USER_TURN_SPAN_NAME)
+        assert attributes["gen_ai.audio.duration"] == pytest.approx(2.5)
+        assert attributes["gen_ai.request.model"] == "deepgram/nova-3"
+
+    def test_other_metrics_on_the_same_event_are_ignored(self, call_harness: _CallHarness) -> None:
+        # metrics_collected carries LLM, TTS, VAD and EOU metrics too, and their
+        # usage belongs to the spans LiveKit already writes it on.
+        self._call(
+            call_harness,
+            {"type": "tts_metrics", "audio_duration": 9.0, "characters_count": 40},
+            {"type": "llm_metrics", "prompt_tokens": 371, "completion_tokens": 21},
+        )
+
+        attributes = call_harness.attributes(USER_TURN_SPAN_NAME)
+        assert "gen_ai.audio.duration" not in attributes
+        assert "gen_ai.usage.prompt_tokens" not in attributes
+
+    def test_subscription_bypasses_the_deprecating_session_override(
+        self, call_harness: _CallHarness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # AgentSession.on logs "metrics_collected is deprecated" on every
+        # subscription; the SDK must not put that in the user's log.
+        import sys
+        from types import ModuleType
+
+        subscribed: List[Tuple[Any, str]] = []
+
+        class _EventEmitter:
+            def on(self, event: str, callback: Any) -> Any:
+                subscribed.append((self, event))
+                return callback
+
+        livekit = ModuleType("livekit")
+        rtc = ModuleType("livekit.rtc")
+        rtc.EventEmitter = _EventEmitter  # type: ignore[attr-defined]
+        livekit.rtc = rtc  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "livekit", livekit)
+        monkeypatch.setitem(sys.modules, "livekit.rtc", rtc)
+
+        session = _SpeakingAgentSession(call_harness.livekit_tracer)
+        _listen_for_metrics(session, lambda event: None)
+
+        assert subscribed == [(session, "metrics_collected")]
+        assert session._listeners == {}, "the session's own on() must not have been used"
 
 
 class TestCallSpanRootsTheTrace:

@@ -25,13 +25,15 @@ from __future__ import annotations
 
 import logging
 from contextlib import ExitStack
-from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Optional, Tuple
+from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
 from opentelemetry import trace
 
 from netra.config import get_active_config
 from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
 from netra.instrumentation.livekit.call_span import end_call_span_of_session, start_call_span
+from netra.instrumentation.livekit.trace_processor import record_stt_usage
+from netra.instrumentation.livekit.utils import STT_METRICS_TYPE
 from netra.session_manager import SessionManager
 
 if TYPE_CHECKING:
@@ -44,6 +46,9 @@ logger = logging.getLogger(__name__)
 # livekit AgentSession, which cannot be imported at module scope — the SDK must
 # stay importable with livekit-agents absent.
 WrappedAsync = Callable[..., Awaitable[Any]]
+
+# LiveKit's ``AgentSession`` event carrying every plugin's metrics.
+_METRICS_EVENT = "metrics_collected"
 
 
 # ---------------------------------------------------------------------------
@@ -177,6 +182,74 @@ def _trace_id_of(session_span: Optional["Span"]) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# STT usage
+# ---------------------------------------------------------------------------
+
+
+def _subscribe_stt_usage(instance: "AgentSession", trace_id: int) -> None:
+    """Route the session's STT metrics onto the ``user_turn`` span they belong to.
+
+    LiveKit puts LLM and TTS metrics on the spans they describe, but not the STT
+    ones: ``telemetry/trace_types.py`` has no ``ATTR_STT_METRICS``, so the audio
+    duration and token counts a transcription is billed on reach the SDK only as
+    ``metrics_collected`` events. ``trace_processor.record_stt_usage`` matches them
+    back to the recording turn by trace id.
+
+    Args:
+        instance: The ``AgentSession`` that is starting.
+        trace_id: The trace its spans belong to.
+    """
+
+    def on_metrics(event: Any) -> None:
+        """Record one ``metrics_collected`` event if it is an STT one.
+
+        Args:
+            event: LiveKit's ``MetricsCollectedEvent``.
+        """
+        try:
+            metrics = getattr(event, "metrics", None)
+            dump = getattr(metrics, "model_dump", None)
+            payload = dump() if callable(dump) else metrics
+            # Matched on the discriminator rather than by ``isinstance``: the same
+            # event carries LLM, TTS, VAD and EOU metrics too, and the SDK must
+            # stay importable with livekit-agents absent.
+            if isinstance(payload, Mapping) and payload.get("type") == STT_METRICS_TYPE:
+                record_stt_usage(trace_id, payload)
+        except Exception:
+            logger.debug("netra.livekit: STT usage could not be recorded", exc_info=True)
+
+    _listen_for_metrics(instance, on_metrics)
+
+
+def _listen_for_metrics(instance: "AgentSession", handler: Callable[[Any], None]) -> None:
+    """Subscribe *handler* to the session's ``metrics_collected`` event.
+
+    Subscribed through ``rtc.EventEmitter``, the base class, rather than
+    ``AgentSession.on``: the override logs a "metrics_collected is deprecated"
+    warning on every subscription, and an SDK has no business putting that in the
+    user's logs for a listener the user did not add. The replacement LiveKit points
+    at — ``session_usage_updated`` — reports cumulative session totals, which
+    cannot be attributed to a single turn.
+
+    If the base class is not reachable, the subscription still goes through the
+    session itself: one deprecation line in the log is a smaller cost than a call
+    that does not price.
+
+    Args:
+        instance: The ``AgentSession`` to subscribe to.
+        handler: The callback to register.
+    """
+    try:
+        from livekit import rtc
+    except ImportError:
+        logger.debug("netra.livekit: livekit.rtc is unavailable; subscribing through the session", exc_info=True)
+        instance.on(_METRICS_EVENT, handler)
+        return
+
+    rtc.EventEmitter.on(instance, _METRICS_EVENT, handler)
+
+
+# ---------------------------------------------------------------------------
 # Session lifecycle hooks
 # ---------------------------------------------------------------------------
 
@@ -303,6 +376,21 @@ async def wrap_start(
                     scope.enter_context(trace.use_span(call_span, end_on_exit=False))
                 except Exception:
                     logger.warning("netra.livekit: could not make the call span current", exc_info=True)
+
+            # Subscribed before start() so no metrics can be missed: the STT stream
+            # is created inside it. The trace id comes off the call span because it
+            # is the trace root — every LiveKit span in this call, ``user_turn``
+            # included, shares it.
+            call_trace_id = _trace_id_of(call_span)
+            if call_trace_id is not None:
+                try:
+                    _subscribe_stt_usage(instance, call_trace_id)
+                except Exception:
+                    logger.warning(
+                        "netra.livekit: could not subscribe to session metrics; STT spans will carry "
+                        "no audio duration or token counts and will not price",
+                        exc_info=True,
+                    )
 
             result = await wrapped(*args, **kwargs)
     except BaseException:

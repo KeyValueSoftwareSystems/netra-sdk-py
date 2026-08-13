@@ -34,12 +34,15 @@ from netra.instrumentation.livekit.utils import (
     CONVERSATION_MAP,
     EVENT_CHOICE,
     EVENT_ROLE,
+    GEN_AI_AUDIO_DURATION,
     GEN_AI_COMPLETION_CONTENT,
     GEN_AI_COMPLETION_ROLE,
     GEN_AI_PROMPT_CONTENT,
     GEN_AI_PROMPT_ROLE,
     GEN_AI_REQUEST_MODEL,
     GEN_AI_USAGE_CHARACTER_COUNT,
+    GEN_AI_USAGE_COMPLETION_TOKENS,
+    GEN_AI_USAGE_PROMPT_TOKENS,
     IO_FROM_CHILD_SPAN_NAMES,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
@@ -51,6 +54,8 @@ from netra.instrumentation.livekit.utils import (
     NETRA_USAGE_SOURCE,
     TTS_METRICS_ATTRIBUTE,
     USAGE_SOURCE_FRAMEWORK,
+    USER_TURN_SPAN_NAME,
+    AudioPricingAttributes,
     ConversationSide,
     as_attribute_text,
     content_of_choice_event,
@@ -63,6 +68,7 @@ from netra.instrumentation.livekit.utils import (
     messages_from_chat_ctx,
     netra_span_type_for,
     role_of_choice_event,
+    stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
 
@@ -120,12 +126,19 @@ def _class_level_writer(span: Span) -> SetAttributeFunc:
     return write
 
 
+# The zero point for the accumulation in ``_write_usage``: nothing carried over.
+_NO_USAGE = AudioPricingAttributes(None, None, None, None, None)
+
+
 def _write_tts_pricing(span: Span, metrics_payload: Any) -> None:
     """Lift the priceable fields out of LiveKit's TTS metrics blob into Netra keys.
 
-    Writes through ``span.set_attribute`` — the outermost wrapper — so the model
-    reaches the rest of the processor chain and the character count takes the
-    usage branch, which stamps ``netra.usage.source`` on it like every other
+    LiveKit writes ``lk.tts_metrics`` once per ``tts_request``, as one complete
+    blob, so the values are set rather than accumulated.
+
+    Written through ``span.set_attribute`` — the outermost wrapper — so the model
+    reaches the rest of the processor chain and the character count takes the usage
+    branch, which stamps ``netra.usage.source`` on it like every other
     framework-reported usage number.
 
     Args:
@@ -137,6 +150,155 @@ def _write_tts_pricing(span: Span, metrics_payload: Any) -> None:
         span.set_attribute(GEN_AI_REQUEST_MODEL, pricing.model)
     if pricing.character_count is not None:
         span.set_attribute(GEN_AI_USAGE_CHARACTER_COUNT, pricing.character_count)
+    _write_usage(span, pricing, previous=_NO_USAGE)
+
+
+def _write_stt_pricing(span: Span, pricing: AudioPricingAttributes) -> None:
+    """Add one STT metrics sample to the running usage totals on a ``user_turn`` span.
+
+    Accumulated rather than set, because LiveKit reports transcription usage
+    *incrementally*: a streaming STT emits ``RECOGNITION_USAGE`` on every final
+    transcript and resets its counter after each one, so a turn with three finals
+    arrives here three times, each carrying only the audio since the last. Setting
+    would keep the last fragment and discard the rest of the turn.
+
+    The model is set, not accumulated — every sample in a turn reports the same one.
+
+    Args:
+        span: The still-recording ``user_turn`` span.
+        pricing: One ``STTMetrics`` sample.
+    """
+    if pricing.model is not None:
+        span.set_attribute(GEN_AI_REQUEST_MODEL, pricing.model)
+    _write_usage(span, pricing, previous=_usage_on(span))
+
+
+def _write_usage(span: Span, pricing: AudioPricingAttributes, *, previous: AudioPricingAttributes) -> None:
+    """Write the usage fields a TTS and an STT call report alike, added to *previous*.
+
+    Writes through ``span.set_attribute`` — the outermost wrapper — so the token
+    counts take the usage branch of ``map_attribute``, which stamps
+    ``netra.usage.source`` on them like every other framework-reported number.
+
+    Args:
+        span: The span to write to.
+        pricing: The values LiveKit reported in this sample.
+        previous: The totals already on the span, or ``_NO_USAGE`` for a value
+            reported once and in full.
+    """
+    for key, reported, carried in (
+        (GEN_AI_USAGE_PROMPT_TOKENS, pricing.prompt_tokens, previous.prompt_tokens),
+        (GEN_AI_USAGE_COMPLETION_TOKENS, pricing.completion_tokens, previous.completion_tokens),
+        (GEN_AI_AUDIO_DURATION, pricing.audio_duration, previous.audio_duration),
+    ):
+        if reported is None:
+            continue
+        span.set_attribute(key, reported + (carried or 0))
+
+
+def _usage_on(span: Span) -> AudioPricingAttributes:
+    """Read the usage totals already written on *span*.
+
+    Args:
+        span: The span to read back from.
+
+    Returns:
+        The totals, each ``None`` when the span carries no such value yet.
+    """
+    attributes: Mapping[str, Any] = getattr(span, "attributes", None) or {}
+    prompt_tokens = _numeric(attributes.get(GEN_AI_USAGE_PROMPT_TOKENS))
+    completion_tokens = _numeric(attributes.get(GEN_AI_USAGE_COMPLETION_TOKENS))
+
+    return _NO_USAGE._replace(
+        prompt_tokens=None if prompt_tokens is None else int(prompt_tokens),
+        completion_tokens=None if completion_tokens is None else int(completion_tokens),
+        audio_duration=_numeric(attributes.get(GEN_AI_AUDIO_DURATION)),
+    )
+
+
+def _numeric(value: Any) -> Optional[float]:
+    """Read a value back off a span as a number, or None if it is not one.
+
+    Args:
+        value: The attribute value.
+
+    Returns:
+        The value as a float, or ``None``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    return float(value)
+
+
+# The ``user_turn`` span currently recording in each trace, keyed by trace id. STT
+# usage arrives on the session's ``metrics_collected`` event, which carries no span
+# and no context, so this is how ``wrappers.py`` finds the turn it belongs to. Weak
+# values for the same reason as ``_io_parents``: a span that somehow never ends
+# cannot leak. One turn records at a time per session, and the re-rooted
+# ``livekit-call`` shares its trace id with every LiveKit span in the call, so a
+# trace id identifies exactly one candidate.
+_user_turn_spans: "weakref.WeakValueDictionary[int, Span]" = weakref.WeakValueDictionary()
+_user_turn_lock = threading.Lock()
+
+
+def _register_user_turn_span(span: Span) -> None:
+    """Make *span* the turn STT usage is attributed to in its trace.
+
+    Args:
+        span: A starting ``user_turn`` span.
+    """
+    context = span.get_span_context()
+    if context is None:
+        return
+    with _user_turn_lock:
+        _user_turn_spans[context.trace_id] = span
+
+
+def _deregister_user_turn_span(span: ReadableSpan) -> None:
+    """Drop *span* from the user-turn registry, if it is still the registered one.
+
+    Gated on identity because ``on_end`` can run after the next turn has already
+    registered itself — a stale end must not evict the turn that replaced it.
+
+    Args:
+        span: The span that has ended.
+    """
+    if span.name != USER_TURN_SPAN_NAME:
+        return
+    context = span.get_span_context()
+    if context is None:
+        return
+    with _user_turn_lock:
+        registered = _user_turn_spans.get(context.trace_id)
+        if registered is not None and registered.get_span_context().span_id == context.span_id:
+            del _user_turn_spans[context.trace_id]
+
+
+def record_stt_usage(trace_id: int, metrics_payload: Any) -> None:
+    """Add one LiveKit ``STTMetrics`` sample to the recording ``user_turn`` span.
+
+    A sample whose turn has already ended is dropped rather than carried onto the
+    next one: an interrupted turn can close before its final metrics arrive, and
+    billing the following turn for the previous one's audio is worse than losing
+    the sample.
+
+    The lookup and the accumulating write are held under one lock: the write is a
+    read-modify-write of the totals on the span, so two samples landing at once
+    would otherwise lose one. Nothing on the write path reads the registry, so the
+    lock cannot be re-entered.
+
+    Args:
+        trace_id: The trace the metrics belong to.
+        metrics_payload: A serialised ``STTMetrics`` mapping or JSON string.
+    """
+    pricing = stt_pricing_attributes_from(metrics_payload)
+
+    with _user_turn_lock:
+        span = _user_turn_spans.get(trace_id)
+        if span is None or not span.is_recording():
+            logger.debug("netra.livekit: no recording user_turn span for STT usage in trace %x", trace_id)
+            return
+        _write_stt_pricing(span, pricing)
 
 
 class _ConversationRecorder:
@@ -326,6 +488,8 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
 
             if span.name in IO_FROM_CHILD_SPAN_NAMES:
                 self._register_io_parent(span)
+            if span.name == USER_TURN_SPAN_NAME:
+                _register_user_turn_span(span)
         except Exception:
             logger.warning("netra.livekit: span mapping could not be installed", exc_info=True)
 
@@ -352,6 +516,10 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             self._deregister_io_parent(span)
         except Exception:
             logger.debug("netra.livekit: span could not be deregistered", exc_info=True)
+        try:
+            _deregister_user_turn_span(span)
+        except Exception:
+            logger.debug("netra.livekit: user turn span could not be deregistered", exc_info=True)
         try:
             self._close_call_span(span)
         except Exception:
