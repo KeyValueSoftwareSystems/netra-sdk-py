@@ -396,6 +396,7 @@ def init_instrumentations(
     if CustomInstruments.HERMES_AGENT in netra_custom_instruments:
         init_hermes_agent_instrumentation()
 
+    # Initialize honcho instrumentation.
     if CustomInstruments.HONCHO in netra_custom_instruments:
         init_honcho_instrumentation()
 
