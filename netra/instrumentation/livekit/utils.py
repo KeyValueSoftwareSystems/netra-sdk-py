@@ -48,6 +48,13 @@ JOB_ENTRYPOINT_SPAN_NAME = "job_entrypoint"
 # signal this package ends ``livekit-call`` on.
 AGENT_SESSION_SPAN_NAME = "agent_session"
 
+# livekit-agents' span for one turn of user speech (``voice/audio_recognition.py``:
+# ``_ensure_user_turn_span``), carrying the transcript and the STT model. It is
+# where this package puts the transcription usage LiveKit reports out-of-band —
+# there is no STT span below it to carry them, and pricing needs the usage on the
+# same span as the model.
+USER_TURN_SPAN_NAME = "user_turn"
+
 # ---------------------------------------------------------------------------
 # Netra target attribute keys
 # ---------------------------------------------------------------------------
@@ -108,12 +115,21 @@ GEN_AI_ATTRIBUTE_PREFIX = "gen_ai."
 # Prefix identifying token-usage attributes, whoever wrote them.
 GEN_AI_USAGE_PREFIX = "gen_ai.usage."
 
-# The pair of keys Netra's backend prices a TTS call from. Identical to what every
-# Netra TTS provider instrumentation emits (``cartesia``, ``elevenlabs``,
-# ``deepgram``), so a LiveKit-hosted synthesis prices through the same path as a
-# directly-instrumented one.
+# The keys Netra's backend prices a speech call from. Which of them a given model
+# is billed on is the backend's decision, not ours: a model's price rows name one
+# usage type each (``character_count``, ``input``/``output``, ``audio_duration``),
+# and a value with no matching row simply does not price. So every value LiveKit
+# reports is written, and the model is written alongside them because pricing needs
+# the model and its usage on the *same* span.
 GEN_AI_REQUEST_MODEL = "gen_ai.request.model"
 GEN_AI_USAGE_CHARACTER_COUNT = "gen_ai.usage.prompt.character_count"
+GEN_AI_USAGE_PROMPT_TOKENS = "gen_ai.usage.prompt_tokens"
+GEN_AI_USAGE_COMPLETION_TOKENS = "gen_ai.usage.completion_tokens"
+
+# Billable audio length, in **seconds**. The unit is the backend's contract, not a
+# choice: its price rows carry the divisor (``unitValue`` 60 for a per-minute
+# price, 3600 for a per-hour one) and apply it to a value it reads as seconds.
+GEN_AI_AUDIO_DURATION = "gen_ai.audio.duration"
 
 # The assembled input/output ``SpanIOProcessor`` builds from the indexed pairs. Read
 # off a child span as the fallback when it carries no indexed pairs of its own.
@@ -165,12 +181,21 @@ NETRA_CONVERSATION_TRUNCATED = "netra.conversation.truncated"
 CHAT_CTX_ATTRIBUTE = "lk.chat_ctx"
 
 # LiveKit's serialised ``TTSMetrics`` (``trace_types.ATTR_TTS_METRICS``, written on
-# ``tts_request``). It is the only place on that span carrying the two values
-# pricing needs — ``characters_count`` and the model name, nested under
-# ``metadata`` — and as one opaque JSON blob the backend cannot read either. The
-# sibling ``tts_node`` span does carry ``gen_ai.request.model``, but pricing needs
-# the model and the character count on the *same* span.
+# ``tts_request``). It is the only place on that span carrying the values pricing
+# needs — ``characters_count``, ``input_tokens``/``output_tokens``,
+# ``audio_duration`` and the model name nested under ``metadata`` — and as one
+# opaque JSON blob the backend can read none of them. The sibling ``tts_node`` span
+# does carry ``gen_ai.request.model``, but pricing needs the model and the usage on
+# the *same* span.
 TTS_METRICS_ATTRIBUTE = "lk.tts_metrics"
+
+# The ``type`` discriminator on a serialised ``STTMetrics`` (``metrics/base.py``).
+# LiveKit has no ``ATTR_STT_METRICS`` — unlike LLM and TTS metrics, the STT ones are
+# never written onto a span — so they are read off the session's ``metrics_collected``
+# event instead, and this is what distinguishes them from the other metrics types
+# that same event carries. Matched by value rather than by ``isinstance``: the SDK
+# stays importable with livekit-agents absent.
+STT_METRICS_TYPE = "stt_metrics"
 
 # LiveKit's completion event (``trace_types.EVENT_GEN_AI_CHOICE``, emitted from
 # ``llm/llm.py`` once the reply is complete). Handled separately from
@@ -256,19 +281,37 @@ class SpanConversation(NamedTuple):
     carries_gen_ai: bool
 
 
-class TtsPricingAttributes(NamedTuple):
-    """The billable facts of one TTS synthesis, as LiveKit reported them.
+class AudioPricingAttributes(NamedTuple):
+    """The billable facts of one speech call, as LiveKit reported them.
+
+    Shared by synthesis and transcription because LiveKit reports both the same
+    way: ``TTSMetrics`` and ``STTMetrics`` differ only in that the latter has no
+    character count. Which fields actually price is the backend's decision — see
+    ``GEN_AI_REQUEST_MODEL`` and the keys beside it.
+
+    Every field is ``None`` when LiveKit reported nothing, or reported a value of
+    zero: a zero prices to nothing and claims a measurement nobody made. That
+    matters in practice — a provider billed by characters reports
+    ``input_tokens: 0``, and a streaming STT connection reports an
+    ``audio_duration`` of 0.0 purely to record when the socket was acquired.
 
     Attributes:
-        model: The synthesis model, verbatim from LiveKit — including the
+        model: The model, verbatim from LiveKit — including the
             ``provider/model`` prefix it uses for its inference gateway
-            (``cartesia/sonic-3``). ``None`` when LiveKit reported none.
-        character_count: The number of characters synthesised, or ``None`` when
-            LiveKit reported none or a count of zero.
+            (``cartesia/sonic-3``).
+        character_count: The number of characters synthesised. Always ``None`` for
+            transcription, which reports no such count.
+        prompt_tokens: Input tokens — synthesised text for TTS, input audio for STT.
+        completion_tokens: Output tokens — output audio for TTS, transcribed text
+            for STT.
+        audio_duration: The billable audio length in seconds.
     """
 
     model: Optional[str]
     character_count: Optional[int]
+    prompt_tokens: Optional[int]
+    completion_tokens: Optional[int]
+    audio_duration: Optional[float]
 
 
 # ---------------------------------------------------------------------------
@@ -403,8 +446,13 @@ _CHAT_CTX_ROLE_KEY = "role"
 _CHAT_CTX_CONTENT_KEY = "content"
 
 _TTS_METRICS_CHARACTERS_KEY = "characters_count"
-_TTS_METRICS_METADATA_KEY = "metadata"
-_TTS_METRICS_MODEL_KEY = "model_name"
+
+# Shared by ``TTSMetrics`` and ``STTMetrics``.
+_METRICS_METADATA_KEY = "metadata"
+_METRICS_MODEL_KEY = "model_name"
+_METRICS_INPUT_TOKENS_KEY = "input_tokens"
+_METRICS_OUTPUT_TOKENS_KEY = "output_tokens"
+_METRICS_AUDIO_DURATION_KEY = "audio_duration"
 
 
 # ---------------------------------------------------------------------------
@@ -769,11 +817,13 @@ def _text_of_chat_content(content: Any) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
-# LiveKit TTS metrics
+# LiveKit speech metrics
 # ---------------------------------------------------------------------------
 
+_NO_PRICING = AudioPricingAttributes(None, None, None, None, None)
 
-def tts_pricing_attributes_from(payload: Any) -> TtsPricingAttributes:
+
+def tts_pricing_attributes_from(payload: Any) -> AudioPricingAttributes:
     """Extract the priceable fields from a serialised LiveKit ``TTSMetrics``.
 
     Accepts either the JSON string LiveKit puts in ``lk.tts_metrics`` or the
@@ -784,25 +834,74 @@ def tts_pricing_attributes_from(payload: Any) -> TtsPricingAttributes:
         payload: A ``TTSMetrics`` JSON string or mapping.
 
     Returns:
-        The model and character count, each ``None`` when absent. Malformed input
-        yields both ``None`` rather than an error — a mapping failure must never
-        break the user's trace.
+        The billable facts, each field ``None`` when absent or zero. Malformed
+        input yields all ``None`` rather than an error — a mapping failure must
+        never break the user's trace.
+    """
+    metrics = _as_metrics_mapping(payload)
+    if metrics is None:
+        return _NO_PRICING
+
+    return _pricing_from(metrics)._replace(
+        character_count=_positive_count(metrics.get(_TTS_METRICS_CHARACTERS_KEY)),
+    )
+
+
+def stt_pricing_attributes_from(payload: Any) -> AudioPricingAttributes:
+    """Extract the priceable fields from a serialised LiveKit ``STTMetrics``.
+
+    ``character_count`` is always ``None``: transcription reports no such count.
+
+    Args:
+        payload: An ``STTMetrics`` JSON string or mapping.
+
+    Returns:
+        The billable facts, each field ``None`` when absent or zero. Malformed
+        input yields all ``None`` rather than an error.
+    """
+    metrics = _as_metrics_mapping(payload)
+    if metrics is None:
+        return _NO_PRICING
+
+    return _pricing_from(metrics)
+
+
+def _as_metrics_mapping(payload: Any) -> Optional[Mapping[str, Any]]:
+    """Read a serialised metrics payload as a mapping.
+
+    Args:
+        payload: A metrics JSON string or mapping.
+
+    Returns:
+        The mapping, or ``None`` if the payload is neither.
     """
     if isinstance(payload, str):
         try:
             payload = json.loads(payload)
         except ValueError:
-            return TtsPricingAttributes(None, None)
+            return None
 
-    if not isinstance(payload, Mapping):
-        return TtsPricingAttributes(None, None)
+    return payload if isinstance(payload, Mapping) else None
 
-    metadata = payload.get(_TTS_METRICS_METADATA_KEY)
-    model = metadata.get(_TTS_METRICS_MODEL_KEY) if isinstance(metadata, Mapping) else None
 
-    return TtsPricingAttributes(
+def _pricing_from(metrics: Mapping[str, Any]) -> AudioPricingAttributes:
+    """Read the fields ``TTSMetrics`` and ``STTMetrics`` report identically.
+
+    Args:
+        metrics: A parsed metrics mapping.
+
+    Returns:
+        The billable facts less ``character_count``, which is TTS-only.
+    """
+    metadata = metrics.get(_METRICS_METADATA_KEY)
+    model = metadata.get(_METRICS_MODEL_KEY) if isinstance(metadata, Mapping) else None
+
+    return AudioPricingAttributes(
         model=model if isinstance(model, str) and model else None,
-        character_count=_positive_count(payload.get(_TTS_METRICS_CHARACTERS_KEY)),
+        character_count=None,
+        prompt_tokens=_positive_count(metrics.get(_METRICS_INPUT_TOKENS_KEY)),
+        completion_tokens=_positive_count(metrics.get(_METRICS_OUTPUT_TOKENS_KEY)),
+        audio_duration=_positive_duration(metrics.get(_METRICS_AUDIO_DURATION_KEY)),
     )
 
 
@@ -823,3 +922,23 @@ def _positive_count(value: Any) -> Optional[int]:
     if value <= 0:
         return None
     return int(value)
+
+
+def _positive_duration(value: Any) -> Optional[float]:
+    """Coerce a reported duration to a positive float, or None if it is not one.
+
+    Absent for the same reason as a zero count, and zero arrives here routinely: a
+    streaming STT reports ``audio_duration = 0.0`` on connection acquisition purely
+    to record the socket timing.
+
+    Args:
+        value: The candidate duration, in seconds.
+
+    Returns:
+        The duration as a float, or ``None``.
+    """
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return None
+    if value <= 0:
+        return None
+    return float(value)
