@@ -58,8 +58,10 @@ from __future__ import annotations
 import logging
 import threading
 from collections import OrderedDict
-from typing import Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import Any, Dict, Iterator, List, Optional
 
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.trace import Span, Status, StatusCode
 
@@ -97,6 +99,18 @@ CALL_SPAN_FIELD = "_netra_livekit_call_span"
 # against a second ``AgentSession`` in the same job re-rooting the trace again,
 # and a visible record on the span that its parent was rewritten.
 REROOTED_ATTRIBUTE = "netra.livekit.rerooted"
+
+# Context key carrying the id of the call a span belongs to.
+#
+# **The call id is the call span's own span id, NOT the trace id.** A trace does
+# not identify a call: ``livekit-call`` is created in the ambient context and so
+# inherits the *job's* trace id rather than minting one, and the re-rooting guard
+# above means a second ``AgentSession`` in the same job inherits that same trace id
+# again. Two concurrent sessions in one job therefore share a trace id, and
+# anything filed under one mixes their calls together — which for the STT usage
+# ``SpanMappingProcessor`` files under it would mean billing one caller's audio to
+# the other. A call span id is unique per call.
+_CALL_ID_KEY = otel_context.create_key("netra-livekit-call-id")
 
 # Hard cap on simultaneously-open call spans, mirroring the bound
 # ``RootInstrumentFilterProcessor`` puts on its own candidate registry.
@@ -253,6 +267,69 @@ def start_call_span(instance: Any, *, session_id: Optional[str] = None) -> Optio
         job_entrypoint is not None,
     )
     return span
+
+
+@contextmanager
+def call_id_scope(call_span: Span) -> Iterator[None]:
+    """Attach the id of the call *call_span* opened, for the duration of the block.
+
+    Entered around ``AgentSession.start``, so every LiveKit task created inside it
+    — each of which snapshots the context at creation — carries the call id for the
+    whole call, exactly as it carries the session id and the call span itself. That
+    is what lets ``SpanMappingProcessor.on_start`` tell one call's ``user_turn``
+    spans from another's without depending on where LiveKit happens to nest them.
+
+    Args:
+        call_span: The ``livekit-call`` span identifying this call.
+
+    Yields:
+        ``None``, with the call id attached to the context. A call span with no
+        usable span id yields without attaching anything, leaving its spans
+        unidentifiable rather than filed under a wrong id.
+    """
+    call_id = _span_id_of(call_span)
+    if call_id is None:
+        yield
+        return
+
+    token = otel_context.attach(otel_context.set_value(_CALL_ID_KEY, call_id))
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
+
+
+def call_id_of(context: Optional[otel_context.Context] = None) -> Optional[int]:
+    """Read the id of the call *context* belongs to.
+
+    Args:
+        context: The context to read, or ``None`` for the ambient one. ``on_start``
+            is handed ``None`` whenever the span's creator relied on the ambient
+            context — the usual case — and the ambient context at that moment is
+            the one the span is being parented to.
+
+    Returns:
+        The call id, or ``None`` outside a call.
+    """
+    call_id = otel_context.get_value(_CALL_ID_KEY, context=context)
+    return call_id if isinstance(call_id, int) else None
+
+
+def call_id_of_session(instance: Any) -> Optional[int]:
+    """Return the id of the call *instance* is currently on.
+
+    The counterpart to :func:`call_id_scope` for code that holds the session rather
+    than the context — resolved on each read, not captured, so a session whose
+    ``start()`` is retried reports the call it is on *now* rather than a dead one.
+
+    Args:
+        instance: The ``AgentSession``.
+
+    Returns:
+        The call id, or ``None`` when the session holds no usable call span —
+        before one was opened, or after opening one failed.
+    """
+    return _span_id_of(getattr(instance, CALL_SPAN_FIELD, None))
 
 
 def _reroot_trace(span: Span, job_entrypoint: Span) -> None:
@@ -553,6 +630,9 @@ def _is_recording(span: Any) -> bool:
 __all__ = [
     "CALL_SPAN_FIELD",
     "REROOTED_ATTRIBUTE",
+    "call_id_of",
+    "call_id_of_session",
+    "call_id_scope",
     "call_spans",
     "end_all_call_spans",
     "end_call_span_of_session",
