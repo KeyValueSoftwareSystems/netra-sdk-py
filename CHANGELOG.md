@@ -4,6 +4,10 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [0.1.99b1] - 2026-08-13
+
+- **Add Honcho memory SDK instrumentation** — Added automatic sync, async, and streaming instrumentation for `honcho-ai` (>= 2.0.0), with declarative patching, unified wrappers, dynamic response serialization, OTel GenAI semantic conventions, and centralized instrumentation constants.
+
 ## [0.1.98] - 2026-08-03
 
 - **Add `set_root_output_stream` utility for streaming output on root span** - New `Netra.set_root_output_stream(stream)` method that wraps a sync or async iterable so the accumulated output is automatically written to the root span's `netra.user.output` attribute when iteration ends. Works transparently with Netra-instrumented stream wrappers (extracting `_netra_output`) and generic iterables (concatenating chunks). All instrumentation streaming wrappers (OpenAI, Cerebras, Groq, LiteLLM, Google GenAI, Agno) now expose `_netra_stream_wrapper` and `_netra_output` for content extraction.
@@ -347,4 +351,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.98]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.99b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
