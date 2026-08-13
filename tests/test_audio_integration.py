@@ -731,6 +731,7 @@ class TestSessionAudioCoordinator:
             role=SpeakerRole.USER,
             span_id=USER_SPAN_ID,
             parent_span_id="",
+            trace_id=TRACE_ID,
         )
 
     def test_close_finalizes_every_span_still_recording(self) -> None:
@@ -743,6 +744,37 @@ class TestSessionAudioCoordinator:
 
         finalized = {call.kwargs["role"] for call in sender.mark_audio_end.call_args_list}
         assert finalized == {SpeakerRole.USER, SpeakerRole.AGENT}
+
+    def test_agent_trailing_frames_are_attributed_after_span_end(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=PARENT_SPAN_ID,
+        )
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        kwargs = sender.enqueue.call_args.kwargs
+        assert kwargs["span_id"] == AGENT_SPAN_ID
+        assert kwargs["parent_span_id"] == PARENT_SPAN_ID
+        assert kwargs["trace_id"] == TRACE_ID
+
+    def test_agent_active_speech_is_overridden_by_next_span(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        new_span_id = "5555666677778888"
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=new_span_id)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        kwargs = sender.enqueue.call_args.kwargs
+        assert kwargs["span_id"] == new_span_id
 
     def test_close_is_idempotent(self) -> None:
         sender = MagicMock()
@@ -896,6 +928,7 @@ class TestAudioSpanProcessor:
             role=role,
             span_id=format(0x1234567890ABCDEF, "016x"),
             parent_span_id=format(0xFEDCBA0987654321, "016x"),
+            trace_id=format(0xAAAABBBBCCCCDDDD, "032x"),
         )
 
     def test_a_span_from_another_call_is_ignored(self) -> None:

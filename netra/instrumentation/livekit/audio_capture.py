@@ -172,27 +172,49 @@ class SessionAudioCoordinator:
             parent_span_id or "(none)",
         )
 
-    def on_speaking_end(self, role: SpeakerRole) -> None:
+    def on_speaking_end(self, role: SpeakerRole, *, span_id: str = "") -> None:
         """Close the recording for *role*'s open span.
 
         An interrupted agent span is left for :meth:`on_playback_finished` to
         finalize: only the playback report says how much of the utterance was
         heard, and finalizing here would fix the recording at its full length.
 
+        For the agent role, ``_active_speech`` is intentionally **not** cleared:
+        LiveKit routinely ends the ``agent_speaking`` span before the TTS has
+        finished outputting all frames — or starts and ends it within a single
+        event-loop tick for tool-call exit messages. Keeping the active speech
+        ensures trailing frames are still attributed to the correct span. The
+        next :meth:`on_speaking_start` naturally overwrites it, and
+        :meth:`close` forcibly clears it at teardown.
+
         Args:
             role: The speaker whose span closed.
+            span_id: Hex id of the specific span that ended. When given, only
+                that span's end is signalled to the sender; when omitted the
+                currently active span (if any) is used.
         """
         active = self._active_speech[role]
-        self._active_speech[role] = None
-        if active is None:
+
+        # Determine which span actually ended.
+        ended_span_id = span_id or (active.span_id if active else "")
+        ended_parent_span_id = active.parent_span_id if active and active.span_id == ended_span_id else ""
+        ended_trace_id = active.trace_id if active and active.span_id == ended_span_id else ""
+
+        # For the agent role, keep _active_speech populated so that trailing
+        # TTS frames are still attributed.  For user role, clear immediately.
+        if role is not SpeakerRole.AGENT:
+            self._active_speech[role] = None
+
+        if not ended_span_id:
             return
         if role is SpeakerRole.AGENT and self._is_agent_interrupted:
             return
         if self._sender is not None:
             self._sender.mark_audio_end(
                 role=role,
-                span_id=active.span_id,
-                parent_span_id=active.parent_span_id,
+                span_id=ended_span_id,
+                parent_span_id=ended_parent_span_id,
+                trace_id=ended_trace_id,
             )
 
     # -- frame callbacks ----------------------------------------------------
@@ -278,9 +300,25 @@ class SessionAudioCoordinator:
         Separate from :meth:`aclose` because the session span has to be stamped
         with the sender's final statistics, which means the two teardown halves
         run at different points.
+
+        Unlike the per-event :meth:`on_speaking_end` (which deliberately leaves
+        agent active speech in place for trailing frames), this teardown path
+        forcibly clears both roles and signals their end to the sender.
         """
         for role in SpeakerRole:
-            self.on_speaking_end(role)
+            active = self._active_speech[role]
+            self._active_speech[role] = None
+            if active is None:
+                continue
+            if role is SpeakerRole.AGENT and self._is_agent_interrupted:
+                continue
+            if self._sender is not None:
+                self._sender.mark_audio_end(
+                    role=role,
+                    span_id=active.span_id,
+                    parent_span_id=active.parent_span_id,
+                    trace_id=active.trace_id,
+                )
 
     async def aclose(self, *, drain_timeout_seconds: Optional[float] = None) -> None:
         """Close the open recordings and shut the sender down.
