@@ -25,7 +25,7 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
-from netra.instrumentation.livekit.call_span import end_call_span_parenting, failure_status_of
+from netra.instrumentation.livekit.call_span import call_id_of, end_call_span_parenting, failure_status_of
 from netra.instrumentation.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     ATTRIBUTE_MAP,
@@ -230,28 +230,45 @@ def _numeric(value: Any) -> Optional[float]:
     return float(value)
 
 
-# The ``user_turn`` span currently recording in each trace, keyed by trace id. STT
-# usage arrives on the session's ``metrics_collected`` event, which carries no span
-# and no context, so this is how ``wrappers.py`` finds the turn it belongs to. Weak
-# values for the same reason as ``_io_parents``: a span that somehow never ends
-# cannot leak. One turn records at a time per session, and the re-rooted
-# ``livekit-call`` shares its trace id with every LiveKit span in the call, so a
-# trace id identifies exactly one candidate.
+# Instance attribute holding the id of the call a ``user_turn`` span belongs to.
+# Stashed on the span at ``on_start`` because ``on_end`` is handed a
+# ``ReadableSpan`` and no context, so the key it must be deregistered under has to
+# travel on the span itself — the same reason ``_RECORDER_FIELD`` does.
+_CALL_ID_FIELD = "_netra_livekit_call_id"
+
+# The ``user_turn`` span currently recording in each call, keyed by call id — the
+# span id of that call's ``livekit-call`` span, as ``call_id_scope`` attaches it.
+# STT usage arrives on the session's ``metrics_collected`` event, which carries no
+# span and no context, so this is how ``wrappers.py`` finds the turn it belongs to.
+#
+# Keyed on the call and NOT on the trace, because a trace does not identify a call:
+# see ``_CALL_ID_KEY`` for why two sessions in one job share a trace id, and why
+# filing turns under one would bill one caller's audio to the other.
+#
+# Weak values for the same reason as ``_io_parents``: a span that somehow never
+# ends cannot leak. One turn records at a time per session, so a call id identifies
+# exactly one candidate.
 _user_turn_spans: "weakref.WeakValueDictionary[int, Span]" = weakref.WeakValueDictionary()
 _user_turn_lock = threading.Lock()
 
 
-def _register_user_turn_span(span: Span) -> None:
-    """Make *span* the turn STT usage is attributed to in its trace.
+def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.Context]) -> None:
+    """Make *span* the turn STT usage is attributed to in its call.
 
     Args:
         span: A starting ``user_turn`` span.
+        parent_context: The context the span is being created in, carrying the call
+            id ``wrap_start`` attached. A span with no call id in scope is not
+            registered at all: it belongs to no call this package opened, so
+            nothing is subscribed to its session's metrics and no usage will ever
+            be looked up for it.
     """
-    context = span.get_span_context()
-    if context is None:
+    call_id = call_id_of(parent_context)
+    if call_id is None:
         return
+    setattr(span, _CALL_ID_FIELD, call_id)
     with _user_turn_lock:
-        _user_turn_spans[context.trace_id] = span
+        _user_turn_spans[call_id] = span
 
 
 def _deregister_user_turn_span(span: ReadableSpan) -> None:
@@ -265,22 +282,27 @@ def _deregister_user_turn_span(span: ReadableSpan) -> None:
     """
     if span.name != USER_TURN_SPAN_NAME:
         return
+    call_id = getattr(span, _CALL_ID_FIELD, None)
+    if call_id is None:
+        return
     context = span.get_span_context()
     if context is None:
         return
     with _user_turn_lock:
-        registered = _user_turn_spans.get(context.trace_id)
+        registered = _user_turn_spans.get(call_id)
         if registered is not None and registered.get_span_context().span_id == context.span_id:
-            del _user_turn_spans[context.trace_id]
+            del _user_turn_spans[call_id]
 
 
-def record_stt_usage(trace_id: int, metrics_payload: Any) -> None:
+def record_stt_usage(call_id: int, metrics_payload: Any) -> None:
     """Add one LiveKit ``STTMetrics`` sample to the recording ``user_turn`` span.
 
     A sample whose turn has already ended is dropped rather than carried onto the
     next one: an interrupted turn can close before its final metrics arrive, and
     billing the following turn for the previous one's audio is worse than losing
-    the sample.
+    the sample. A sample for a call with no registered turn is dropped for the same
+    reason — including one arriving on a session whose current call is not the one
+    the sample was measured on.
 
     The lookup and the accumulating write are held under one lock: the write is a
     read-modify-write of the totals on the span, so two samples landing at once
@@ -288,15 +310,16 @@ def record_stt_usage(trace_id: int, metrics_payload: Any) -> None:
     lock cannot be re-entered.
 
     Args:
-        trace_id: The trace the metrics belong to.
+        call_id: The call the metrics belong to — the ``livekit-call`` span's own
+            span id, as ``call_id_of_session`` reports it.
         metrics_payload: A serialised ``STTMetrics`` mapping or JSON string.
     """
     pricing = stt_pricing_attributes_from(metrics_payload)
 
     with _user_turn_lock:
-        span = _user_turn_spans.get(trace_id)
+        span = _user_turn_spans.get(call_id)
         if span is None or not span.is_recording():
-            logger.debug("netra.livekit: no recording user_turn span for STT usage in trace %x", trace_id)
+            logger.debug("netra.livekit: no recording user_turn span for STT usage in call %x", call_id)
             return
         _write_stt_pricing(span, pricing)
 
@@ -489,7 +512,7 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             if span.name in IO_FROM_CHILD_SPAN_NAMES:
                 self._register_io_parent(span)
             if span.name == USER_TURN_SPAN_NAME:
-                _register_user_turn_span(span)
+                _register_user_turn_span(span, parent_context)
         except Exception:
             logger.warning("netra.livekit: span mapping could not be installed", exc_info=True)
 

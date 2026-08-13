@@ -8,7 +8,7 @@ mocks: spans are created from a tracer whose instrumentation scope is
 
 import asyncio
 import json
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
 from opentelemetry import trace
@@ -24,6 +24,7 @@ from netra.instrumentation.livekit.call_span import (
     _MAX_OPEN_CALL_SPANS,
     CALL_SPAN_FIELD,
     REROOTED_ATTRIBUTE,
+    call_id_scope,
     call_spans,
     end_all_call_spans,
 )
@@ -554,15 +555,31 @@ class TestSttPricing:
         payload.update(overrides)
         return payload
 
-    @staticmethod
-    def _turn(harness: _Harness) -> Tuple[Any, int]:
-        """Start a ``user_turn`` span and return it with its trace id."""
-        span = harness.livekit_tracer.start_span("user_turn")
-        return span, span.get_span_context().trace_id
+    @pytest.fixture
+    def call_id(self, harness: _Harness) -> Iterator[int]:
+        """Open a call and attach its id, as ``wrap_start`` does around ``start()``.
 
-    def test_reported_usage_lands_on_the_recording_turn(self, harness: _Harness) -> None:
-        span, trace_id = self._turn(harness)
-        record_stt_usage(trace_id, self._metrics(input_tokens=12, output_tokens=4))
+        Every ``user_turn`` started inside the test therefore registers under this
+        call, which is what ``record_stt_usage`` is handed to find it again.
+        """
+        call = harness.livekit_tracer.start_span(CALL_SPAN_NAME)
+        with call_id_scope(call):
+            yield call.get_span_context().span_id
+
+    @staticmethod
+    def _turn(harness: _Harness) -> Any:
+        """Start a ``user_turn`` span in the ambient call."""
+        return harness.livekit_tracer.start_span(USER_TURN_SPAN_NAME)
+
+    @staticmethod
+    def _turns_by_id(harness: _Harness) -> Dict[int, Dict[str, Any]]:
+        """The exported ``user_turn`` spans' attributes, keyed by span id."""
+        exported = [span for span in harness.exporter.get_finished_spans() if span.name == USER_TURN_SPAN_NAME]
+        return {span.get_span_context().span_id: dict(span.attributes or {}) for span in exported}
+
+    def test_reported_usage_lands_on_the_recording_turn(self, harness: _Harness, call_id: int) -> None:
+        span = self._turn(harness)
+        record_stt_usage(call_id, self._metrics(input_tokens=12, output_tokens=4))
         span.end()
 
         attributes = harness.attributes("user_turn")
@@ -572,68 +589,104 @@ class TestSttPricing:
         assert attributes["gen_ai.request.model"] == "deepgram/nova-3"
         assert attributes["netra.usage.source"] == "framework"
 
-    def test_incremental_samples_accumulate_over_a_turn(self, harness: _Harness) -> None:
+    def test_incremental_samples_accumulate_over_a_turn(self, harness: _Harness, call_id: int) -> None:
         # A streaming STT emits RECOGNITION_USAGE per final transcript, each
         # carrying only the audio since the last one.
-        span, trace_id = self._turn(harness)
-        record_stt_usage(trace_id, self._metrics(audio_duration=2.5, input_tokens=12))
-        record_stt_usage(trace_id, self._metrics(audio_duration=1.25, input_tokens=3))
+        span = self._turn(harness)
+        record_stt_usage(call_id, self._metrics(audio_duration=2.5, input_tokens=12))
+        record_stt_usage(call_id, self._metrics(audio_duration=1.25, input_tokens=3))
         span.end()
 
         attributes = harness.attributes("user_turn")
         assert attributes["gen_ai.audio.duration"] == pytest.approx(3.75)
         assert attributes["gen_ai.usage.prompt_tokens"] == 15
 
-    def test_a_json_string_is_accepted_like_a_mapping(self, harness: _Harness) -> None:
-        span, trace_id = self._turn(harness)
-        record_stt_usage(trace_id, json.dumps(self._metrics()))
+    def test_a_json_string_is_accepted_like_a_mapping(self, harness: _Harness, call_id: int) -> None:
+        span = self._turn(harness)
+        record_stt_usage(call_id, json.dumps(self._metrics()))
         span.end()
 
         assert harness.attributes("user_turn")["gen_ai.audio.duration"] == pytest.approx(2.5)
 
-    def test_connection_timing_sample_writes_no_usage(self, harness: _Harness) -> None:
+    def test_connection_timing_sample_writes_no_usage(self, harness: _Harness, call_id: int) -> None:
         # ``_report_connection_acquired`` reports a zero-duration sample purely to
         # record when the socket was acquired.
-        span, trace_id = self._turn(harness)
-        record_stt_usage(trace_id, self._metrics(request_id="", audio_duration=0.0, acquire_time=0.4))
+        span = self._turn(harness)
+        record_stt_usage(call_id, self._metrics(request_id="", audio_duration=0.0, acquire_time=0.4))
         span.end()
 
         attributes = harness.attributes("user_turn")
         assert "gen_ai.audio.duration" not in attributes
         assert "netra.usage.source" not in attributes
 
-    def test_usage_arriving_after_the_turn_ended_is_dropped(self, harness: _Harness) -> None:
-        span, trace_id = self._turn(harness)
+    def test_usage_arriving_after_the_turn_ended_is_dropped(self, harness: _Harness, call_id: int) -> None:
+        span = self._turn(harness)
         span.end()
 
-        record_stt_usage(trace_id, self._metrics())
+        record_stt_usage(call_id, self._metrics())
 
         assert "gen_ai.audio.duration" not in harness.attributes("user_turn")
 
-    def test_a_late_turn_end_does_not_evict_its_successor(self, harness: _Harness) -> None:
-        first, trace_id = self._turn(harness)
-        second = harness.livekit_tracer.start_span("user_turn", context=trace.set_span_in_context(first))
+    def test_a_late_turn_end_does_not_evict_its_successor(self, harness: _Harness, call_id: int) -> None:
+        first = self._turn(harness)
+        second = harness.livekit_tracer.start_span(USER_TURN_SPAN_NAME, context=trace.set_span_in_context(first))
         first.end()
 
-        record_stt_usage(trace_id, self._metrics())
+        record_stt_usage(call_id, self._metrics())
         second.end()
 
-        exported = [span for span in harness.exporter.get_finished_spans() if span.name == "user_turn"]
-        by_id = {span.get_span_context().span_id: dict(span.attributes or {}) for span in exported}
+        by_id = self._turns_by_id(harness)
         assert by_id[second.get_span_context().span_id]["gen_ai.audio.duration"] == pytest.approx(2.5)
         assert "gen_ai.audio.duration" not in by_id[first.get_span_context().span_id]
 
+    def test_two_calls_in_one_job_keep_their_usage_apart(self, harness: _Harness) -> None:
+        # Two sessions in one job share a trace id: ``livekit-call`` inherits the
+        # job's rather than minting one, and only the first re-roots. Keyed on the
+        # trace, the second turn would take both callers' audio and the first would
+        # be billed nothing.
+        job = harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        with trace.use_span(job, end_on_exit=False):
+            first_call = harness.livekit_tracer.start_span(CALL_SPAN_NAME)
+            second_call = harness.livekit_tracer.start_span(CALL_SPAN_NAME)
+
+            with call_id_scope(first_call):
+                first_turn = self._turn(harness)
+            with call_id_scope(second_call):
+                second_turn = self._turn(harness)
+
+        assert first_turn.get_span_context().trace_id == second_turn.get_span_context().trace_id
+
+        record_stt_usage(first_call.get_span_context().span_id, self._metrics(audio_duration=2.5))
+        record_stt_usage(second_call.get_span_context().span_id, self._metrics(audio_duration=7.5))
+        first_turn.end()
+        second_turn.end()
+
+        by_id = self._turns_by_id(harness)
+        assert by_id[first_turn.get_span_context().span_id]["gen_ai.audio.duration"] == pytest.approx(2.5)
+        assert by_id[second_turn.get_span_context().span_id]["gen_ai.audio.duration"] == pytest.approx(7.5)
+
+    def test_a_turn_outside_a_call_is_never_registered(self, harness: _Harness) -> None:
+        # No call id in scope means ``wrap_start`` never ran, so nothing is
+        # subscribed to that session's metrics either.
+        span = self._turn(harness)
+        record_stt_usage(0xDEADBEEF, self._metrics())
+        span.end()
+
+        assert "gen_ai.audio.duration" not in harness.attributes("user_turn")
+
     @pytest.mark.parametrize("payload", ["not json", None, [], {"metadata": "not a mapping"}])
-    def test_a_malformed_payload_is_dropped_without_raising(self, harness: _Harness, payload: Any) -> None:
-        span, trace_id = self._turn(harness)
-        record_stt_usage(trace_id, payload)
+    def test_a_malformed_payload_is_dropped_without_raising(
+        self, harness: _Harness, call_id: int, payload: Any
+    ) -> None:
+        span = self._turn(harness)
+        record_stt_usage(call_id, payload)
         span.end()
 
         attributes = harness.attributes("user_turn")
         assert "gen_ai.audio.duration" not in attributes
         assert "gen_ai.request.model" not in attributes
 
-    def test_usage_for_an_unknown_trace_is_dropped_without_raising(self) -> None:
+    def test_usage_for_an_unknown_call_is_dropped_without_raising(self) -> None:
         record_stt_usage(0xDEADBEEF, self._metrics())
 
     @pytest.mark.parametrize(
@@ -1161,6 +1214,37 @@ class TestSttUsageWiring:
         attributes = call_harness.attributes(USER_TURN_SPAN_NAME)
         assert "gen_ai.audio.duration" not in attributes
         assert "gen_ai.usage.prompt_tokens" not in attributes
+
+    def test_a_retried_start_neither_subscribes_twice_nor_double_counts(self, call_harness: _CallHarness) -> None:
+        # Both starts run under one job_entrypoint, so their call spans share a
+        # trace id — only the first re-roots. A second listener would then record
+        # the sample twice and bill the turn 5.0 seconds of audio for 2.5.
+        session = _SpeakingAgentSession(call_harness.livekit_tracer)
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+
+        async def call() -> None:
+            with trace.use_span(job, end_on_exit=False):
+                await wrap_start(session.start, session, (), {"room": _FakeRoom("console-stt")})
+                assert session.user_turn is not None
+                session.user_turn.end()
+
+                await wrap_start(session.start, session, (), {"room": _FakeRoom("console-stt")})
+                session.emit("metrics_collected", _FakeMetricsEvent(self.STT_METRICS))
+                assert session.user_turn is not None
+                session.user_turn.end()
+                await wrap_aclose(session.aclose_impl, session, (), {})
+
+        asyncio.run(call())
+
+        assert len(session._listeners["metrics_collected"]) == 1, "the session was subscribed to twice"
+        turns = [
+            dict(span.attributes or {})
+            for span in call_harness.exporter.get_finished_spans()
+            if span.name == USER_TURN_SPAN_NAME
+        ]
+        assert len(turns) == 2
+        assert "gen_ai.audio.duration" not in turns[0], "the abandoned turn took usage it never heard"
+        assert turns[1]["gen_ai.audio.duration"] == pytest.approx(2.5)
 
     def test_subscription_bypasses_the_deprecating_session_override(
         self, call_harness: _CallHarness, monkeypatch: pytest.MonkeyPatch
