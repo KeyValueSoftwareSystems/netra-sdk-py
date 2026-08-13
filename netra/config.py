@@ -6,6 +6,8 @@ from opentelemetry.util.re import parse_env_headers
 
 from netra.version import __version__
 
+_DEFAULT_ATTRIBUTE_MAX_LEN = 50000
+
 
 class Config:
     """
@@ -76,6 +78,9 @@ class Config:
         self.blocked_spans = blocked_spans
         self.metrics_export_interval_ms = self._get_int_config(
             metrics_export_interval_ms, "NETRA_METRICS_EXPORT_INTERVAL", default=60000
+        )
+        self.attribute_max_len = self._get_int_config(
+            None, "NETRA_ATTRIBUTE_MAX_LEN", default=_DEFAULT_ATTRIBUTE_MAX_LEN
         )
 
         self._set_trace_content_env()
@@ -163,3 +168,27 @@ class Config:
     def _set_trace_content_env(self) -> None:
         """Set TRACELOOP_TRACE_CONTENT environment variable based on trace_content."""
         os.environ["TRACELOOP_TRACE_CONTENT"] = "true" if self.trace_content else "false"
+
+
+_active_config: Optional["Config"] = None
+
+
+def set_active_config(config: "Config") -> None:
+    """Register *config* as the process-active configuration.
+
+    Called once by ``Netra.init()``. Subsequent calls replace the reference,
+    matching the single-init singleton semantics of ``Netra``.
+    """
+    global _active_config
+    _active_config = config
+
+
+def get_active_config() -> Optional["Config"]:
+    """Return the process-active Config, or ``None`` if ``Netra.init()`` has not run."""
+    return _active_config
+
+
+def get_attribute_max_len() -> int:
+    """Max length for a single span attribute value, from the active config or default."""
+    cfg = get_active_config()
+    return cfg.attribute_max_len if cfg is not None else _DEFAULT_ATTRIBUTE_MAX_LEN
