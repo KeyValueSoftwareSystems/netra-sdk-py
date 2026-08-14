@@ -75,7 +75,10 @@ class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
         if speaking is None:
             return
 
-        speaking.coordinator.on_speaking_end(speaking.role)
+        speaking.coordinator.on_speaking_end(
+            speaking.role,
+            span_id=format(speaking.span_context.span_id, _SPAN_ID_HEX_DIGITS),
+        )
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op flush; this processor holds nothing pending.
