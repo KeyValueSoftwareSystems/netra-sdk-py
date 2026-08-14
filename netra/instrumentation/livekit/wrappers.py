@@ -30,7 +30,11 @@ from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Mapping, Optio
 from opentelemetry import trace
 
 from netra.config import get_active_config
-from netra.instrumentation.livekit.audio_capture import start_audio_capture, stop_audio_capture
+from netra.instrumentation.livekit.audio_capture import (
+    finish_audio_capture_close,
+    prepare_audio_capture_close,
+    start_audio_capture,
+)
 from netra.instrumentation.livekit.call_span import (
     call_id_of_session,
     call_id_scope,
@@ -315,14 +319,16 @@ async def _after_start(instance: "AgentSession", session_id: Optional[str]) -> N
 
 
 async def _before_close(instance: "AgentSession") -> None:
-    """Run the per-session teardown, *before* LiveKit closes the session.
+    """Prepare audio teardown *before* LiveKit closes the session.
 
-    Ordering is load-bearing: ``_aclose_impl`` ends ``_session_span`` before it
-    emits ``close``, after which the span is gone and its trace id — the key
-    every per-session resource is filed under — is unreachable.
+    Stops forwarding new agent frames but leaves the sender open so LiveKit's
+    ``clear_buffer`` / ``playback_finished`` during ``_aclose_impl`` can still
+    report how much of the utterance was heard. The drain runs in
+    :func:`_after_close`.
 
-    Idempotent, in two layers: a second call finds no ``_session_span``, and the
-    coordinator registry only hands out a coordinator once.
+    Also snapshots ``_session_span`` here: LiveKit ends it inside
+    ``_aclose_impl``, and the finish half still needs the object (and its
+    trace id) to stamp delivery stats.
 
     Args:
         instance: The ``AgentSession`` that is closing.
@@ -333,8 +339,22 @@ async def _before_close(instance: "AgentSession") -> None:
         logger.debug("netra.livekit: session close with no live agent_session span; nothing to tear down")
         return
 
+    setattr(instance, "_netra_pending_audio_close", (trace_id, session_span))
     logger.debug("netra.livekit: agent session closing trace_id=%032x", trace_id)
-    await stop_audio_capture(trace_id, session_span=session_span)
+    await prepare_audio_capture_close(trace_id)
+
+
+async def _after_close(instance: "AgentSession") -> None:
+    """Drain audio after LiveKit has closed (and reported playback position)."""
+    pending = getattr(instance, "_netra_pending_audio_close", None)
+    if pending is None:
+        return
+    try:
+        delattr(instance, "_netra_pending_audio_close")
+    except AttributeError:
+        pass
+    trace_id, session_span = pending
+    await finish_audio_capture_close(trace_id, session_span=session_span)
 
 
 # ---------------------------------------------------------------------------
@@ -470,11 +490,17 @@ async def wrap_aclose(
     ``_aclose_impl`` directly. Wrapping ``aclose`` would mean the teardown never
     runs on a normal phone call.
 
-    The two halves sit on opposite sides of the wrapped call, and both placements
-    are load-bearing. The audio teardown must run *first*, while ``_session_span``
-    still exists to key it by. Ending the call span must run *last*: LiveKit ends
-    ``agent_session`` inside ``_aclose_impl``, so ending the call span beforehand
-    would close a parent before its own child.
+    Audio teardown is split across the wrapped call on purpose:
+
+    * **before** — stop capturing new agent frames while ``_session_span`` (and
+      its trace id) still exist to key the coordinator;
+    * **after** — drain the sender once LiveKit has run ``clear_buffer`` /
+      ``playback_finished`` inside ``_aclose_impl``, so mid-speech disconnects
+      trim to what the caller heard instead of the full buffered TTS.
+
+    Ending the call span must still run *last*: LiveKit ends ``agent_session``
+    inside ``_aclose_impl``, so ending the call span beforehand would close a
+    parent before its own child.
 
     ``SpanMappingProcessor`` normally gets there first, off the ``agent_session``
     span ending — that path needs no method wrap and so survives a LiveKit rename
@@ -498,6 +524,10 @@ async def wrap_aclose(
     try:
         return await wrapped(*args, **kwargs)
     finally:
+        try:
+            await _after_close(instance)
+        except Exception:
+            logger.warning("netra.livekit: post-close audio drain failed", exc_info=True)
         # In ``finally`` so a close that raises still closes the call span rather
         # than abandoning the trace's root.
         try:

@@ -125,6 +125,7 @@ class _SpanEndMarker:
     role: SpeakerRole
     span_id: str
     parent_span_id: str = ""
+    trace_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -543,20 +544,24 @@ class AudioChunkSender:
             self.stats.frames_dropped += 1
             self._warn_about_drops_once()
 
-    def mark_audio_end(self, *, role: SpeakerRole, span_id: str, parent_span_id: str = "") -> None:
+    def mark_audio_end(self, *, role: SpeakerRole, span_id: str, parent_span_id: str = "", trace_id: str = "") -> None:
         """Signal that the recording for *span_id* is complete.
 
         Args:
             role: The speaker whose span closed.
             span_id: Hex id of the closed speaking span.
             parent_span_id: Hex id of the speaking span's parent, or ``""``.
+            trace_id: Hex trace id, so the sender can attribute the terminator
+                even when no frames were ever queued for this span.
         """
         if self._is_closed or not span_id:
             return
         state = self._span_states.get(span_id)
         if state is not None and state.is_finalized:
             return
-        if not self._offer(_SpanEndMarker(role=role, span_id=span_id, parent_span_id=parent_span_id)):
+        if not self._offer(
+            _SpanEndMarker(role=role, span_id=span_id, parent_span_id=parent_span_id, trace_id=trace_id)
+        ):
             logger.debug("netra.audio: queue full; end marker for span=%s dropped", span_id)
 
     def interrupt_agent_span(self, *, span_id: str, playback_ms: int, parent_span_id: str = "") -> None:
@@ -732,7 +737,9 @@ class AudioChunkSender:
         if marker.role is SpeakerRole.AGENT:
             if batch.span_id == marker.span_id and not batch.is_empty:
                 await self._flush(batch)
-            self._state_for(marker.span_id, marker.role, parent_span_id=marker.parent_span_id).is_end_received = True
+            self._state_for(
+                marker.span_id, marker.role, trace_id=marker.trace_id, parent_span_id=marker.parent_span_id
+            ).is_end_received = True
             return
 
         if batch.span_id == marker.span_id and not batch.is_empty:
