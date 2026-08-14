@@ -66,6 +66,15 @@ _MILLISECONDS_PER_SECOND = 1000
 # hands the coordinator, so the coordinator's own deadline is the one that fires.
 _TEARDOWN_GRACE_SECONDS = 1.0
 
+# How long finish-close will wait for LiveKit's natural ``playback_finished``
+# (emitted during ``_aclose_impl`` after we stop forwarding frames) before falling
+# back to a wall-clock estimate of how much was heard.
+_PLAYBACK_WAIT_ON_CLOSE_SECONDS = 1.5
+
+# Attribute on AgentSession stashing (trace_id, session_span) between the prepare
+# and finish halves of audio teardown around LiveKit's ``_aclose_impl``.
+_PENDING_AUDIO_CLOSE_ATTR = "_netra_pending_audio_close"
+
 
 @dataclass(frozen=True)
 class _ActiveSpeech:
@@ -121,6 +130,21 @@ class SessionAudioCoordinator:
         self._interrupted_agent_span_id = ""
         self._interrupted_agent_parent_span_id = ""
 
+        # Patched audio output — kept so we can observe playout lifecycle.
+        self._audio_output: Optional["AudioOutput"] = None
+        # Wall-clock start of playout from LiveKit ``playback_started``.
+        self._agent_playback_started_at: Optional[float] = None
+        # Wall-clock of the first agent frame we captured for the current
+        # utterance. Used when ``playback_started`` never reaches us (wrapper
+        # chain) so mid-speech session close is still detected and estimated.
+        self._agent_capture_started_at: Optional[float] = None
+        # Set once interrupt_agent_span has been asked to trim the current
+        # utterance, so prepare/finish close do not double-report.
+        self._agent_playback_trim_reported = False
+        # Completed when an interrupted ``playback_finished`` reports heard_ms,
+        # so finish-close can wait for LiveKit's natural interrupt during aclose.
+        self._playback_trim_event: Optional[asyncio.Event] = None
+
     # -- attachment ---------------------------------------------------------
 
     def attach(self, session: "AgentSession") -> None:
@@ -165,6 +189,10 @@ class SessionAudioCoordinator:
             self._is_agent_interrupted = False
             self._interrupted_agent_span_id = ""
             self._interrupted_agent_parent_span_id = ""
+            self._agent_playback_started_at = None
+            self._agent_capture_started_at = None
+            self._agent_playback_trim_reported = False
+            self._playback_trim_event = None
         logger.debug(
             "netra.audio: %s speaking started — span_id=%s parent_span_id=%s",
             role.value,
@@ -235,6 +263,9 @@ class SessionAudioCoordinator:
             # Produced after the caller cut in, so never played out.
             return
 
+        if role is SpeakerRole.AGENT and self._agent_capture_started_at is None:
+            self._agent_capture_started_at = time.time()
+
         active = self._active_speech[role]
         self._sender.enqueue(
             frame,
@@ -266,6 +297,18 @@ class SessionAudioCoordinator:
             self._interrupted_agent_span_id,
         )
 
+    def on_playback_started(self, event: Any = None, **kwargs: Any) -> None:
+        """Remember when the current agent utterance began playing out.
+
+        Args:
+            event: LiveKit ``playback_started`` payload, if emitted as an object.
+            **kwargs: Alternate form with ``created_at`` (some LiveKit paths).
+        """
+        created_at = kwargs.get("created_at")
+        if created_at is None and event is not None:
+            created_at = getattr(event, "created_at", None)
+        self._agent_playback_started_at = float(created_at) if created_at is not None else time.time()
+
     def on_playback_finished(self, event: "PlaybackFinishedEvent") -> None:
         """Trim an interrupted utterance to the audio that was played out.
 
@@ -275,21 +318,49 @@ class SessionAudioCoordinator:
                 correction.
         """
         if not getattr(event, "interrupted", False):
+            self._agent_playback_started_at = None
+            self._agent_capture_started_at = None
             return
-        span_id = self._interrupted_agent_span_id
+        span_id = self._interrupted_agent_span_id or self._last_agent_span_id
         if not span_id or self._sender is None:
             return
 
         playback_ms = int(getattr(event, "playback_position", 0.0) * _MILLISECONDS_PER_SECOND)
-        self._sender.interrupt_agent_span(
+        self._report_agent_playback_trim(
             span_id=span_id,
             playback_ms=playback_ms,
-            parent_span_id=self._interrupted_agent_parent_span_id,
+            parent_span_id=self._interrupted_agent_parent_span_id or self._last_agent_parent_span_id,
         )
+        self._agent_playback_started_at = None
+        self._agent_capture_started_at = None
         logger.debug(
             "netra.audio: interrupted playback finished — span_id=%s heard=%dms",
             span_id,
             playback_ms,
+        )
+
+    def _report_agent_playback_trim(self, *, span_id: str, playback_ms: int, parent_span_id: str = "") -> None:
+        """Tell the sender how much of an agent utterance was heard. Idempotent."""
+        if self._sender is None or not span_id or self._agent_playback_trim_reported:
+            return
+        self._agent_playback_trim_reported = True
+        self._sender.interrupt_agent_span(
+            span_id=span_id,
+            playback_ms=max(0, playback_ms),
+            parent_span_id=parent_span_id,
+        )
+        if self._playback_trim_event is not None:
+            self._playback_trim_event.set()
+
+    def _agent_is_mid_utterance(self) -> bool:
+        """True when agent audio may still be playing or buffered unheard."""
+        pending_playback = 0
+        if self._audio_output is not None:
+            pending_playback = int(getattr(self._audio_output, "_pending_playback_count", 0) or 0)
+        return (
+            pending_playback > 0
+            or self._agent_playback_started_at is not None
+            or self._agent_capture_started_at is not None
         )
 
     # -- teardown -----------------------------------------------------------
@@ -320,8 +391,59 @@ class SessionAudioCoordinator:
                     trace_id=active.trace_id,
                 )
 
+    async def prepare_close(self) -> None:
+        """Stop capturing agent frames before LiveKit tears the session down.
+
+        Does **not** drain the sender. LiveKit emits ``clear_buffer`` /
+        ``playback_finished`` (with the real ``playback_position``) only inside
+        its own ``_aclose_impl``, which runs *after* this prepare step. Draining
+        here would finalize the span before that report arrives.
+        """
+        if not self._agent_is_mid_utterance() and not (
+            self._is_agent_interrupted and not self._agent_playback_trim_reported
+        ):
+            return
+
+        active = self._active_speech[SpeakerRole.AGENT]
+        span_id = (
+            active.span_id if active is not None else (self._interrupted_agent_span_id or self._last_agent_span_id)
+        )
+        parent_span_id = (
+            active.parent_span_id
+            if active is not None
+            else (self._interrupted_agent_parent_span_id or self._last_agent_parent_span_id)
+        )
+        if not span_id:
+            return
+
+        self._is_agent_interrupted = True
+        self._interrupted_agent_span_id = span_id
+        self._interrupted_agent_parent_span_id = parent_span_id
+        if self._playback_trim_event is None:
+            self._playback_trim_event = asyncio.Event()
+        logger.debug(
+            "netra.audio: prepare close mid-agent-speech — span_id=%s (waiting for playback_finished)",
+            span_id,
+        )
+
+    async def finish_close(self, *, drain_timeout_seconds: Optional[float] = None) -> None:
+        """Trim unheard agent audio if needed, then drain the sender.
+
+        Call after LiveKit's ``_aclose_impl`` so ``playback_finished`` has had a
+        chance to deliver ``heard_ms``. Falls back to wall-clock if it does not.
+        """
+        await self._finalize_mid_speech_trim_after_livekit_close()
+        self.close()
+        if self._sender is None:
+            return
+        await self._sender.end_session(drain_timeout_seconds=drain_timeout_seconds)
+
     async def aclose(self, *, drain_timeout_seconds: Optional[float] = None) -> None:
         """Close the open recordings and shut the sender down.
+
+        Prefer :meth:`prepare_close` then :meth:`finish_close` around LiveKit
+        session teardown when possible. This combined path is the backstop used
+        by ``Netra.shutdown()`` and tests.
 
         Args:
             drain_timeout_seconds: Explicit total budget for the sender's drain.
@@ -329,10 +451,60 @@ class SessionAudioCoordinator:
                 (the default), the sender computes a dynamic budget from the
                 remaining queue depth and open spans.
         """
-        self.close()
-        if self._sender is None:
+        await self.prepare_close()
+        await self.finish_close(drain_timeout_seconds=drain_timeout_seconds)
+
+    async def _finalize_mid_speech_trim_after_livekit_close(self) -> None:
+        """Apply heard_ms for a mid-speech disconnect, waiting briefly if needed."""
+        if self._sender is None or self._agent_playback_trim_reported:
             return
-        await self._sender.end_session(drain_timeout_seconds=drain_timeout_seconds)
+        if not self._is_agent_interrupted and not self._agent_is_mid_utterance():
+            return
+
+        span_id = self._interrupted_agent_span_id or self._last_agent_span_id
+        parent_span_id = self._interrupted_agent_parent_span_id or self._last_agent_parent_span_id
+        if not span_id:
+            return
+
+        self._is_agent_interrupted = True
+        self._interrupted_agent_span_id = span_id
+        self._interrupted_agent_parent_span_id = parent_span_id
+
+        if self._playback_trim_event is not None and not self._agent_playback_trim_reported:
+            try:
+                await asyncio.wait_for(
+                    self._playback_trim_event.wait(),
+                    timeout=_PLAYBACK_WAIT_ON_CLOSE_SECONDS,
+                )
+            except asyncio.TimeoutError:
+                logger.debug(
+                    "netra.audio: timed out waiting for playback_finished on close; "
+                    "falling back to wall-clock estimate"
+                )
+
+        if self._agent_playback_trim_reported:
+            return
+
+        playback_ms = self._estimate_playback_ms_from_clock()
+        if playback_ms is None:
+            playback_ms = 0
+        self._report_agent_playback_trim(
+            span_id=span_id,
+            playback_ms=playback_ms,
+            parent_span_id=parent_span_id,
+        )
+        logger.debug(
+            "netra.audio: session closing mid-agent-speech — span_id=%s heard=%dms (estimated)",
+            span_id,
+            playback_ms,
+        )
+
+    def _estimate_playback_ms_from_clock(self) -> Optional[int]:
+        """Estimate heard ms from playback_started or first captured agent frame."""
+        started_at = self._agent_playback_started_at or self._agent_capture_started_at
+        if started_at is None:
+            return None
+        return max(0, int((time.time() - started_at) * _MILLISECONDS_PER_SECOND))
 
     @property
     def sender(self) -> Optional[AudioChunkSender]:
@@ -378,9 +550,10 @@ class SessionAudioCoordinator:
             logger.warning("netra.audio: session.output.audio is unavailable — agent audio is not captured")
             return
 
+        self._audio_output = audio_output
         self._patch_capture_frame(audio_output)
         self._patch_clear_buffer(audio_output)
-        self._subscribe_to_playback_finished(audio_output)
+        self._subscribe_to_playback_events(audio_output)
 
     def _patch_capture_frame(self, audio_output: "AudioOutput") -> None:
         """Wrap ``capture_frame`` so every outgoing frame is seen.
@@ -417,8 +590,8 @@ class SessionAudioCoordinator:
         audio_output.clear_buffer = clear_buffer
         logger.debug("netra.audio: wrapped clear_buffer for interrupt detection")
 
-    def _subscribe_to_playback_finished(self, audio_output: "AudioOutput") -> None:
-        """Listen for playback reports, which say how much audio was heard.
+    def _subscribe_to_playback_events(self, audio_output: "AudioOutput") -> None:
+        """Listen for playback start/finish, which say when and how much was heard.
 
         Args:
             audio_output: LiveKit's agent audio output.
@@ -429,10 +602,11 @@ class SessionAudioCoordinator:
             return
         try:
             subscribe("playback_finished", self.on_playback_finished)
+            subscribe("playback_started", self.on_playback_started)
         except (TypeError, ValueError):
-            logger.debug("netra.audio: could not subscribe to playback_finished", exc_info=True)
+            logger.debug("netra.audio: could not subscribe to playback events", exc_info=True)
             return
-        logger.debug("netra.audio: subscribed to playback_finished")
+        logger.debug("netra.audio: subscribed to playback_started and playback_finished")
 
 
 # ---------------------------------------------------------------------------
@@ -766,10 +940,43 @@ async def start_audio_capture(session: "AgentSession", *, config: "Config", sess
         logger.warning("netra.livekit: audio capture setup failed; the call is traced without audio", exc_info=True)
 
 
+async def prepare_audio_capture_close(trace_id: int) -> None:
+    """Stop forwarding agent frames before LiveKit closes the session.
+
+    Leaves the coordinator registered so ``playback_finished`` during LiveKit's
+    ``_aclose_impl`` can still trim with the real ``heard_ms``.
+    """
+    coordinator = audio_coordinators.get(trace_id)
+    if coordinator is None:
+        return
+    try:
+        await coordinator.prepare_close()
+    except Exception:
+        logger.warning("netra.audio: audio capture prepare-close failed", exc_info=True)
+
+
+async def finish_audio_capture_close(trace_id: int, session_span: Optional["Span"] = None) -> None:
+    """Drain the sender after LiveKit has had a chance to report playback position."""
+    coordinator = audio_coordinators.unregister(trace_id)
+    if coordinator is None:
+        return
+
+    try:
+        await coordinator.finish_close()
+    except Exception:
+        logger.warning("netra.audio: audio capture finish-close failed", exc_info=True)
+
+    sender = coordinator.sender
+    if session_span is not None and sender is not None:
+        _stamp_audio_stats(session_span, sender)
+
+
 async def stop_audio_capture(trace_id: int, session_span: Optional["Span"] = None) -> None:
     """Stop capturing a call's audio and record what was delivered.
 
     Idempotent: a call whose coordinator has already been removed does nothing.
+    Combined prepare+finish; session wrappers prefer the split helpers so
+    LiveKit can emit ``playback_finished`` between them.
 
     Args:
         trace_id: The ``agent_session`` span's trace id.
