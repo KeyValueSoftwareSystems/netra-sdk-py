@@ -731,6 +731,7 @@ class TestSessionAudioCoordinator:
             role=SpeakerRole.USER,
             span_id=USER_SPAN_ID,
             parent_span_id="",
+            trace_id=TRACE_ID,
         )
 
     def test_close_finalizes_every_span_still_recording(self) -> None:
@@ -743,6 +744,37 @@ class TestSessionAudioCoordinator:
 
         finalized = {call.kwargs["role"] for call in sender.mark_audio_end.call_args_list}
         assert finalized == {SpeakerRole.USER, SpeakerRole.AGENT}
+
+    def test_agent_trailing_frames_are_attributed_after_span_end(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=PARENT_SPAN_ID,
+        )
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        kwargs = sender.enqueue.call_args.kwargs
+        assert kwargs["span_id"] == AGENT_SPAN_ID
+        assert kwargs["parent_span_id"] == PARENT_SPAN_ID
+        assert kwargs["trace_id"] == TRACE_ID
+
+    def test_agent_active_speech_is_overridden_by_next_span(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        new_span_id = "5555666677778888"
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=new_span_id)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        kwargs = sender.enqueue.call_args.kwargs
+        assert kwargs["span_id"] == new_span_id
 
     def test_close_is_idempotent(self) -> None:
         sender = MagicMock()
@@ -816,6 +848,66 @@ class TestSessionAudioCoordinatorInterrupts:
         coordinator.on_playback_finished(MagicMock(interrupted=False, playback_position=2.0))
 
         sender.interrupt_agent_span.assert_not_called()
+
+    def test_closing_while_agent_is_speaking_trims_to_what_was_heard(self) -> None:
+        sender = MagicMock()
+        sender.end_session = _async_noop
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+        coordinator.on_playback_started(created_at=time.time() - 0.4)
+
+        async def drive() -> None:
+            await coordinator.prepare_close()
+            # LiveKit reports heard position during its aclose, between prepare and finish.
+            coordinator.on_playback_finished(MagicMock(interrupted=True, playback_position=0.4))
+            await coordinator.finish_close()
+
+        asyncio.run(drive())
+
+        sender.interrupt_agent_span.assert_called_once_with(
+            span_id=AGENT_SPAN_ID,
+            playback_ms=400,
+            parent_span_id="",
+        )
+        assert not any(call.kwargs.get("role") is SpeakerRole.AGENT for call in sender.mark_audio_end.call_args_list)
+
+    def test_closing_after_agent_finished_does_not_trim_prior_turn(self) -> None:
+        sender = MagicMock()
+        sender.end_session = _async_noop
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        # Trailing-attribution keep-alive: active speech remains after OTel end.
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+        coordinator.on_playback_finished(MagicMock(interrupted=False, playback_position=2.0))
+
+        asyncio.run(coordinator.aclose())
+
+        sender.interrupt_agent_span.assert_not_called()
+
+    def test_closing_mid_speech_falls_back_to_wall_clock_when_playout_wait_fails(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(
+            "netra.instrumentation.livekit.audio_capture._PLAYBACK_WAIT_ON_CLOSE_SECONDS",
+            0.05,
+        )
+        sender = MagicMock()
+        sender.end_session = _async_noop
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(SpeakerRole.AGENT, trace_id=TRACE_ID, span_id=AGENT_SPAN_ID)
+        started_at = time.time() - 0.25
+        coordinator.on_playback_started(created_at=started_at)
+
+        async def drive() -> None:
+            await coordinator.prepare_close()
+            # No playback_finished arrives; finish should estimate from the clock.
+            await coordinator.finish_close()
+
+        asyncio.run(drive())
+
+        playback_ms = sender.interrupt_agent_span.call_args.kwargs["playback_ms"]
+        assert 200 <= playback_ms <= 500
 
 
 # ---------------------------------------------------------------------------
@@ -896,6 +988,7 @@ class TestAudioSpanProcessor:
             role=role,
             span_id=format(0x1234567890ABCDEF, "016x"),
             parent_span_id=format(0xFEDCBA0987654321, "016x"),
+            trace_id=format(0xAAAABBBBCCCCDDDD, "032x"),
         )
 
     def test_a_span_from_another_call_is_ignored(self) -> None:
