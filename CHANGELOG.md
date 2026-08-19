@@ -4,7 +4,9 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [0.1.99b1] - 2026-08-13
+## [0.1.99] - 2026-08-19
+
+- **Add support to capture cache-write tokens in OpenAI instrumentation** — The OpenAI instrumentor now extracts `cache_write_tokens` from `prompt_tokens_details` (or `input_tokens_details` for the Responses API) and maps it to the `gen_ai.usage.cache_creation_input_tokens` span attribute. This enables accurate cost calculation for new OpenAI models that report cache-write tokens separately, as well as OpenAI-compatible proxies that expose cache-write usage.
 
 - **Add Honcho memory SDK instrumentation** — Added automatic sync, async, and streaming instrumentation for `honcho-ai` (>= 2.0.0), with declarative patching, unified wrappers, dynamic response serialization, OTel GenAI semantic conventions, and centralized instrumentation constants.
 
@@ -351,4 +353,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.99b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[0.1.99]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main

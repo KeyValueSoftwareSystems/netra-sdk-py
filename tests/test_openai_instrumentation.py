@@ -9,11 +9,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.openai import (
-    NetraOpenAIInstrumentor,
-    is_streaming_response,
-    should_suppress_instrumentation,
-)
+from netra.instrumentation.openai import NetraOpenAIInstrumentor
+from netra.instrumentation.openai.utils import should_suppress_instrumentation
 
 
 class TestNetraOpenAIInstrumentor:
@@ -158,31 +155,7 @@ class TestWrappers:
 class TestUtilityFunctions:
     """Test utility functions in the openai instrumentation module."""
 
-    def test_is_streaming_response_with_generator(self):
-        """Test is_streaming_response returns True for generator objects."""
-
-        # Arrange
-        def sample_generator():
-            yield 1
-            yield 2
-
-        generator = sample_generator()
-
-        # Act
-        result = is_streaming_response(generator)
-
-        # Assert
-        assert result is True
-
-    def test_is_streaming_response_with_non_generator(self):
-        """Test is_streaming_response returns False for non-generator objects."""
-        # Act
-        result = is_streaming_response("not a generator")
-
-        # Assert
-        assert result is False
-
-    @patch("netra.instrumentation.openai.context_api.get_value")
+    @patch("netra.instrumentation.openai.utils.context_api.get_value")
     def test_should_suppress_instrumentation_true(self, mock_get_value):
         """Test should_suppress_instrumentation returns True when suppression is enabled."""
         # Arrange
@@ -194,7 +167,7 @@ class TestUtilityFunctions:
         # Assert
         assert result is True
 
-    @patch("netra.instrumentation.openai.context_api.get_value")
+    @patch("netra.instrumentation.openai.utils.context_api.get_value")
     def test_should_suppress_instrumentation_false(self, mock_get_value):
         """Test should_suppress_instrumentation returns False when suppression is disabled."""
         # Arrange
@@ -205,6 +178,7 @@ class TestUtilityFunctions:
 
         # Assert
         assert result is False
+
 
 class TestUsageAttributes:
     """Test _set_usage_attributes token capture across Chat and Responses shapes."""
