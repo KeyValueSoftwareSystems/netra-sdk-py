@@ -42,7 +42,7 @@ from netra.instrumentation.livekit.call_span import (
     start_call_span,
 )
 from netra.instrumentation.livekit.trace_processor import record_stt_usage
-from netra.instrumentation.livekit.utils import STT_METRICS_TYPE
+from netra.instrumentation.livekit.utils import NETRA_CLOSE_REASON, STT_METRICS_TYPE
 from netra.session_manager import SessionManager
 
 if TYPE_CHECKING:
@@ -289,6 +289,70 @@ def _listen_for_metrics(instance: "AgentSession", handler: Callable[[Any], None]
 
 
 # ---------------------------------------------------------------------------
+# Room event tracking
+# ---------------------------------------------------------------------------
+
+# Instance attribute marking a session whose room events are already subscribed.
+_ROOM_EVENTS_SUBSCRIBED_FIELD = "_netra_livekit_room_events_subscribed"
+
+
+def _subscribe_room_events(instance: "AgentSession") -> None:
+    """Subscribe to room-level events for close-context attribution.
+
+    Records which participant disconnected and when, so the call span carries
+    enough context to distinguish user-hangup from room-deletion from agent-initiated
+    shutdown. Subscribed at most once per session.
+
+    Args:
+        instance: The ``AgentSession`` that has started.
+    """
+    if getattr(instance, _ROOM_EVENTS_SUBSCRIBED_FIELD, False):
+        return
+
+    room_io = getattr(instance, "_room_io", None)
+    if room_io is None:
+        return
+
+    room = getattr(room_io, "room", None)
+    if room is None:
+        return
+
+    from netra.instrumentation.livekit.call_span import CALL_SPAN_FIELD
+
+    def on_participant_disconnected(participant: Any) -> None:
+        """Record participant disconnect on the call span.
+
+        Args:
+            participant: The ``RemoteParticipant`` that left.
+        """
+        try:
+            call_span = getattr(instance, CALL_SPAN_FIELD, None)
+            if call_span is None:
+                return
+            identity = getattr(participant, "identity", None) or ""
+            kind = getattr(participant, "kind", None)
+            kind_str = str(kind.name if hasattr(kind, "name") else kind) if kind is not None else ""
+            call_span.set_attribute("netra.livekit.participant_disconnected", identity)
+            if kind_str:
+                call_span.set_attribute("netra.livekit.participant_kind", kind_str)
+        except Exception:
+            logger.debug("netra.livekit: room event handler failed", exc_info=True)
+
+    try:
+        from livekit import rtc
+
+        rtc.EventEmitter.on(room, "participant_disconnected", on_participant_disconnected)
+    except (ImportError, Exception):
+        logger.debug("netra.livekit: could not subscribe to room events via EventEmitter", exc_info=True)
+        return
+
+    try:
+        setattr(instance, _ROOM_EVENTS_SUBSCRIBED_FIELD, True)
+    except Exception:
+        pass
+
+
+# ---------------------------------------------------------------------------
 # Session lifecycle hooks
 # ---------------------------------------------------------------------------
 
@@ -311,11 +375,44 @@ async def _after_start(instance: "AgentSession", session_id: Optional[str]) -> N
 
     logger.debug("netra.livekit: agent session started session_id=%s trace_id=%032x", session_id, trace_id)
 
+    try:
+        _subscribe_room_events(instance)
+    except Exception:
+        logger.debug("netra.livekit: could not subscribe to room events", exc_info=True)
+
     config = get_active_config()
     if config is None or not config.audio_capture_enabled:
         return
 
     await start_audio_capture(instance, config=config, session_id=session_id or "", trace_id=trace_id)
+
+
+def _stamp_close_reason(instance: "AgentSession", kwargs: Dict[str, Any]) -> None:
+    """Stamp the session close reason on the call span.
+
+    Called at the start of ``wrap_aclose``, before ``_before_close``, while the call
+    span is still recording. The reason comes from LiveKit's ``CloseReason`` enum
+    passed as a keyword argument to ``_aclose_impl``.
+
+    Args:
+        instance: The ``AgentSession`` that is closing.
+        kwargs: The keyword arguments to ``_aclose_impl``.
+    """
+    from netra.instrumentation.livekit.call_span import CALL_SPAN_FIELD
+
+    call_span = getattr(instance, CALL_SPAN_FIELD, None)
+    if call_span is None:
+        return
+
+    reason = kwargs.get("reason")
+    if reason is None:
+        return
+
+    reason_value = getattr(reason, "value", None) or str(reason)
+    try:
+        call_span.set_attribute(NETRA_CLOSE_REASON, reason_value)
+    except Exception:
+        logger.debug("netra.livekit: could not set close reason attribute", exc_info=True)
 
 
 async def _before_close(instance: "AgentSession") -> None:
@@ -516,6 +613,11 @@ async def wrap_aclose(
     Returns:
         Whatever ``_aclose_impl`` returns, untouched.
     """
+    try:
+        _stamp_close_reason(instance, kwargs)
+    except Exception:
+        logger.debug("netra.livekit: could not stamp close reason", exc_info=True)
+
     try:
         await _before_close(instance)
     except Exception:
