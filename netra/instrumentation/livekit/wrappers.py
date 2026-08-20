@@ -36,6 +36,7 @@ from netra.instrumentation.livekit.audio_capture import (
     start_audio_capture,
 )
 from netra.instrumentation.livekit.call_span import (
+    agent_name_scope,
     call_id_of_session,
     call_id_scope,
     end_call_span_of_session,
@@ -121,6 +122,42 @@ def _room_sid_from_job_context() -> Optional[str]:
 
     if isinstance(sid, str) and sid:
         return sid
+    return None
+
+
+def _agent_name_from_job_context() -> Optional[str]:
+    """Read the dispatched agent's name off the job assignment.
+
+    ``JobContext.job.agent_name`` is the name the *worker* registered under
+    (``WorkerOptions(agent_name=...)``) and the room was explicitly dispatched to.
+    LiveKit stamps it on ``agent_session`` and ``job_entrypoint`` as
+    ``lk.agent_name`` but never on the turns, so it is read here and carried to
+    them through the context — see ``agent_name_scope``.
+
+    Returns:
+        The agent name, or ``None`` outside a job (eval mode, direct library use)
+        and for a worker registered without one, where LiveKit leaves the field
+        empty because the job was dispatched automatically.
+    """
+    try:
+        from livekit.agents import get_job_context
+
+        job_context = get_job_context(required=False)
+    except Exception:
+        logger.debug("netra.livekit: could not read the job context", exc_info=True)
+        return None
+
+    if job_context is None:
+        return None
+
+    try:
+        agent_name = getattr(job_context.job, "agent_name", None)
+    except Exception:
+        logger.debug("netra.livekit: could not read the agent name off the job", exc_info=True)
+        return None
+
+    if isinstance(agent_name, str) and agent_name:
+        return agent_name
     return None
 
 
@@ -441,6 +478,15 @@ async def wrap_start(
                     scope.enter_context(call_id_scope(call_span))
                 except Exception:
                     logger.warning("netra.livekit: could not attach the call id", exc_info=True)
+
+            # Attached for the same span of time and for the same reason, but not
+            # gated on the call span: an ``agent_turn`` reads the name straight off
+            # the context it was created in, so the name reaches the turns whether
+            # or not the call span could be opened.
+            try:
+                scope.enter_context(agent_name_scope(_agent_name_from_job_context()))
+            except Exception:
+                logger.warning("netra.livekit: could not attach the agent name", exc_info=True)
 
             # Subscribed before start() so no metrics can be missed: the STT stream
             # is created inside it. Idempotent, and it reads the call it belongs to

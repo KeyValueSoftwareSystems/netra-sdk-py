@@ -11,6 +11,7 @@ import json
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
+from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
@@ -24,6 +25,7 @@ from netra.instrumentation.livekit.call_span import (
     _MAX_OPEN_CALL_SPANS,
     CALL_SPAN_FIELD,
     REROOTED_ATTRIBUTE,
+    agent_name_scope,
     call_id_scope,
     call_spans,
     end_all_call_spans,
@@ -32,10 +34,12 @@ from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvid
 from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor, record_stt_usage
 from netra.instrumentation.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
+    AGENT_TURN_SPAN_NAME,
     CALL_SPAN_NAME,
     JOB_ENTRYPOINT_SPAN_NAME,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
+    NETRA_AGENT_NAME,
     NETRA_CONVERSATION_TRUNCATED,
     NETRA_ENTITY_TYPE,
     NETRA_SPAN_TYPE,
@@ -1059,6 +1063,32 @@ class _SpeakingAgentSession(_FakeAgentSession):
         return result
 
 
+class _TurningAgentSession(_FakeAgentSession):
+    """A session that opens ``agent_turn`` spans the way livekit-agents does.
+
+    LiveKit snapshots the context *inside* ``start()`` as
+    ``AgentSession._root_span_context`` and opens every ``agent_turn`` against that
+    snapshot, from a reply task created later (``voice/agent_activity.py``). So
+    ``speak()`` deliberately runs after ``wrap_start`` has returned and unwound its
+    scopes: the ambient context no longer carries anything, and only the snapshot
+    can carry the agent name to the turn.
+    """
+
+    def __init__(self, tracer: Any) -> None:
+        super().__init__(tracer)
+        self._root_span_context: Optional[otel_context.Context] = None
+
+    async def start(self, **kwargs: Any) -> str:
+        result = await super().start(**kwargs)
+        with trace.use_span(self._session_span, end_on_exit=False):
+            self._root_span_context = otel_context.get_current()
+        return result
+
+    def speak(self, name: str = AGENT_TURN_SPAN_NAME) -> None:
+        """Open and close one turn span, parented as LiveKit parents it."""
+        self._tracer.start_span(name, context=self._root_span_context).end()
+
+
 class _FakeMetricsEvent:
     """LiveKit's ``MetricsCollectedEvent``: a wrapper around one pydantic metrics model."""
 
@@ -1139,6 +1169,40 @@ def fake_livekit_agents(monkeypatch: pytest.MonkeyPatch) -> None:
 class _FakeRoom:
     def __init__(self, name: str) -> None:
         self.name = name
+
+
+class _FakeJobContext:
+    """LiveKit's ``JobContext``, reduced to the two fields the wrappers read.
+
+    ``room`` carries no ``sid``, so the session id falls back to the room name —
+    the same path the ``fake_livekit_agents`` fixture already exercises.
+    """
+
+    def __init__(self, agent_name: str) -> None:
+        self.job = _FakeJob(agent_name)
+
+
+class _FakeJob:
+    def __init__(self, agent_name: str) -> None:
+        self.agent_name = agent_name
+        self.room = None
+
+
+@pytest.fixture
+def dispatch_job(monkeypatch: pytest.MonkeyPatch, fake_livekit_agents: None) -> Any:
+    """Run the wrappers inside a job dispatched to an agent the test names.
+
+    Returns:
+        A callable taking the ``agent_name`` LiveKit would put on the job — ``""``
+        for the automatic-dispatch case, where the worker registered no name.
+    """
+    import sys
+
+    def dispatch(agent_name: str) -> None:
+        agents = sys.modules["livekit.agents"]
+        monkeypatch.setattr(agents, "get_job_context", lambda required=True: _FakeJobContext(agent_name))
+
+    return dispatch
 
 
 def _run_call(
@@ -1273,6 +1337,67 @@ class TestSttUsageWiring:
 
         assert subscribed == [(session, "metrics_collected")]
         assert session._listeners == {}, "the session's own on() must not have been used"
+
+
+class TestAgentTurnCarriesTheAgentName:
+    """``agent_turn`` spans name the agent the job was dispatched to."""
+
+    AGENT_NAME = "inbound-support"
+
+    @staticmethod
+    def _call(harness: _CallHarness, *, turn_name: str = AGENT_TURN_SPAN_NAME) -> None:
+        """Run one call that speaks a turn after ``start()`` has returned."""
+        session = _TurningAgentSession(harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": _FakeRoom("console-turn")})
+            session.speak(turn_name)
+            await wrap_aclose(session.aclose_impl, session, (), {})
+
+        asyncio.run(call())
+
+    def test_turn_carries_the_dispatched_agent_name(self, call_harness: _CallHarness, dispatch_job: Any) -> None:
+        dispatch_job(self.AGENT_NAME)
+        self._call(call_harness)
+
+        assert call_harness.attributes(AGENT_TURN_SPAN_NAME)[NETRA_AGENT_NAME] == self.AGENT_NAME
+
+    def test_turn_carries_no_agent_name_under_automatic_dispatch(
+        self, call_harness: _CallHarness, dispatch_job: Any
+    ) -> None:
+        # A worker registered without an agent_name gets an empty string from
+        # LiveKit; an empty attribute is worse than an absent one.
+        dispatch_job("")
+        self._call(call_harness)
+
+        assert NETRA_AGENT_NAME not in call_harness.attributes(AGENT_TURN_SPAN_NAME)
+
+    def test_turn_carries_no_agent_name_outside_a_job(
+        self, call_harness: _CallHarness, fake_livekit_agents: None
+    ) -> None:
+        # Console and eval mode: get_job_context() returns None.
+        self._call(call_harness)
+
+        assert NETRA_AGENT_NAME not in call_harness.attributes(AGENT_TURN_SPAN_NAME)
+
+    def test_other_livekit_spans_are_left_unnamed(self, call_harness: _CallHarness, dispatch_job: Any) -> None:
+        dispatch_job(self.AGENT_NAME)
+        self._call(call_harness, turn_name=USER_TURN_SPAN_NAME)
+
+        assert NETRA_AGENT_NAME not in call_harness.attributes(USER_TURN_SPAN_NAME)
+        assert NETRA_AGENT_NAME not in call_harness.attributes(AGENT_SESSION_SPAN_NAME)
+        assert NETRA_AGENT_NAME not in call_harness.attributes(CALL_SPAN_NAME)
+
+    def test_turn_started_outside_any_call_is_unnamed(self, harness: _Harness) -> None:
+        # The processor is process-wide: a turn from a session this package never
+        # wrapped must not inherit a neighbouring call's agent name.
+        assert NETRA_AGENT_NAME not in _record(harness, AGENT_TURN_SPAN_NAME, {})
+
+    def test_the_scope_does_not_leak_past_the_call(self, harness: _Harness) -> None:
+        with agent_name_scope(self.AGENT_NAME):
+            pass
+
+        assert NETRA_AGENT_NAME not in _record(harness, AGENT_TURN_SPAN_NAME, {})
 
 
 class TestCallSpanRootsTheTrace:
