@@ -60,6 +60,12 @@ AGENT_TURN_SPAN_NAME = "agent_turn"
 # same span as the model.
 USER_TURN_SPAN_NAME = "user_turn"
 
+# The speaking spans LiveKit creates for each run of speech. Due to a context
+# propagation bug in livekit-agents, ``user_speaking`` is often created without an
+# explicit OTel context, causing it to be orphaned (no parent). This package
+# detects and reparents such spans under their trace's ``agent_session``.
+SPEAKING_SPAN_NAMES = frozenset({"user_speaking", "agent_speaking"})
+
 # ---------------------------------------------------------------------------
 # Netra target attribute keys
 # ---------------------------------------------------------------------------
@@ -105,6 +111,10 @@ ENTITY_TYPE_WORKFLOW = "workflow"
 NETRA_AUDIO_TYPE = "netra.audio.type"
 AUDIO_TYPE_SESSION = "session"
 AUDIO_TYPE_SPAN = "span"
+
+# The reason the session closed, stamped on the ``livekit-call`` span by
+# ``wrap_aclose``. Values mirror LiveKit's ``CloseReason`` enum.
+NETRA_CLOSE_REASON = "netra.livekit.close_reason"
 
 # ---------------------------------------------------------------------------
 # The gen_ai conventions this package emits into
