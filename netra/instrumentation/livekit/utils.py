@@ -48,6 +48,11 @@ JOB_ENTRYPOINT_SPAN_NAME = "job_entrypoint"
 # signal this package ends ``livekit-call`` on.
 AGENT_SESSION_SPAN_NAME = "agent_session"
 
+# livekit-agents' span for one turn of agent speech (``voice/agent_activity.py``,
+# opened by each of the three reply tasks). It is the span the dispatched agent's
+# name is stamped on — see ``NETRA_AGENT_NAME``.
+AGENT_TURN_SPAN_NAME = "agent_turn"
+
 # livekit-agents' span for one turn of user speech (``voice/audio_recognition.py``:
 # ``_ensure_user_turn_span``), carrying the transcript and the STT model. It is
 # where this package puts the transcription usage LiveKit reports out-of-band —
@@ -60,6 +65,18 @@ USER_TURN_SPAN_NAME = "user_turn"
 # ---------------------------------------------------------------------------
 
 NETRA_TOOL_NAME = "netra.tool.name"
+
+# The dispatched agent's name, written on every ``agent_turn`` span. Same key the
+# ``@agent`` decorator emits (``SessionManager.get_current_entity_attributes``), so
+# a voice turn names its agent the way every other Netra agent span does.
+#
+# The value is the *worker dispatch* name — ``JobContext.job.agent_name``, which
+# LiveKit itself writes as ``lk.agent_name`` on ``agent_session`` and
+# ``job_entrypoint`` but not on the turns. It is NOT the per-``Agent`` label
+# (``lk.agent_label``), so it does not change when a session hands off between
+# agents, and it is absent for a worker that declares no ``agent_name`` — LiveKit
+# leaves the field empty for automatic dispatch, and an empty name is not written.
+NETRA_AGENT_NAME = "netra.agent.name"
 NETRA_USAGE_SOURCE = "netra.usage.source"
 USAGE_SOURCE_FRAMEWORK = "framework"
 
