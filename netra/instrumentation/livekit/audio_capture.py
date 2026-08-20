@@ -119,6 +119,7 @@ class SessionAudioCoordinator:
 
         self._active_speech: Dict[SpeakerRole, Optional[_ActiveSpeech]] = {role: None for role in SpeakerRole}
         self._session_trace_id = ""
+        self._agent_speech_ended = False
 
         # The agent span most recently opened, kept after it closes: LiveKit
         # routinely ends the ``agent_speaking`` span *before* it reports the
@@ -172,6 +173,11 @@ class SessionAudioCoordinator:
     ) -> None:
         """Attribute subsequent frames from *role* to a newly opened span.
 
+        When *role* is :attr:`SpeakerRole.USER` and a previous agent speaking
+        span has already ended, the stale ``_active_speech[AGENT]`` is cleared.
+        This prevents preemptive TTS audio (synthesized during the user's turn
+        but never played) from being misattributed to the previous agent span.
+
         Args:
             role: The speaker whose span opened.
             trace_id: Hex trace id of the span.
@@ -187,12 +193,15 @@ class SessionAudioCoordinator:
             self._last_agent_span_id = span_id
             self._last_agent_parent_span_id = parent_span_id
             self._is_agent_interrupted = False
+            self._agent_speech_ended = False
             self._interrupted_agent_span_id = ""
             self._interrupted_agent_parent_span_id = ""
             self._agent_playback_started_at = None
             self._agent_capture_started_at = None
             self._agent_playback_trim_reported = False
             self._playback_trim_event = None
+        if role is SpeakerRole.USER and self._agent_speech_ended:
+            self._active_speech[SpeakerRole.AGENT] = None
         logger.debug(
             "netra.audio: %s speaking started — span_id=%s parent_span_id=%s",
             role.value,
@@ -207,13 +216,16 @@ class SessionAudioCoordinator:
         finalize: only the playback report says how much of the utterance was
         heard, and finalizing here would fix the recording at its full length.
 
-        For the agent role, ``_active_speech`` is intentionally **not** cleared:
-        LiveKit routinely ends the ``agent_speaking`` span before the TTS has
-        finished outputting all frames — or starts and ends it within a single
-        event-loop tick for tool-call exit messages. Keeping the active speech
-        ensures trailing frames are still attributed to the correct span. The
-        next :meth:`on_speaking_start` naturally overwrites it, and
-        :meth:`close` forcibly clears it at teardown.
+        For the agent role, ``_active_speech`` is intentionally **not** cleared
+        immediately: LiveKit routinely ends the ``agent_speaking`` span before
+        the TTS has finished outputting all frames — or starts and ends it
+        within a single event-loop tick for tool-call exit messages. Keeping
+        the active speech ensures trailing frames are still attributed to the
+        correct span. The next :meth:`on_speaking_start` naturally overwrites
+        it, :meth:`on_speaking_start` for the USER role clears it once a new
+        user turn begins (so preemptive TTS audio that was never played is
+        dropped rather than misattributed), and :meth:`close` forcibly clears
+        it at teardown.
 
         Args:
             role: The speaker whose span closed.
@@ -232,6 +244,8 @@ class SessionAudioCoordinator:
         # TTS frames are still attributed.  For user role, clear immediately.
         if role is not SpeakerRole.AGENT:
             self._active_speech[role] = None
+        else:
+            self._agent_speech_ended = True
 
         if not ended_span_id:
             return
@@ -261,6 +275,10 @@ class SessionAudioCoordinator:
             return
         if role is SpeakerRole.AGENT and self._is_agent_interrupted:
             # Produced after the caller cut in, so never played out.
+            return
+        if role is SpeakerRole.AGENT and self._active_speech[role] is None:
+            # Preemptive TTS: synthesized during the user's turn with no
+            # agent_speaking span, so never played out — drop silently.
             return
 
         if role is SpeakerRole.AGENT and self._agent_capture_started_at is None:
