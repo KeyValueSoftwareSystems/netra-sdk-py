@@ -684,6 +684,8 @@ def _is_recording(span: Any) -> bool:
 __all__ = [
     "CALL_SPAN_FIELD",
     "REROOTED_ATTRIBUTE",
+    "agent_name_of",
+    "agent_name_scope",
     "call_id_of",
     "call_id_of_session",
     "call_id_scope",
