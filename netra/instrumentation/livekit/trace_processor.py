@@ -25,9 +25,15 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
-from netra.instrumentation.livekit.call_span import call_id_of, end_call_span_parenting, failure_status_of
+from netra.instrumentation.livekit.call_span import (
+    agent_name_of,
+    call_id_of,
+    end_call_span_parenting,
+    failure_status_of,
+)
 from netra.instrumentation.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
+    AGENT_TURN_SPAN_NAME,
     ATTRIBUTE_MAP,
     AUDIO_TYPE_BY_SPAN_NAME,
     CHAT_CTX_ATTRIBUTE,
@@ -46,6 +52,7 @@ from netra.instrumentation.livekit.utils import (
     IO_FROM_CHILD_SPAN_NAMES,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
+    NETRA_AGENT_NAME,
     NETRA_AUDIO_TYPE,
     NETRA_CONVERSATION_TRUNCATED,
     NETRA_ENTITY_TYPE,
@@ -461,6 +468,27 @@ class _ConversationRecorder:
             self.append(message.side, message.role, message.content)
 
 
+def _stamp_agent_name(span: Span, parent_context: Optional[otel_context.Context]) -> None:
+    """Name the dispatched agent on a starting ``agent_turn`` span.
+
+    LiveKit puts the name on ``agent_session`` and ``job_entrypoint`` only, so a
+    turn has to be told. The value travels on the context ``wrap_start`` attached:
+    every ``agent_turn`` is opened with ``AgentSession._root_span_context``
+    (``voice/agent_activity.py``), which is snapshotted inside ``start()`` and so
+    carries it — the same route ``user_turn`` takes to its call id.
+
+    Args:
+        span: A starting ``agent_turn`` span.
+        parent_context: The context the span is being created in. A turn with no
+            agent name in scope is left unstamped: the worker declared none, or the
+            turn belongs to no session this package wrapped.
+    """
+    agent_name = agent_name_of(parent_context)
+    if agent_name is None:
+        return
+    span.set_attribute(NETRA_AGENT_NAME, agent_name)
+
+
 class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
     """Mirrors LiveKit's ``lk.*`` attributes and conversation events into Netra keys.
 
@@ -513,6 +541,8 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
                 self._register_io_parent(span)
             if span.name == USER_TURN_SPAN_NAME:
                 _register_user_turn_span(span, parent_context)
+            if span.name == AGENT_TURN_SPAN_NAME:
+                _stamp_agent_name(span, parent_context)
         except Exception:
             logger.warning("netra.livekit: span mapping could not be installed", exc_info=True)
 
