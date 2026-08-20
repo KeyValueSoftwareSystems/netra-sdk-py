@@ -1804,3 +1804,162 @@ class TestSessionHookLifecycle:
         livekit_instrumentation._install_session_hook()
 
         assert not isinstance(fake_agent_session.start.__wrapped__, ObjectProxy)
+
+
+# ---------------------------------------------------------------------------
+# Speaking span reparenting
+# ---------------------------------------------------------------------------
+
+
+class TestSpeakingSpanReparenting:
+    """SpanMappingProcessor reparents only truly orphaned speaking spans."""
+
+    def test_speaking_span_under_agent_turn_is_not_reparented(self, harness: _Harness) -> None:
+        """A user_speaking span correctly parented under agent_turn is left alone.
+
+        This is the normal production case: LiveKit creates user_speaking inside
+        a use_span(user_turn) context, so it becomes a child of user_turn.
+        """
+        session_span = harness.livekit_tracer.start_span(AGENT_SESSION_SPAN_NAME)
+
+        # Simulate the production hierarchy: user_turn under agent_session
+        with trace.use_span(session_span, end_on_exit=False):
+            user_turn = harness.livekit_tracer.start_span(USER_TURN_SPAN_NAME)
+            user_turn_ctx = user_turn.get_span_context()
+
+        # user_speaking created under user_turn (the correct production case)
+        with trace.use_span(user_turn, end_on_exit=False):
+            speaking_span = harness.livekit_tracer.start_span("user_speaking")
+        speaking_span.end()
+        user_turn.end()
+        session_span.end()
+
+        exported = harness.finished("user_speaking")
+        assert exported.parent is not None
+        assert exported.parent.span_id == user_turn_ctx.span_id
+
+    def test_speaking_span_under_agent_session_is_not_reparented(self, harness: _Harness) -> None:
+        """A speaking span already parented under agent_session is left alone."""
+        session_span = harness.livekit_tracer.start_span(AGENT_SESSION_SPAN_NAME)
+        session_ctx = session_span.get_span_context()
+
+        with trace.use_span(session_span, end_on_exit=False):
+            speaking_span = harness.livekit_tracer.start_span("user_speaking")
+        speaking_span.end()
+        session_span.end()
+
+        exported = harness.finished("user_speaking")
+        assert exported.parent is not None
+        assert exported.parent.span_id == session_ctx.span_id
+
+    def test_speaking_span_under_wrapper_is_not_reparented(self, harness: _Harness) -> None:
+        """A speaking span with any valid parent (even a wrapper) is NOT reparented.
+
+        The reparenting only targets truly orphaned spans (no parent at all).
+        """
+        wrapper = harness.livekit_tracer.start_span("wrapper_span")
+        wrapper_ctx = wrapper.get_span_context()
+        with trace.use_span(wrapper, end_on_exit=False):
+            harness.livekit_tracer.start_span(AGENT_SESSION_SPAN_NAME).end()
+            speaking_span = harness.livekit_tracer.start_span("user_speaking")
+        speaking_span.end()
+        wrapper.end()
+
+        exported = harness.finished("user_speaking")
+        assert exported.parent is not None
+        assert exported.parent.span_id == wrapper_ctx.span_id
+
+    def test_speaking_span_without_session_is_not_reparented(self, harness: _Harness) -> None:
+        """A speaking span in a trace with no agent_session stays orphaned."""
+        speaking_span = harness.livekit_tracer.start_span("user_speaking")
+        speaking_span.end()
+
+        exported = harness.finished("user_speaking")
+        assert exported.parent is None
+
+
+# ---------------------------------------------------------------------------
+# Deferred call span close
+# ---------------------------------------------------------------------------
+
+
+class TestDeferredCallSpanClose:
+    """The call span close is deferred while speaking spans are still open."""
+
+    def test_call_span_closes_normally_when_no_speaking_spans(
+        self, call_harness: _CallHarness, fake_livekit_agents: None
+    ) -> None:
+        """Without speaking spans, the call span closes immediately."""
+        _run_call(call_harness, room=_FakeRoom("test-room"))
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+    def test_call_span_deferred_until_speaking_span_ends(
+        self, call_harness: _CallHarness, fake_livekit_agents: None
+    ) -> None:
+        """Call span close is deferred if a speaking span is still open."""
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": _FakeRoom("test-room")})
+            # Create a speaking span under agent_session (simulates user mid-speech)
+            speaking = call_harness.livekit_tracer.start_span("user_speaking")
+            # Close the session while speaking span is open
+            await wrap_aclose(session.aclose_impl, session, (), {})
+            # Call span should still be closed (fallback path handles it)
+            speaking.end()
+
+        asyncio.run(call())
+        assert call_harness.finished_count(CALL_SPAN_NAME) == 1
+
+
+# ---------------------------------------------------------------------------
+# Close reason attribution
+# ---------------------------------------------------------------------------
+
+
+class TestCloseReasonAttribution:
+    """wrap_aclose stamps the session close reason on the call span."""
+
+    def test_user_initiated_close_reason_stamped(self, call_harness: _CallHarness, fake_livekit_agents: None) -> None:
+        """A USER_INITIATED close stamps the reason on the call span."""
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": _FakeRoom("test-room")})
+            await wrap_aclose(session.aclose_impl, session, (), {"reason": _FakeCloseReason("user_initiated")})
+
+        asyncio.run(call())
+        attrs = call_harness.attributes(CALL_SPAN_NAME)
+        assert attrs.get("netra.livekit.close_reason") == "user_initiated"
+
+    def test_participant_disconnected_close_reason_stamped(
+        self, call_harness: _CallHarness, fake_livekit_agents: None
+    ) -> None:
+        """A PARTICIPANT_DISCONNECTED close stamps the reason on the call span."""
+        session = _FakeAgentSession(call_harness.livekit_tracer)
+
+        async def call() -> None:
+            await wrap_start(session.start, session, (), {"room": _FakeRoom("test-room")})
+            await wrap_aclose(
+                session.aclose_impl, session, (), {"reason": _FakeCloseReason("participant_disconnected")}
+            )
+
+        asyncio.run(call())
+        attrs = call_harness.attributes(CALL_SPAN_NAME)
+        assert attrs.get("netra.livekit.close_reason") == "participant_disconnected"
+
+    def test_no_reason_kwarg_does_not_crash(self, call_harness: _CallHarness, fake_livekit_agents: None) -> None:
+        """If no reason is passed, nothing crashes and no attribute is stamped."""
+        _run_call(call_harness, room=_FakeRoom("test-room"))
+        attrs = call_harness.attributes(CALL_SPAN_NAME)
+        assert "netra.livekit.close_reason" not in attrs
+
+
+class _FakeCloseReason:
+    """Stand-in for LiveKit's CloseReason enum."""
+
+    def __init__(self, value: str) -> None:
+        self.value = value
+
+    def __str__(self) -> str:
+        return self.value
