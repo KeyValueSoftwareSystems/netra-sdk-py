@@ -78,7 +78,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
 
-- **Fix set_root_output_stream handling** - `set_root_output_stream` now reliably commits output for streams, even when iteration ends early (for example, via `break` or `.close()`), and correctly handles plain iterables by setting their output immediately with a warning recommending `Netra.set_root_output()`. Only true single-pass iterators are wrapped as streams.
+- **Fix set_root_output_stream handling** – `set_root_output_stream` now forces a commit of the inner stream to capture output when a stream exits early (for example, via `break` or `.close()`). It also correctly handles plain iterables by setting their output immediately with a warning recommending `Netra.set_root_output()`. Only true single-pass iterators are wrapped as streams.
 
 - **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
 
