@@ -16,6 +16,8 @@ import pytest
 from netra.instrumentation.capture.stream_utils import (
     RootOutputAsyncStreamWrapper,
     RootOutputSyncStreamWrapper,
+    _aforce_finalize_inner_stream,
+    _force_finalize_inner_stream,
     _generic_extractor,
     _netra_extractor,
     wrap_stream_for_root_output,
@@ -392,3 +394,425 @@ class TestWrapStreamForRootOutput:
         gen = (x for x in [1, 2, 3])
         wrapped = wrap_stream_for_root_output(gen, commit_fn)
         assert isinstance(wrapped, RootOutputSyncStreamWrapper)
+
+
+class _ReturnSelfSyncWrapper:
+    """Mimics an OpenAI-style return-self sync wrapper with ``_finalize_span``
+    that sets ``_netra_output`` (no idempotency guard)."""
+
+    _netra_stream_wrapper = True
+
+    def __init__(self, items: List[Any]) -> None:
+        self._items = items
+        self._netra_output: Any = None
+        self._finalize_span_called = False
+
+    def __iter__(self) -> "_ReturnSelfSyncWrapper":
+        return self
+
+    def __next__(self) -> Any:
+        if not self._items:
+            self._finalize_span()
+            raise StopIteration
+        return self._items.pop(0)
+
+    def _finalize_span(self) -> None:
+        self._finalize_span_called = True
+        self._netra_output = "finalized_output"
+
+
+class _ReturnSelfAsyncWrapper:
+    """Mimics an OpenAI-style return-self async wrapper with ``_finalize_span``."""
+
+    _netra_stream_wrapper = True
+
+    def __init__(self, items: List[Any]) -> None:
+        self._items = list(items)
+        self._netra_output: Any = None
+        self._finalize_span_called = False
+
+    def __aiter__(self) -> "_ReturnSelfAsyncWrapper":
+        return self
+
+    async def __anext__(self) -> Any:
+        if not self._items:
+            self._finalize_span()
+            raise StopAsyncIteration
+        return self._items.pop(0)
+
+    def _finalize_span(self) -> None:
+        self._finalize_span_called = True
+        self._netra_output = "async_finalized_output"
+
+
+class _IdempotentFinalizeWrapper:
+    """Mimics an Agno-style wrapper with ``_finalize`` and idempotency guard."""
+
+    _netra_stream_wrapper = True
+
+    def __init__(self, items: List[Any]) -> None:
+        self._items = items
+        self._netra_output: Any = None
+        self._finalized = False
+        self._finalize_call_count = 0
+
+    def __iter__(self) -> "_IdempotentFinalizeWrapper":
+        return self
+
+    def __next__(self) -> Any:
+        if not self._items:
+            self._finalize()
+            raise StopIteration
+        return self._items.pop(0)
+
+    def _finalize(self) -> None:
+        self._finalize_call_count += 1
+        if self._finalized:
+            return
+        self._finalized = True
+        self._netra_output = "agno_output"
+
+
+# --- _force_finalize_inner_stream unit tests ---
+
+
+class TestForceFinalize:
+
+    def test_none_iterator_returns_immediately(self) -> None:
+        """Passing ``iterator=None`` is a no-op."""
+        stream = _ReturnSelfSyncWrapper(["a"])
+        _force_finalize_inner_stream(None, stream)
+        assert stream._finalize_span_called is False
+        assert stream._netra_output is None
+
+    def test_path2_calls_finalize_span_on_return_self_wrapper(self) -> None:
+        """When ``_netra_output`` is ``None``, path 2 calls ``_finalize_span``."""
+        stream = _ReturnSelfSyncWrapper(["a", "b"])
+        iterator = iter(stream)
+        next(iterator)
+        _force_finalize_inner_stream(iterator, stream)
+        assert stream._finalize_span_called is True
+        assert stream._netra_output == "finalized_output"
+
+    def test_path1_generator_close_triggers_finalization(self) -> None:
+        """Closing a generator-based inner iterator triggers its ``finally`` block."""
+        finalized = {"called": False, "output": None}
+
+        class _GenBasedStream:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            def __iter__(self) -> Iterator[Any]:
+                try:
+                    yield "a"
+                    yield "b"
+                finally:
+                    self._netra_output = "gen_finalized"
+                    finalized["called"] = True
+
+        stream = _GenBasedStream()
+        iterator = iter(stream)
+        next(iterator)
+        _force_finalize_inner_stream(iterator, stream)
+        assert finalized["called"] is True
+        assert stream._netra_output == "gen_finalized"
+
+    def test_skips_path2_when_netra_output_already_set(self) -> None:
+        """If ``_netra_output`` is already populated, path 2 is skipped."""
+        stream = _ReturnSelfSyncWrapper(["a"])
+        list(stream)  # exhaust fully — _finalize_span sets _netra_output
+        assert stream._netra_output == "finalized_output"
+        stream._finalize_span_called = False  # reset for tracking
+        _force_finalize_inner_stream(iter([]), stream)
+        assert stream._finalize_span_called is False
+
+    def test_path2_prefers_finalize_over_finalize_span(self) -> None:
+        """``_finalize`` is tried before ``_finalize_span`` for idempotency-safe wrappers."""
+        stream = _IdempotentFinalizeWrapper(["a", "b"])
+        iterator = iter(stream)
+        next(iterator)
+        _force_finalize_inner_stream(iterator, stream)
+        assert stream._finalized is True
+        assert stream._netra_output == "agno_output"
+        assert stream._finalize_call_count == 1
+
+    def test_path2_skips_non_netra_wrappers(self) -> None:
+        """Streams without ``_netra_stream_wrapper`` never trigger path 2."""
+
+        class _PlainIterator:
+            def __init__(self) -> None:
+                self._finalize_span_called = False
+                self._netra_output: Any = None
+
+            def _finalize_span(self) -> None:
+                self._finalize_span_called = True
+
+            def __iter__(self) -> "_PlainIterator":
+                return self
+
+            def __next__(self) -> Any:
+                raise StopIteration
+
+        stream = _PlainIterator()
+        _force_finalize_inner_stream(iter([]), stream)
+        assert stream._finalize_span_called is False
+
+    def test_async_iterator_skips_path1_close(self) -> None:
+        """Async iterators (with ``__anext__``) should not have ``close()`` called."""
+        close_called = {"value": False}
+
+        class _AsyncWithClose:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            def __aiter__(self) -> "_AsyncWithClose":
+                return self
+
+            async def __anext__(self) -> Any:
+                raise StopAsyncIteration
+
+            def close(self) -> None:
+                close_called["value"] = True
+
+            def _finalize_span(self) -> None:
+                self._netra_output = "async_output"
+
+        stream = _AsyncWithClose()
+        _force_finalize_inner_stream(stream, stream)
+        assert close_called["value"] is False
+        assert stream._netra_output == "async_output"
+
+    def test_finalize_span_exception_is_logged_not_raised(self) -> None:
+        """If ``_finalize_span()`` raises, it is caught and does not propagate."""
+
+        class _BrokenWrapper:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            def __iter__(self) -> "_BrokenWrapper":
+                return self
+
+            def __next__(self) -> Any:
+                raise StopIteration
+
+            def _finalize_span(self) -> None:
+                raise RuntimeError("span already ended")
+
+        stream = _BrokenWrapper()
+        _force_finalize_inner_stream(iter([]), stream)
+
+
+# --- Integration tests: early break with _force_finalize_inner_stream ---
+
+
+class TestEarlyBreakIntegration:
+
+    def test_sync_early_break_captures_output_from_return_self_wrapper(self) -> None:
+        """Early ``break`` on a sync wrapper around a return-self Netra inner stream
+        correctly captures the inner output via ``_force_finalize_inner_stream``."""
+        commit_fn = _make_commit_fn()
+        inner = _ReturnSelfSyncWrapper(["chunk1", "chunk2", "chunk3"])
+        wrapper = RootOutputSyncStreamWrapper(inner, commit_fn, _netra_extractor)
+        for _ in wrapper:
+            break
+        assert wrapper._committed is True
+        assert inner._finalize_span_called is True
+        commit_fn.assert_called_once_with("finalized_output")
+
+    def test_sync_full_exhaustion_with_return_self_wrapper(self) -> None:
+        """Full exhaustion of a return-self wrapper commits output without
+        double-calling ``_finalize_span`` (the ``_netra_output is not None``
+        guard in ``_force_finalize_inner_stream`` prevents it)."""
+        commit_fn = _make_commit_fn()
+        inner = _ReturnSelfSyncWrapper(["a", "b"])
+        wrapper = RootOutputSyncStreamWrapper(inner, commit_fn, _netra_extractor)
+        result = list(wrapper)
+        assert result == ["a", "b"]
+        assert wrapper._committed is True
+        commit_fn.assert_called_once_with("finalized_output")
+
+    def test_async_early_break_captures_output_from_return_self_wrapper(self) -> None:
+        """Early ``break`` on an async wrapper around a return-self Netra inner
+        stream correctly captures the inner output."""
+        commit_fn = _make_commit_fn()
+        inner = _ReturnSelfAsyncWrapper(["c1", "c2", "c3"])
+        wrapper = RootOutputAsyncStreamWrapper(inner, commit_fn, _netra_extractor)
+
+        async def _break_early() -> None:
+            async for _ in wrapper:
+                break
+
+        asyncio.run(_break_early())
+        assert wrapper._committed is True
+        assert inner._finalize_span_called is True
+        commit_fn.assert_called_once_with("async_finalized_output")
+
+    def test_sync_early_break_idempotent_wrapper(self) -> None:
+        """Early ``break`` with an Agno-style idempotent wrapper calls
+        ``_finalize`` exactly once."""
+        commit_fn = _make_commit_fn()
+        inner = _IdempotentFinalizeWrapper(["x", "y", "z"])
+        wrapper = RootOutputSyncStreamWrapper(inner, commit_fn, _netra_extractor)
+        for _ in wrapper:
+            break
+        assert wrapper._committed is True
+        assert inner._finalized is True
+        assert inner._finalize_call_count == 1
+        commit_fn.assert_called_once_with("agno_output")
+
+
+# --- _aforce_finalize_inner_stream unit tests ---
+
+
+class TestAsyncForceFinalize:
+
+    def test_none_iterator_returns_immediately(self) -> None:
+        """Passing ``iterator=None`` is a no-op."""
+        stream = _ReturnSelfAsyncWrapper(["a"])
+
+        async def _run() -> None:
+            await _aforce_finalize_inner_stream(None, stream)
+
+        asyncio.run(_run())
+        assert stream._finalize_span_called is False
+        assert stream._netra_output is None
+
+    def test_aclose_called_on_async_generator(self) -> None:
+        """``aclose()`` is awaited on async generator inner iterators."""
+        finalized = {"called": False}
+
+        class _AsyncGenStream:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            async def __aiter__(self) -> Any:
+                try:
+                    yield "a"
+                    yield "b"
+                finally:
+                    self._netra_output = "async_gen_finalized"
+                    finalized["called"] = True
+
+        stream = _AsyncGenStream()
+
+        async def _run() -> None:
+            ait = stream.__aiter__()
+            await ait.__anext__()
+            await _aforce_finalize_inner_stream(ait, stream)
+
+        asyncio.run(_run())
+        assert finalized["called"] is True
+        assert stream._netra_output == "async_gen_finalized"
+
+    def test_path2_on_return_self_async_wrapper(self) -> None:
+        """Return-self async wrappers trigger path 2 (direct finalization)."""
+        stream = _ReturnSelfAsyncWrapper(["a", "b"])
+
+        async def _run() -> None:
+            ait = aiter(stream)
+            await ait.__anext__()
+            await _aforce_finalize_inner_stream(ait, stream)
+
+        asyncio.run(_run())
+        assert stream._finalize_span_called is True
+        assert stream._netra_output == "async_finalized_output"
+
+    def test_skips_path2_when_netra_output_already_set(self) -> None:
+        """If ``_netra_output`` is already populated, path 2 is skipped."""
+        stream = _ReturnSelfAsyncWrapper(["a"])
+
+        async def _exhaust_and_check() -> None:
+            ait = aiter(stream)
+            try:
+                while True:
+                    await ait.__anext__()
+            except StopAsyncIteration:
+                pass
+            assert stream._netra_output == "async_finalized_output"
+            stream._finalize_span_called = False
+            await _aforce_finalize_inner_stream(ait, stream)
+
+        asyncio.run(_exhaust_and_check())
+        assert stream._finalize_span_called is False
+
+    def test_aclose_exception_is_caught(self) -> None:
+        """If ``aclose()`` raises, it is caught and does not propagate."""
+
+        class _BrokenAsyncGen:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            async def aclose(self) -> None:
+                raise RuntimeError("aclose failed")
+
+            def _finalize_span(self) -> None:
+                self._netra_output = "recovered"
+
+        stream = _BrokenAsyncGen()
+
+        async def _run() -> None:
+            await _aforce_finalize_inner_stream(stream, stream)
+
+        asyncio.run(_run())
+        assert stream._netra_output == "recovered"
+
+
+class TestAsyncEarlyBreakIntegration:
+
+    def test_async_early_break_with_async_gen_inner_stream(self) -> None:
+        """Early ``break`` on an async wrapper around an async-generator-based
+        Netra inner stream correctly triggers ``aclose()`` and captures output."""
+
+        class _AsyncGenNetraStream:
+            _netra_stream_wrapper = True
+
+            def __init__(self) -> None:
+                self._netra_output: Any = None
+
+            async def __aiter__(self) -> Any:
+                try:
+                    yield "chunk1"
+                    yield "chunk2"
+                    yield "chunk3"
+                finally:
+                    self._netra_output = "async_gen_output"
+
+        commit_fn = _make_commit_fn()
+        inner = _AsyncGenNetraStream()
+        wrapper = RootOutputAsyncStreamWrapper(inner, commit_fn, _netra_extractor)
+
+        async def _break_early() -> None:
+            async for _ in wrapper:
+                break
+
+        asyncio.run(_break_early())
+        assert wrapper._committed is True
+        assert inner._netra_output == "async_gen_output"
+        commit_fn.assert_called_once_with("async_gen_output")
+
+    def test_async_full_exhaustion_with_return_self_wrapper(self) -> None:
+        """Full exhaustion of an async return-self wrapper commits correctly."""
+        commit_fn = _make_commit_fn()
+        inner = _ReturnSelfAsyncWrapper(["a", "b"])
+        wrapper = RootOutputAsyncStreamWrapper(inner, commit_fn, _netra_extractor)
+
+        async def _consume() -> List[Any]:
+            result = []
+            async for chunk in wrapper:
+                result.append(chunk)
+            return result
+
+        result = asyncio.run(_consume())
+        assert result == ["a", "b"]
+        assert wrapper._committed is True
+        commit_fn.assert_called_once_with("async_finalized_output")
