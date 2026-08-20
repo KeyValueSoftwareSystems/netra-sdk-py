@@ -112,6 +112,16 @@ REROOTED_ATTRIBUTE = "netra.livekit.rerooted"
 # the other. A call span id is unique per call.
 _CALL_ID_KEY = otel_context.create_key("netra-livekit-call-id")
 
+# Context key carrying the name of the agent dispatched to a call.
+#
+# Attached beside the call id, and for the same reason: LiveKit writes the name on
+# ``agent_session`` and ``job_entrypoint`` only, so an ``agent_turn`` has no way to
+# reach it except through the context its creator snapshotted. Constant for the
+# whole call — it names the worker the job was dispatched to, not the ``Agent``
+# instance currently speaking — so a value attached once around ``start()`` stays
+# correct for every turn, with no registry to keep fresh or to evict.
+_AGENT_NAME_KEY = otel_context.create_key("netra-livekit-agent-name")
+
 # Hard cap on simultaneously-open call spans, mirroring the bound
 # ``RootInstrumentFilterProcessor`` puts on its own candidate registry.
 #
@@ -313,6 +323,50 @@ def call_id_of(context: Optional[otel_context.Context] = None) -> Optional[int]:
     """
     call_id = otel_context.get_value(_CALL_ID_KEY, context=context)
     return call_id if isinstance(call_id, int) else None
+
+
+@contextmanager
+def agent_name_scope(agent_name: Optional[str]) -> Iterator[None]:
+    """Attach the dispatched agent's name for the duration of the block.
+
+    Entered around ``AgentSession.start`` alongside :func:`call_id_scope`, so every
+    context LiveKit snapshots inside ``start()`` carries the name — including
+    ``AgentSession._root_span_context``, which is the context every ``agent_turn``
+    span is created in.
+
+    Args:
+        agent_name: The name to attach. ``None`` or empty attaches nothing: LiveKit
+            leaves ``job.agent_name`` empty for a worker that declares none, and an
+            empty name is worse than an absent one on a span.
+
+    Yields:
+        ``None``, with the agent name attached to the context.
+    """
+    if not agent_name:
+        yield
+        return
+
+    token = otel_context.attach(otel_context.set_value(_AGENT_NAME_KEY, agent_name))
+    try:
+        yield
+    finally:
+        otel_context.detach(token)
+
+
+def agent_name_of(context: Optional[otel_context.Context] = None) -> Optional[str]:
+    """Read the name of the agent dispatched to the call *context* belongs to.
+
+    Args:
+        context: The context to read, or ``None`` for the ambient one. As with
+            :func:`call_id_of`, ``on_start`` is handed ``None`` whenever the span's
+            creator relied on the ambient context.
+
+    Returns:
+        The agent name, or ``None`` outside a call and for a worker that declares
+        no ``agent_name``.
+    """
+    agent_name = otel_context.get_value(_AGENT_NAME_KEY, context=context)
+    return agent_name if isinstance(agent_name, str) and agent_name else None
 
 
 def call_id_of_session(instance: Any) -> Optional[int]:
