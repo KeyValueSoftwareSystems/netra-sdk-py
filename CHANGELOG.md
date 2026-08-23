@@ -6,15 +6,31 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ## [1.0.0] - 2026-08-23
 
+### Breaking changes
+
+- **Remove `enable_root_span` configuration** - The `enable_root_span` option and the `NETRA_ENABLE_ROOT_SPAN` environment variable have been removed from `Netra.init()`. Netra no longer creates a long-lived process root span at initialization. Passing `enable_root_span` to `Netra.init()` is now a `TypeError`; remove the argument and the environment variable from your setup.
+
+- **`create_dataset` parameter order changed** - `Netra.evaluation.create_dataset()` now takes `(name, dataset_type=DatasetType.TEXT, turn_type=TurnType.SINGLE, tags=None)`; `tags` moved from the second positional parameter to last. Positional calls such as `create_dataset("my-set", ["tag"])` now bind the tag list to `dataset_type` and must be updated to keyword form (`create_dataset("my-set", tags=["tag"])`). Keyword callers are unaffected.
+
+### Features
+
+- **Add `dataset_type` to the dataset creation utility** - `Netra.evaluation.create_dataset()` accepts a new `dataset_type` argument backed by the `DatasetType` enum (`TEXT`, `IMAGE`), exported from `netra.evaluation`, and forwards it to the backend. Defaults to `DatasetType.TEXT`, matching the previous behavior.
+
+- **Propagate trace context across thread boundaries** - `InstrumentSet.THREADING` is now enabled by default, so spans created inside `threading.Thread` and `ThreadPoolExecutor` workers attach to the parent workflow trace instead of starting independent root traces. `SessionManager` span bookkeeping moved from shared mutable state to thread-isolated `ContextVar`s with copy-on-write updates, and entity frames are tracked through OTel context values rather than `attach`/`detach` token pairs, which required strict LIFO ordering that parallel workers cannot guarantee.
+
 - **Label evaluation/simulation traces on the root span** - Root spans produced by evaluation test runs (`Netra.evaluation`) and simulation runs (`Netra.simulation`) now carry a `netra.trace.origin` attribute set to `evaluation`, letting the backend and frontend distinguish these traces from normal workflow invocations.
 
-- **Remove `enable_root_span` configuration** - The `enable_root_span` option and the `NETRA_ENABLE_ROOT_SPAN` environment variable have been removed from `Netra.init()`. Netra no longer creates a long-lived process root span at initialization.
+- **Add `escaped` flag to `record_exception`** - `Netra.record_exception(exception, attributes=..., escaped=...)` now forwards the OpenTelemetry `escaped` flag to the underlying span event, so callers can mark whether the exception escaped the instrumented scope. Defaults to `False`, preserving existing behavior.
 
-- **Surface backend error messages in HTTP client logs** - Backend API clients (prompts, models, usage, dashboard, evaluation, simulation) now log the backend-provided error message (e.g. `Prompt 'X' not found`) on request failures instead of the raw HTTP exception string, via a shared `extract_error_message` helper in `netra.utils`. This also fixes a latent error in the dashboard and evaluation clients that could raise while handling a request that failed before a response was received.
+- **Map `db.statement` to span input for DB instrumentations** - `SpanIOProcessor` now promotes the `db.statement` attribute (set by PyMySQL and other OTel DB instrumentations) into the canonical `input` attribute when `input` is still empty, so database spans show the SQL query in trace previews instead of blank input. `db.statement` is preserved as an attribute, and `output` is never populated from DB attributes, since query results and bound parameters are user data.
+
+### Fixes
+
+- **Fix `set_session_id` / `set_user_id` / `set_tenant_id` not stamping the active span** — These methods previously only set OTel baggage but did not set the attribute on the span that was active at call time. `SessionManager.set_session_context` now also stamps the currently recording span immediately, so the caller's span carries the identity attribute without relying solely on processor-based propagation.
 
 - **Resolve attribute/conversation truncation limits at init time instead of import time** - `NETRA_ATTRIBUTE_MAX_LEN`, `NETRA_CONVERSATION_CONTENT_MAX_LEN`, and `TRIAL_BLOCK_DURATION_SECONDS` are now resolved when `Netra.init()` builds the config rather than when `netra` is first imported. Overrides applied before `init()` — including a late `load_dotenv()` placed after the `netra` import — are now honored, so import order no longer affects these limits. Invalid values fall back to the defaults (50000/50000/900).
 
-- **Fix `set_session_id` / `set_user_id` / `set_tenant_id` not stamping the active span** — These methods previously only set OTel baggage but did not set the attribute on the span that was active at call time. `SessionManager.set_session_context` now also stamps the currently recording span immediately, so the caller's span carries the identity attribute without relying solely on processor-based propagation.
+- **Surface backend error messages in HTTP client logs** - Backend API clients (prompts, models, usage, dashboard, evaluation, simulation) now log the backend-provided error message (e.g. `Prompt 'X' not found`) on request failures instead of the raw HTTP exception string, via a shared `extract_error_message` helper in `netra.utils`. This also fixes a latent error in the dashboard and evaluation clients — including the session details endpoint — that could raise while handling a request that failed before a response was received.
 
 - **Centralize session attribute key constants** — Introduced `ATTR_SESSION_ID`, `ATTR_USER_ID`, and `ATTR_TENANT_ID` constants in `session_manager.py` as the single source of truth for span-attribute keys. `SessionSpanProcessor` now imports these instead of constructing keys inline, eliminating duplication and divergence risk.
 
@@ -367,4 +383,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[0.1.99]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.0.0]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
