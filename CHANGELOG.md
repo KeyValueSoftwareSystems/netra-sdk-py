@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Performance
+
+- **Instrumentations are applied when their library is first imported, not during `Netra.init()`** - Each enabled instrumentation now registers a post-import hook (via `wrapt`, already a transitive dependency) instead of being applied up front. Applying an instrumentation means importing the library it patches, so `Netra.init()` previously paid for every LLM library present in the environment whether or not the process used any of them — around 3 s in a typical LLM venv. An instrumentation is now applied at the moment its target library is first imported, and never if that library is never imported. wrapt fires a hook immediately and synchronously when the module is already loaded, so this holds whether the client imports their library before or after `Netra.init()`.
+
+  Total instrumentation work is strictly lower, but its position changes: the first `import openai` in a process that uses OpenAI becomes correspondingly slower. Objects a library builds during its own module execution keep unpatched bound methods — a limitation that already applied to any client importing their library before `Netra.init()`, now on the common path rather than the rare one.
+
+  Set `NETRA_EAGER_INSTRUMENTATION=true` to restore up-front instrumentation. This flag is a temporary escape hatch and will be removed two minor releases after this one.
+
+- **`import netra` no longer imports `traceloop-sdk`** - `traceloop.sdk` costs ~620 ms to import (it pulls in pandas, numpy and aiohttp) and was reached from module scope in `netra/instrumentation/`, so every `import netra` paid it — including in processes that never call `Netra.init()`. Every traceloop symbol is now imported inside the function that needs it, and traceloop is loaded only when a traceloop-backed instrumentation actually activates. Measured: `import netra` 463 ms / 1033 modules to 275 ms / 760 modules.
+
+### Breaking changes
+
+- **The per-library `init_*_instrumentation()` helpers were removed from `netra.instrumentation`** - The ~60 functions of the form `init_openai_instrumentation()`, `init_redis_instrumentation()`, and so on have been replaced by a declarative table (`netra.instrumentation.registry.CUSTOM_INSTRUMENTORS`) that a single generic activator applies. They were an internal dispatch mechanism with no callers outside the package, and the set of instrumentations enabled by `Netra.init()` is unchanged. Code calling one directly should pass the corresponding `InstrumentSet` member to `Netra.init(instruments=...)` instead. `CustomInstruments` is retained but no longer keys anything inside the SDK; activation is keyed on `InstrumentSet`.
+
+- **`InstrumentSet.<member>.origin` changed type** - `origin` was the enum *class* backing the member (`CustomInstruments` or `traceloop.sdk.Instruments`) and is now a member of the internal `_Origin` enum (`_Origin.CUSTOM` / `_Origin.TRACELOOP`). Tagging members with `traceloop.sdk.Instruments` forced the traceloop import onto every `import netra`. Code comparing `instrument.origin == CustomInstruments` must compare against `_Origin.CUSTOM` instead. `InstrumentSet` values, names and membership are unchanged.
+
 ## [1.0.0] - 2026-08-23
 
 ### Breaking changes
