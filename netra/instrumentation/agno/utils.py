@@ -643,45 +643,6 @@ def extract_vectordb_attributes(instance: Any, operation: str) -> Dict[str, Any]
     return attributes
 
 
-def extract_token_usage(response: Any) -> Dict[str, Any]:
-    """Extract token usage metrics from an Agno response object.
-
-    Args:
-        response: An Agno RunResponse, RunOutput, or TeamRunOutput object.
-
-    Returns:
-        Dict with input/output token count attributes, or empty dict if unavailable.
-    """
-    attributes: Dict[str, Any] = {}
-
-    metrics = _safe_getattr(response, "metrics")
-    if metrics is None:
-        # Fallback: ModelResponse stream chunks carry usage in response_usage
-        metrics = _safe_getattr(response, "response_usage")
-        if metrics is None:
-            return attributes
-
-    if isinstance(metrics, dict):
-        input_tokens = metrics.get("input_tokens", 0)
-        output_tokens = metrics.get("output_tokens", 0)
-        reasoning_tokens = metrics.get("reasoning_tokens", 0)
-        total_tokens = metrics.get("total_tokens", 0)
-    else:
-        input_tokens = _safe_getattr(metrics, "input_tokens", 0)
-        output_tokens = _safe_getattr(metrics, "output_tokens", 0)
-        reasoning_tokens = _safe_getattr(metrics, "reasoning_tokens", 0)
-        total_tokens = _safe_getattr(metrics, "total_tokens", 0)
-
-    if input_tokens:
-        attributes[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] = input_tokens
-    if completion_tokens := output_tokens + reasoning_tokens:
-        attributes[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] = completion_tokens
-    if total_tokens:
-        attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] = total_tokens
-
-    return attributes
-
-
 def extract_input_content(args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Optional[str]:
     """Extract user query or input content from wrapper call arguments.
 
@@ -944,7 +905,10 @@ def set_request_attributes(
 def set_response_attributes(span: Span, response: Any) -> Optional[str]:
     """Set response-side span attributes from an Agno response object.
 
-    Writes token usage, output content, response ID, and output type.
+    Writes output content, response ID, and output type. Token usage is deliberately
+    not written here: the underlying provider instrumentation (openai, google_genai,
+    anthropic, ...) already reports it on its own spans, and duplicating it on the
+    Agno spans double-counts usage for the trace.
 
     Args:
         span: The active OpenTelemetry span.
@@ -952,10 +916,6 @@ def set_response_attributes(span: Span, response: Any) -> Optional[str]:
     """
     if not span.is_recording():
         return None
-
-    usage = extract_token_usage(response)
-    if usage:
-        span.set_attributes(usage)
 
     output = extract_output_content(response)
     if output:
