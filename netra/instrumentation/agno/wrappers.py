@@ -23,7 +23,6 @@ from netra.instrumentation.agno.utils import (
     extract_http_request_attributes,
     extract_knowledge_attributes,
     extract_memory_attributes,
-    extract_token_usage,
     extract_vectordb_attributes,
     format_messages_as_input,
     format_response_as_output,
@@ -243,7 +242,11 @@ class _LlmStreamOutputMixin:
     _tool_calls: List[Any]
 
     def _set_output_on_success(self) -> None:
-        """Write accumulated LLM content, token usage, and timing metrics to the span."""
+        """Write accumulated LLM content and timing metrics to the span.
+
+        Token usage is not written here: the underlying provider instrumentation
+        reports it on its own child span, so setting it again double-counts.
+        """
         output_str = None
         self._netra_output = ""
         if self._content_chunks:
@@ -268,10 +271,6 @@ class _LlmStreamOutputMixin:
         if output_str:
             self._span.set_attribute("output", output_str)
             set_llm_completion_attributes(self._span, output_str)
-        if self._last_response is not None:
-            usage = extract_token_usage(self._last_response)
-            if usage:
-                self._span.set_attributes(usage)
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
 
 
@@ -1202,11 +1201,6 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if output_str:
                     span.set_attribute("output", output_str)
                     set_llm_completion_attributes(span, output_str)
-                usage = extract_token_usage(assistant_message)
-                if not usage and response is not None:
-                    usage = extract_token_usage(response)
-                if usage:
-                    span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
@@ -1303,11 +1297,6 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if output_str:
                     span.set_attribute("output", output_str)
                     set_llm_completion_attributes(span, output_str)
-                usage = extract_token_usage(assistant_message)
-                if not usage and response is not None:
-                    usage = extract_token_usage(response)
-                if usage:
-                    span.set_attributes(usage)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
