@@ -23,7 +23,6 @@ from typing import AbstractSet, Callable, Optional
 
 from netra.instrumentation.activation import (
     SUBPROCESS_ACTIVATION,
-    activate_now,
     build_activations,
     run_activation,
 )
@@ -34,16 +33,6 @@ from netra.instrumentation.selection import select_instrumentations
 __all__ = ["init_instrumentations"]
 
 logger = logging.getLogger(__name__)
-
-# Kill switch restoring pre-lazy behaviour: every enabled instrumentation is
-# applied during Netra.init(), importing each target library up front.
-#
-# Temporary.  A wrong trigger mapping shows up as missing telemetry in an
-# environment we cannot reproduce, and without this the only recovery is a
-# release.  Remove this flag two minor releases after ship, or once a customer
-# environment has run a release with it unset.
-_EAGER_INSTRUMENTATION_ENV_VAR = "NETRA_EAGER_INSTRUMENTATION"
-_TRUTHY_ENV_VALUES = frozenset({"1", "true"})
 
 
 def init_instrumentations(
@@ -56,8 +45,6 @@ def init_instrumentations(
 
     Each enabled instrumentation is applied when the library it patches is
     first imported, which may be immediately if that library is already loaded.
-    Setting ``NETRA_EAGER_INSTRUMENTATION=true`` applies them all up front
-    instead.
 
     Args:
         should_enrich_metrics: Whether to enrich metrics.
@@ -73,20 +60,8 @@ def init_instrumentations(
 
     os.environ["TRACELOOP_TELEMETRY"] = "false"
 
-    if _eager_instrumentation_requested():
-        activate_now(activations)
-    else:
-        register_lazy_instrumentations(activations)
+    register_lazy_instrumentations(activations)
 
     # Subprocess instrumentation is always enabled: it propagates trace context
     # into subprocesses and is not tied to any third-party library.
     run_activation(SUBPROCESS_ACTIVATION)
-
-
-def _eager_instrumentation_requested() -> bool:
-    """Report whether the caller asked for pre-lazy, eager instrumentation.
-
-    Returns:
-        True when ``NETRA_EAGER_INSTRUMENTATION`` is set to ``1`` or ``true``.
-    """
-    return os.getenv(_EAGER_INSTRUMENTATION_ENV_VAR, "").lower() in _TRUTHY_ENV_VALUES

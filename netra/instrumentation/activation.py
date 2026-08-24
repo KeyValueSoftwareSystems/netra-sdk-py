@@ -11,12 +11,15 @@ deferring that import is the point of the whole arrangement.
 """
 
 import logging
-from contextlib import redirect_stderr, redirect_stdout
+import re
+import sys
+import threading
+from contextlib import contextmanager
 from functools import lru_cache, partial
 from importlib import import_module
 from importlib.metadata import distributions
 from io import StringIO
-from typing import TYPE_CHECKING, AbstractSet, Callable, NamedTuple, Optional, Sequence
+from typing import TYPE_CHECKING, AbstractSet, Callable, Iterator, NamedTuple, Optional, TextIO
 
 from netra.instrumentation.instruments import InstrumentSet
 from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS, SUBPROCESS_INSTRUMENTOR, InstrumentorSpec
@@ -27,6 +30,13 @@ if TYPE_CHECKING:
     from traceloop.sdk.instruments import Instruments
 
 logger = logging.getLogger(__name__)
+
+# Guards the depth counter below — never held across an activation, only across
+# the counter update.  Holding a lock while an instrumentor imports its library
+# would deadlock against the import lock a post-import hook already runs under.
+_output_suppression_lock = threading.Lock()
+_output_suppression_depth = 0
+_suppressed_streams: Optional[tuple[TextIO, TextIO]] = None
 
 
 class Activation(NamedTuple):
@@ -77,16 +87,6 @@ def build_activations(
         logger.debug("No instrumentor registered for: %s", ", ".join(sorted(i.name for i in unregistered)))
 
     return activations
-
-
-def activate_now(activations: Sequence[Activation]) -> None:
-    """Apply every activation immediately, importing each target library.
-
-    Args:
-        activations: The instrumentations to apply, in activation order.
-    """
-    for activation in activations:
-        run_activation(activation)
 
 
 def run_activation(activation: Activation) -> None:
@@ -146,9 +146,8 @@ def apply_traceloop_instrumentation(
     # traceloop prints a colour-coded warning to stdout when a call instruments
     # nothing.  Applying one instrument at a time makes that path routine
     # rather than rare, and this runs inside the client's own import statement,
-    # so the warnings must not reach their stream.  Scoped as tightly as
-    # possible: redirect_stdout/stderr are process-global.
-    with redirect_stdout(StringIO()), redirect_stderr(StringIO()):
+    # so the warnings must not reach their stream.
+    with _suppressed_output():
         apply_traceloop_instruments(
             should_enrich_metrics=should_enrich_metrics,
             base64_image_uploader=base64_image_uploader,
@@ -157,33 +156,96 @@ def apply_traceloop_instrumentation(
         )
 
 
+@contextmanager
+def _suppressed_output() -> Iterator[None]:
+    """Swallow anything written to ``sys.stdout``/``sys.stderr`` in this block.
+
+    ``contextlib.redirect_stdout`` cannot be used here.  It saves the stream it
+    displaced on the instance rather than on a shared stack, so two threads
+    entering and leaving out of order restore each other's replacements:
+
+        A enters (saves real, installs SA) -> B enters (saves SA, installs SB)
+        -> A exits (installs real) -> B exits (installs SA)
+
+    ``sys.stdout`` is then left pointing at a discarded buffer for the rest of
+    the process, silently swallowing every later ``print`` and traceback.
+    Before deferred activation that could not happen — suppression ran once,
+    during ``Netra.init()``, on one thread.  Now it runs inside the client's
+    own ``import`` statement, so two libraries first imported on two threads
+    reach it concurrently.
+
+    A depth counter fixes the ordering: the first thread in installs the
+    buffers, the last one out restores the real streams, whatever order they
+    arrive in.  Output written by *other* threads during the window is still
+    lost; that is the pre-existing cost of a process-global stream swap, and it
+    is bounded by the activation rather than by the process lifetime.
+    """
+    global _output_suppression_depth, _suppressed_streams
+
+    with _output_suppression_lock:
+        if _output_suppression_depth == 0:
+            _suppressed_streams = (sys.stdout, sys.stderr)
+            sys.stdout = StringIO()
+            sys.stderr = StringIO()
+        _output_suppression_depth += 1
+
+    try:
+        yield
+    finally:
+        with _output_suppression_lock:
+            _output_suppression_depth -= 1
+            if _output_suppression_depth == 0 and _suppressed_streams is not None:
+                sys.stdout, sys.stderr = _suppressed_streams
+                _suppressed_streams = None
+
+
 def is_distribution_installed(name: str) -> bool:
     """Report whether a distribution is installed.
 
-    Equivalent to traceloop's ``is_package_installed``, reimplemented over
+    Stands in for traceloop's ``is_package_installed``, reimplemented over
     ``importlib.metadata`` so that asking whether a library is installed does
     not drag in the ~620 ms ``traceloop.sdk`` import — which is precisely the
     cost deferred activation exists to avoid.
 
+    Unlike traceloop's, both sides are normalised per PEP 503 before matching.
+    traceloop compares lower-cased names only, so a gate spelled with an
+    underscore never matches a distribution published with a hyphen: on the
+    table this replaced, ``aio_pika`` and ``cerebras_cloud_sdk`` silently
+    gated their instrumentors off in every environment.  Normalising makes the
+    gate mean what it reads as; it can only ever match more, never less.
+
     Args:
-        name: Distribution name as it appears in installed metadata.
+        name: Distribution name, in any PEP 503-equivalent spelling.
 
     Returns:
         True if the distribution is installed.
     """
-    return name.lower() in _installed_distribution_names()
+    return _normalize_distribution_name(name) in _installed_distribution_names()
+
+
+def _normalize_distribution_name(name: str) -> str:
+    """Reduce a distribution name to its PEP 503 normalised form.
+
+    Args:
+        name: Distribution name as written in a gate or in installed metadata.
+
+    Returns:
+        Lower-cased name with every run of ``-``, ``_`` or ``.`` collapsed to a
+        single ``-``, so all spellings of one distribution compare equal.
+    """
+    return re.sub(r"[-_.]+", "-", name).lower()
 
 
 @lru_cache(maxsize=1)
 def _installed_distribution_names() -> frozenset[str]:
-    """Return the lower-cased name of every installed distribution.
+    """Return the normalised name of every installed distribution.
 
     Built on first use rather than at import, so the scan lands in
     ``Netra.init()`` and not in ``import netra``.  A distribution installed
     after the first call is not picked up, matching traceloop's own helper.
 
     Returns:
-        Lower-cased distribution names.
+        PEP 503-normalised distribution names.
     """
     names: set[str] = set()
     for distribution in distributions():
@@ -193,7 +255,7 @@ def _installed_distribution_names() -> frozenset[str]:
             # A partially-written or malformed dist-info has no usable Name;
             # it cannot be matched by name either way, so skip it.
             continue
-        names.add(name.lower())
+        names.add(_normalize_distribution_name(name))
     return frozenset(names)
 
 

@@ -36,6 +36,21 @@ Accepted limitations:
 4. **Activation cost moves into the client's import statement.**  ``import
    openai`` becomes ~350 ms slower in a process that will use OpenAI.  Total
    work is strictly lower; only its position changes.
+5. **A concurrent importer can return before the patch lands.**  An
+   instrumentation is claimed in the ledger and applied outside its lock, so
+   for a *multi-trigger* instrumentation two threads can race: thread A
+   imports ``langchain_core`` and starts applying LANGCHAIN while thread B
+   imports ``langgraph``, loses the claim and returns immediately.  B may then
+   call into langgraph before A has finished patching, losing telemetry for
+   those calls.  Single-trigger instrumentations cannot hit this — CPython
+   serialises concurrent imports of the same module, and the hook runs before
+   that import returns.  The window is bounded by one activation; widening the
+   lock to close it would mean holding it across an import, which is the
+   deadlock this module's ledger is shaped to avoid.
+6. **Hooks outlive ``Netra.shutdown()``.**  wrapt exposes no way to withdraw a
+   registered post-import hook, so a library first imported after shutdown is
+   still patched and will emit spans to a shut-down provider.  Spans could
+   already outlive shutdown before this change; only the patching is new.
 """
 
 import logging
@@ -84,6 +99,20 @@ class _ActivationLedger:
             self._claimed.add(name)
             return True
 
+    def reset(self) -> None:
+        """Forget every claim.  For tests that re-register within one process."""
+        with self._lock:
+            self._claimed.clear()
+
+
+# Process-wide, not per call: the exactly-once invariant this module documents
+# is per process.  ``Netra.init()`` already refuses repeat calls, so today this
+# only matters for direct callers and tests — but a per-call ledger would let a
+# second registration re-run every activation, and the traceloop path has no
+# equivalent of ``is_instrumented_by_opentelemetry`` to catch it.  Hooks
+# themselves still accumulate in wrapt; the ledger is what keeps them no-ops.
+_LEDGER = _ActivationLedger()
+
 
 def register_lazy_instrumentations(activations: Sequence[Activation]) -> None:
     """Register *activations* to run when the libraries they patch are imported.
@@ -97,7 +126,7 @@ def register_lazy_instrumentations(activations: Sequence[Activation]) -> None:
     """
     import wrapt
 
-    ledger = _ActivationLedger()
+    ledger = _LEDGER
     activations_by_trigger: dict[str, list[Activation]] = defaultdict(list)
 
     for activation in activations:

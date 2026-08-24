@@ -9,6 +9,7 @@ depending on which LLM libraries happen to be installed.
 
 import importlib
 import importlib.util
+import io
 import logging
 import subprocess
 import sys
@@ -20,18 +21,32 @@ import pytest
 import wrapt
 import wrapt.importer
 
-from netra.instrumentation.activation import Activation, apply_traceloop_instrumentation
-from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
-from netra.instrumentation.lazy import register_lazy_instrumentations
+from netra.instrumentation.activation import Activation, apply_traceloop_instrumentation, is_distribution_installed
+from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
+from netra.instrumentation.lazy import _LEDGER, register_lazy_instrumentations
 from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS
 from netra.instrumentation.selection import (
     TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA,
     partition_by_origin,
     select_instrumentations,
 )
-from netra.instrumentation.triggers import INSTRUMENT_TRIGGERS
+from netra.instrumentation.triggers import INSTRUMENT_TRIGGERS, INTENTIONALLY_EAGER_INSTRUMENTS
 
 pytestmark = pytest.mark.unit
+
+
+@pytest.fixture(autouse=True)  # type: ignore[misc]
+def reset_activation_ledger() -> Generator[None, None, None]:
+    """Clear the process-wide ledger between tests.
+
+    The ledger is module scope so the exactly-once invariant holds per process
+    (see ``netra.instrumentation.lazy``).  Tests re-register the same synthetic
+    instrument names repeatedly, so without this the second test to use a name
+    would find it already claimed.
+    """
+    _LEDGER.reset()
+    yield
+    _LEDGER.reset()
 
 
 @pytest.fixture  # type: ignore[misc]
@@ -177,11 +192,17 @@ def test_concurrent_imports_of_a_trigger_activate_exactly_once(
     probe_package: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
 ) -> None:
     module_name = probe_package("netra_probe_threads")
+    dependency_name = probe_package("netra_probe_activation_dependency")
     calls: List[str] = []
     calls_lock = threading.Lock()
     barrier = threading.Barrier(8)
 
     def record() -> None:
+        # Importing from inside the activation is the point of this test: the
+        # hook already runs under the trigger module's import lock, so a real
+        # instrumentor importing the library it patches is the re-entrant case
+        # that could deadlock.
+        importlib.import_module(dependency_name)
         with calls_lock:
             calls.append("ran")
 
@@ -209,6 +230,89 @@ def test_concurrent_imports_of_a_trigger_activate_exactly_once(
     assert calls == ["ran"]
 
 
+@pytest.mark.thread_safety  # type: ignore[misc]
+def test_concurrent_activations_leave_stdout_and_stderr_intact(
+    probe_package: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # contextlib.redirect_stdout saves the displaced stream per instance, so
+    # two threads entering and leaving out of order restore each other's
+    # buffers and sys.stdout stays a discarded StringIO for the whole process.
+    from netra.instrumentation.activation import _suppressed_output
+
+    first = probe_package("netra_probe_stdout_one")
+    second = probe_package("netra_probe_stdout_two")
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+    both_inside = threading.Barrier(2)
+
+    def suppress_while(hold_seconds: float) -> Callable[[], None]:
+        def run() -> None:
+            with _suppressed_output():
+                both_inside.wait(timeout=10)
+                # Forces the exits to interleave rather than nest cleanly.
+                threading.Event().wait(hold_seconds)
+
+        return run
+
+    _register(
+        {"FIRST": (first,), "SECOND": (second,)},
+        [Activation("FIRST", suppress_while(0.0)), Activation("SECOND", suppress_while(0.3))],
+        monkeypatch,
+    )
+
+    threads = [
+        threading.Thread(target=lambda: importlib.import_module(first)),
+        threading.Thread(target=lambda: importlib.import_module(second)),
+    ]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+
+    assert sys.stdout is real_stdout, "sys.stdout was left pointing at a discarded buffer"
+    assert sys.stderr is real_stderr, "sys.stderr was left pointing at a discarded buffer"
+
+
+def test_suppressed_output_restores_streams_after_a_failure() -> None:
+    from netra.instrumentation.activation import _suppressed_output
+
+    real_stdout, real_stderr = sys.stdout, sys.stderr
+
+    with pytest.raises(RuntimeError):
+        with _suppressed_output():
+            raise RuntimeError("instrumentor blew up mid-activation")
+
+    assert (sys.stdout, sys.stderr) == (real_stdout, real_stderr)
+
+
+def test_suppressed_output_swallows_writes_inside_the_block() -> None:
+    from netra.instrumentation.activation import _suppressed_output
+
+    with _suppressed_output():
+        print("traceloop warning that must not reach the client")
+        print("and one on stderr", file=sys.stderr)
+        captured = sys.stdout
+
+    assert isinstance(captured, io.StringIO)
+    assert "must not reach the client" in captured.getvalue()
+
+
+def test_registering_twice_does_not_activate_twice(
+    probe_package: Callable[[str], str], monkeypatch: pytest.MonkeyPatch
+) -> None:
+    # The ledger is process-wide, so a second registration is a no-op rather
+    # than a second application. The traceloop path has no equivalent of
+    # is_instrumented_by_opentelemetry to catch a repeat.
+    module_name = probe_package("netra_probe_double_register")
+    calls: List[str] = []
+
+    _register({"PROBE": (module_name,)}, [Activation("PROBE", lambda: calls.append("ran"))], monkeypatch)
+    register_lazy_instrumentations([Activation("PROBE", lambda: calls.append("ran"))])
+
+    importlib.import_module(module_name)
+
+    assert calls == ["ran"]
+
+
 def test_every_default_instrument_has_a_trigger() -> None:
     missing = sorted(member.name for member in DEFAULT_INSTRUMENTS if member not in INSTRUMENT_TRIGGERS)
 
@@ -216,6 +320,62 @@ def test_every_default_instrument_has_a_trigger() -> None:
         f"No INSTRUMENT_TRIGGERS entry for {', '.join(missing)}. "
         "Without one the instrumentation falls back to eager activation, which "
         "costs the startup latency lazy activation exists to remove."
+    )
+
+
+def test_every_implemented_instrument_is_lazy_or_deliberately_eager() -> None:
+    # DEFAULT_INSTRUMENTS is covered above; this covers InstrumentSet.ALL,
+    # where a missing trigger drags traceloop (~620 ms) back into init().
+    implemented = {
+        member for member in ALL_INSTRUMENTS if member in CUSTOM_INSTRUMENTORS or member.origin is _Origin.TRACELOOP
+    }
+    missing = sorted(
+        member.name
+        for member in implemented
+        if member not in INSTRUMENT_TRIGGERS and member not in INTENTIONALLY_EAGER_INSTRUMENTS
+    )
+
+    assert missing == [], (
+        f"No INSTRUMENT_TRIGGERS entry for {', '.join(missing)}, and not listed in "
+        "INTENTIONALLY_EAGER_INSTRUMENTS. Add a trigger module, or record the "
+        "exemption so an eager activation is a decision rather than drift."
+    )
+
+
+def test_no_trigger_names_an_instrument_that_can_never_activate() -> None:
+    # A trigger row for an instrument with no implementation reads as support
+    # the SDK does not have: build_activations never emits an activation for
+    # it, so the hook would fire against nothing.
+    unreachable = sorted(
+        member.name
+        for member in INSTRUMENT_TRIGGERS
+        if member.origin is _Origin.CUSTOM and member not in CUSTOM_INSTRUMENTORS
+    )
+
+    assert unreachable == [], f"{unreachable} have trigger modules but no CUSTOM_INSTRUMENTORS entry"
+
+
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "instrument",
+    sorted(CUSTOM_INSTRUMENTORS, key=lambda member: member.name),
+)
+def test_registered_gates_name_distributions_not_modules(instrument: InstrumentSet) -> None:
+    # is_distribution_installed matches installed distribution metadata, so a
+    # gate naming an import path instead of a distribution can never match and
+    # silently disables its instrumentor in every environment. Stdlib-backed
+    # instrumentors use an empty gate instead.
+    stdlib_module_names = set(sys.stdlib_module_names)
+
+    offenders = [
+        name
+        for spec in CUSTOM_INSTRUMENTORS[instrument]
+        for name in spec.required_distributions
+        if name.split(".")[0] in stdlib_module_names and not is_distribution_installed(name)
+    ]
+
+    assert offenders == [], (
+        f"{instrument.name} is gated on {offenders}, which name standard-library "
+        "modules rather than installed distributions. Use () to always apply."
     )
 
 
@@ -342,26 +502,6 @@ def test_init_does_not_import_the_libraries_it_instruments() -> None:
     assert "ok" in result.stdout
 
 
-def test_eager_kill_switch_restores_up_front_instrumentation() -> None:
-    result = _run_in_subprocess(
-        """
-        import os
-        import sys
-
-        os.environ["NETRA_EAGER_INSTRUMENTATION"] = "true"
-        from netra import Netra
-
-        Netra.init(app_name="eager-init-test")
-
-        assert "traceloop.sdk" in sys.modules, "NETRA_EAGER_INSTRUMENTATION did not restore eager activation"
-        print("ok")
-        """
-    )
-
-    assert result.returncode == 0, result.stderr
-    assert "ok" in result.stdout
-
-
 @pytest.mark.integration  # type: ignore[misc]
 def test_openai_is_patched_when_imported_after_init() -> None:
     pytest.importorskip("openai", reason="openai is not installed in this environment")
@@ -440,6 +580,47 @@ def test_blocking_one_instrument_removes_only_that_one() -> None:
 
 def test_requesting_only_custom_instruments_enables_no_traceloop_instrument() -> None:
     assert _enabled_traceloop_names({InstrumentSet.OPENAI}) == set()
+
+
+def test_blocking_a_traceloop_instrument_never_enables_another() -> None:
+    # Regression: an explicit request naming only Netra-backed instruments used
+    # to fall through to "every installed traceloop instrument" as soon as a
+    # block list was present, so blocking Anthropic enabled langchain, bedrock,
+    # vertexai and the rest.
+    selection = select_instrumentations({InstrumentSet.OPENAI}, {InstrumentSet.ANTHROPIC})
+
+    assert selection.traceloop_instrument_names == frozenset()
+    assert selection.custom_instruments == frozenset({InstrumentSet.OPENAI})
+
+
+def test_blocking_alongside_a_traceloop_request_keeps_only_that_request() -> None:
+    selection = select_instrumentations({InstrumentSet.ANTHROPIC, InstrumentSet.LANGCHAIN}, {InstrumentSet.LANGCHAIN})
+
+    assert selection.traceloop_instrument_names == frozenset({"ANTHROPIC"})
+
+
+def test_selection_never_imports_traceloop() -> None:
+    result = _run_in_subprocess(
+        """
+        import sys
+        from netra.instrumentation.instruments import InstrumentSet
+        from netra.instrumentation.selection import select_instrumentations
+
+        for requested, blocked in (
+            (None, None),
+            ({InstrumentSet.ALL}, None),
+            ({InstrumentSet.OPENAI}, {InstrumentSet.ANTHROPIC}),
+            (None, {InstrumentSet.LANGCHAIN}),
+        ):
+            select_instrumentations(requested, blocked)
+
+        assert "traceloop.sdk" not in sys.modules, "selection imported traceloop"
+        print("ok")
+        """
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "ok" in result.stdout
 
 
 def test_netra_owned_instrumentations_are_never_delegated_to_traceloop() -> None:

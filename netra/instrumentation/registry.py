@@ -81,6 +81,13 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
         InstrumentorSpec(("weaviate-client",), "netra.instrumentation.weaviate", "WeaviateInstrumentor"),
     ),
     InstrumentSet.HTTPX: (InstrumentorSpec(("httpx",), "netra.instrumentation.httpx", "HTTPXInstrumentor"),),
+    InstrumentSet.AIOHTTP: (
+        InstrumentorSpec(
+            ("aiohttp",),
+            "opentelemetry.instrumentation.aiohttp_client",
+            "AioHttpClientInstrumentor",
+        ),
+    ),
     InstrumentSet.COHEREAI: (InstrumentorSpec(("cohere",), "netra.instrumentation.cohere", "CohereInstrumentor"),),
     InstrumentSet.MISTRALAI: (
         InstrumentorSpec(
@@ -129,14 +136,14 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     InstrumentSet.ASYNCCLICK: (
         InstrumentorSpec(("asyncclick",), "opentelemetry.instrumentation.asyncclick", "AsyncClickInstrumentor"),
     ),
-    InstrumentSet.ASYNCIO: (
-        InstrumentorSpec(("asyncio",), "opentelemetry.instrumentation.asyncio", "AsyncioInstrumentor"),
-    ),
+    InstrumentSet.ASYNCIO: (InstrumentorSpec((), "opentelemetry.instrumentation.asyncio", "AsyncioInstrumentor"),),
     InstrumentSet.ASYNCPG: (
         InstrumentorSpec(("asyncpg",), "opentelemetry.instrumentation.asyncpg", "AsyncPGInstrumentor"),
     ),
+    # No distribution gate: the AWS Lambda instrumentor ships with the SDK and
+    # decides for itself whether it is running inside a Lambda runtime.
     InstrumentSet.AWS_LAMBDA: (
-        InstrumentorSpec(("aws_lambda",), "opentelemetry.instrumentation.aws_lambda", "AwsLambdaInstrumentor"),
+        InstrumentorSpec((), "opentelemetry.instrumentation.aws_lambda", "AwsLambdaInstrumentor"),
     ),
     InstrumentSet.BOTO3SQS: (
         InstrumentorSpec(("boto3",), "opentelemetry.instrumentation.boto3sqs", "Boto3SQSInstrumentor"),
@@ -158,6 +165,7 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     InstrumentSet.CELERY: (
         InstrumentorSpec(("celery",), "opentelemetry.instrumentation.celery", "CeleryInstrumentor"),
     ),
+    InstrumentSet.CLICK: (InstrumentorSpec(("click",), "opentelemetry.instrumentation.click", "ClickInstrumentor"),),
     InstrumentSet.CONFLUENT_KAFKA: (
         InstrumentorSpec(
             ("confluent-kafka",),
@@ -165,28 +173,10 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
             "ConfluentKafkaInstrumentor",
         ),
     ),
-    InstrumentSet.KAFKA_PYTHON: (
-        InstrumentorSpec(("kafka-python",), "opentelemetry.instrumentation.kafka", "KafkaInstrumentor"),
-    ),
-    InstrumentSet.PIKA: (InstrumentorSpec(("pika",), "opentelemetry.instrumentation.pika", "PikaInstrumentor"),),
-    InstrumentSet.REMOULADE: (
-        InstrumentorSpec(("remoulade",), "opentelemetry.instrumentation.remoulade", "RemouladeInstrumentor"),
-    ),
     # Web frameworks
     InstrumentSet.DJANGO: (
         InstrumentorSpec(("django",), "opentelemetry.instrumentation.django", "DjangoInstrumentor"),
     ),
-    InstrumentSet.FALCON: (
-        InstrumentorSpec(("falcon",), "opentelemetry.instrumentation.falcon", "FalconInstrumentor"),
-    ),
-    InstrumentSet.FLASK: (InstrumentorSpec(("flask",), "opentelemetry.instrumentation.flask", "FlaskInstrumentor"),),
-    InstrumentSet.STARLETTE: (
-        InstrumentorSpec(("starlette",), "opentelemetry.instrumentation.starlette", "StarletteInstrumentor"),
-    ),
-    InstrumentSet.TORNADO: (
-        InstrumentorSpec(("tornado",), "opentelemetry.instrumentation.tornado", "TornadoInstrumentor"),
-    ),
-    # Databases, caches and ORMs
     InstrumentSet.ELASTICSEARCH: (
         InstrumentorSpec(
             ("elasticsearch",),
@@ -194,6 +184,22 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
             "ElasticsearchInstrumentor",
         ),
     ),
+    InstrumentSet.FALCON: (
+        InstrumentorSpec(("falcon",), "opentelemetry.instrumentation.falcon", "FalconInstrumentor"),
+    ),
+    InstrumentSet.FLASK: (InstrumentorSpec(("flask",), "opentelemetry.instrumentation.flask", "FlaskInstrumentor"),),
+    InstrumentSet.GRPC: (
+        InstrumentorSpec(("grpcio",), "opentelemetry.instrumentation.grpc", "GrpcInstrumentorClient"),
+    ),
+    InstrumentSet.JINJA2: (
+        InstrumentorSpec(("jinja2",), "opentelemetry.instrumentation.jinja2", "Jinja2Instrumentor"),
+    ),
+    InstrumentSet.KAFKA_PYTHON: (
+        InstrumentorSpec(("kafka-python",), "opentelemetry.instrumentation.kafka", "KafkaInstrumentor"),
+    ),
+    # Standard library: no distribution to gate on, so these always apply.
+    InstrumentSet.LOGGING: (InstrumentorSpec((), "opentelemetry.instrumentation.logging", "LoggingInstrumentor"),),
+    # Databases, caches and ORMs
     InstrumentSet.MYSQL: (
         InstrumentorSpec(("mysql-connector-python",), "opentelemetry.instrumentation.mysql", "MySQLInstrumentor"),
     ),
@@ -204,6 +210,7 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
             "MySQLClientInstrumentor",
         ),
     ),
+    InstrumentSet.PIKA: (InstrumentorSpec(("pika",), "opentelemetry.instrumentation.pika", "PikaInstrumentor"),),
     InstrumentSet.PSYCOPG: (
         InstrumentorSpec(("psycopg",), "opentelemetry.instrumentation.psycopg", "PsycopgInstrumentor"),
     ),
@@ -223,40 +230,35 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
         InstrumentorSpec(("PyMySQL",), "opentelemetry.instrumentation.pymysql", "PyMySQLInstrumentor"),
     ),
     InstrumentSet.REDIS: (InstrumentorSpec(("redis",), "opentelemetry.instrumentation.redis", "RedisInstrumentor"),),
-    InstrumentSet.SQLALCHEMY: (
-        InstrumentorSpec(("sqlalchemy",), "opentelemetry.instrumentation.sqlalchemy", "SQLAlchemyInstrumentor"),
-    ),
-    InstrumentSet.SQLITE3: (
-        InstrumentorSpec(("sqlite3",), "opentelemetry.instrumentation.sqlite3", "SQLite3Instrumentor"),
-    ),
-    InstrumentSet.TORTOISEORM: (
-        InstrumentorSpec(("tortoise-orm",), "opentelemetry.instrumentation.tortoiseorm", "TortoiseORMInstrumentor"),
+    InstrumentSet.REMOULADE: (
+        InstrumentorSpec(("remoulade",), "opentelemetry.instrumentation.remoulade", "RemouladeInstrumentor"),
     ),
     # HTTP clients
     InstrumentSet.REQUESTS: (
         InstrumentorSpec(("requests",), "netra.instrumentation.requests", "RequestsInstrumentor"),
     ),
-    InstrumentSet.URLLIB3: (
-        InstrumentorSpec(("urllib3",), "opentelemetry.instrumentation.urllib3", "URLLib3Instrumentor"),
+    InstrumentSet.SQLALCHEMY: (
+        InstrumentorSpec(("sqlalchemy",), "opentelemetry.instrumentation.sqlalchemy", "SQLAlchemyInstrumentor"),
     ),
-    # Standard library: no distribution to gate on, so these always apply.
-    InstrumentSet.THREADING: (
-        InstrumentorSpec((), "opentelemetry.instrumentation.threading", "ThreadingInstrumentor"),
-    ),
-    InstrumentSet.URLLIB: (InstrumentorSpec((), "opentelemetry.instrumentation.urllib", "URLLibInstrumentor"),),
-    # Misc libraries
-    InstrumentSet.CLICK: (InstrumentorSpec(("click",), "opentelemetry.instrumentation.click", "ClickInstrumentor"),),
-    InstrumentSet.GRPC: (
-        InstrumentorSpec(("grpcio",), "opentelemetry.instrumentation.grpc", "GrpcInstrumentorClient"),
-    ),
-    InstrumentSet.JINJA2: (
-        InstrumentorSpec(("jinja2",), "opentelemetry.instrumentation.jinja2", "Jinja2Instrumentor"),
-    ),
-    InstrumentSet.LOGGING: (
-        InstrumentorSpec(("logging",), "opentelemetry.instrumentation.logging", "LoggingInstrumentor"),
+    InstrumentSet.SQLITE3: (InstrumentorSpec((), "opentelemetry.instrumentation.sqlite3", "SQLite3Instrumentor"),),
+    InstrumentSet.STARLETTE: (
+        InstrumentorSpec(("starlette",), "opentelemetry.instrumentation.starlette", "StarletteInstrumentor"),
     ),
     InstrumentSet.SYSTEM_METRICS: (
         InstrumentorSpec(("psutil",), "opentelemetry.instrumentation.system_metrics", "SystemMetricsInstrumentor"),
+    ),
+    InstrumentSet.THREADING: (
+        InstrumentorSpec((), "opentelemetry.instrumentation.threading", "ThreadingInstrumentor"),
+    ),
+    InstrumentSet.TORNADO: (
+        InstrumentorSpec(("tornado",), "opentelemetry.instrumentation.tornado", "TornadoInstrumentor"),
+    ),
+    InstrumentSet.TORTOISEORM: (
+        InstrumentorSpec(("tortoise-orm",), "opentelemetry.instrumentation.tortoiseorm", "TortoiseORMInstrumentor"),
+    ),
+    InstrumentSet.URLLIB: (InstrumentorSpec((), "opentelemetry.instrumentation.urllib", "URLLibInstrumentor"),),
+    InstrumentSet.URLLIB3: (
+        InstrumentorSpec(("urllib3",), "opentelemetry.instrumentation.urllib3", "URLLib3Instrumentor"),
     ),
     # Speech, agent and memory SDKs
     InstrumentSet.CEREBRAS: (

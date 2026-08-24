@@ -60,6 +60,8 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.MISTRALAI: ("mistralai",),
     InstrumentSet.OLLAMA: ("ollama",),
     InstrumentSet.OPENAI: ("openai",),
+    # openai-agents imports as `agents`, not `openai_agents`.
+    InstrumentSet.OPENAI_AGENTS: ("agents",),
     InstrumentSet.PYDANTIC_AI: ("pydantic_ai",),
     InstrumentSet.REPLICATE: ("replicate",),
     InstrumentSet.SAGEMAKER: ("boto3", "botocore"),
@@ -82,7 +84,6 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.FALCON: ("falcon",),
     InstrumentSet.FASTAPI: ("fastapi",),
     InstrumentSet.FLASK: ("flask",),
-    InstrumentSet.PYRAMID: ("pyramid",),
     InstrumentSet.STARLETTE: ("starlette",),
     InstrumentSet.TORNADO: ("tornado",),
     # HTTP clients
@@ -126,6 +127,25 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.TORTOISEORM: ("tortoise",),
     # Stdlib modules, always already imported: these activate during
     # Netra.init() itself, which is what they did before lazy activation.
+    InstrumentSet.ASYNCIO: ("asyncio",),
     InstrumentSet.LOGGING: ("logging",),
+    InstrumentSet.SQLITE3: ("sqlite3",),
     InstrumentSet.THREADING: ("threading",),
 }
+
+
+# Instrumentations that are eager *by design*, so their absence from the table
+# above is a decision rather than drift.  Neither patches a library a client
+# imports: SystemMetricsInstrumentor samples the process itself, and
+# AwsLambdaInstrumentor patches the handler named by the Lambda runtime's own
+# environment.  There is no import that could sensibly trigger either.
+#
+# ``tests/test_lazy_instrumentation.py`` asserts that this set plus
+# ``INSTRUMENT_TRIGGERS`` covers every instrumentation with an implementation,
+# so a genuinely missing trigger cannot hide behind this exemption.
+INTENTIONALLY_EAGER_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
+    {
+        InstrumentSet.AWS_LAMBDA,
+        InstrumentSet.SYSTEM_METRICS,
+    }
+)

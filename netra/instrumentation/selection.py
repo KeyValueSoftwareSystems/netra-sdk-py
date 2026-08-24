@@ -1,8 +1,12 @@
 """Turns the caller's instrument sets into the instrumentations to enable.
 
-Pure resolution: no instrumentor is imported or applied here.  The rules are
-inherited from traceloop's own ``init_instrumentations`` so that deferring
-activation cannot change *which* instrumentations end up enabled.
+Pure resolution: nothing is imported or applied here, and in particular
+``traceloop.sdk`` is never reached — an explicit request is answered entirely
+from :class:`InstrumentSet`, so selection costs nothing on any path.
+
+The rules are inherited from traceloop's own ``init_instrumentations`` so that
+deferring activation does not change *which* instrumentations end up enabled,
+with one deliberate exception documented on :func:`_select_traceloop_names`.
 """
 
 import logging
@@ -88,11 +92,9 @@ def select_instrumentations(
     blocked_traceloop, blocked_custom = partition_by_origin(blocked or frozenset())
 
     return InstrumentationSelection(
-        traceloop_instrument_names=_select_traceloop_names(
-            requested_traceloop, blocked_traceloop, enable_everything=enable_everything
-        ),
-        # Unlike traceloop's, this family has no "empty means everything"
-        # fallback: an empty request enables no Netra instrumentation.
+        traceloop_instrument_names=_select_traceloop_names(requested_traceloop, blocked_traceloop),
+        # Neither family has an "empty means everything" fallback: a request
+        # naming no instrumentation of a family enables none of that family.
         custom_instruments=frozenset(requested_custom - blocked_custom),
     )
 
@@ -137,44 +139,32 @@ def partition_by_origin(
     return traceloop_names, custom_instruments
 
 
-def _select_traceloop_names(
-    requested: set[str],
-    blocked: set[str],
-    *,
-    enable_everything: bool,
-) -> frozenset[str]:
+def _select_traceloop_names(requested: set[str], blocked: set[str]) -> frozenset[str]:
     """Reduce a requested/blocked pair to the traceloop instruments to enable.
 
-    Two inherited rules are preserved here because changing either would
-    change which instrumentations a released version enables:
+    What the caller asked for, minus what they blocked, minus the instruments
+    Netra implements itself.  ``requested`` already accounts for the ``None``
+    and ``ALL`` cases: :func:`select_instrumentations` expands those to
+    :data:`DEFAULT_INSTRUMENTS` and :data:`ALL_INSTRUMENTS` before partitioning,
+    so an empty ``requested`` here means the caller named instruments and none
+    of them were traceloop-backed.
 
-    * An explicit selection naming no traceloop instrument enables none of
-      them, rather than falling through to "all of them".
-    * An empty request that *does* come with a block list means "every
-      traceloop instrument except the blocked ones" — this mirrors traceloop's
-      own ``instruments=None``.
+    **Deliberate behaviour change.**  Previously an empty ``requested`` fell
+    through to "every traceloop instrument the environment has", mirroring
+    traceloop's own ``instruments=None``.  Because ``None``/``ALL`` are already
+    expanded above, that fallback was only ever reachable one way: a caller who
+    named Netra-backed instruments *and* blocked at least one traceloop one.
+    ``Netra.init(instruments={InstrumentSet.OPENAI},
+    block_instruments={InstrumentSet.ANTHROPIC})`` therefore enabled langchain,
+    bedrock, vertexai and the rest — the opposite of what it reads as, and a
+    direct contradiction of the first rule above.  Blocking one instrument now
+    never enables another.
 
     Args:
         requested: Names of the traceloop instruments the caller asked for.
         blocked: Names of the traceloop instruments the caller blocked.
-        enable_everything: Whether the caller passed ``InstrumentSet.ALL``.
 
     Returns:
         Names of the traceloop instruments to enable.
     """
-    if not requested and not blocked and not enable_everything:
-        return frozenset()
-
-    enabled = (requested or _installed_traceloop_instrument_names()) - blocked
-    return frozenset(enabled - TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA)
-
-
-def _installed_traceloop_instrument_names() -> set[str]:
-    """Return every instrument name the installed traceloop-sdk offers.
-
-    The only branch of selection that needs traceloop's member list, and so
-    the only one that pays for importing it.
-    """
-    from traceloop.sdk.instruments import Instruments
-
-    return {member.name for member in Instruments}
+    return frozenset(requested - blocked - TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA)

@@ -12,7 +12,17 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
   Total instrumentation work is strictly lower, but its position changes: the first `import openai` in a process that uses OpenAI becomes correspondingly slower. Objects a library builds during its own module execution keep unpatched bound methods — a limitation that already applied to any client importing their library before `Netra.init()`, now on the common path rather than the rare one.
 
-  Set `NETRA_EAGER_INSTRUMENTATION=true` to restore up-front instrumentation. This flag is a temporary escape hatch and will be removed two minor releases after this one.
+### Fixed
+
+- **Blocking one traceloop instrumentation no longer enables every other one** - `Netra.init(instruments={InstrumentSet.OPENAI}, block_instruments={InstrumentSet.ANTHROPIC})` previously enabled langchain, bedrock, vertexai and every other installed traceloop instrumentation. Selection inherited traceloop's "an empty instrument list means all of them" rule, and a request naming only Netra-backed instrumentations partitioned to an empty traceloop list — so adding a block list flipped the request into its opposite. A request now enables exactly what it names, minus what it blocks. This was also the only code path that imported `traceloop-sdk` during `Netra.init()`; selection is now free of it on every path.
+
+- **Instrumentations gated on a module name rather than a distribution now apply** - `ASYNCIO`, `AWS_LAMBDA`, `LOGGING` and `SQLITE3` were gated on `asyncio`, `aws_lambda`, `logging` and `sqlite3`. Those are import names, not installed distributions, so the gate never matched and requesting one of these instrumentations was a silent no-op. They are now ungated, matching `THREADING` and `URLLIB`. Distribution gates are additionally matched per PEP 503, so a gate spelled with an underscore matches a distribution published with a hyphen — this revives `AIO_PIKA` (`aio_pika`) and `CEREBRAS` (`cerebras_cloud_sdk`), which had the same problem. None of these are in `DEFAULT_INSTRUMENTS`, so this only affects callers who asked for them explicitly or passed `InstrumentSet.ALL`.
+
+- **`AIOHTTP` is now actually instrumented when requested** - the instrumentor existed but was never reachable from the dispatch chain, so enabling `InstrumentSet.AIOHTTP` did nothing. It is now registered against `AioHttpClientInstrumentor`. Not in `DEFAULT_INSTRUMENTS`.
+
+- **Concurrent instrumentation no longer corrupts `sys.stdout`/`sys.stderr`** - traceloop's "no valid instruments set" warning is suppressed by swapping the process streams. With activation deferred into the client's own `import`, two libraries first imported on two threads could interleave that swap and leave `sys.stdout` pointing at a discarded buffer for the rest of the process, silently swallowing every later `print` and traceback. Suppression is now depth-counted, so the last thread out restores the real streams whatever order they arrive in.
+
+- **`InstrumentSet.PYRAMID`** no longer claims a trigger module; no Pyramid instrumentor ships with the SDK, so the entry implied support that did not exist.
 
 - **`import netra` no longer imports `traceloop-sdk`** - `traceloop.sdk` costs ~620 ms to import (it pulls in pandas, numpy and aiohttp) and was reached from module scope in `netra/instrumentation/`, so every `import netra` paid it — including in processes that never call `Netra.init()`. Every traceloop symbol is now imported inside the function that needs it, and traceloop is loaded only when a traceloop-backed instrumentation actually activates. Measured: `import netra` 463 ms / 1033 modules to 275 ms / 760 modules.
 
