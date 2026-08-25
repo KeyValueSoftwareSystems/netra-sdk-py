@@ -99,6 +99,10 @@ class TestModels:
         assert result.progress is None
         assert result.risk_score is None
 
+    def test_redteam_error_run_id(self) -> None:
+        assert RedteamError("boom").run_id is None
+        assert RedteamError("boom", run_id="r1").run_id == "r1"
+
 
 # ---------------------------------------------------------------------------
 # handler.py — execute_handler normalization
@@ -700,7 +704,26 @@ class TestRedteam:
         mock_client.submit_turn.side_effect = RedteamError("network died")
 
         rt = Redteam(_make_config())
-        with pytest.raises(RedteamError):
+        with pytest.raises(RedteamError) as exc_info:
+            rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+
+        # Carries run_id so the caller can inspect/manually cancel, and the
+        # run is best-effort cancelled server-side before the error propagates.
+        assert exc_info.value.run_id == "run-1"
+        mock_client.cancel.assert_called_once_with("run-1")
+
+    @patch("netra.redteam.api.RedteamHttpClient")
+    def test_run_redteam_fatal_failure_cancel_error_does_not_mask_original(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import Redteam
+
+        mock_client = mock_client_cls.return_value
+        mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
+        mock_client.get_prompts.return_value = [RunPromptItem(id="p1", prompt="hi", evaluator_id="e1")]
+        mock_client.submit_turn.side_effect = RedteamError("network died")
+        mock_client.cancel.side_effect = RedteamError("cancel also failed")
+
+        rt = Redteam(_make_config())
+        with pytest.raises(RedteamError, match="network died"):
             rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
     @patch("netra.redteam.api.RedteamHttpClient")
@@ -854,7 +877,7 @@ class TestRedteam:
         assert len(sh._hooks) == 0
 
     @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_leaves_hook_registered_if_drive_raises(self, mock_client_cls: MagicMock) -> None:
+    def test_run_redteam_unregisters_shutdown_hook_even_if_drive_raises(self, mock_client_cls: MagicMock) -> None:
         """Even on a fatal error mid-run, the hook is still unregistered (finally block)."""
         import netra.shutdown_hooks as sh
         from netra.redteam.api import Redteam

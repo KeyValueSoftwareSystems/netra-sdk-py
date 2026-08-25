@@ -58,7 +58,9 @@ class Redteam:
 
         Raises:
             netra.redteam.exceptions.RedteamError: Or a subclass, for any
-                failure other than invalid input.
+                failure other than invalid input. Carries ``.run_id`` when a
+                run was already created, and the run is best-effort cancelled
+                server-side before this is raised.
         """
         if not validate_redteam_inputs(config_id, handler, max_concurrency):
             return None
@@ -94,6 +96,16 @@ class Redteam:
                 # Already cancelled server-side by _cancel_on_shutdown; report
                 # a clean cancelled result instead of an uncaught traceback.
                 logger.info("%s: run %s interrupted; reporting as cancelled", LOG_PREFIX, run_id)
+            except Exception as exc:
+                # A fatal error would otherwise leave the run orphaned as
+                # "running" server-side with no run_id in hand to cancel it.
+                if isinstance(exc, RedteamError):
+                    exc.run_id = run_id
+                try:
+                    self._client.cancel(run_id)
+                except Exception:
+                    logger.debug("%s: best-effort cancel failed for run %s", LOG_PREFIX, run_id, exc_info=True)
+                raise
         finally:
             unregister_shutdown_hook(hook_token)
 
