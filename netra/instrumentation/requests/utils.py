@@ -8,6 +8,8 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 from opentelemetry.util.http import remove_url_credentials, sanitize_method
 
+from netra.instrumentation.utils import BoundedBodyBuffer
+
 logger = logging.getLogger(__name__)
 
 _SENSITIVE_HEADERS = frozenset(
@@ -166,14 +168,17 @@ def set_span_output(span: Span, response: requests_lib.Response) -> None:
         logger.debug("Failed to set output attribute on requests span", exc_info=True)
 
 
-def _parse_streaming_body(accumulated: bytes) -> Any:
+def _parse_streaming_body(accumulated: bytes, total_bytes: int) -> Any:
     """Parse accumulated streaming response bytes into a structured value.
 
     Handles SSE (``data: {...}``), NDJSON, plain concatenated JSON objects,
     and falls back to a decoded string or a binary placeholder.
 
     Args:
-        accumulated: Raw bytes collected from the streaming response chunks.
+        accumulated: Raw bytes retained from the streaming response chunks. May
+            be a prefix of the body when the retention cap was reached.
+        total_bytes: Size of the whole body, used for the binary placeholder so
+            it reports what was streamed rather than what was retained.
 
     Returns:
         A parsed JSON object or list, a plain string, or a binary-size
@@ -182,7 +187,7 @@ def _parse_streaming_body(accumulated: bytes) -> Any:
     try:
         text = accumulated.decode("utf-8")
     except UnicodeDecodeError:
-        return f"<binary content: {len(accumulated)} bytes>"
+        return f"<binary content: {total_bytes} bytes>"
 
     # SSE: any line starts with "data:"
     lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
@@ -191,7 +196,7 @@ def _parse_streaming_body(accumulated: bytes) -> Any:
         for ln in lines:
             if ln.startswith("data:"):
                 data = ln[5:].strip()
-                if data == "[DONE]":
+                if not data or data == "[DONE]":
                     continue
                 try:
                     parsed.append(json.loads(data))
@@ -220,13 +225,14 @@ def _parse_streaming_body(accumulated: bytes) -> Any:
     return text
 
 
-def set_streaming_span_output(span: Span, response: requests_lib.Response, chunks: List[bytes]) -> None:
-    """Serialize accumulated streaming chunks and set them as the span ``output`` attribute.
+def set_streaming_span_output(span: Span, response: requests_lib.Response, body_buffer: BoundedBodyBuffer) -> None:
+    """Serialize accumulated streaming body bytes and set them as the span ``output`` attribute.
 
     Args:
         span: The active OpenTelemetry span.
         response: The requests Response whose headers/status are used.
-        chunks: Raw bytes chunks accumulated during iteration.
+        body_buffer: Body bytes accumulated during iteration, capped at the
+            configured attribute length.
     """
     if not span.is_recording():
         return
@@ -235,8 +241,14 @@ def set_streaming_span_output(span: Span, response: requests_lib.Response, chunk
             "status_code": response.status_code,
             "headers": _sanitize_headers(response.headers),
         }
-        if chunks:
-            output_data["body"] = _parse_streaming_body(b"".join(chunks))
+        if body_buffer:
+            # The truncation flags are inserted before the body: json.dumps keeps
+            # insertion order and the exporter trims the tail, so anything placed
+            # after a body at the length limit would be cut off.
+            if body_buffer.truncated:
+                output_data["body_truncated"] = True
+                output_data["body_bytes"] = body_buffer.total_bytes
+            output_data["body"] = _parse_streaming_body(body_buffer.getvalue(), body_buffer.total_bytes)
         else:
             # Fallback: body was accessed via .content/.text rather than iterators
             body = _get_response_body(response)
