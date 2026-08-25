@@ -4,7 +4,7 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [1.0.1b1] - 2026-08-25
 
 ### Performance
 
@@ -411,4 +411,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.0.0]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.0.1b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
