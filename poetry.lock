@@ -6029,4 +6029,4 @@ presidio = ["presidio-analyzer", "presidio-anonymizer", "stanza", "transformers"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "e3e8712b3e7fc95f4cfe59b27fca6ce7ac4e84e2d04ea419ffbce8540d0b48bd"
+content-hash = "4438422c54a5b85c91ce2a97676d3e579106344fa7ffef905533073aa1af7954"
