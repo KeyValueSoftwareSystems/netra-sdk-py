@@ -1,12 +1,14 @@
 import json
 import logging
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 import httpx
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 from opentelemetry.util.http import remove_url_credentials, sanitize_method
+
+from netra.instrumentation.http_body import BoundedBodyBuffer, build_streaming_output
 
 logger = logging.getLogger(__name__)
 
@@ -148,67 +150,14 @@ def set_span_output(span: Span, response: httpx.Response) -> None:
         logger.error(f"Failed to set output attribute on httpx span: {e}")
 
 
-def _parse_streaming_body(accumulated: bytes) -> Any:
-    """Parse accumulated streaming response bytes into a structured value.
-
-    Handles SSE (``data: {...}``), NDJSON, plain concatenated JSON objects,
-    and falls back to a decoded string or a binary placeholder.
-
-    Args:
-        accumulated: Raw bytes collected from the streaming response chunks.
-
-    Returns:
-        A parsed JSON object or list, a plain string, or a binary-size
-        placeholder string if the bytes cannot be decoded as UTF-8.
-    """
-    try:
-        text = accumulated.decode("utf-8")
-    except UnicodeDecodeError:
-        return f"<binary content: {len(accumulated)} bytes>"
-
-    # SSE: any line starts with "data:"
-    lines = [ln.strip() for ln in text.splitlines() if ln.strip()]
-    if any(ln.startswith("data:") for ln in lines):
-        parsed: List[Any] = []
-        for ln in lines:
-            if ln.startswith("data:"):
-                data = ln[5:].strip()
-                if data == "[DONE]":
-                    continue
-                try:
-                    parsed.append(json.loads(data))
-                except json.JSONDecodeError:
-                    parsed.append(data)
-        if parsed:
-            return parsed[0] if len(parsed) == 1 else parsed
-
-    # Sequential JSON decoding: handles single JSON, NDJSON, and bare concatenated objects
-    decoder = json.JSONDecoder()
-    results: List[Any] = []
-    idx = 0
-    stripped = text.strip()
-    try:
-        while idx < len(stripped):
-            obj, end_idx = decoder.raw_decode(stripped, idx)
-            results.append(obj)
-            idx = end_idx
-            while idx < len(stripped) and stripped[idx] in " \t\n\r":
-                idx += 1
-        if results and idx == len(stripped):
-            return results[0] if len(results) == 1 else results
-    except json.JSONDecodeError:
-        pass
-
-    return text
-
-
-def set_streaming_span_output(span: Span, response: httpx.Response, chunks: List[bytes]) -> None:
-    """Serialize accumulated streaming chunks and set them as the span ``output`` attribute.
+def set_streaming_span_output(span: Span, response: httpx.Response, body_buffer: BoundedBodyBuffer) -> None:
+    """Serialize accumulated streaming body bytes and set them as the span ``output`` attribute.
 
     Args:
         span: The active OpenTelemetry span.
         response: The httpx Response whose headers/status are used.
-        chunks: Raw bytes chunks accumulated during iteration.
+        body_buffer: Body bytes accumulated during iteration, capped at the
+            configured attribute length.
     """
     if not span.is_recording():
         return
@@ -217,8 +166,9 @@ def set_streaming_span_output(span: Span, response: httpx.Response, chunks: List
             "status_code": response.status_code,
             "headers": _sanitize_headers(response.headers),
         }
-        if chunks:
-            output_data["body"] = _parse_streaming_body(b"".join(chunks))
+        if body_buffer.total_bytes:
+            span.set_attribute("output", build_streaming_output(output_data, body_buffer))
+            return
         span.set_attribute("output", json.dumps(output_data))
     except Exception as e:
         logger.error(f"Failed to set streaming output attribute on httpx span: {e}")
