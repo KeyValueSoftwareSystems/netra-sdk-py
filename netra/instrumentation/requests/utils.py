@@ -8,12 +8,7 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 from opentelemetry.util.http import remove_url_credentials, sanitize_method
 
-from netra.config import get_attribute_max_len
-from netra.instrumentation.utils import (
-    BoundedBodyBuffer,
-    parse_streaming_body,
-    serialize_bounded_output,
-)
+from netra.instrumentation.http_body import BoundedBodyBuffer, build_streaming_output
 
 logger = logging.getLogger(__name__)
 
@@ -189,30 +184,14 @@ def set_streaming_span_output(span: Span, response: requests_lib.Response, body_
             "status_code": response.status_code,
             "headers": _sanitize_headers(response.headers),
         }
-        if body_buffer:
-            max_len = get_attribute_max_len()
-            parsed = parse_streaming_body(
-                body_buffer.getvalue(),
-                body_buffer.total_bytes,
-                truncated=body_buffer.truncated,
-                budget=max_len,
-            )
-            span.set_attribute(
-                "output",
-                serialize_bounded_output(
-                    output_data,
-                    parsed,
-                    total_bytes=body_buffer.total_bytes,
-                    truncated=body_buffer.truncated or parsed.truncated,
-                    max_len=max_len,
-                ),
-            )
+        if body_buffer.total_bytes:
+            span.set_attribute("output", build_streaming_output(output_data, body_buffer))
             return
-        else:
-            # Fallback: body was accessed via .content/.text rather than iterators
-            body = _get_response_body(response)
-            if body is not None:
-                output_data["body"] = body
+
+        # Fallback: body was accessed via .content/.text rather than iterators
+        body = _get_response_body(response)
+        if body is not None:
+            output_data["body"] = body
         span.set_attribute("output", json.dumps(output_data))
     except Exception:
         logger.debug("Failed to set streaming output attribute on requests span", exc_info=True)

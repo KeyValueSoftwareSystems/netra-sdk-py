@@ -10,6 +10,7 @@ from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util.http import remove_url_credentials
 from wrapt import ObjectProxy
 
+from netra.instrumentation.http_body import BoundedBodyBuffer
 from netra.instrumentation.httpx.utils import (
     get_default_span_name,
     set_span_input,
@@ -17,7 +18,6 @@ from netra.instrumentation.httpx.utils import (
     set_streaming_span_output,
     should_suppress_instrumentation,
 )
-from netra.instrumentation.utils import BoundedBodyBuffer
 
 logger = logging.getLogger(__name__)
 
