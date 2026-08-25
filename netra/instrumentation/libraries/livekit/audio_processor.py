@@ -5,6 +5,13 @@ span. This processor is the only thing that sees those spans start and end, so
 it is what lets a frame captured milliseconds later be filed under the turn it
 belongs to.
 
+It also watches ``tts_node`` spans so the coordinator can detect when a *new*
+agent turn starts synthesizing speech.  When the ``tts_node``'s parent
+(``agent_turn``) differs from the stale ``agent_speaking``'s parent, the
+coordinator clears the stale reference and subsequent frames are dropped rather
+than misattributed — see
+:meth:`~netra.instrumentation.livekit.audio_capture.SessionAudioCoordinator.on_tts_node_started`.
+
 Registered once for the process, while coordinators are per call — hence the
 lookup by the span's trace id in
 :data:`~netra.instrumentation.libraries.livekit.audio_capture.audio_coordinators`.
@@ -44,26 +51,44 @@ class _SpeakingSpan(NamedTuple):
     parent_span_id: str
 
 
+class _TtsNodeSpan(NamedTuple):
+    """A ``tts_node`` span resolved to its call's coordinator.
+
+    Attributes:
+        coordinator: The coordinator capturing that call's audio.
+        parent_span_id: Hex id of the ``tts_node``'s parent (``agent_turn``), or ``""``.
+    """
+
+    coordinator: SessionAudioCoordinator
+    parent_span_id: str
+
+
 class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
     """Opens and closes an audio recording alongside each speaking span."""
 
     def on_start(self, span: Span, parent_context: Optional[otel_context.Context] = None) -> None:
         """Start attributing this speaker's audio to the span that just opened.
 
+        Also detects ``tts_node`` spans so the coordinator can clear stale
+        ``agent_speaking`` attribution when a new turn's TTS begins.
+
         Args:
             span: The span that was started.
             parent_context: The parent context (unused).
         """
         speaking = _resolve_speaking_span(span)
-        if speaking is None:
+        if speaking is not None:
+            speaking.coordinator.on_speaking_start(
+                speaking.role,
+                trace_id=format(speaking.span_context.trace_id, _TRACE_ID_HEX_DIGITS),
+                span_id=format(speaking.span_context.span_id, _SPAN_ID_HEX_DIGITS),
+                parent_span_id=speaking.parent_span_id,
+            )
             return
 
-        speaking.coordinator.on_speaking_start(
-            speaking.role,
-            trace_id=format(speaking.span_context.trace_id, _TRACE_ID_HEX_DIGITS),
-            span_id=format(speaking.span_context.span_id, _SPAN_ID_HEX_DIGITS),
-            parent_span_id=speaking.parent_span_id,
-        )
+        tts = _resolve_tts_node_span(span)
+        if tts is not None:
+            tts.coordinator.on_tts_node_started(parent_span_id=tts.parent_span_id)
 
     def on_end(self, span: ReadableSpan) -> None:
         """Close the recording for the speaking span that just ended.
@@ -131,11 +156,43 @@ def _resolve_speaking_span(span: Union[Span, ReadableSpan]) -> Optional[_Speakin
         return None
 
 
+def _resolve_tts_node_span(span: Union[Span, ReadableSpan]) -> Optional[_TtsNodeSpan]:
+    """Identify a ``tts_node`` span and the call whose audio it may affect.
+
+    Never raises, for the same reason as ``_resolve_speaking_span``.
+
+    Args:
+        span: The span that started.
+
+    Returns:
+        The resolved TTS node span, or ``None`` when *span* is not a
+        ``tts_node`` or its call is not capturing audio.
+    """
+    try:
+        if (span.name or "") != TTS_NODE_SPAN_NAME:
+            return None
+
+        span_context = span.get_span_context()
+        if span_context is None or not span_context.is_valid:
+            return None
+
+        coordinator = audio_coordinators.get(span_context.trace_id)
+        if coordinator is None:
+            return None
+        return _TtsNodeSpan(
+            coordinator=coordinator,
+            parent_span_id=_parent_span_id_hex(span),
+        )
+    except Exception:
+        logger.debug("netra.audio: could not resolve a tts_node span", exc_info=True)
+        return None
+
+
 def _parent_span_id_hex(span: Union[Span, ReadableSpan]) -> str:
     """Return the hex id of *span*'s parent, or ``""`` when there is none.
 
     Args:
-        span: The speaking span whose parent to read.
+        span: The span whose parent to read.
 
     Returns:
         A 16-digit lowercase hex span id, or an empty string for a root span

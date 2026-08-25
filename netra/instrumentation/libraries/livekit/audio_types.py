@@ -43,6 +43,12 @@ SPEAKING_SPAN_ROLES: Dict[str, SpeakerRole] = {
     "agent_speaking": SpeakerRole.AGENT,
 }
 
+# The TTS wrapper span whose parent is the ``agent_turn`` that owns the
+# synthesis. Used by ``AudioSpanProcessor`` to detect when a new turn's TTS
+# starts and clear stale ``agent_speaking`` attribution — see
+# ``SessionAudioCoordinator.on_tts_node_started``.
+TTS_NODE_SPAN_NAME = "tts_node"
+
 
 # ---------------------------------------------------------------------------
 # PCM format
