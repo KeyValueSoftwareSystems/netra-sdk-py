@@ -34,6 +34,10 @@ dependencies = [
     "opentelemetry-exporter-otlp-proto-http>=0.55b1,<=1.41.1",
     "opentelemetry-instrumentation-fastapi>=0.55b1,<=0.62b1",
     "traceloop-sdk>=0.51.0,<=0.60.0",
+    # Direct: post-import hooks drive all deferred instrumentation, and the
+    # instrumentors Netra authors patch through wrapt. Previously relied on
+    # transitively via opentelemetry/traceloop.
+    "wrapt>=1.14,<2",
     "opentelemetry-instrumentation-httpx>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-aiohttp-client>=0.55b1,<=0.62b1",
     "opentelemetry-instrumentation-aio-pika>=0.55b1,<=0.62b1",

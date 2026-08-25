@@ -1,10 +1,23 @@
-from enum import Enum
-from typing import Any, Dict, Optional, Type
+"""The instrumentations the SDK knows about, and the sets enabled by default.
 
-from traceloop.sdk import Instruments
+This module is pure data: enum members, the default instrument sets and the
+scope aliases the span processors key off.  It deliberately imports nothing
+beyond the standard library — every consumer of ``netra`` reaches it, including
+processes that never call ``Netra.init()``.
+"""
+
+from enum import Enum
+from typing import Any, Optional
 
 
 class CustomInstruments(Enum):
+    """Instrumentations Netra provides itself rather than delegating to traceloop.
+
+    Retained as public API.  Activation is keyed on :class:`InstrumentSet`
+    (see ``netra.instrumentation.registry``), so nothing inside the SDK reads
+    this enum any more.
+    """
+
     AIOHTTP = "aiohttp"
     COHEREAI = "cohere_ai"
     DSPY = "dspy"
@@ -78,21 +91,34 @@ class CustomInstruments(Enum):
     LIVEKIT = "livekit"
 
 
-class InstrumentSet(Enum):
-    """Custom enum that stores the original enum class in an 'origin' attribute.
+class _Origin(Enum):
+    """Which family of instrumentors backs an :class:`InstrumentSet` member.
 
-    Every member carries an ``origin`` attribute that identifies which
-    underlying enum (``CustomInstruments`` or ``Instruments``) provides the
-    actual instrumentor.  The special ``ALL`` member has ``origin=None`` and
-    acts as a sentinel: when included in the ``instruments`` or
-    ``root_instruments`` sets passed to ``Netra.init()``, it restores the
-    legacy behaviour where **every** instrumentation available in the user's
-    environment is enabled automatically — no curated default list is applied.
+    A plain sentinel rather than the concrete enum class it used to tag.
+    ``traceloop.sdk`` costs ~620 ms to import, and tagging members with
+    ``traceloop.sdk.Instruments`` forced that cost onto every ``import netra``
+    — including processes that never call ``Netra.init()``.  The traceloop
+    member itself is still resolved by name, but only at activation time.
     """
 
-    origin: Optional[Type[Enum]]
+    TRACELOOP = "traceloop"
+    CUSTOM = "custom"
 
-    def __new__(cls, value: Any, origin: Optional[Type[Enum]] = None) -> "InstrumentSet":
+
+class InstrumentSet(Enum):
+    """Every instrumentation that can be enabled, tagged with its origin.
+
+    Each member carries an ``origin`` (an :class:`_Origin`) naming the family
+    that provides the actual instrumentor.  ``ALL`` is a sentinel with
+    ``origin=None``: passing it in the ``instruments`` or ``root_instruments``
+    set given to ``Netra.init()`` restores the legacy behaviour where **every**
+    instrumentation available in the environment is enabled, bypassing the
+    curated default lists below.
+    """
+
+    origin: Optional[_Origin]
+
+    def __new__(cls, value: Any, origin: Optional[_Origin] = None) -> "InstrumentSet":
         member = object.__new__(cls)
         member._value_ = value
         member.origin = origin
@@ -100,105 +126,111 @@ class InstrumentSet(Enum):
 
     ALL = ("__all__", None)
 
-    ADK = ("google_adk", CustomInstruments)
-    AGNO = ("agno", CustomInstruments)
-    AIOHTTP = ("aiohttp", CustomInstruments)
-    AIOHTTP_SERVER = ("aiohttp_server", CustomInstruments)
-    AIO_PIKA = ("aio_pika", CustomInstruments)
-    AIOKAFKA = ("aiokafka", CustomInstruments)
-    AIOPG = ("aiopg", CustomInstruments)
-    ALEPHALPHA = ("alephalpha", Instruments)
-    ANTHROPIC = ("anthropic", Instruments)
-    ASGI = ("asgi", CustomInstruments)
-    ASYNCCLICK = ("asyncclick", CustomInstruments)
-    ASYNCIO = ("asyncio", CustomInstruments)
-    ASYNCPG = ("asyncpg", CustomInstruments)
-    AWS_LAMBDA = ("aws_lambda", CustomInstruments)
-    BEDROCK = ("bedrock", Instruments)
-    BOTO = ("boto", CustomInstruments)
-    BOTO3SQS = ("boto3sqs", CustomInstruments)
-    BOTOCORE = ("botocore", CustomInstruments)
-    CARTESIA = ("cartesia", CustomInstruments)
-    CASSANDRA = ("cassandra", CustomInstruments)
-    CEREBRAS = ("cerebras", CustomInstruments)
-    CELERY = ("celery", CustomInstruments)
-    CHROMA = ("chroma", Instruments)
-    CLAUDE_AGENT_SDK = ("claude_agent_sdk", CustomInstruments)
-    CLICK = ("click", CustomInstruments)
-    COHEREAI = ("cohere_ai", CustomInstruments)
-    CONFLUENT_KAFKA = ("confluent_kafka", CustomInstruments)
-    CREW = ("crew", Instruments)
-    DEEPGRAM = ("deepgram", CustomInstruments)
-    DBAPI = ("dbapi", CustomInstruments)
-    DJANGO = ("django", CustomInstruments)
-    DSPY = ("dspy", CustomInstruments)
-    ELASTICSEARCH = ("elasticsearch", CustomInstruments)
-    ELEVENLABS = ("elevenlabs", CustomInstruments)
-    FALCON = ("falcon", CustomInstruments)
-    FASTAPI = ("fastapi", CustomInstruments)
-    FLASK = ("flask", CustomInstruments)
-    GOOGLE_GENERATIVEAI = ("google_genai", CustomInstruments)
-    GROQ = ("groq", CustomInstruments)
-    GRPC = ("grpc", CustomInstruments)
-    HAYSTACK = ("haystack", Instruments)
-    HERMES_AGENT = ("hermes_agent", CustomInstruments)
-    HONCHO = ("honcho", CustomInstruments)
-    HTTPX = ("httpx", CustomInstruments)
-    JINJA2 = ("jinja2", CustomInstruments)
-    KAFKA_PYTHON = ("kafka_python", CustomInstruments)
-    LANCEDB = ("lancedb", Instruments)
-    LANGCHAIN = ("langchain", Instruments)
-    LITELLM = ("litellm", CustomInstruments)
-    LIVEKIT = ("livekit", CustomInstruments)
-    LLAMA_INDEX = ("llama_index", Instruments)
-    LOGGING = ("logging", CustomInstruments)
-    MARQO = ("marqo", Instruments)
-    MCP = ("mcp", Instruments)
-    MILVUS = ("milvus", Instruments)
-    MISTRALAI = ("mistral_ai", CustomInstruments)
-    MYSQL = ("mysql", CustomInstruments)
-    MYSQLCLIENT = ("mysqlclient", CustomInstruments)
-    OLLAMA = ("ollama", Instruments)
-    OPENAI = ("openai", CustomInstruments)
-    OPENAI_AGENTS = ("openai_agents", Instruments)
-    PIKA = ("pika", CustomInstruments)
-    PINECONE = ("pinecone", Instruments)
-    PSYCOPG = ("psycopg", CustomInstruments)
-    PSYCOPG2 = ("psycopg2", CustomInstruments)
-    PYDANTIC_AI = ("pydantic_ai", CustomInstruments)
-    PYMEMCACHE = ("pymemcache", CustomInstruments)
-    PYMONGO = ("pymongo", CustomInstruments)
-    PYMSSQL = ("pymssql", CustomInstruments)
-    PYMYSQL = ("pymysql", CustomInstruments)
-    PYRAMID = ("pyramid", CustomInstruments)
-    QDRANTDB = ("qdrant_db", CustomInstruments)
-    REDIS = ("redis", CustomInstruments)
-    REMOULADE = ("remoulade", CustomInstruments)
-    REPLICATE = ("replicate", Instruments)
-    REQUESTS = ("requests", CustomInstruments)
-    SAGEMAKER = ("sagemaker", Instruments)
-    SQLALCHEMY = ("sqlalchemy", CustomInstruments)
-    SQLITE3 = ("sqlite3", CustomInstruments)
-    STARLETTE = ("starlette", CustomInstruments)
-    SYSTEM_METRICS = ("system_metrics", CustomInstruments)
-    THREADING = ("threading", CustomInstruments)
-    TOGETHER = ("together", Instruments)
-    TORNADO = ("tornado", CustomInstruments)
-    TORTOISEORM = ("tortoiseorm", CustomInstruments)
-    TRANSFORMERS = ("transformers", Instruments)
-    URLLIB = ("urllib", CustomInstruments)
-    URLLIB3 = ("urllib3", CustomInstruments)
-    VERTEXAI = ("vertexai", Instruments)
-    VOYAGEAI = ("voyageai", Instruments)
-    WATSONX = ("watsonx", Instruments)
-    WEAVIATEDB = ("weaviate_db", CustomInstruments)
-    WRITER = ("writer", Instruments)
-    WSGI = ("wsgi", CustomInstruments)
+    ADK = ("google_adk", _Origin.CUSTOM)
+    AGNO = ("agno", _Origin.CUSTOM)
+    AIOHTTP = ("aiohttp", _Origin.CUSTOM)
+    AIOHTTP_SERVER = ("aiohttp_server", _Origin.CUSTOM)
+    AIO_PIKA = ("aio_pika", _Origin.CUSTOM)
+    AIOKAFKA = ("aiokafka", _Origin.CUSTOM)
+    AIOPG = ("aiopg", _Origin.CUSTOM)
+    ALEPHALPHA = ("alephalpha", _Origin.TRACELOOP)
+    ANTHROPIC = ("anthropic", _Origin.TRACELOOP)
+    ASGI = ("asgi", _Origin.CUSTOM)
+    ASYNCCLICK = ("asyncclick", _Origin.CUSTOM)
+    ASYNCIO = ("asyncio", _Origin.CUSTOM)
+    ASYNCPG = ("asyncpg", _Origin.CUSTOM)
+    AWS_LAMBDA = ("aws_lambda", _Origin.CUSTOM)
+    BEDROCK = ("bedrock", _Origin.TRACELOOP)
+    BOTO = ("boto", _Origin.CUSTOM)
+    BOTO3SQS = ("boto3sqs", _Origin.CUSTOM)
+    BOTOCORE = ("botocore", _Origin.CUSTOM)
+    CARTESIA = ("cartesia", _Origin.CUSTOM)
+    CASSANDRA = ("cassandra", _Origin.CUSTOM)
+    CEREBRAS = ("cerebras", _Origin.CUSTOM)
+    CELERY = ("celery", _Origin.CUSTOM)
+    CHROMA = ("chroma", _Origin.TRACELOOP)
+    CLAUDE_AGENT_SDK = ("claude_agent_sdk", _Origin.CUSTOM)
+    CLICK = ("click", _Origin.CUSTOM)
+    COHEREAI = ("cohere_ai", _Origin.CUSTOM)
+    CONFLUENT_KAFKA = ("confluent_kafka", _Origin.CUSTOM)
+    CREW = ("crew", _Origin.TRACELOOP)
+    DEEPGRAM = ("deepgram", _Origin.CUSTOM)
+    DBAPI = ("dbapi", _Origin.CUSTOM)
+    DJANGO = ("django", _Origin.CUSTOM)
+    DSPY = ("dspy", _Origin.CUSTOM)
+    ELASTICSEARCH = ("elasticsearch", _Origin.CUSTOM)
+    ELEVENLABS = ("elevenlabs", _Origin.CUSTOM)
+    FALCON = ("falcon", _Origin.CUSTOM)
+    FASTAPI = ("fastapi", _Origin.CUSTOM)
+    FLASK = ("flask", _Origin.CUSTOM)
+    GOOGLE_GENERATIVEAI = ("google_genai", _Origin.CUSTOM)
+    GROQ = ("groq", _Origin.CUSTOM)
+    GRPC = ("grpc", _Origin.CUSTOM)
+    HAYSTACK = ("haystack", _Origin.TRACELOOP)
+    HERMES_AGENT = ("hermes_agent", _Origin.CUSTOM)
+    HONCHO = ("honcho", _Origin.CUSTOM)
+    HTTPX = ("httpx", _Origin.CUSTOM)
+    JINJA2 = ("jinja2", _Origin.CUSTOM)
+    KAFKA_PYTHON = ("kafka_python", _Origin.CUSTOM)
+    LANCEDB = ("lancedb", _Origin.TRACELOOP)
+    LANGCHAIN = ("langchain", _Origin.TRACELOOP)
+    LITELLM = ("litellm", _Origin.CUSTOM)
+    LIVEKIT = ("livekit", _Origin.CUSTOM)
+    LLAMA_INDEX = ("llama_index", _Origin.TRACELOOP)
+    LOGGING = ("logging", _Origin.CUSTOM)
+    MARQO = ("marqo", _Origin.TRACELOOP)
+    MCP = ("mcp", _Origin.TRACELOOP)
+    MILVUS = ("milvus", _Origin.TRACELOOP)
+    MISTRALAI = ("mistral_ai", _Origin.CUSTOM)
+    MYSQL = ("mysql", _Origin.CUSTOM)
+    MYSQLCLIENT = ("mysqlclient", _Origin.CUSTOM)
+    OLLAMA = ("ollama", _Origin.TRACELOOP)
+    OPENAI = ("openai", _Origin.CUSTOM)
+    OPENAI_AGENTS = ("openai_agents", _Origin.TRACELOOP)
+    PIKA = ("pika", _Origin.CUSTOM)
+    PINECONE = ("pinecone", _Origin.TRACELOOP)
+    PSYCOPG = ("psycopg", _Origin.CUSTOM)
+    PSYCOPG2 = ("psycopg2", _Origin.CUSTOM)
+    PYDANTIC_AI = ("pydantic_ai", _Origin.CUSTOM)
+    PYMEMCACHE = ("pymemcache", _Origin.CUSTOM)
+    PYMONGO = ("pymongo", _Origin.CUSTOM)
+    PYMSSQL = ("pymssql", _Origin.CUSTOM)
+    PYMYSQL = ("pymysql", _Origin.CUSTOM)
+    PYRAMID = ("pyramid", _Origin.CUSTOM)
+    QDRANTDB = ("qdrant_db", _Origin.CUSTOM)
+    REDIS = ("redis", _Origin.CUSTOM)
+    REMOULADE = ("remoulade", _Origin.CUSTOM)
+    REPLICATE = ("replicate", _Origin.TRACELOOP)
+    REQUESTS = ("requests", _Origin.CUSTOM)
+    SAGEMAKER = ("sagemaker", _Origin.TRACELOOP)
+    SQLALCHEMY = ("sqlalchemy", _Origin.CUSTOM)
+    SQLITE3 = ("sqlite3", _Origin.CUSTOM)
+    STARLETTE = ("starlette", _Origin.CUSTOM)
+    SYSTEM_METRICS = ("system_metrics", _Origin.CUSTOM)
+    THREADING = ("threading", _Origin.CUSTOM)
+    TOGETHER = ("together", _Origin.TRACELOOP)
+    TORNADO = ("tornado", _Origin.CUSTOM)
+    TORTOISEORM = ("tortoiseorm", _Origin.CUSTOM)
+    TRANSFORMERS = ("transformers", _Origin.TRACELOOP)
+    URLLIB = ("urllib", _Origin.CUSTOM)
+    URLLIB3 = ("urllib3", _Origin.CUSTOM)
+    VERTEXAI = ("vertexai", _Origin.TRACELOOP)
+    VOYAGEAI = ("voyageai", _Origin.TRACELOOP)
+    WATSONX = ("watsonx", _Origin.TRACELOOP)
+    WEAVIATEDB = ("weaviate_db", _Origin.CUSTOM)
+    WRITER = ("writer", _Origin.TRACELOOP)
+    WSGI = ("wsgi", _Origin.CUSTOM)
 
 
 # Public alias — same class, not a copy, so identity/membership checks
 # (e.g. ``InstrumentSet.ALL in some_set``) work correctly.
 NetraInstruments = InstrumentSet
+
+# Every real instrumentation, i.e. every member except the ``ALL`` sentinel.
+# This is what ``InstrumentSet.ALL`` expands to.
+ALL_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
+    member for member in InstrumentSet if member is not InstrumentSet.ALL
+)
 
 
 # Instrumentation scopes that Netra enables but does not author, so their scope
@@ -211,7 +243,7 @@ NetraInstruments = InstrumentSet
 #
 # Matched exactly, never as a prefix: an alias claims one specific scope, and a
 # prefix match here would start pulling in unrelated third-party tracers.
-THIRD_PARTY_INSTRUMENTATION_SCOPES: Dict[str, str] = {
+THIRD_PARTY_INSTRUMENTATION_SCOPES: dict[str, str] = {
     # livekit-agents emits its own span tree (agent_session -> agent_turn ->
     # llm_node / tts_node / function_tool) under this scope.
     "livekit-agents": InstrumentSet.LIVEKIT.value,
@@ -219,11 +251,11 @@ THIRD_PARTY_INSTRUMENTATION_SCOPES: Dict[str, str] = {
 
 
 # Default instrument sets
-
-# These sets are intentionally independent.  Removing an
-# instrument from the root allow-list must NOT prevent it from being
-# installed — it should still create spans, but those spans will be
-# filtered when they appear at the root of a trace.
+#
+# These two sets are intentionally independent.  Removing an instrument from
+# the root allow-list must NOT prevent it from being installed — it should
+# still create spans, but those spans are filtered when they appear at the root
+# of a trace.
 
 # Full set of instrumentations installed by default.
 DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
