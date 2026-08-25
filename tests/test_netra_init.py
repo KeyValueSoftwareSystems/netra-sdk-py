@@ -40,6 +40,15 @@ class TestNetraInitialization:
             Netra.init()
             assert Netra.is_initialized() is True
 
+    def test_init_does_not_register_global_shutdown_hook(self) -> None:
+        """Netra.shutdown() relies on atexit alone, not the shared signal-hook registry."""
+        import netra.shutdown_hooks as sh
+
+        hooks_before = len(sh._hooks)
+        with patch("netra.Tracer"), patch("netra.init_instrumentations"):
+            Netra.init()
+        assert len(sh._hooks) == hooks_before
+
     @patch("netra.init_instrumentations")
     @patch("netra.Tracer")
     @patch("netra.Config")
@@ -139,6 +148,9 @@ class TestNetraInitialization:
         # Reset mocks to check second call behavior
         mock_tracer.reset_mock()
         mock_init_instrumentations.reset_mock()
+
+        # Isolate warnings from the second call only.
+        mock_logger.warning.reset_mock()
 
         # Second initialization should log warning and not reinitialize
         Netra.init()

@@ -21,6 +21,7 @@ from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
 from netra.models import Models
 from netra.prompts import Prompts
+from netra.redteam import Redteam
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
@@ -205,6 +206,13 @@ class Netra:
                 logger.warning("Failed to initialize simulation client: %s", e, exc_info=True)
                 cls.simulation = None  # type:ignore[attr-defined]
 
+            # Initialize redteam client and expose as class attribute
+            try:
+                cls.redteam = Redteam(cfg)  # type:ignore[attr-defined]
+            except Exception as e:
+                logger.warning("Failed to initialize redteam client: %s", e, exc_info=True)
+                cls.redteam = None  # type:ignore[attr-defined]
+
             # Initialize models client and expose as class attribute
             try:
                 cls.models = Models(cfg)  # type:ignore[attr-defined]
@@ -222,7 +230,7 @@ class Netra:
             cls._initialized = True
             logger.info("Netra successfully initialized.")
 
-            # Ensure cleanup at process exit
+            # Ensure cleanup at process exit.
             atexit.register(cls.shutdown)
 
     @classmethod
@@ -301,6 +309,12 @@ class Netra:
             if hasattr(cls, "models") and cls.models is not None:
                 try:
                     cls.models.clear_cache()
+                except Exception:
+                    pass
+            # Close redteam HTTP client
+            if hasattr(cls, "redteam") and cls.redteam is not None:
+                try:
+                    cls.redteam.close()
                 except Exception:
                     pass
 

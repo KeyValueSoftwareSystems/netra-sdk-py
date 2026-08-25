@@ -5,8 +5,10 @@ This module centralizes common helpers that can be reused across the codebase.
 
 from __future__ import annotations
 
+import asyncio
 import logging
-from typing import AbstractSet, Any, Optional, Set
+import threading
+from typing import AbstractSet, Any, Awaitable, Optional, Set, TypeVar
 
 import httpx
 
@@ -19,6 +21,8 @@ from netra.instrumentation.instruments import (
 )
 
 logger = logging.getLogger(__name__)
+
+_T = TypeVar("_T")
 
 
 def extract_error_message(response: Optional[httpx.Response], exc: Exception) -> str:
@@ -134,6 +138,50 @@ def serialize_value(value: Any) -> str:
     except Exception:
         logger.debug("utils: failed to serialize value", exc_info=True)
         return ""
+
+
+def run_async_safely(coro: Awaitable[_T]) -> _T:
+    """Run an async coroutine from synchronous code.
+
+    When called from a context that already has a running event loop (e.g. a
+    Jupyter notebook, or an async framework like FastAPI), ``asyncio.run()``
+    would raise.  In that case we spin up a **new daemon thread** with its own
+    event loop via ``asyncio.run()`` so the caller's loop is never blocked or
+    re-entered.
+
+    Args:
+        coro: The coroutine to execute.
+
+    Returns:
+        The result of the coroutine execution.
+
+    Raises:
+        Exception: Re-raises any exception from the coroutine.
+    """
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        loop = None
+
+    if loop and loop.is_running():
+        result_holder: dict[str, _T] = {}
+        error_holder: dict[str, BaseException] = {}
+
+        def runner() -> None:
+            try:
+                result_holder["value"] = asyncio.run(coro)  # type: ignore[arg-type]
+            except BaseException as exc:
+                error_holder["exc"] = exc
+
+        thread = threading.Thread(target=runner, daemon=True)
+        thread.start()
+        thread.join()
+
+        if "exc" in error_holder:
+            raise error_holder["exc"]
+        return result_holder.get("value")  # type: ignore[return-value]
+
+    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 def resolve_root_instruments(
