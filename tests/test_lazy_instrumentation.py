@@ -7,6 +7,7 @@ synthetic trigger modules so they exercise the real wrapt machinery without
 depending on which LLM libraries happen to be installed.
 """
 
+import dataclasses
 import importlib
 import importlib.util
 import io
@@ -15,7 +16,7 @@ import subprocess
 import sys
 import textwrap
 import threading
-from typing import Callable, Generator, List
+from typing import Callable, Generator, List, Mapping
 
 import pytest
 import wrapt
@@ -24,7 +25,7 @@ import wrapt.importer
 from netra.instrumentation.activation import Activation, apply_traceloop_instrumentation, is_distribution_installed
 from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
 from netra.instrumentation.lazy import _LEDGER, register_lazy_instrumentations
-from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS
+from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS, InstrumentorSpec
 from netra.instrumentation.selection import (
     TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA,
     partition_by_origin,
@@ -439,6 +440,19 @@ def test_every_registered_instrumentor_names_a_distinct_candidate_order() -> Non
         gates = [spec.required_distributions for spec in specs]
 
         assert len(gates) == len(set(gates)), f"{instrument.name} has an unreachable instrumentor candidate"
+
+
+def test_instrumentor_spec_declares_no_mapping_field_default() -> None:
+    # Python 3.11's dataclasses rejects any ``default=`` whose type is
+    # unhashable, and ``mappingproxy`` only became hashable in 3.12 - so a
+    # bare mapping default here makes ``import netra`` fail outright on 3.11.
+    offenders = [
+        spec_field.name
+        for spec_field in dataclasses.fields(InstrumentorSpec)
+        if spec_field.default is not dataclasses.MISSING and isinstance(spec_field.default, Mapping)
+    ]
+
+    assert offenders == [], f"use default_factory for {offenders}"
 
 
 def test_traceloop_warnings_do_not_reach_stdout(capsys: pytest.CaptureFixture[str]) -> None:

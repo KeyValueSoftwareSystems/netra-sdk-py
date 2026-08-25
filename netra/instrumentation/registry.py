@@ -28,6 +28,16 @@ logger = logging.getLogger(__name__)
 _NO_KWARGS: Mapping[str, Any] = MappingProxyType({})
 
 
+def _no_kwargs() -> Mapping[str, Any]:
+    """Return the shared empty constructor-kwargs mapping.
+
+    A factory rather than ``field(default=_NO_KWARGS)``: on Python 3.11
+    ``dataclasses`` rejects any default whose type is unhashable, and
+    ``mappingproxy`` only became hashable in 3.12.
+    """
+    return _NO_KWARGS
+
+
 @dataclass(frozen=True)
 class InstrumentorSpec:
     """How to build one instrumentor, and the distributions it needs.
@@ -45,7 +55,7 @@ class InstrumentorSpec:
     required_distributions: tuple[str, ...]
     module: str
     class_name: str
-    constructor_kwargs: Mapping[str, Any] = field(default=_NO_KWARGS)
+    constructor_kwargs: Mapping[str, Any] = field(default_factory=_no_kwargs)
 
 
 def _log_mistral_wrapper_error(exception: Exception) -> None:
