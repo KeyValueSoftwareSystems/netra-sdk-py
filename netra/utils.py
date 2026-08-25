@@ -19,6 +19,11 @@ from netra.instrumentation.instruments import (
 
 logger = logging.getLogger(__name__)
 
+# Marker key set on any value the SDK cut short, wherever that happens. The
+# Netra UI keys off it to show a body as partial, so every producer must use
+# this exact string.
+TRUNCATION_MARKER_KEY = "__truncated__"
+
 
 def extract_error_message(response: Optional[httpx.Response], exc: Exception) -> str:
     """Extract a human-readable error message from a Netra backend HTTP error.
@@ -98,7 +103,7 @@ def truncate_and_repair_json(content: Any, max_len: int) -> Any:
             return repaired_obj
 
         # Fallback: safe container preserving a preview
-        return {"__truncated__": True, "preview": truncated}
+        return {TRUNCATION_MARKER_KEY: True, "preview": truncated}
     except Exception:
         # If anything goes wrong, return original content as-is
         return content

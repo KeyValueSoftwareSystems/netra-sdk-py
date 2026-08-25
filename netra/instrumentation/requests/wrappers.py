@@ -1,6 +1,6 @@
 import logging
 from collections.abc import Iterator
-from typing import Any, Callable, Dict, List, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
@@ -10,6 +10,7 @@ from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util.http import remove_url_credentials
 from wrapt import ObjectProxy
 
+from netra.instrumentation.http_body import BoundedBodyBuffer
 from netra.instrumentation.requests.utils import (
     get_default_span_name,
     set_span_input,
@@ -33,7 +34,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         """
         super().__init__(response)
         self._span = span
-        self._chunks: List[bytes] = []
+        self._body_buffer = BoundedBodyBuffer()
         self._finalized = False
 
     def _wrap_iter(self, inner: Iterator[Any]) -> Iterator[Any]:
@@ -47,10 +48,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
         """
         try:
             for chunk in inner:
-                if isinstance(chunk, bytes):
-                    self._chunks.append(chunk)
-                elif isinstance(chunk, str):
-                    self._chunks.append(chunk.encode("utf-8"))
+                self._body_buffer.append(chunk)
                 yield chunk
         except GeneratorExit:
             return
@@ -103,7 +101,7 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             return
         self._finalized = True
         try:
-            set_streaming_span_output(self._span, self.__wrapped__, self._chunks)
+            set_streaming_span_output(self._span, self.__wrapped__, self._body_buffer)
         except Exception as e:
             logger.debug("netra.instrumentation.requests: failed to finalize streaming span: %s", e)
         finally:
