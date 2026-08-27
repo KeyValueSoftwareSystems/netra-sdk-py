@@ -156,7 +156,7 @@ class Netra:
 
             # Restore parent trace context when running as a subprocess.
             try:
-                from netra.instrumentation.subprocess.utils import extract_subprocess_context
+                from netra.instrumentation.libraries.subprocess.utils import extract_subprocess_context
 
                 cls._subprocess_ctx_token = extract_subprocess_context()
             except Exception as e:
@@ -246,7 +246,7 @@ class Netra:
             # ended after that point never reaches the exporter, and losing this one
             # loses the whole call's root.
             try:
-                from netra.instrumentation.livekit.call_span import end_all_call_spans
+                from netra.instrumentation.libraries.livekit.call_span import end_all_call_spans
 
                 end_all_call_spans()
             except ImportError:
@@ -280,7 +280,7 @@ class Netra:
             # Backstop for LiveKit calls whose session never closed cleanly, so
             # their captured audio is flushed rather than abandoned in a queue.
             try:
-                from netra.instrumentation.livekit.audio_capture import close_all_audio_capture
+                from netra.instrumentation.libraries.livekit.audio_capture import close_all_audio_capture
 
                 close_all_audio_capture()
             except ImportError:

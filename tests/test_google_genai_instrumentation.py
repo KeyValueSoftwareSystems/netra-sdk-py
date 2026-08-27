@@ -6,7 +6,7 @@ Minimal tests focusing on core functionality and happy path scenarios.
 from typing import Collection
 from unittest.mock import Mock, patch
 
-from netra.instrumentation.google_genai import (
+from netra.instrumentation.libraries.google_genai import (
     GoogleGenAiInstrumentor,
     is_async_streaming_response,
     is_streaming_response,
@@ -51,8 +51,8 @@ class TestGoogleGenAiInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "google-genai >= 0.1.0" in dependencies
 
-    @patch("netra.instrumentation.google_genai.get_tracer")
-    @patch("netra.instrumentation.google_genai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.google_genai.get_tracer")
+    @patch("netra.instrumentation.libraries.google_genai.wrap_function_wrapper")
     def test_instrument_with_default_parameters(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with default parameters."""
         # Arrange
@@ -68,8 +68,8 @@ class TestGoogleGenAiInstrumentor:
         # Should wrap all methods defined in WRAPPED_METHODS (8 methods)
         assert mock_wrap_function.call_count == 8
 
-    @patch("netra.instrumentation.google_genai.get_tracer")
-    @patch("netra.instrumentation.google_genai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.google_genai.get_tracer")
+    @patch("netra.instrumentation.libraries.google_genai.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with custom tracer provider."""
         # Arrange
@@ -83,11 +83,13 @@ class TestGoogleGenAiInstrumentor:
 
         # Assert
         mock_get_tracer.assert_called_once_with(
-            "netra.instrumentation.google_genai", mock_get_tracer.call_args[0][1], mock_tracer_provider  # version
+            "netra.instrumentation.google_genai",
+            mock_get_tracer.call_args[0][1],
+            mock_tracer_provider,  # version
         )
         assert mock_wrap_function.call_count == 8
 
-    @patch("netra.instrumentation.google_genai.unwrap")
+    @patch("netra.instrumentation.libraries.google_genai.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method unwraps all wrapped methods."""
         # Arrange

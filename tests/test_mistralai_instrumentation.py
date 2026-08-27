@@ -11,7 +11,11 @@ import pytest
 # Skip tests if mistralai is not installed
 pytest.importorskip("mistralai")
 
-from netra.instrumentation.mistralai import MistralAiInstrumentor, _llm_request_type_by_method, should_send_prompts
+from netra.instrumentation.libraries.mistralai import (
+    MistralAiInstrumentor,
+    _llm_request_type_by_method,
+    should_send_prompts,
+)
 
 
 class TestMistralAiInstrumentor:
@@ -51,8 +55,8 @@ class TestMistralAiInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "mistralai >= 1.0.0" in dependencies
 
-    @patch("netra.instrumentation.mistralai.get_tracer")
-    @patch("netra.instrumentation.mistralai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.mistralai.get_tracer")
+    @patch("netra.instrumentation.libraries.mistralai.wrap_function_wrapper")
     def test_instrument_with_default_parameters(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with default parameters."""
         # Arrange
@@ -68,8 +72,8 @@ class TestMistralAiInstrumentor:
         # Should wrap all methods defined in WRAPPED_METHODS (5 methods)
         assert mock_wrap_function.call_count == 5
 
-    @patch("netra.instrumentation.mistralai.get_tracer")
-    @patch("netra.instrumentation.mistralai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.mistralai.get_tracer")
+    @patch("netra.instrumentation.libraries.mistralai.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with custom tracer provider."""
         # Arrange
@@ -87,7 +91,7 @@ class TestMistralAiInstrumentor:
         )
         assert mock_wrap_function.call_count == 5
 
-    @patch("netra.instrumentation.mistralai.unwrap")
+    @patch("netra.instrumentation.libraries.mistralai.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method unwraps all wrapped methods."""
         # Arrange

@@ -6,8 +6,8 @@ Minimal tests focusing on core functionality and happy path scenarios.
 from typing import Collection
 from unittest.mock import Mock, patch
 
-from netra.instrumentation.httpx import HTTPXInstrumentor
-from netra.instrumentation.httpx.utils import get_default_span_name
+from netra.instrumentation.libraries.httpx import HTTPXInstrumentor
+from netra.instrumentation.libraries.httpx.utils import get_default_span_name
 
 
 class TestHTTPXInstrumentor:
@@ -31,8 +31,8 @@ class TestHTTPXInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "httpx >= 0.18.0" in dependencies
 
-    @patch("netra.instrumentation.httpx.get_tracer")
-    @patch("netra.instrumentation.httpx.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.httpx.get_tracer")
+    @patch("netra.instrumentation.libraries.httpx.wrap_function_wrapper")
     def test_instrument_with_default_parameters(self, mock_wrap, mock_get_tracer):
         """Test _instrument method with default parameters."""
         instrumentor = HTTPXInstrumentor()
@@ -44,8 +44,8 @@ class TestHTTPXInstrumentor:
         mock_get_tracer.assert_called_once()
         assert mock_wrap.call_count == 2
 
-    @patch("netra.instrumentation.httpx.get_tracer")
-    @patch("netra.instrumentation.httpx.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.httpx.get_tracer")
+    @patch("netra.instrumentation.libraries.httpx.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap, mock_get_tracer):
         """Test _instrument method with custom tracer provider."""
         instrumentor = HTTPXInstrumentor()
@@ -58,7 +58,7 @@ class TestHTTPXInstrumentor:
         mock_get_tracer.assert_called_once()
         assert mock_wrap.call_count == 2
 
-    @patch("netra.instrumentation.httpx.unwrap")
+    @patch("netra.instrumentation.libraries.httpx.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method calls unwrap for both sync and async clients."""
         instrumentor = HTTPXInstrumentor()

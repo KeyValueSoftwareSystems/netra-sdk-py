@@ -9,8 +9,8 @@ from unittest.mock import MagicMock, Mock, patch
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.openai import NetraOpenAIInstrumentor
-from netra.instrumentation.openai.utils import should_suppress_instrumentation
+from netra.instrumentation.libraries.openai import NetraOpenAIInstrumentor
+from netra.instrumentation.libraries.openai.utils import should_suppress_instrumentation
 
 
 class TestNetraOpenAIInstrumentor:
@@ -39,8 +39,8 @@ class TestNetraOpenAIInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "openai >= 1.0.0" in dependencies
 
-    @patch("netra.instrumentation.openai.get_tracer")
-    @patch("netra.instrumentation.openai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
     def test_instrument_with_default_parameters(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with default parameters."""
         # Arrange
@@ -56,8 +56,8 @@ class TestNetraOpenAIInstrumentor:
         # Should wrap all methods (chat, completion, embeddings, responses)
         assert mock_wrap_function.call_count >= 6  # At least 6 methods are wrapped
 
-    @patch("netra.instrumentation.openai.get_tracer")
-    @patch("netra.instrumentation.openai.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with custom tracer provider."""
         # Arrange
@@ -75,7 +75,7 @@ class TestNetraOpenAIInstrumentor:
         )
         assert mock_wrap_function.call_count >= 6
 
-    @patch("netra.instrumentation.openai.unwrap")
+    @patch("netra.instrumentation.libraries.openai.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method unwraps all wrapped methods."""
         # Arrange
@@ -94,7 +94,7 @@ class TestWrappers:
 
     def test_chat_wrapper_non_streaming(self):
         """Test chat_wrapper for non-streaming requests."""
-        from netra.instrumentation.openai.wrappers import chat_wrapper
+        from netra.instrumentation.libraries.openai.wrappers import chat_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -117,10 +117,10 @@ class TestWrappers:
         mock_tracer.start_as_current_span.assert_called_once()
         assert result == wrapped.return_value
 
-    @patch("netra.instrumentation.openai.wrappers.StreamingWrapper")
+    @patch("netra.instrumentation.libraries.openai.wrappers.StreamingWrapper")
     def test_chat_wrapper_streaming(self, mock_streaming_wrapper_class):
         """Test chat_wrapper for streaming requests."""
-        from netra.instrumentation.openai.wrappers import chat_wrapper
+        from netra.instrumentation.libraries.openai.wrappers import chat_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -155,7 +155,7 @@ class TestWrappers:
 class TestUtilityFunctions:
     """Test utility functions in the openai instrumentation module."""
 
-    @patch("netra.instrumentation.openai.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.openai.utils.context_api.get_value")
     def test_should_suppress_instrumentation_true(self, mock_get_value):
         """Test should_suppress_instrumentation returns True when suppression is enabled."""
         # Arrange
@@ -167,7 +167,7 @@ class TestUtilityFunctions:
         # Assert
         assert result is True
 
-    @patch("netra.instrumentation.openai.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.openai.utils.context_api.get_value")
     def test_should_suppress_instrumentation_false(self, mock_get_value):
         """Test should_suppress_instrumentation returns False when suppression is disabled."""
         # Arrange
@@ -186,7 +186,7 @@ class TestUsageAttributes:
     @staticmethod
     def _capture(usage):
         """Run _set_usage_attributes against a recording span and return {attr: value}."""
-        from netra.instrumentation.openai.utils import _set_usage_attributes
+        from netra.instrumentation.libraries.openai.utils import _set_usage_attributes
 
         span = Mock()
         span.is_recording.return_value = True
@@ -274,7 +274,7 @@ class TestResponseMessageAttributesToolCalls:
 
     @staticmethod
     def _capture(response_dict):
-        from netra.instrumentation.openai.utils import _set_response_message_attributes
+        from netra.instrumentation.libraries.openai.utils import _set_response_message_attributes
 
         span = Mock()
         captured: dict = {}
@@ -431,7 +431,7 @@ class TestChatCompletionInputToolCalls:
 
     @staticmethod
     def _capture(messages):
-        from netra.instrumentation.openai.utils import _set_chat_completion_input
+        from netra.instrumentation.libraries.openai.utils import _set_chat_completion_input
 
         span = Mock()
         captured: dict = {}

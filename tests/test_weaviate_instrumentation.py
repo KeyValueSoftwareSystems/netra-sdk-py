@@ -7,7 +7,7 @@ import logging
 from typing import Collection
 from unittest.mock import Mock
 
-from netra.instrumentation.weaviate import WeaviateInstrumentor
+from netra.instrumentation.libraries.weaviate import WeaviateInstrumentor
 
 
 class TestWeaviateInstrumentor:

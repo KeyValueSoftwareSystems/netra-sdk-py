@@ -382,7 +382,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         scope, and a scope that the first accepted but the second could not name
         would slip past the allow-list unchecked.
 
-        A scope named ``netra.instrumentation.fastapi`` resolves to ``fastapi``.
+        A scope named ``netra.instrumentation.libraries.fastapi`` resolves to ``fastapi``.
         A third-party scope registered in ``THIRD_PARTY_INSTRUMENTATION_SCOPES``
         resolves to its ``InstrumentSet`` value — ``livekit-agents`` to
         ``livekit`` — which is what brings those spans under ``root_instruments``

@@ -6,7 +6,7 @@ Minimal tests focusing on core functionality and happy path scenarios.
 from typing import Collection
 from unittest.mock import Mock, patch
 
-from netra.instrumentation.cohere import CohereInstrumentor, _llm_request_type_by_method, should_send_prompts
+from netra.instrumentation.libraries.cohere import CohereInstrumentor, _llm_request_type_by_method, should_send_prompts
 
 
 class TestCohereInstrumentor:
@@ -46,8 +46,8 @@ class TestCohereInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "cohere >=4.2.7, <6" in dependencies
 
-    @patch("netra.instrumentation.cohere.get_tracer")
-    @patch("netra.instrumentation.cohere.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.cohere.get_tracer")
+    @patch("netra.instrumentation.libraries.cohere.wrap_function_wrapper")
     def test_instrument_with_default_parameters(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with default parameters."""
         # Arrange
@@ -63,8 +63,8 @@ class TestCohereInstrumentor:
         # Should wrap all methods defined in WRAPPED_METHODS (5 methods)
         assert mock_wrap_function.call_count == 5
 
-    @patch("netra.instrumentation.cohere.get_tracer")
-    @patch("netra.instrumentation.cohere.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.cohere.get_tracer")
+    @patch("netra.instrumentation.libraries.cohere.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap_function, mock_get_tracer):
         """Test _instrument method with custom tracer provider."""
         # Arrange
@@ -82,7 +82,7 @@ class TestCohereInstrumentor:
         )
         assert mock_wrap_function.call_count == 5
 
-    @patch("netra.instrumentation.cohere.unwrap")
+    @patch("netra.instrumentation.libraries.cohere.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method unwraps all wrapped methods."""
         # Arrange

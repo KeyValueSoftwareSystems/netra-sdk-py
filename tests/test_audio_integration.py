@@ -20,7 +20,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from netra.config import Config
-from netra.instrumentation.livekit.audio_capture import (
+from netra.instrumentation.libraries.livekit.audio_capture import (
     AudioCoordinatorRegistry,
     SessionAudioCoordinator,
     audio_coordinators,
@@ -28,9 +28,9 @@ from netra.instrumentation.livekit.audio_capture import (
     start_audio_capture,
     stop_audio_capture,
 )
-from netra.instrumentation.livekit.audio_processor import AudioSpanProcessor
-from netra.instrumentation.livekit.audio_sender import AudioChunkSender
-from netra.instrumentation.livekit.audio_types import (
+from netra.instrumentation.libraries.livekit.audio_processor import AudioSpanProcessor
+from netra.instrumentation.libraries.livekit.audio_sender import AudioChunkSender
+from netra.instrumentation.libraries.livekit.audio_types import (
     HEADER_HEARD_MS,
     HEADER_LAST_CHUNK,
     HEADER_PARENT_SPAN_ID,
@@ -889,7 +889,7 @@ class TestSessionAudioCoordinatorInterrupts:
         self, monkeypatch: pytest.MonkeyPatch
     ) -> None:
         monkeypatch.setattr(
-            "netra.instrumentation.livekit.audio_capture._PLAYBACK_WAIT_ON_CLOSE_SECONDS",
+            "netra.instrumentation.libraries.livekit.audio_capture._PLAYBACK_WAIT_ON_CLOSE_SECONDS",
             0.05,
         )
         sender = MagicMock()

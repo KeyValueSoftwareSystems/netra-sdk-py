@@ -14,7 +14,7 @@ class CustomInstruments(Enum):
     """Instrumentations Netra provides itself rather than delegating to traceloop.
 
     Retained as public API.  Activation is keyed on :class:`InstrumentSet`
-    (see ``netra.instrumentation.registry``), so nothing inside the SDK reads
+    (see ``netra.instrumentation.wiring.registry``), so nothing inside the SDK reads
     this enum any more.
     """
 
