@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- **`init_instrumentations()` no longer takes `base64_image_uploader`** - Netra hosts no image store, so the only call site had always passed `None` through four layers to reach traceloop, where the parameter is typed as required and mistyped besides (three arguments here, four in traceloop). It is now passed as `None` at the traceloop boundary and gone from the SDK's own signature. Internal helper; `Netra.init()` is unaffected.
+
+- **A named instrumentation with no instrumentor now warns instead of logging at debug** - `Netra.init(instruments={InstrumentSet.PYRAMID})` is a no-op — no Pyramid instrumentor ships with the SDK — and said so only at `DEBUG`. Naming one explicitly now logs a warning. An `InstrumentSet.ALL` expansion still logs at debug, since it sweeps in six such members every time.
+
+- **`netra.instrumentation.lazy` is now `netra.instrumentation.deferred_activation`**, matching the noun-per-module naming of its siblings (`selection`, `registry`, `activation`, `triggers`). Internal module.
+
+### Fixed
+
+- **`CustomInstruments`, `InstrumentSet` and `DEFAULT_INSTRUMENTS` are importable from `netra.instrumentation` again** - all three were reachable as `from netra.instrumentation import ...` before activation was split out of that module in 1.0.1b1, and the split dropped them without intending to. Re-exported. The supported public path remains `from netra import NetraInstruments`.
+
+- **Two instrumentations were listed twice in the trigger table** - `ASYNCIO` and `SQLITE3` each had a duplicate row in `INSTRUMENT_TRIGGERS`. The duplicated values were identical so nothing was mistriggered, but the later row silently wins, and pyflakes' `F601` only fires when repeated keys have *different* values — so an edit to either copy would have been dropped without warning. Deduplicated, with a test that parses the source to catch a recurrence.
+
+### Removed
+
+- **`TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA`** - the set could never match anything: eight of its twelve names belong to `InstrumentSet` members tagged `_Origin.CUSTOM` (which never reach traceloop selection) and the other four name no member at all. The invariant it was meant to protect — that Netra's own instrumentations are never also delegated to traceloop — is enforced by `_Origin` and covered by `test_every_registered_instrumentor_belongs_to_the_custom_family`.
+
 ## [1.0.1b2] - 2026-08-27
 
 ### Fixed
@@ -26,7 +46,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **Blocking one traceloop instrumentation no longer enables every other one** - `Netra.init(instruments={InstrumentSet.OPENAI}, block_instruments={InstrumentSet.ANTHROPIC})` previously enabled langchain, bedrock, vertexai and every other installed traceloop instrumentation. Selection inherited traceloop's "an empty instrument list means all of them" rule, and a request naming only Netra-backed instrumentations partitioned to an empty traceloop list — so adding a block list flipped the request into its opposite. A request now enables exactly what it names, minus what it blocks. This was also the only code path that imported `traceloop-sdk` during `Netra.init()`; selection is now free of it on every path.
 
-- **Instrumentations gated on a module name rather than a distribution now apply** - `ASYNCIO`, `AWS_LAMBDA`, `LOGGING` and `SQLITE3` were gated on `asyncio`, `aws_lambda`, `logging` and `sqlite3`. Those are import names, not installed distributions, so the gate never matched and requesting one of these instrumentations was a silent no-op. They are now ungated, matching `THREADING` and `URLLIB`. Distribution gates are additionally matched per PEP 503, so a gate spelled with an underscore matches a distribution published with a hyphen — this revives `AIO_PIKA` (`aio_pika`) and `CEREBRAS` (`cerebras_cloud_sdk`), which had the same problem. None of these are in `DEFAULT_INSTRUMENTS`, so this only affects callers who asked for them explicitly or passed `InstrumentSet.ALL`.
+- **Instrumentations gated on a module name rather than a distribution now apply** - `ASYNCIO`, `AWS_LAMBDA`, `LOGGING` and `SQLITE3` were gated on `asyncio`, `aws_lambda`, `logging` and `sqlite3`. Those are import names, not installed distributions, so the gate never matched and requesting one of these instrumentations was a silent no-op. They are now ungated, matching `THREADING` and `URLLIB`. Distribution gates are additionally matched per PEP 503, so a gate spelled with an underscore matches a distribution published with a hyphen — this revives `AIO_PIKA` (`aio_pika`) and `CEREBRAS` (`cerebras_cloud_sdk`), which had the same problem.
+
+  **`CEREBRAS` is in `DEFAULT_INSTRUMENTS`.** Every other instrumentation named above is opt-in, but Cerebras is enabled by default, and its gate has never matched — `cerebras-cloud-sdk` is published with hyphens and the old check compared lower-cased names only. Any process on default configuration with the Cerebras SDK installed will run `NetraCerebrasInstrumentor` for the first time on upgrade. The remaining instrumentations here affect only callers who asked for them explicitly or passed `InstrumentSet.ALL`.
 
 - **`AIOHTTP` is now actually instrumented when requested** - the instrumentor existed but was never reachable from the dispatch chain, so enabling `InstrumentSet.AIOHTTP` did nothing. It is now registered against `AioHttpClientInstrumentor`. Not in `DEFAULT_INSTRUMENTS`.
 

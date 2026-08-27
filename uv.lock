@@ -284,7 +284,7 @@ name = "exceptiongroup"
 version = "1.3.0"
 source = { registry = "https://pypi.org/simple" }
 dependencies = [
-    { name = "typing-extensions", marker = "python_full_version < '3.11'" },
+    { name = "typing-extensions" },
 ]
 sdist = { url = "https://files.pythonhosted.org/packages/0b/9f/a65090624ecf468cdca03533906e7c69ed7588582240cfe7cc9e770b50eb/exceptiongroup-1.3.0.tar.gz", hash = "sha256:b241f5885f560bc56a59ee63ca4c6a8bfa46ae4ad651af316d4e81817bb9fd88", size = 29749, upload-time = "2025-05-10T17:42:51.123Z" }
 wheels = [
@@ -698,7 +698,7 @@ wheels = [
 
 [[package]]
 name = "netra-sdk"
-version = "0.1.96"
+version = "1.0.1b2"
 source = { editable = "." }
 dependencies = [
     { name = "httpx" },
@@ -752,12 +752,13 @@ dependencies = [
     { name = "opentelemetry-instrumentation-urllib3" },
     { name = "opentelemetry-sdk" },
     { name = "traceloop-sdk" },
+    { name = "wrapt" },
 ]
 
 [package.metadata]
 requires-dist = [
     { name = "httpx", specifier = ">=0.27.0,<1.0.0" },
-    { name = "json-repair", specifier = "==0.44.1" },
+    { name = "json-repair", specifier = ">=0.44.1,<1.0.0" },
     { name = "opentelemetry-api", specifier = ">=1.34.1,<=1.41.1" },
     { name = "opentelemetry-exporter-otlp-proto-http", specifier = ">=0.55b1,<=1.41.1" },
     { name = "opentelemetry-instrumentation-aio-pika", specifier = ">=0.55b1,<=0.62b1" },
@@ -807,6 +808,7 @@ requires-dist = [
     { name = "opentelemetry-instrumentation-urllib3", specifier = ">=0.55b1,<=0.62b1" },
     { name = "opentelemetry-sdk", specifier = ">=1.34.1,<=1.41.1" },
     { name = "traceloop-sdk", specifier = ">=0.51.0,<=0.60.0" },
+    { name = "wrapt", specifier = ">=1.14,<2" },
 ]
 
 [[package]]

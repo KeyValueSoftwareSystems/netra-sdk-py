@@ -71,7 +71,6 @@ class TestNetraInitialization:
         # Verify instrumentations were initialized
         mock_init_instrumentations.assert_called_once_with(
             should_enrich_metrics=True,
-            base64_image_uploader=None,
             instruments=DEFAULT_INSTRUMENTS,
             block_instruments=None,
         )

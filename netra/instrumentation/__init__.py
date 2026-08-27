@@ -1,14 +1,14 @@
 """Enabling the instrumentations the SDK traces with.
 
 ``Netra.init()`` calls :func:`init_instrumentations` once, which decides *what*
-to instrument and hands each instrumentation to
-``netra.instrumentation.lazy``, which decides *when*.  The work is split across
-four modules:
+to instrument and hands each instrumentation to ``deferred_activation``, which
+decides *when*.  The work is split across five modules:
 
-* ``instruments`` — every instrumentation the SDK knows about, and the defaults
-* ``selection``   — requested/blocked sets to the instrumentations to enable
-* ``registry``    — how to build each instrumentor Netra provides itself
-* ``activation``  — applying one instrumentation, whoever implements it
+* ``instruments``         — every instrumentation the SDK knows about, and the defaults
+* ``selection``           — requested/blocked sets to the instrumentations to enable
+* ``registry``            — how to build each instrumentor Netra provides itself
+* ``activation``          — applying one instrumentation, whoever implements it
+* ``deferred_activation`` — holding each one until its library is imported
 
 ``traceloop.sdk`` is never imported at module scope.  Importing it costs
 ~620 ms (it transitively pulls in pandas, aiohttp and numpy) and that cost
@@ -19,25 +19,40 @@ needs it, so the cost is paid on first *activation* instead.
 
 import logging
 import os
-from typing import AbstractSet, Callable, Optional
+from typing import AbstractSet, Optional
 
 from netra.instrumentation.activation import (
     SUBPROCESS_ACTIVATION,
     build_activations,
     run_activation,
 )
-from netra.instrumentation.instruments import NetraInstruments
-from netra.instrumentation.lazy import register_lazy_instrumentations
+from netra.instrumentation.deferred_activation import register_lazy_instrumentations
+
+# Re-exported for import-path compatibility: these four were reachable as
+# ``from netra.instrumentation import ...`` before activation was split out of
+# this module, and nothing about that split needed to break it.  The supported
+# public path remains ``from netra import NetraInstruments``.
+from netra.instrumentation.instruments import (
+    DEFAULT_INSTRUMENTS,
+    CustomInstruments,
+    InstrumentSet,
+    NetraInstruments,
+)
 from netra.instrumentation.selection import select_instrumentations
 
-__all__ = ["init_instrumentations"]
+__all__ = [
+    "CustomInstruments",
+    "DEFAULT_INSTRUMENTS",
+    "InstrumentSet",
+    "NetraInstruments",
+    "init_instrumentations",
+]
 
 logger = logging.getLogger(__name__)
 
 
 def init_instrumentations(
     should_enrich_metrics: bool,
-    base64_image_uploader: Optional[Callable[[str, str, str], str]],
     instruments: Optional[AbstractSet[NetraInstruments]] = None,
     block_instruments: Optional[AbstractSet[NetraInstruments]] = None,
 ) -> None:
@@ -48,7 +63,6 @@ def init_instrumentations(
 
     Args:
         should_enrich_metrics: Whether to enrich metrics.
-        base64_image_uploader: Optional callback for image uploads.
         instruments: Instruments to enable.  ``None`` falls back to the curated
             default set; a set containing ``InstrumentSet.ALL`` enables every
             instrumentation available in the environment.
@@ -56,7 +70,7 @@ def init_instrumentations(
             ``InstrumentSet.ALL`` blocks every instrumentation.
     """
     selection = select_instrumentations(instruments, block_instruments)
-    activations = build_activations(selection, should_enrich_metrics, base64_image_uploader)
+    activations = build_activations(selection, should_enrich_metrics)
 
     os.environ["TRACELOOP_TELEMETRY"] = "false"
 
