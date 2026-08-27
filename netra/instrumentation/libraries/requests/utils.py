@@ -78,10 +78,18 @@ def _get_response_body(response: requests_lib.Response) -> Union[bytes, str, Non
     Returns:
         The raw body bytes, :data:`_UNREAD_RESPONSE_BODY` for a streaming
         response the caller has not consumed -- reading it here would force a
-        full download and break their iterator -- or None when there is no body.
+        full download and break their iterator -- or None when there is no body
+        left to read, whether because there never was one or because the caller
+        already drained it through their own iterator.
     """
     if not getattr(response, "_content_consumed", True):
         return _UNREAD_RESPONSE_BODY
+    if getattr(response, "_content", None) is False:
+        # Consumed through the caller's own iterator, with nothing buffered to
+        # replay. ``Response.content`` raises RuntimeError in that state rather
+        # than returning empty, and an empty stream reaches here with the tee
+        # having captured nothing, so ask for the state instead of the value.
+        return None
     try:
         return response.content or None
     except requests_lib.RequestException:

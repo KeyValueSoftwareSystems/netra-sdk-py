@@ -88,7 +88,8 @@ class BoundedStreamBuffer:
     :attr:`total_bytes` keeps counting everything that actually flowed.
 
     Chunks may be ``bytes``, ``bytearray`` or ``str``; text chunks are counted
-    and retained as their UTF-8 encoding, and :meth:`gettext` decodes back.
+    and retained as their UTF-8 encoding, and :meth:`getvalue` hands back a
+    prefix that always ends on a codepoint boundary, so it decodes cleanly.
 
     The buffer is not synchronized. One stream is consumed by one reader, which
     is the only way the tee in front of it is correct in the first place.
@@ -151,16 +152,6 @@ class BoundedStreamBuffer:
         """Return the retained prefix, ending on a UTF-8 codepoint boundary."""
         data = b"".join(self._parts)
         return _trim_partial_utf8_tail(data) if self.truncated else data
-
-    def gettext(self) -> str:
-        """Return the retained prefix decoded as text.
-
-        For a producer that appended ``str`` chunks this round-trips exactly.
-        Undecodable bytes are replaced rather than raising, because a caller
-        asking for text has already decided it wants a best-effort string; a
-        caller that needs to distinguish binary should use :meth:`getvalue`.
-        """
-        return self.getvalue().decode("utf-8", errors="replace")
 
 
 class BoundedValue(NamedTuple):
@@ -306,14 +297,14 @@ def _shrink_dict(mapping: Dict[str, Any], deficit: int) -> Optional[Any]:
     return {key: mapping[key] for key in keys}
 
 
-def serialize_within_budget(
-    envelope: Mapping[str, Any],
-    payload: BoundedValue,
-    *,
-    max_len: int,
-    payload_key: str = "body",
-    size_key: str = "body_bytes",
-) -> str:
+# Envelope keys the payload and its real size are written to. Constants rather
+# than parameters: no caller has ever needed a different pair, and the Netra UI
+# reads these exact names.
+_PAYLOAD_KEY = "body"
+_PAYLOAD_SIZE_KEY = "body_bytes"
+
+
+def serialize_within_budget(envelope: Mapping[str, Any], payload: BoundedValue, *, max_len: int) -> str:
     """Serialize *envelope* plus *payload* as JSON kept inside *max_len*.
 
     The payload is trimmed here rather than left to
@@ -329,9 +320,6 @@ def serialize_within_budget(
             Not mutated.
         payload: The value to place last, and what is known about it.
         max_len: The character budget the result must fit within.
-        payload_key: Envelope key the payload is written to.
-        size_key: Envelope key the real payload size is written to, when the
-            payload is truncated and its size is known.
 
     Returns:
         The serialized output, at most *max_len* characters. Two cases can
@@ -348,8 +336,8 @@ def serialize_within_budget(
         if is_truncated:
             data[TRUNCATION_MARKER_KEY] = True
             if payload.total_size is not None:
-                data[size_key] = payload.total_size
-        data[payload_key] = _with_ellipsis(value) if is_truncated and not payload.is_placeholder else value
+                data[_PAYLOAD_SIZE_KEY] = payload.total_size
+        data[_PAYLOAD_KEY] = _with_ellipsis(value) if is_truncated and not payload.is_placeholder else value
         return json.dumps(data, default=str)
 
     rendered = render(payload.value, is_truncated=payload.truncated)

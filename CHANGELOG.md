@@ -14,7 +14,15 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **`netra.instrumentation.lazy` is now `netra.instrumentation.wiring.deferral`**, matching the noun-per-module naming of its siblings, which moved alongside it into `netra.instrumentation.wiring` (`selection`, `registry`, `activation`, `triggers`). Internal modules.
 
+- **`netra.instrumentation` is now four subpackages rather than a flat directory** - the 25 per-library instrumentors moved to `netra.instrumentation.libraries.<library>`, `http_body` split into `netra.instrumentation.capture` (`bounded_capture`, `stream_formats`, `stream_utils`) and `netra.instrumentation.http` (`headers`, `body`), and `utils` became `span_utils` so it no longer reads as a sibling of `opentelemetry.instrumentation.utils` at import sites. `netra.instrumentation.instruments` is unchanged and remains the public path for `InstrumentSet`; the exported OpenTelemetry scope name of every instrumentor is unchanged too, now pinned in a `_TRACER_NAME` constant rather than derived from `__name__`, with a test that fails if one drifts. All internal modules.
+
+- **`netra.utils.TRUNCATION_MARKER_KEY` now lives in `netra.instrumentation.capture.bounded_capture`**, next to the code that stamps it. Still importable from `netra.utils`, and the marker string itself is unchanged.
+
 ### Fixed
+
+- **`requests` spans no longer lose their whole `output` attribute on an empty streaming response** - a `stream=True` response whose body carried no bytes left `requests` with nothing to replay, and reading the body back to record it raised `RuntimeError` instead of returning empty. That took the status code and headers down with the body, so an empty SSE stream or a bodiless chunked response produced a span with no `output` at all. The body state is now checked rather than the read attempted.
+
+- **`httpx` and `requests` now agree on the shape of a bodiless stream** - `httpx` recorded `"body": ""` where `requests` omitted the key, for the same response. Both now omit it, matching the non-streaming path: a stream that yielded nothing is bodiless, not a body that happens to be empty.
 
 - **`CustomInstruments`, `InstrumentSet` and `DEFAULT_INSTRUMENTS` are importable from `netra.instrumentation` again** - all three were reachable as `from netra.instrumentation import ...` before activation was split out of that module in 1.0.1b1, and the split dropped them without intending to. Re-exported. The supported public path remains `from netra import NetraInstruments`.
 

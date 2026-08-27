@@ -745,15 +745,21 @@ def test_netra_owned_instrumentations_are_never_delegated_to_traceloop() -> None
 _LIBRARIES_DIR = pathlib.Path(__file__).parent.parent / "netra" / "instrumentation" / "libraries"
 
 
-def _tracer_name_constant(package: pathlib.Path) -> str | None:
-    """Read the literal assigned to ``_TRACER_NAME`` in *package*, without importing it."""
+def _tracer_name_constants(package: pathlib.Path) -> List[str]:
+    """Read every literal assigned to ``_TRACER_NAME`` in *package*, without importing it.
+
+    Every assignment is collected rather than the first found, so a package that
+    grows a second, divergent constant fails the assertion below instead of
+    having whichever file sorts first silently speak for the whole package.
+    """
+    found = []
     for source_file in sorted(package.rglob("*.py")):
         tree = ast.parse(source_file.read_text())
         for node in ast.walk(tree):
             if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
                 if any(isinstance(t, ast.Name) and t.id == "_TRACER_NAME" for t in node.targets):
-                    return str(node.value.value)
-    return None
+                    found.append(str(node.value.value))
+    return found
 
 
 @pytest.mark.parametrize(  # type: ignore[misc]
@@ -762,13 +768,14 @@ def _tracer_name_constant(package: pathlib.Path) -> str | None:
     ids=lambda p: p.name,
 )
 def test_exported_scope_name_is_pinned_to_the_library_not_the_file_path(package: pathlib.Path) -> None:
-    scope = _tracer_name_constant(package)
-    if scope is None:
+    scopes = _tracer_name_constants(package)
+    if not scopes:
         pytest.skip(f"{package.name} creates no tracer of its own")
 
-    assert scope == f"netra.instrumentation.{package.name}", (
-        f"{package.name} exports scope {scope!r}. The contract is "
-        f"'netra.instrumentation.{package.name}' regardless of where the package sits on disk -- "
+    expected = f"netra.instrumentation.{package.name}"
+    assert set(scopes) == {expected}, (
+        f"{package.name} exports scope(s) {sorted(set(scopes))}. The contract is "
+        f"{expected!r} regardless of where the package sits on disk -- "
         "changing it breaks every backend query and dashboard filtering on scope name."
     )
 

@@ -61,7 +61,13 @@ def build_streaming_output(envelope: Mapping[str, Any], body_buffer: BoundedStre
 
     Returns:
         The serialized value, bounded by the configured ``attribute_max_len``.
+        The ``body`` key is omitted when the stream carried no bytes at all, on
+        the same contract as :func:`build_response_output`: a stream that
+        yielded nothing is bodiless, not a body that happens to be empty.
     """
+    if not body_buffer.total_bytes:
+        return json.dumps(dict(envelope), default=str)
+
     max_len = get_attribute_max_len()
     parsed = parse_streaming_body(
         body_buffer.getvalue(),
@@ -88,8 +94,10 @@ def build_response_output(envelope: Mapping[str, Any], raw_body: Union[bytes, by
         The ``body`` key is omitted entirely when *raw_body* is empty, so a
         bodiless response stays distinguishable from one carrying an empty body.
     """
-    if not raw_body:
-        return json.dumps(dict(envelope), default=str)
     buffer = new_body_buffer()
-    buffer.append(raw_body)
+    if raw_body:
+        buffer.append(raw_body)
+    # An empty body is left to build_streaming_output's own bodiless case rather
+    # than short-circuited here: two copies of "what counts as no body" is how
+    # the streaming and non-streaming paths drifted apart in the first place.
     return build_streaming_output(envelope, buffer)

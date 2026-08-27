@@ -25,12 +25,17 @@ the behavioral tests run against each of them.
 """
 
 import asyncio
+import io
 import json
 import random
 import string
 from typing import Any, Callable, Dict, Iterator, List
 
+import httpx
 import pytest
+import requests as requests_lib
+import urllib3
+from requests.structures import CaseInsensitiveDict
 
 from netra import config as config_module
 from netra.config import _DEFAULT_ATTRIBUTE_MAX_LEN, Config, set_active_config
@@ -49,6 +54,7 @@ from netra.instrumentation.http.body import (
 )
 from netra.instrumentation.libraries.httpx.wrappers import AsyncStreamingWrapper
 from netra.instrumentation.libraries.httpx.wrappers import StreamingWrapper as HttpxStreamingWrapper
+from netra.instrumentation.libraries.requests.utils import _get_response_body as _get_requests_response_body
 from netra.instrumentation.libraries.requests.wrappers import StreamingWrapper as RequestsStreamingWrapper
 
 pytestmark = pytest.mark.unit
@@ -89,16 +95,35 @@ class RecordingSpan:
 
 
 class FakeResponse:
-    """Stand-in for a streaming ``requests``/``httpx`` response."""
+    """Stand-in for a streaming ``requests``/``httpx`` response.
+
+    The ``_content`` / ``_content_consumed`` pair and the ``content`` property
+    mirror ``requests.Response`` exactly, including the ``RuntimeError`` it
+    raises once a caller has drained the body through its own iterator with
+    nothing buffered to replay.  Modelling only the happy shape is what let the
+    fallback path in ``set_streaming_span_output`` go unexercised.
+    """
 
     def __init__(self, chunks: List[bytes], status_code: int = 200) -> None:
         self._chunk_source = chunks
         self.status_code = status_code
         self.headers = {"content-type": "application/octet-stream"}
         self.closed = False
+        self._content: Any = False
+        self._content_consumed = False
 
     def _iter(self) -> Iterator[bytes]:
         yield from self._chunk_source
+        self._content_consumed = True
+
+    @property
+    def content(self) -> bytes:
+        if self._content is False:
+            if self._content_consumed:
+                raise RuntimeError("The content for this response was already consumed")
+            self._content = b"".join(self._chunk_source)
+        self._content_consumed = True
+        return self._content  # type: ignore[no-any-return]
 
     # requests surface
     def iter_content(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
@@ -682,6 +707,104 @@ class TestNonStreamingBodiesAreBoundedToo:
         assert recovered["body"] == "<binary content: 256 bytes>"
 
 
+class TestBodilessStreams:
+    """A stream that yielded nothing still records its status and headers.
+
+    These drive real ``requests``/``httpx`` response objects rather than
+    ``FakeResponse``, because the failure being pinned lives in the real
+    libraries' post-consumption state: once a caller drains
+    ``requests.Response.iter_content``, requests leaves ``_content`` as
+    ``False`` with ``_content_consumed`` set, and ``Response.content`` raises
+    ``RuntimeError`` in that state rather than returning empty.  The tee has
+    captured nothing for an empty stream, so the fallback path reads the body
+    back, and letting that raise took the whole ``output`` attribute with it --
+    status code and headers included.
+    """
+
+    @staticmethod
+    def _empty_requests_response() -> requests_lib.Response:
+        response = requests_lib.Response()
+        response.status_code = 200
+        response.headers = CaseInsensitiveDict({"content-type": "text/event-stream"})
+        response.raw = urllib3.HTTPResponse(body=io.BytesIO(b""), preload_content=False, status=200)
+        response.url = "http://stream.test/"
+        return response
+
+    @staticmethod
+    def _empty_httpx_response() -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=b"")
+
+    def test_reading_a_drained_response_body_reports_no_body_rather_than_raising(self):
+        response = self._empty_requests_response()
+        list(response.iter_content(1024))  # the caller's own iterator drains it
+
+        assert _get_requests_response_body(response) is None
+
+    def test_requests_records_the_envelope_when_the_stream_yields_nothing(self, monkeypatch):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+        wrapper = RequestsStreamingWrapper(response=self._empty_requests_response(), span=span)
+
+        assert b"".join(wrapper.iter_content()) == b""
+        wrapper.close()
+
+        assert _span_output(span) == {
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        }
+
+    def test_httpx_records_the_envelope_when_the_stream_yields_nothing(self, monkeypatch):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+        wrapper = HttpxStreamingWrapper(response=self._empty_httpx_response(), span=span)
+
+        assert b"".join(wrapper.iter_bytes()) == b""
+        wrapper.close()
+
+        assert _span_output(span) == {
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        }
+
+    def test_both_clients_agree_on_the_shape_of_a_bodiless_stream(self, monkeypatch):
+        # The two used to disagree: httpx emitted `"body": ""` where requests
+        # omitted the key, for the same response.
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        requests_span, httpx_span = RecordingSpan(), RecordingSpan()
+
+        requests_wrapper = RequestsStreamingWrapper(response=self._empty_requests_response(), span=requests_span)
+        list(requests_wrapper.iter_content())
+        requests_wrapper.close()
+
+        httpx_wrapper = HttpxStreamingWrapper(response=self._empty_httpx_response(), span=httpx_span)
+        list(httpx_wrapper.iter_bytes())
+        httpx_wrapper.close()
+
+        assert _span_output(requests_span) == _span_output(httpx_span)
+        assert "body" not in _span_output(requests_span)
+
+    @all_wrappers
+    def test_an_empty_stream_omits_the_body_key(self, monkeypatch, drive: Driver):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+
+        assert drive(FakeResponse([]), span) == b""
+
+        assert "body" not in _span_output(span)
+        assert _span_output(span)["status_code"] == 200
+
+    @all_wrappers
+    def test_a_stream_carrying_an_empty_chunk_is_still_bodiless(self, monkeypatch, drive: Driver):
+        # Zero bytes is zero bytes however they arrive; a chunk boundary is not
+        # a body.
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+
+        assert drive(FakeResponse([b"", b""]), span) == b""
+
+        assert "body" not in _span_output(span)
+
+
 class TestCaptureHeadroomLimitation:
     """The parse headroom is a heuristic, and this pins where it falls short.
 
@@ -704,28 +827,6 @@ class TestCaptureHeadroomLimitation:
         assert len(serialized) <= 5_000
         # Well short of the budget, purely because of discarded framing.
         assert len(serialized) < 5_000 * 0.8
-
-
-class TestTextBufferAccess:
-    """A text producer can use the same buffer without hand-rolling decoding."""
-
-    def test_text_chunks_round_trip_through_gettext(self):
-        buffer = BoundedStreamBuffer(max_bytes=1_000)
-
-        for chunk in ("héllo ", "wörld"):
-            buffer.append(chunk)
-
-        assert buffer.gettext() == "héllo wörld"
-        assert buffer.truncated is False
-
-    def test_a_multibyte_character_is_never_split_across_the_cap(self):
-        # "é" is two bytes; a cap of 5 lands mid-character on the third one.
-        buffer = BoundedStreamBuffer(max_bytes=5)
-
-        buffer.append("ééé")
-
-        assert buffer.gettext() == "éé"
-        assert buffer.truncated is True
 
 
 class TestBudgetInvariantAcrossArbitraryShapes:
