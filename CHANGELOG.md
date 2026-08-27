@@ -4,7 +4,13 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [1.0.1b2] - 2026-08-27
+
+### Fixed
+
+- **Root spans from instrumentations outside `root_instruments` are now dropped even when they have no children** - `RootInstrumentFilterProcessor` marked a root-block candidate by setting an instance attribute on the live span at `on_start`, but `Span.end()` hands span processors a fresh `ReadableSpan` built from a fixed field list, so the marker never reached the export batch. `FilteringSpanExporter` then found no in-batch candidate and fell back to the cross-batch candidate registry, which it consults only when some batch span's *parent* is a registered candidate — a blocked root with no children in the batch is nobody's parent, matched nothing, and was exported. Standalone spans from non-root instrumentations (a bare `redis` command, `requests` call or `sqlalchemy` query) therefore leaked to the backend as root traces, intermittently: whether they were filtered depended on what else happened to share their export batch. The marker is now re-stamped at `on_end`, on the copy the exporter actually reads. Traces that were already being filtered correctly are unaffected, but anyone relying on the default `root_instruments` will see these standalone spans stop arriving.
+
+## [1.0.1b1] - 2026-08-25
 
 ### Performance
 
