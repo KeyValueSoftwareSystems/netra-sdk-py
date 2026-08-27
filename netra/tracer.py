@@ -105,6 +105,11 @@ class Tracer:
                 SpanIOProcessor,
             )
 
+            # ORDER MATTERS: RootInstrumentFilterProcessor must precede the exporting
+            # span processor added below. It stamps the root-block candidacy marker in
+            # on_end, on the same ReadableSpan object that the exporter later reads;
+            # a processor registered after the exporting one would mark the span only
+            # after it had already been queued for export.
             if self._root_instrument_names is not None:
                 provider.add_span_processor(RootInstrumentFilterProcessor(self._root_instrument_names))
 

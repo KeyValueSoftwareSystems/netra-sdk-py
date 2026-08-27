@@ -10,10 +10,14 @@ the drop + reparent decision), using lightweight span doubles so parent/scope
 wiring is explicit.
 """
 
+import logging
 import threading
 import time
 
 import pytest
+from opentelemetry import trace
+from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
 from netra.exporters.filtering_span_exporter import FilteringSpanExporter
 from netra.processors import root_instrument_filter_processor as rifp
@@ -461,3 +465,206 @@ def test_candidate_marker_survives_span_attribute_limit():
 
     assert is_root_block_candidate(span) is True
     assert ROOT_BLOCK_CANDIDATE_FIELD not in dict(span.attributes or {})
+
+
+# ---------------------------------------------------------------------------
+# End to end on real SDK spans
+#
+# The FakeSpan doubles above hand the exporter the *same object* the processor
+# marked at on_start.  A real ``Span`` does not: ``Span.end()`` calls
+# ``on_end(self._readable_span())``, a fresh ``ReadableSpan`` built from a fixed
+# field list that carries no instance attributes.  These tests drive a real
+# TracerProvider so that copy is in the loop.
+# ---------------------------------------------------------------------------
+
+
+# Both processors are exercised: SimpleSpanProcessor exports each span in its own
+# single-span batch synchronously inside on_end, while BatchSpanProcessor — the
+# production default unless ``disable_batch`` is set — queues spans and exports
+# several at a time from a worker thread.  Batch composition is exactly what the
+# original leak depended on, so neither shape may be left untested.
+sdk_span_processors = pytest.mark.parametrize(
+    "span_processor_cls",
+    [SimpleSpanProcessor, BatchSpanProcessor],
+    ids=["simple", "batch"],
+)
+
+
+@pytest.fixture
+def make_sdk_pipeline():
+    """Build real providers whose exporter is the real FilteringSpanExporter.
+
+    Providers are shut down at teardown so a BatchSpanProcessor worker thread
+    does not outlive the test that created it.
+    """
+    providers = []
+
+    def _make(allowed: set[str], span_processor_cls: type[SpanProcessor]):
+        recorder = RecordingExporter()
+        provider = TracerProvider(shutdown_on_exit=False)
+        provider.add_span_processor(RootInstrumentFilterProcessor(allowed))
+        provider.add_span_processor(span_processor_cls(FilteringSpanExporter(recorder, patterns=[])))
+        providers.append(provider)
+        return provider, recorder
+
+    yield _make
+
+    for provider in providers:
+        provider.shutdown()
+
+
+def exported_names(recorder: RecordingExporter) -> list[str]:
+    return [s.name for s in recorder.exported]
+
+
+@sdk_span_processors
+def test_childless_blocked_root_on_a_real_span_is_dropped(make_sdk_pipeline, span_processor_cls):
+    # The leak this guards against: a blocked root with no children is nobody's
+    # parent, so the exporter's cross-batch registry lookup never fires for it.
+    # It is dropped only if the export copy itself carries the candidacy marker.
+    provider, recorder = make_sdk_pipeline({"openai"}, span_processor_cls)
+
+    provider.get_tracer(scope("redis")).start_span("SET").end()
+    provider.force_flush()
+
+    assert exported_names(recorder) == []
+
+
+@sdk_span_processors
+def test_childless_allowed_root_on_a_real_span_is_exported(make_sdk_pipeline, span_processor_cls):
+    provider, recorder = make_sdk_pipeline({"openai"}, span_processor_cls)
+
+    provider.get_tracer(scope("openai")).start_span("openai.chat").end()
+    provider.force_flush()
+
+    assert exported_names(recorder) == ["openai.chat"]
+
+
+@sdk_span_processors
+def test_blocked_instrumentation_span_under_a_manual_root_is_kept_on_real_spans(make_sdk_pipeline, span_processor_cls):
+    # Only *root-connected* candidates are dropped: the same redis span that is
+    # dropped at the root survives under a manual span, which is never a candidate.
+    # Under BatchSpanProcessor both spans share one batch, so this also covers the
+    # in-batch overlay resolving a parent that is present alongside its child.
+    provider, recorder = make_sdk_pipeline({"openai"}, span_processor_cls)
+
+    manual_root = provider.get_tracer("my.app.tracer").start_span("cache-lookup-workflow")
+    with trace.use_span(manual_root, end_on_exit=False):
+        provider.get_tracer(scope("redis")).start_span("GET").end()
+    manual_root.end()
+    provider.force_flush()
+
+    assert exported_names(recorder) == ["GET", "cache-lookup-workflow"]
+    assert recorder.exported[0].parent.span_id == manual_root.get_span_context().span_id
+
+
+@sdk_span_processors
+def test_blocked_child_exporting_before_its_blocked_root_is_dropped_via_the_registry(
+    make_sdk_pipeline, span_processor_cls
+):
+    # The in-batch marker cannot resolve this one: under SimpleSpanProcessor the
+    # child exports alone, in a batch its blocked root has not reached yet, so the
+    # child is root-connected only via the cross-batch candidate registry.
+    provider, recorder = make_sdk_pipeline({"openai"}, span_processor_cls)
+
+    blocked_root = provider.get_tracer(scope("requests")).start_span("GET /health")
+    with trace.use_span(blocked_root, end_on_exit=False):
+        provider.get_tracer(scope("redis")).start_span("SET").end()
+    blocked_root.end()
+    provider.force_flush()
+
+    assert exported_names(recorder) == []
+
+
+@pytest.mark.thread_safety
+def test_blocked_roots_ended_concurrently_are_all_dropped(make_sdk_pipeline):
+    # on_end now does correctness-critical work (stamping the export copy) next to
+    # registry mutation and TTL eviction, all under concurrent span ends.  Batching
+    # is used so the ends and the exporter's reads genuinely overlap.
+    provider, recorder = make_sdk_pipeline({"openai"}, BatchSpanProcessor)
+    thread_count = 8
+    spans_per_thread = 25
+    barrier = threading.Barrier(thread_count)
+    failures: list[Exception] = []
+
+    def end_blocked_roots() -> None:
+        try:
+            barrier.wait()  # maximise overlap: every thread starts ending spans together
+            for _ in range(spans_per_thread):
+                provider.get_tracer(scope("redis")).start_span("SET").end()
+        except Exception as exc:
+            failures.append(exc)
+
+    threads = [threading.Thread(target=end_blocked_roots) for _ in range(thread_count)]
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join()
+    provider.force_flush()
+
+    assert failures == []
+    assert exported_names(recorder) == []
+
+
+def test_marker_stamping_failure_is_reported_not_swallowed(caplog):
+    # The whole fix rests on this setattr succeeding.  If it ever stops (a future
+    # SDK giving ReadableSpan __slots__), filtering goes inert — so the failure has
+    # to be visible rather than silently dropping every span back into the export.
+    class SpanRejectingAttributes:
+        __slots__ = ()
+        name = "SET"
+
+    rifp._marker_failure_reported = False
+    try:
+        with caplog.at_level(logging.WARNING, logger=rifp.__name__):
+            RootInstrumentFilterProcessor._mark_candidate(SpanRejectingAttributes())
+    finally:
+        rifp._marker_failure_reported = False
+
+    records = [r for r in caplog.records if r.name == rifp.__name__]
+    assert [r.levelno for r in records] == [logging.WARNING]
+    assert "root-block candidacy marker" in records[0].message
+
+
+def test_repeated_marker_stamping_failures_are_reported_once_at_warning(caplog):
+    # A structural failure must not become one WARNING per ending span.
+    class SpanRejectingAttributes:
+        __slots__ = ()
+        name = "SET"
+
+    rifp._marker_failure_reported = False
+    try:
+        with caplog.at_level(logging.DEBUG, logger=rifp.__name__):
+            for _ in range(3):
+                RootInstrumentFilterProcessor._mark_candidate(SpanRejectingAttributes())
+    finally:
+        rifp._marker_failure_reported = False
+
+    records = [r for r in caplog.records if r.name == rifp.__name__]
+    assert [r.levelno for r in records] == [logging.WARNING, logging.DEBUG, logging.DEBUG]
+
+
+def test_the_export_copy_of_a_blocked_span_carries_the_candidate_marker():
+    # Pins the mechanism behind the end-to-end tests in this section: the marker
+    # set on the live span at on_start is absent from the ReadableSpan the SDK
+    # hands downstream, so the processor has to re-stamp it at on_end.
+    from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
+
+    from netra.exporters.utils import is_root_block_candidate
+
+    seen: list[ReadableSpan] = []
+
+    class CaptureProcessor(SpanProcessor):
+        def on_end(self, span: ReadableSpan) -> None:
+            seen.append(span)
+
+    provider = TracerProvider(shutdown_on_exit=False)
+    provider.add_span_processor(RootInstrumentFilterProcessor({"openai"}))
+    provider.add_span_processor(CaptureProcessor())
+
+    live_span = provider.get_tracer(scope("redis")).start_span("SET")
+    live_span.end()
+
+    (export_copy,) = seen
+    assert export_copy is not live_span  # the SDK snapshots the span on end
+    assert is_root_block_candidate(export_copy) is True
