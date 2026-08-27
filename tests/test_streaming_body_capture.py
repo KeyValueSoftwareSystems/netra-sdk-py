@@ -1,42 +1,61 @@
 """
-Unit tests for bounded streaming-body capture in the HTTP instrumentations.
+Unit tests for bounded HTTP body capture and budgeted serialization.
 
 The ``requests`` and ``httpx`` streaming wrappers tee every chunk the caller
 reads so the body can be recorded on the span.  They used to retain the whole
 body, which made tracing a large download cost several times the download's size
 in RAM even though the exported attribute is capped at ``attribute_max_len``.
-Capture now stops at that same limit.
+Capture now stops at that same limit, and non-streaming bodies go through the
+same bound rather than being parsed and re-serialized whole.
 
-These tests pin the two invariants that matter:
+These tests pin the invariants that matter:
 
     1. The caller still receives every byte, unaltered, no matter how large the
        body is.  Truncation applies to what Netra records, never to what the
        application reads.
     2. Peak retention is bounded by ``attribute_max_len`` and the recorded span
        still reports the *real* body size.
+    3. The serialized attribute fits the budget and stays parseable whatever
+       shape the body parses into -- not just the shapes someone thought to
+       write a case for.  ``TestBudgetInvariantAcrossArbitraryShapes``
+       generates the rest.
 
 All three wrappers (requests, httpx sync, httpx async) share one pipeline, so
 the behavioral tests run against each of them.
 """
 
 import asyncio
+import io
 import json
+import random
+import string
 from typing import Any, Callable, Dict, Iterator, List
 
+import httpx
 import pytest
+import requests as requests_lib
+import urllib3
+from requests.structures import CaseInsensitiveDict
 
 from netra import config as config_module
 from netra.config import _DEFAULT_ATTRIBUTE_MAX_LEN, Config, set_active_config
-from netra.instrumentation.http_body import (
-    _PARSE_COMPACTION_HEADROOM,
+from netra.instrumentation.capture.bounded_capture import (
     TRUNCATION_ELLIPSIS,
-    BoundedBodyBuffer,
-    parse_streaming_body,
+    TRUNCATION_MARKER_KEY,
+    BoundedStreamBuffer,
+    BoundedValue,
+    serialize_within_budget,
 )
-from netra.instrumentation.httpx.wrappers import AsyncStreamingWrapper
-from netra.instrumentation.httpx.wrappers import StreamingWrapper as HttpxStreamingWrapper
-from netra.instrumentation.requests.wrappers import StreamingWrapper as RequestsStreamingWrapper
-from netra.utils import TRUNCATION_MARKER_KEY
+from netra.instrumentation.capture.stream_formats import parse_streaming_body
+from netra.instrumentation.http.body import (
+    _PARSE_COMPACTION_HEADROOM,
+    build_response_output,
+    new_body_buffer,
+)
+from netra.instrumentation.libraries.httpx.wrappers import AsyncStreamingWrapper
+from netra.instrumentation.libraries.httpx.wrappers import StreamingWrapper as HttpxStreamingWrapper
+from netra.instrumentation.libraries.requests.utils import _get_response_body as _get_requests_response_body
+from netra.instrumentation.libraries.requests.wrappers import StreamingWrapper as RequestsStreamingWrapper
 
 pytestmark = pytest.mark.unit
 
@@ -76,16 +95,35 @@ class RecordingSpan:
 
 
 class FakeResponse:
-    """Stand-in for a streaming ``requests``/``httpx`` response."""
+    """Stand-in for a streaming ``requests``/``httpx`` response.
+
+    The ``_content`` / ``_content_consumed`` pair and the ``content`` property
+    mirror ``requests.Response`` exactly, including the ``RuntimeError`` it
+    raises once a caller has drained the body through its own iterator with
+    nothing buffered to replay.  Modelling only the happy shape is what let the
+    fallback path in ``set_streaming_span_output`` go unexercised.
+    """
 
     def __init__(self, chunks: List[bytes], status_code: int = 200) -> None:
         self._chunk_source = chunks
         self.status_code = status_code
         self.headers = {"content-type": "application/octet-stream"}
         self.closed = False
+        self._content: Any = False
+        self._content_consumed = False
 
     def _iter(self) -> Iterator[bytes]:
         yield from self._chunk_source
+        self._content_consumed = True
+
+    @property
+    def content(self) -> bytes:
+        if self._content is False:
+            if self._content_consumed:
+                raise RuntimeError("The content for this response was already consumed")
+            self._content = b"".join(self._chunk_source)
+        self._content_consumed = True
+        return self._content  # type: ignore[no-any-return]
 
     # requests surface
     def iter_content(self, *args: Any, **kwargs: Any) -> Iterator[bytes]:
@@ -159,11 +197,11 @@ def _span_output(span: RecordingSpan) -> Dict[str, Any]:
     return json.loads(span.attributes["output"])
 
 
-class TestBoundedBodyBuffer:
+class TestBoundedStreamBuffer:
     """The buffer retains a bounded prefix while counting the whole stream."""
 
     def test_retains_everything_when_body_is_under_the_cap(self):
-        buffer = BoundedBodyBuffer(max_bytes=100)
+        buffer = BoundedStreamBuffer(max_bytes=100)
 
         buffer.append(b"hello ")
         buffer.append(b"world")
@@ -181,7 +219,7 @@ class TestBoundedBodyBuffer:
         ],
     )
     def test_retains_exactly_the_cap_and_counts_the_rest(self, chunk_size, chunk_count):
-        buffer = BoundedBodyBuffer(max_bytes=10)
+        buffer = BoundedStreamBuffer(max_bytes=10)
 
         for _ in range(chunk_count):
             buffer.append(b"a" * chunk_size)
@@ -191,8 +229,8 @@ class TestBoundedBodyBuffer:
         assert buffer.truncated is True
 
     def test_retention_is_flat_as_the_body_grows(self):
-        small = BoundedBodyBuffer(max_bytes=64)
-        large = BoundedBodyBuffer(max_bytes=64)
+        small = BoundedStreamBuffer(max_bytes=64)
+        large = BoundedStreamBuffer(max_bytes=64)
 
         for _ in range(10):
             small.append(b"x" * 1024)
@@ -204,7 +242,7 @@ class TestBoundedBodyBuffer:
 
     def test_truncated_multibyte_tail_is_dropped_so_text_still_decodes(self):
         # "€" is 3 bytes; a 10-byte cap over "abcdefgh€" cuts it after 2 of them.
-        buffer = BoundedBodyBuffer(max_bytes=10)
+        buffer = BoundedStreamBuffer(max_bytes=10)
 
         buffer.append("abcdefgh€x".encode("utf-8"))
 
@@ -212,7 +250,7 @@ class TestBoundedBodyBuffer:
         assert buffer.getvalue().decode("utf-8") == "abcdefgh"
 
     def test_complete_multibyte_tail_is_kept(self):
-        buffer = BoundedBodyBuffer(max_bytes=11)
+        buffer = BoundedStreamBuffer(max_bytes=11)
 
         buffer.append("abcdefgh€x".encode("utf-8"))
 
@@ -221,7 +259,7 @@ class TestBoundedBodyBuffer:
 
     def test_untruncated_body_is_never_trimmed(self):
         payload = "€€€".encode("utf-8")
-        buffer = BoundedBodyBuffer(max_bytes=len(payload))
+        buffer = BoundedStreamBuffer(max_bytes=len(payload))
 
         buffer.append(payload)
 
@@ -229,7 +267,7 @@ class TestBoundedBodyBuffer:
         assert buffer.getvalue() == payload
 
     def test_str_chunks_are_counted_as_encoded_bytes(self):
-        buffer = BoundedBodyBuffer(max_bytes=100)
+        buffer = BoundedStreamBuffer(max_bytes=100)
 
         buffer.append("€")  # 1 character, 3 bytes
 
@@ -237,7 +275,7 @@ class TestBoundedBodyBuffer:
         assert buffer.getvalue() == "€".encode("utf-8")
 
     def test_bytearray_chunk_is_copied_not_aliased(self):
-        buffer = BoundedBodyBuffer(max_bytes=100)
+        buffer = BoundedStreamBuffer(max_bytes=100)
         chunk = bytearray(b"abc")
 
         buffer.append(chunk)
@@ -246,7 +284,7 @@ class TestBoundedBodyBuffer:
         assert buffer.getvalue() == b"abc"
 
     def test_non_bytes_chunk_is_ignored(self):
-        buffer = BoundedBodyBuffer(max_bytes=100)
+        buffer = BoundedStreamBuffer(max_bytes=100)
 
         buffer.append(None)  # type: ignore[arg-type]
         buffer.append(12345)  # type: ignore[arg-type]
@@ -255,7 +293,7 @@ class TestBoundedBodyBuffer:
         assert buffer.getvalue() == b""
 
     def test_zero_cap_retains_nothing_but_still_counts(self):
-        buffer = BoundedBodyBuffer(max_bytes=0)
+        buffer = BoundedStreamBuffer(max_bytes=0)
 
         buffer.append(b"payload")
 
@@ -264,7 +302,7 @@ class TestBoundedBodyBuffer:
         assert buffer.truncated is True
 
     def test_empty_buffer_reports_no_bytes(self):
-        buffer = BoundedBodyBuffer(max_bytes=10)
+        buffer = BoundedStreamBuffer(max_bytes=10)
 
         assert buffer.total_bytes == 0
         assert buffer.truncated is False
@@ -272,7 +310,7 @@ class TestBoundedBodyBuffer:
     def test_cap_defaults_to_configured_attribute_max_len_with_headroom(self, monkeypatch):
         _activate_limit(monkeypatch, 32)
 
-        buffer = BoundedBodyBuffer()
+        buffer = new_body_buffer()
         buffer.append(b"y" * 5000)
 
         assert len(buffer.getvalue()) == 32 * _PARSE_COMPACTION_HEADROOM
@@ -281,7 +319,7 @@ class TestBoundedBodyBuffer:
         assert config_module._active_config is None
         expected = _DEFAULT_ATTRIBUTE_MAX_LEN * _PARSE_COMPACTION_HEADROOM
 
-        buffer = BoundedBodyBuffer()
+        buffer = new_body_buffer()
         buffer.append(b"y" * (expected + 1000))
 
         assert len(buffer.getvalue()) == expected
@@ -523,3 +561,342 @@ class TestStreamingCapture:
 
         assert response.closed is True
         assert span.ended is True
+
+
+class TestBudgetIsAlwaysHonored:
+    """Whatever shape the body parses into, the serialized value fits the budget.
+
+    The shrinker used to handle only strings and multi-entry lists. Anything
+    else -- most importantly a single JSON document, which is what a plain
+    ``application/json`` response streamed via ``iter_content`` parses to --
+    returned unshrunk and blew the budget by whatever the body happened to
+    weigh. ``InstrumentationSpanProcessor`` then sliced the attribute at a
+    fixed length, leaving unparseable JSON with the ellipsis cut off.
+    """
+
+    @staticmethod
+    def _serialize(envelope, value, max_len: int) -> str:
+        return serialize_within_budget(envelope, BoundedValue(value, truncated=True), max_len=max_len)
+
+    @all_wrappers
+    def test_single_json_document_over_budget_is_shrunk_not_passed_through(self, monkeypatch, drive: Driver):
+        # Small enough to fit the capture buffer whole, so the buffer reports
+        # truncated=False and only the serializer can enforce the budget.
+        _activate_limit(monkeypatch, 2_000)
+        document = json.dumps({"items": [{"id": i, "v": "z" * 100} for i in range(60)]}).encode()
+        assert len(document) < 2_000 * _PARSE_COMPACTION_HEADROOM
+        span = RecordingSpan()
+
+        drive(FakeResponse([document]), span)
+
+        serialized = span.attributes["output"]
+        assert len(serialized) <= 2_000
+        json.loads(serialized)  # still parseable -- no mid-token slice
+        assert _span_output(span)[TRUNCATION_MARKER_KEY] is True
+
+    def test_dict_body_is_shrunk_when_the_envelope_pushes_it_over(self):
+        envelope = {"status_code": 200, "headers": {"x-request-id": "r" * 300}}
+        body = {"summary": "a" * 900, "code": 7}
+
+        serialized = self._serialize(envelope, body, max_len=1_000)
+
+        assert len(serialized) <= 1_000
+        recovered = json.loads(serialized)
+        assert recovered[TRUNCATION_MARKER_KEY] is True
+        # The widest value gave up characters; the narrow one stayed.
+        assert recovered["body"]["code"] == 7
+        assert len(recovered["body"]["summary"]) < 900
+
+    def test_nested_structure_shrinks_into_its_widest_branch(self):
+        body = {"meta": {"id": "abc"}, "rows": [{"text": "q" * 400} for _ in range(5)]}
+
+        serialized = self._serialize({}, body, max_len=600)
+
+        assert len(serialized) <= 600
+        recovered = json.loads(serialized)["body"]
+        assert recovered["meta"] == {"id": "abc"}
+        assert len(recovered["rows"]) < 5
+
+    def test_flat_scalar_dict_drops_entries_when_nothing_can_shrink(self):
+        body = {f"k{i}": i for i in range(200)}
+
+        serialized = self._serialize({}, body, max_len=300)
+
+        assert len(serialized) <= 300
+        recovered = json.loads(serialized)["body"]
+        assert 0 < len(recovered) < 200
+        assert recovered["k0"] == 0  # entries are dropped from the tail
+
+    def test_a_scalar_body_is_left_alone_when_it_already_fits(self):
+        serialized = self._serialize({"status_code": 200}, 42, max_len=100)
+
+        assert json.loads(serialized)["body"] == 42
+
+    def test_oversized_envelope_returns_the_smallest_rendering_not_the_fullest(self):
+        # The envelope alone busts the budget, so nothing this layer does can
+        # fit it. It must still not hand back the *largest* candidate.
+        envelope = {"headers": {"h": "x" * 5_000}}
+
+        serialized = self._serialize(envelope, ["entry" * 50] * 40, max_len=1_000)
+        unshrunk = self._serialize(envelope, ["entry" * 50] * 40, max_len=10_000_000)
+
+        assert len(serialized) < len(unshrunk)
+        assert json.loads(serialized)[TRUNCATION_MARKER_KEY] is True
+
+
+class TestNonStreamingBodiesAreBoundedToo:
+    """A body the HTTP library already holds is still bounded before recording.
+
+    "Already in memory" is not "free to record": parsing and re-serializing a
+    200 MB response so the exporter can keep 50,000 characters of it is Netra's
+    own allocation on top of the library's.
+    """
+
+    def test_large_body_is_recorded_within_budget_and_marked(self, monkeypatch):
+        _activate_limit(monkeypatch, 1_000)
+        body = json.dumps([{"i": i, "v": "y" * 80} for i in range(5_000)]).encode()
+
+        serialized = build_response_output({"status_code": 200}, body)
+
+        assert len(serialized) <= 1_000
+        recovered = json.loads(serialized)
+        assert recovered[TRUNCATION_MARKER_KEY] is True
+        assert recovered["body_bytes"] == len(body)
+
+    def test_parsing_never_sees_more_than_the_capture_cap(self, monkeypatch):
+        _activate_limit(monkeypatch, 500)
+        cap = 500 * _PARSE_COMPACTION_HEADROOM
+        body = b"y" * (cap * 20)
+
+        buffer = new_body_buffer()
+        buffer.append(body)
+
+        assert len(buffer.getvalue()) == cap
+        assert buffer.total_bytes == len(body)
+
+    @pytest.mark.parametrize(
+        "raw,expected",
+        [
+            (b'{"key": "value"}', {"key": "value"}),
+            (b"plain text", "plain text"),
+            ("decoded text", "decoded text"),
+        ],
+    )
+    def test_small_bodies_round_trip_unchanged(self, monkeypatch, raw, expected):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+
+        recovered = json.loads(build_response_output({"status_code": 200}, raw))
+
+        assert recovered["body"] == expected
+        assert TRUNCATION_MARKER_KEY not in recovered
+
+    @pytest.mark.parametrize("empty", [None, b"", ""])
+    def test_a_bodiless_response_omits_the_body_key(self, monkeypatch, empty):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+
+        recovered = json.loads(build_response_output({"status_code": 204}, empty))
+
+        assert "body" not in recovered
+        assert recovered == {"status_code": 204}
+
+    def test_binary_body_is_described_rather_than_decoded(self, monkeypatch):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+
+        recovered = json.loads(build_response_output({}, bytes(range(256))))
+
+        assert recovered["body"] == "<binary content: 256 bytes>"
+
+
+class TestBodilessStreams:
+    """A stream that yielded nothing still records its status and headers.
+
+    These drive real ``requests``/``httpx`` response objects rather than
+    ``FakeResponse``, because the failure being pinned lives in the real
+    libraries' post-consumption state: once a caller drains
+    ``requests.Response.iter_content``, requests leaves ``_content`` as
+    ``False`` with ``_content_consumed`` set, and ``Response.content`` raises
+    ``RuntimeError`` in that state rather than returning empty.  The tee has
+    captured nothing for an empty stream, so the fallback path reads the body
+    back, and letting that raise took the whole ``output`` attribute with it --
+    status code and headers included.
+    """
+
+    @staticmethod
+    def _empty_requests_response() -> requests_lib.Response:
+        response = requests_lib.Response()
+        response.status_code = 200
+        response.headers = CaseInsensitiveDict({"content-type": "text/event-stream"})
+        response.raw = urllib3.HTTPResponse(body=io.BytesIO(b""), preload_content=False, status=200)
+        response.url = "http://stream.test/"
+        return response
+
+    @staticmethod
+    def _empty_httpx_response() -> httpx.Response:
+        return httpx.Response(200, headers={"content-type": "text/event-stream"}, content=b"")
+
+    def test_reading_a_drained_response_body_reports_no_body_rather_than_raising(self):
+        response = self._empty_requests_response()
+        list(response.iter_content(1024))  # the caller's own iterator drains it
+
+        assert _get_requests_response_body(response) is None
+
+    def test_requests_records_the_envelope_when_the_stream_yields_nothing(self, monkeypatch):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+        wrapper = RequestsStreamingWrapper(response=self._empty_requests_response(), span=span)
+
+        assert b"".join(wrapper.iter_content()) == b""
+        wrapper.close()
+
+        assert _span_output(span) == {
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        }
+
+    def test_httpx_records_the_envelope_when_the_stream_yields_nothing(self, monkeypatch):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+        wrapper = HttpxStreamingWrapper(response=self._empty_httpx_response(), span=span)
+
+        assert b"".join(wrapper.iter_bytes()) == b""
+        wrapper.close()
+
+        assert _span_output(span) == {
+            "status_code": 200,
+            "headers": {"content-type": "text/event-stream"},
+        }
+
+    def test_both_clients_agree_on_the_shape_of_a_bodiless_stream(self, monkeypatch):
+        # The two used to disagree: httpx emitted `"body": ""` where requests
+        # omitted the key, for the same response.
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        requests_span, httpx_span = RecordingSpan(), RecordingSpan()
+
+        requests_wrapper = RequestsStreamingWrapper(response=self._empty_requests_response(), span=requests_span)
+        list(requests_wrapper.iter_content())
+        requests_wrapper.close()
+
+        httpx_wrapper = HttpxStreamingWrapper(response=self._empty_httpx_response(), span=httpx_span)
+        list(httpx_wrapper.iter_bytes())
+        httpx_wrapper.close()
+
+        assert _span_output(requests_span) == _span_output(httpx_span)
+        assert "body" not in _span_output(requests_span)
+
+    @all_wrappers
+    def test_an_empty_stream_omits_the_body_key(self, monkeypatch, drive: Driver):
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+
+        assert drive(FakeResponse([]), span) == b""
+
+        assert "body" not in _span_output(span)
+        assert _span_output(span)["status_code"] == 200
+
+    @all_wrappers
+    def test_a_stream_carrying_an_empty_chunk_is_still_bodiless(self, monkeypatch, drive: Driver):
+        # Zero bytes is zero bytes however they arrive; a chunk boundary is not
+        # a body.
+        _activate_limit(monkeypatch, _DEFAULT_ATTRIBUTE_MAX_LEN)
+        span = RecordingSpan()
+
+        assert drive(FakeResponse([b"", b""]), span) == b""
+
+        assert "body" not in _span_output(span)
+
+
+class TestCaptureHeadroomLimitation:
+    """The parse headroom is a heuristic, and this pins where it falls short.
+
+    ``_PARSE_COMPACTION_HEADROOM`` assumes retained bytes mostly become exported
+    characters. A stream padded with framing the SSE parser discards outright
+    breaks that assumption, and the attribute lands *under* budget. This is a
+    documented trade-off, not a bug -- the test exists so that a change to the
+    factor shows up as a deliberate edit rather than a silent drift.
+    """
+
+    def test_framing_the_parser_discards_leaves_budget_unused(self, monkeypatch):
+        _activate_limit(monkeypatch, 5_000)
+        # Every event spends ~55 bytes of capture to yield ~12 characters.
+        event = b'event: ping\n:keepalive-padding-comment\ndata: {"t":1}\n\n'
+        span = RecordingSpan()
+
+        _drive_httpx(FakeResponse([event * 4_000]), span)
+
+        serialized = span.attributes["output"]
+        assert len(serialized) <= 5_000
+        # Well short of the budget, purely because of discarded framing.
+        assert len(serialized) < 5_000 * 0.8
+
+
+class TestBudgetInvariantAcrossArbitraryShapes:
+    """The budget holds for payload shapes nobody thought to write a case for.
+
+    The shrinker was rewritten twice during review because each hand-picked
+    example passed while a neighbouring shape blew the budget by 200 KB: an
+    averaged entry size collapses on a list holding one fat entry among many
+    small, and shrinking one dict value per round needs one round per fat key.
+    This generates the neighbours.
+    """
+
+    @staticmethod
+    def _random_value(rng: random.Random, depth: int = 0) -> Any:
+        kinds = ["str", "int", "list", "dict", "str", "list"] if depth < 3 else ["str", "int"]
+        kind = rng.choice(kinds)
+        if kind == "str":
+            return "".join(rng.choice(string.printable[:70]) for _ in range(rng.randint(0, 400)))
+        if kind == "int":
+            return rng.randint(-(10**6), 10**6)
+        if kind == "list":
+            return [
+                TestBudgetInvariantAcrossArbitraryShapes._random_value(rng, depth + 1)
+                for _ in range(rng.randint(0, 30))
+            ]
+        return {
+            f"k{i}": TestBudgetInvariantAcrossArbitraryShapes._random_value(rng, depth + 1)
+            for i in range(rng.randint(0, 15))
+        }
+
+    @pytest.mark.parametrize("seed", [0, 1, 2, 3, 4, 5])
+    def test_output_fits_the_budget_and_stays_parseable(self, seed):
+        rng = random.Random(seed)
+
+        for _ in range(60):
+            envelope = {"status_code": 200}
+            if rng.random() < 0.25:
+                envelope["headers"] = {"h": "x" * rng.randint(0, 3_000)}
+            payload = BoundedValue(
+                self._random_value(rng),
+                truncated=rng.random() < 0.5,
+                total_size=rng.randint(0, 10**6),
+            )
+            max_len = rng.choice([200, 1_000, 5_000])
+
+            serialized = serialize_within_budget(envelope, payload, max_len=max_len)
+
+            json.loads(serialized)  # never a mid-token slice
+            # The only permitted overshoot is an envelope that leaves no room
+            # for even an elided body -- no shorter output exists.
+            floor = len(
+                json.dumps({**envelope, TRUNCATION_MARKER_KEY: True, "body_bytes": payload.total_size, "body": "..."})
+            )
+            assert len(serialized) <= max_len or floor >= max_len
+
+    def test_a_list_whose_weight_sits_in_one_entry_still_fits(self):
+        # The averaged-size shrinker judged every entry droppable here and then
+        # tried to shrink into the first, which was an empty dict.
+        body = [{}, 1, 2, ["z" * 15_000], 3, "tail"]
+
+        serialized = serialize_within_budget({}, BoundedValue(body, truncated=True), max_len=200)
+
+        assert len(serialized) <= 200
+        json.loads(serialized)
+
+    def test_a_dict_of_many_fat_values_fits_without_exhausting_the_rounds(self):
+        # One value shrunk per round needed 20 rounds; the limit is 8.
+        body = {f"field{i}": "q" * 400 for i in range(20)}
+
+        serialized = serialize_within_budget({}, BoundedValue(body, truncated=True), max_len=300)
+
+        assert len(serialized) <= 300
+        json.loads(serialized)

@@ -20,7 +20,7 @@ from opentelemetry.sdk.trace import SpanProcessor, TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 
 from netra.exporters.filtering_span_exporter import FilteringSpanExporter
-from netra.instrumentation.livekit.utils import (
+from netra.instrumentation.libraries.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     CALL_SPAN_NAME,
     JOB_ENTRYPOINT_SPAN_NAME,

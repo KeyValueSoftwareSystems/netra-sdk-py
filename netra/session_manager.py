@@ -726,7 +726,7 @@ class SessionManager:
                 stream = Netra.set_root_output_stream(stream)
         """
         try:
-            from netra.instrumentation.stream_utils import wrap_stream_for_root_output
+            from netra.instrumentation.capture.stream_utils import wrap_stream_for_root_output
             from netra.processors.root_span_processor import RootSpanProcessor
 
             root_span = RootSpanProcessor.get_root_span(trace.get_current_span())

@@ -13,8 +13,8 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.agno.utils import set_response_attributes
-from netra.instrumentation.agno.wrappers import (
+from netra.instrumentation.libraries.agno.utils import set_response_attributes
+from netra.instrumentation.libraries.agno.wrappers import (
     LlmSpanStreamingWrapper,
     model_response_capture_wrapper,
 )

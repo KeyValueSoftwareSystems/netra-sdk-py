@@ -6,7 +6,7 @@ Minimal tests focusing on core functionality and happy path scenarios.
 from typing import Collection
 from unittest.mock import Mock, patch
 
-from netra.instrumentation.aiohttp import AioHttpClientInstrumentor, get_default_span_name
+from netra.instrumentation.libraries.aiohttp import AioHttpClientInstrumentor, get_default_span_name
 
 
 class TestAioHttpClientInstrumentor:
@@ -35,13 +35,13 @@ class TestAioHttpClientInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "aiohttp >= 3.0.0" in dependencies
 
-    @patch("netra.instrumentation.aiohttp.get_tracer")
-    @patch("netra.instrumentation.aiohttp.get_meter")
-    @patch("netra.instrumentation.aiohttp._instrument")
+    @patch("netra.instrumentation.libraries.aiohttp.get_tracer")
+    @patch("netra.instrumentation.libraries.aiohttp.get_meter")
+    @patch("netra.instrumentation.libraries.aiohttp._instrument")
     @patch(
-        "netra.instrumentation.aiohttp._OpenTelemetrySemanticConventionStability._get_opentelemetry_stability_opt_in_mode"
+        "netra.instrumentation.libraries.aiohttp._OpenTelemetrySemanticConventionStability._get_opentelemetry_stability_opt_in_mode"
     )
-    @patch("netra.instrumentation.aiohttp._get_schema_url")
+    @patch("netra.instrumentation.libraries.aiohttp._get_schema_url")
     def test_instrument_with_default_parameters(
         self, mock_schema_url, mock_stability_mode, mock_instrument, mock_get_meter, mock_get_tracer
     ):
@@ -66,13 +66,13 @@ class TestAioHttpClientInstrumentor:
         mock_get_meter.assert_called_once()
         mock_instrument.assert_called_once()
 
-    @patch("netra.instrumentation.aiohttp.get_tracer")
-    @patch("netra.instrumentation.aiohttp.get_meter")
-    @patch("netra.instrumentation.aiohttp._instrument")
+    @patch("netra.instrumentation.libraries.aiohttp.get_tracer")
+    @patch("netra.instrumentation.libraries.aiohttp.get_meter")
+    @patch("netra.instrumentation.libraries.aiohttp._instrument")
     @patch(
-        "netra.instrumentation.aiohttp._OpenTelemetrySemanticConventionStability._get_opentelemetry_stability_opt_in_mode"
+        "netra.instrumentation.libraries.aiohttp._OpenTelemetrySemanticConventionStability._get_opentelemetry_stability_opt_in_mode"
     )
-    @patch("netra.instrumentation.aiohttp._get_schema_url")
+    @patch("netra.instrumentation.libraries.aiohttp._get_schema_url")
     def test_instrument_with_custom_parameters(
         self, mock_schema_url, mock_stability_mode, mock_instrument, mock_get_meter, mock_get_tracer
     ):
@@ -116,7 +116,7 @@ class TestAioHttpClientInstrumentor:
         assert call_args[1]["request_hook"] == mock_request_hook
         assert call_args[1]["response_hook"] == mock_response_hook
 
-    @patch("netra.instrumentation.aiohttp._uninstrument")
+    @patch("netra.instrumentation.libraries.aiohttp._uninstrument")
     def test_uninstrument(self, mock_uninstrument):
         """Test _uninstrument method calls global uninstrument function."""
         # Arrange
@@ -128,7 +128,7 @@ class TestAioHttpClientInstrumentor:
         # Assert
         mock_uninstrument.assert_called_once()
 
-    @patch("netra.instrumentation.aiohttp._uninstrument_from")
+    @patch("netra.instrumentation.libraries.aiohttp._uninstrument_from")
     def test_uninstrument_session(self, mock_uninstrument_from):
         """Test uninstrument_session static method."""
         # Arrange

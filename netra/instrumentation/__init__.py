@@ -1,14 +1,24 @@
 """Enabling the instrumentations the SDK traces with.
 
 ``Netra.init()`` calls :func:`init_instrumentations` once, which decides *what*
-to instrument and hands each instrumentation to ``deferred_activation``, which
-decides *when*.  The work is split across five modules:
+to instrument and hands each instrumentation to ``wiring.deferral``, which
+decides *when*.
 
-* ``instruments``         — every instrumentation the SDK knows about, and the defaults
-* ``selection``           — requested/blocked sets to the instrumentations to enable
-* ``registry``            — how to build each instrumentor Netra provides itself
-* ``activation``          — applying one instrumentation, whoever implements it
-* ``deferred_activation`` — holding each one until its library is imported
+The package is laid out in four parts:
+
+* ``instruments``  — every instrumentation the SDK knows about, and the defaults.
+  Kept at this level because it is public: callers name ``InstrumentSet`` members
+  when they pass ``instruments=`` to ``Netra.init()``.
+* ``wiring/``      — resolving the requested set and applying it: ``selection``,
+  ``registry``, ``triggers``, ``activation``, ``deferral``.
+* ``capture/``     — bounding and shaping recorded values: ``bounded_capture``,
+  ``stream_formats``, ``stream_utils``.
+* ``http/``        — what the HTTP instrumentations share: ``headers``, ``body``.
+
+Everything else here is one directory per instrumented library, each following
+the layout in CLAUDE.md: ``__init__.py`` holds the ``BaseInstrumentor``
+subclass, ``wrappers.py`` the wrapper factories, ``utils.py`` the attribute
+extraction, ``version.py`` the pinned library version.
 
 ``traceloop.sdk`` is never imported at module scope.  Importing it costs
 ~620 ms (it transitively pulls in pandas, aiohttp and numpy) and that cost
@@ -21,13 +31,6 @@ import logging
 import os
 from typing import AbstractSet, Optional
 
-from netra.instrumentation.activation import (
-    SUBPROCESS_ACTIVATION,
-    build_activations,
-    run_activation,
-)
-from netra.instrumentation.deferred_activation import register_lazy_instrumentations
-
 # Re-exported for import-path compatibility: these four were reachable as
 # ``from netra.instrumentation import ...`` before activation was split out of
 # this module, and nothing about that split needed to break it.  The supported
@@ -38,7 +41,13 @@ from netra.instrumentation.instruments import (
     InstrumentSet,
     NetraInstruments,
 )
-from netra.instrumentation.selection import select_instrumentations
+from netra.instrumentation.wiring.activation import (
+    SUBPROCESS_ACTIVATION,
+    build_activations,
+    run_activation,
+)
+from netra.instrumentation.wiring.deferral import register_lazy_instrumentations
+from netra.instrumentation.wiring.selection import select_instrumentations
 
 __all__ = [
     "CustomInstruments",
