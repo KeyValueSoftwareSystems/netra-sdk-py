@@ -3,10 +3,10 @@ name: Detailed Code Checks
 on:
   # Run on pushes to main branches
   push:
-    branches: [ main, master, beta, dev, staging ]
+    branches: [ main, master, beta, dev, develop, staging ]
   # Run on pull requests to specific branches
   pull_request:
-    branches: [ main, master, beta, dev, staging ]
+    branches: [ main, master, beta, dev, develop, staging ]
   # Manual trigger from GitHub UI
   workflow_dispatch:
 
@@ -53,6 +53,44 @@ jobs:
 
       - name: Type check with mypy
         run: mypy .
+
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pytest
+          pip install -e .
+
+      # netra/instrumentation/triggers.py maps each instrumentation to the
+      # module whose import activates it.  A wrong entry loses customer
+      # telemetry silently, and the tests that catch that
+      # (test_trigger_module_is_a_real_module_when_installed) can only check a
+      # trigger whose library is present -- otherwise they skip.  These are the
+      # entries where the trigger name is not the obvious one: namespace
+      # packages that must name the real submodule, and distributions whose
+      # import name differs from their package name.
+      - name: Install trigger libraries for instrumentation coverage
+        run: |
+          pip install \
+            cerebras-cloud-sdk \
+            google-adk \
+            google-genai \
+            langchain-core \
+            langgraph \
+            livekit-agents \
+            openai
+
+      - name: Run tests
+        run: pytest tests -q
 
   commit-check:
     runs-on: ubuntu-latest

@@ -7,11 +7,13 @@ synthetic trigger modules so they exercise the real wrapt machinery without
 depending on which LLM libraries happen to be installed.
 """
 
+import ast
 import dataclasses
 import importlib
 import importlib.util
 import io
 import logging
+import pathlib
 import subprocess
 import sys
 import textwrap
@@ -22,15 +24,17 @@ import pytest
 import wrapt
 import wrapt.importer
 
-from netra.instrumentation.activation import Activation, apply_traceloop_instrumentation, is_distribution_installed
-from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
-from netra.instrumentation.lazy import _LEDGER, register_lazy_instrumentations
-from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS, InstrumentorSpec
-from netra.instrumentation.selection import (
-    TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA,
-    partition_by_origin,
-    select_instrumentations,
+from netra.instrumentation import triggers
+from netra.instrumentation.activation import (
+    Activation,
+    apply_traceloop_instrumentation,
+    build_activations,
+    is_distribution_installed,
 )
+from netra.instrumentation.deferred_activation import _LEDGER, register_lazy_instrumentations
+from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
+from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS, InstrumentorSpec
+from netra.instrumentation.selection import partition_by_origin, select_instrumentations
 from netra.instrumentation.triggers import INSTRUMENT_TRIGGERS, INTENTIONALLY_EAGER_INSTRUMENTS
 
 pytestmark = pytest.mark.unit
@@ -41,7 +45,7 @@ def reset_activation_ledger() -> Generator[None, None, None]:
     """Clear the process-wide ledger between tests.
 
     The ledger is module scope so the exactly-once invariant holds per process
-    (see ``netra.instrumentation.lazy``).  Tests re-register the same synthetic
+    (see ``netra.instrumentation.deferred_activation``).  Tests re-register the same synthetic
     instrument names repeatedly, so without this the second test to use a name
     would find it already claimed.
     """
@@ -78,7 +82,7 @@ def probe_package(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> Generato
 
 def _register(triggers: dict, activations: List[Activation], monkeypatch: pytest.MonkeyPatch) -> None:
     """Register *activations* against a trigger table containing only *triggers*."""
-    monkeypatch.setattr("netra.instrumentation.lazy._TRIGGERS_BY_NAME", triggers)
+    monkeypatch.setattr("netra.instrumentation.deferred_activation._TRIGGERS_BY_NAME", triggers)
     register_lazy_instrumentations(activations)
 
 
@@ -399,6 +403,24 @@ def test_trigger_module_is_a_real_module_when_installed(trigger: str) -> None:
     assert spec.loader is not None, f"{trigger} is a namespace package; the trigger must name the real module"
 
 
+def test_no_instrument_appears_twice_in_the_trigger_table() -> None:
+    # A repeated key is invisible at runtime — the later row silently wins — and
+    # pyflakes' F601 only fires when the repeated values *differ*, so a copy
+    # with identical triggers passes lint.  Parsing the source is the only way
+    # to see the rows the dict literal threw away.
+    source = pathlib.Path(triggers.__file__).read_text(encoding="utf-8")
+    table = next(
+        node.value
+        for node in ast.parse(source).body
+        if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", None) == "INSTRUMENT_TRIGGERS"
+    )
+
+    keys = [ast.unparse(key) for key in table.keys if key is not None]
+    duplicates = sorted({key for key in keys if keys.count(key) > 1})
+
+    assert duplicates == [], f"{duplicates} appear twice in INSTRUMENT_TRIGGERS; the later row wins silently"
+
+
 def test_no_trigger_is_the_parent_namespace_of_another_trigger() -> None:
     triggers = {trigger for values in INSTRUMENT_TRIGGERS.values() for trigger in values}
     overlapping = sorted(
@@ -408,6 +430,27 @@ def test_no_trigger_is_the_parent_namespace_of_another_trigger() -> None:
     )
 
     assert overlapping == [], f"{overlapping} shadow a more specific trigger and may fire mid-import"
+
+
+def test_naming_an_unimplemented_instrument_warns(caplog: pytest.LogCaptureFixture) -> None:
+    # PYRAMID is selectable but ships no instrumentor, so enabling it does
+    # nothing.  A caller who typed its name should not have to raise the log
+    # level to find that out.
+    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.activation"):
+        build_activations(select_instrumentations({InstrumentSet.PYRAMID}, None), should_enrich_metrics=True)
+
+    assert "PYRAMID" in caplog.text
+
+
+def test_expanding_all_does_not_warn_about_unimplemented_instruments(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    # InstrumentSet.ALL sweeps in six unimplemented members every time; warning
+    # about them would make the warning above worthless noise.
+    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.activation"):
+        build_activations(select_instrumentations({InstrumentSet.ALL}, None), should_enrich_metrics=True)
+
+    assert "No instrumentor registered" not in caplog.text
 
 
 def test_partition_by_origin_splits_traceloop_and_custom_instruments() -> None:
@@ -459,7 +502,7 @@ def test_traceloop_warnings_do_not_reach_stdout(capsys: pytest.CaptureFixture[st
     # Activating one instrument at a time makes traceloop's "no valid
     # instruments set" warning routine, and it would print into whatever the
     # client was doing when they imported their library.
-    apply_traceloop_instrumentation("ALEPHALPHA", should_enrich_metrics=True, base64_image_uploader=None)
+    apply_traceloop_instrumentation("ALEPHALPHA", should_enrich_metrics=True)
 
     captured = capsys.readouterr()
     assert captured.out == ""
@@ -468,7 +511,7 @@ def test_traceloop_warnings_do_not_reach_stdout(capsys: pytest.CaptureFixture[st
 
 def test_unknown_traceloop_instrument_is_logged_and_skipped(caplog: pytest.LogCaptureFixture) -> None:
     with caplog.at_level(logging.WARNING):
-        apply_traceloop_instrumentation("NOT_A_REAL_INSTRUMENT", should_enrich_metrics=True, base64_image_uploader=None)
+        apply_traceloop_instrumentation("NOT_A_REAL_INSTRUMENT", should_enrich_metrics=True)
 
     assert "NOT_A_REAL_INSTRUMENT" in caplog.text
 
@@ -550,9 +593,7 @@ def _enabled_traceloop_names(
 
 
 def test_default_instruments_enable_their_traceloop_members() -> None:
-    expected = {
-        member.name for member in DEFAULT_INSTRUMENTS if member.origin is _Origin.TRACELOOP
-    } - TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA
+    expected = {member.name for member in DEFAULT_INSTRUMENTS if member.origin is _Origin.TRACELOOP}
 
     assert _enabled_traceloop_names() == expected
 
@@ -639,7 +680,10 @@ def test_selection_never_imports_traceloop() -> None:
 
 def test_netra_owned_instrumentations_are_never_delegated_to_traceloop() -> None:
     # Netra ships its own OpenAI/Groq/... instrumentors; traceloop's versions
-    # would double-instrument the same call sites.
+    # would double-instrument the same call sites.  Checked against the
+    # registry rather than a hand-kept list of names, which could only ever
+    # agree with itself.
     enabled = _enabled_traceloop_names({InstrumentSet.ALL})
+    netra_owned = {instrument.name for instrument in CUSTOM_INSTRUMENTORS}
 
-    assert enabled.isdisjoint(TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA)
+    assert enabled.isdisjoint(netra_owned)

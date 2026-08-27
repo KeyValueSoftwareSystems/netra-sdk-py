@@ -2,7 +2,7 @@
 
 Every instrumentation — Netra's own or one delegated to traceloop — is wrapped
 in an :class:`Activation`: a name plus a callable that applies it.  That single
-shape is what lets ``netra.instrumentation.lazy`` defer activation to the first
+shape is what lets ``netra.instrumentation.deferred_activation`` defer activation to the first
 import of the target library without knowing anything about instrumentors.
 
 No instrumentor module is imported until its instrumentation is actually
@@ -53,26 +53,27 @@ class Activation(NamedTuple):
     run: Callable[[], None]
 
 
-def build_activations(
-    selection: InstrumentationSelection,
-    should_enrich_metrics: bool,
-    base64_image_uploader: Optional[Callable[[str, str, str], str]],
-) -> list[Activation]:
-    """Build one activation per selected instrumentation, in activation order.
+def build_activations(selection: InstrumentationSelection, should_enrich_metrics: bool) -> list[Activation]:
+    """Build one activation per selected instrumentation, in registration order.
 
     Traceloop instrumentations come first, in name order, then Netra's own in
-    registry order, so the order does not depend on set iteration.
+    registry order, so the list does not depend on set iteration.  That fixes
+    the order activations are *registered* in, and the order they are applied
+    in on the eager fallback path and within a single post-import hook.  It
+    does not fix the order across hooks: once activation is deferred, two
+    instrumentations with different trigger modules are applied in whatever
+    order the client imports those modules.  No instrumentation depends on
+    another having been applied first.
 
     Args:
         selection: The instrumentations to enable.
         should_enrich_metrics: Whether to enrich metrics.
-        base64_image_uploader: Optional callback for image uploads.
 
     Returns:
-        The activations, in the order they should be applied.
+        The activations, in registration order.
     """
     activations = [
-        Activation(name, partial(apply_traceloop_instrumentation, name, should_enrich_metrics, base64_image_uploader))
+        Activation(name, partial(apply_traceloop_instrumentation, name, should_enrich_metrics))
         for name in sorted(selection.traceloop_instrument_names)
     ]
     activations.extend(
@@ -84,7 +85,10 @@ def build_activations(
     unregistered = selection.custom_instruments - CUSTOM_INSTRUMENTORS.keys()
     if unregistered:
         # Selectable but not implemented: enabling one is a no-op, not an error.
-        logger.debug("No instrumentor registered for: %s", ", ".join(sorted(i.name for i in unregistered)))
+        # A caller who named one deserves to hear about it; an InstrumentSet.ALL
+        # expansion sweeps in six of them every time, so that stays at debug.
+        log = logger.warning if selection.instruments_were_named_by_caller else logger.debug
+        log("No instrumentor registered for: %s", ", ".join(sorted(i.name for i in unregistered)))
 
     return activations
 
@@ -125,17 +129,12 @@ def apply_custom_instrumentation(instrument: InstrumentSet) -> None:
     logger.debug("No installed distribution to instrument for: %s", instrument.name)
 
 
-def apply_traceloop_instrumentation(
-    name: str,
-    should_enrich_metrics: bool,
-    base64_image_uploader: Optional[Callable[[str, str, str], str]],
-) -> None:
+def apply_traceloop_instrumentation(name: str, should_enrich_metrics: bool) -> None:
     """Apply a single traceloop instrumentation by enum member name.
 
     Args:
         name: Traceloop ``Instruments`` member name.
         should_enrich_metrics: Whether to enrich metrics.
-        base64_image_uploader: Optional callback for image uploads.
     """
     from traceloop.sdk.tracing.tracing import init_instrumentations as apply_traceloop_instruments
 
@@ -150,7 +149,13 @@ def apply_traceloop_instrumentation(
     with _suppressed_output():
         apply_traceloop_instruments(
             should_enrich_metrics=should_enrich_metrics,
-            base64_image_uploader=base64_image_uploader,
+            # Netra hosts no image store, so there is nothing to upload to.
+            # None is what the SDK has always passed here.  The instrumentors
+            # that receive it declare it Optional and guard on it (see
+            # opentelemetry.instrumentation.openai's ``Config`` and
+            # ``chat_wrappers``); only traceloop's intermediate signature types
+            # it as required, hence the ignore.
+            base64_image_uploader=None,
             instruments=instruments,
             block_instruments=set(),
         )
