@@ -1,4 +1,4 @@
-"""Tests for netra.instrumentation.stream_utils stream wrappers.
+"""Tests for netra.instrumentation.capture.stream_utils stream wrappers.
 
 Covers both sync and async wrappers, verifying:
 - True iterators (single-pass streams) are wrapped correctly.
@@ -13,7 +13,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from netra.instrumentation.stream_utils import (
+from netra.instrumentation.capture.stream_utils import (
     RootOutputAsyncStreamWrapper,
     RootOutputSyncStreamWrapper,
     _aforce_finalize_inner_stream,

@@ -12,7 +12,7 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 - **A named instrumentation with no instrumentor now warns instead of logging at debug** - `Netra.init(instruments={InstrumentSet.PYRAMID})` is a no-op — no Pyramid instrumentor ships with the SDK — and said so only at `DEBUG`. Naming one explicitly now logs a warning. An `InstrumentSet.ALL` expansion still logs at debug, since it sweeps in six such members every time.
 
-- **`netra.instrumentation.lazy` is now `netra.instrumentation.deferred_activation`**, matching the noun-per-module naming of its siblings (`selection`, `registry`, `activation`, `triggers`). Internal module.
+- **`netra.instrumentation.lazy` is now `netra.instrumentation.wiring.deferral`**, matching the noun-per-module naming of its siblings, which moved alongside it into `netra.instrumentation.wiring` (`selection`, `registry`, `activation`, `triggers`). Internal modules.
 
 ### Fixed
 

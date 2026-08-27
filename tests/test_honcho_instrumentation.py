@@ -8,9 +8,9 @@ from unittest.mock import MagicMock, Mock, patch
 
 import pytest
 
-from netra.instrumentation.honcho import NetraHonchoInstrumentor
-from netra.instrumentation.honcho import constants as attrs
-from netra.instrumentation.honcho.utils import should_suppress_instrumentation
+from netra.instrumentation.libraries.honcho import NetraHonchoInstrumentor
+from netra.instrumentation.libraries.honcho import constants as attrs
+from netra.instrumentation.libraries.honcho.utils import should_suppress_instrumentation
 
 
 class _FakeObj:
@@ -42,8 +42,8 @@ class TestNetraHonchoInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "honcho-ai >= 2.0.0" in dependencies
 
-    @patch("netra.instrumentation.honcho.get_tracer")
-    @patch("netra.instrumentation.honcho.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.honcho.get_tracer")
+    @patch("netra.instrumentation.libraries.honcho.wrap_function_wrapper")
     def test_instrument_patches_all_methods(self, mock_wrap, mock_get_tracer):
         instrumentor = NetraHonchoInstrumentor()
         mock_get_tracer.return_value = Mock()
@@ -54,8 +54,8 @@ class TestNetraHonchoInstrumentor:
         # 27 PatchSpecs × 2 (sync + async) = 54
         assert mock_wrap.call_count == 54
 
-    @patch("netra.instrumentation.honcho.get_tracer")
-    @patch("netra.instrumentation.honcho.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.honcho.get_tracer")
+    @patch("netra.instrumentation.libraries.honcho.wrap_function_wrapper")
     def test_instrument_with_custom_tracer_provider(self, mock_wrap, mock_get_tracer):
         instrumentor = NetraHonchoInstrumentor()
         mock_tracer_provider = Mock()
@@ -69,15 +69,15 @@ class TestNetraHonchoInstrumentor:
             mock_tracer_provider,
         )
 
-    @patch("netra.instrumentation.honcho.unwrap")
+    @patch("netra.instrumentation.libraries.honcho.unwrap")
     def test_uninstrument(self, mock_unwrap):
         instrumentor = NetraHonchoInstrumentor()
         instrumentor._uninstrument()
         # 27 PatchSpecs × 2 (sync + async) = 54
         assert mock_unwrap.call_count == 54
 
-    @patch("netra.instrumentation.honcho.get_tracer")
-    @patch("netra.instrumentation.honcho.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.honcho.get_tracer")
+    @patch("netra.instrumentation.libraries.honcho.wrap_function_wrapper")
     def test_instrument_tracer_error_returns_early(self, mock_wrap, mock_get_tracer):
         instrumentor = NetraHonchoInstrumentor()
         mock_get_tracer.side_effect = RuntimeError("tracer init failed")
@@ -86,8 +86,8 @@ class TestNetraHonchoInstrumentor:
 
         mock_wrap.assert_not_called()
 
-    @patch("netra.instrumentation.honcho.get_tracer")
-    @patch("netra.instrumentation.honcho.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.honcho.get_tracer")
+    @patch("netra.instrumentation.libraries.honcho.wrap_function_wrapper")
     def test_instrument_wrap_failure_continues(self, mock_wrap, mock_get_tracer):
         """If one wrap fails, the rest should still be attempted."""
         instrumentor = NetraHonchoInstrumentor()
@@ -111,7 +111,7 @@ class TestSyncWrapper:
     """Test sync wrapper functionality."""
 
     def test_non_streaming_wrapper_creates_span_and_returns_result(self):
-        from netra.instrumentation.honcho.wrappers import make_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_sync_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -135,7 +135,7 @@ class TestSyncWrapper:
         assert result == ["msg1", "msg2"]
 
     def test_non_streaming_wrapper_records_error(self):
-        from netra.instrumentation.honcho.wrappers import make_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_sync_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -154,9 +154,9 @@ class TestSyncWrapper:
         mock_span.set_status.assert_called_once()
         mock_span.record_exception.assert_called_once_with(error)
 
-    @patch("netra.instrumentation.honcho.utils.context_api.get_value", return_value=True)
+    @patch("netra.instrumentation.libraries.honcho.utils.context_api.get_value", return_value=True)
     def test_non_streaming_wrapper_suppressed(self, mock_get_value):
-        from netra.instrumentation.honcho.wrappers import make_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_sync_wrapper
 
         mock_tracer = Mock()
         wrapped = Mock(return_value="result")
@@ -168,7 +168,7 @@ class TestSyncWrapper:
         assert result == "result"
 
     def test_wrapper_tolerates_request_attr_failure(self):
-        from netra.instrumentation.honcho.wrappers import make_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_sync_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -187,7 +187,7 @@ class TestSyncWrapper:
         wrapped.assert_called_once()
 
     def test_wrapper_tolerates_response_attr_failure(self):
-        from netra.instrumentation.honcho.wrappers import make_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_sync_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -210,7 +210,7 @@ class TestAsyncWrapper:
     """Test async wrapper functionality."""
 
     def test_async_wrapper_creates_span_and_returns_result(self):
-        from netra.instrumentation.honcho.wrappers import make_async_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_async_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -235,7 +235,7 @@ class TestAsyncWrapper:
         assert result == ["msg1"]
 
     def test_async_wrapper_records_error(self):
-        from netra.instrumentation.honcho.wrappers import make_async_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_async_wrapper
 
         mock_tracer = Mock()
         mock_span_ctx = MagicMock()
@@ -261,7 +261,7 @@ class TestStreamingChatWrapper:
     """Test streaming chat wrappers."""
 
     def test_sync_streaming_wrapper_iterates_and_finalizes_span(self):
-        from netra.instrumentation.honcho.wrappers import StreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import StreamingChatWrapper
 
         mock_span = Mock()
         chunks = ["Hello", " ", "world"]
@@ -303,7 +303,7 @@ class TestStreamingChatWrapper:
         mock_span.end.assert_called_once()
 
     def test_sync_streaming_wrapper_handles_error(self):
-        from netra.instrumentation.honcho.wrappers import StreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import StreamingChatWrapper
 
         mock_span = Mock()
 
@@ -332,7 +332,7 @@ class TestStreamingChatWrapper:
         mock_span.end.assert_called_once()
 
     def test_sync_chat_stream_wrapper_factory(self):
-        from netra.instrumentation.honcho.wrappers import make_chat_stream_sync_wrapper
+        from netra.instrumentation.libraries.honcho.wrappers import make_chat_stream_sync_wrapper
 
         mock_tracer = Mock()
         mock_span = Mock()
@@ -360,7 +360,7 @@ class TestStreamingChatWrapper:
         assert hasattr(result, "__iter__")
 
     def test_async_streaming_wrapper_iterates_and_finalizes_span(self):
-        from netra.instrumentation.honcho.wrappers import AsyncStreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import AsyncStreamingChatWrapper
 
         mock_span = Mock()
         chunks = ["Hello", " ", "world"]
@@ -404,12 +404,12 @@ class TestStreamingChatWrapper:
 class TestUtilityFunctions:
     """Test utility functions."""
 
-    @patch("netra.instrumentation.honcho.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.honcho.utils.context_api.get_value")
     def test_should_suppress_instrumentation_true(self, mock_get_value):
         mock_get_value.return_value = True
         assert should_suppress_instrumentation() is True
 
-    @patch("netra.instrumentation.honcho.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.honcho.utils.context_api.get_value")
     def test_should_suppress_instrumentation_false(self, mock_get_value):
         mock_get_value.return_value = False
         assert should_suppress_instrumentation() is False
@@ -427,7 +427,7 @@ class TestRequestAttributes:
         return span, captured
 
     def test_set_chat_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_chat_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_chat_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -444,7 +444,7 @@ class TestRequestAttributes:
         assert captured[attrs.PEER_TARGET] == "bob"
 
     def test_set_add_messages_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_add_messages_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_add_messages_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -459,7 +459,7 @@ class TestRequestAttributes:
         assert captured[attrs.MESSAGE_COUNT] == 3
 
     def test_set_session_context_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_session_context_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_session_context_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -473,7 +473,7 @@ class TestRequestAttributes:
         assert captured[attrs.PEER_TARGET] == "alice"
 
     def test_set_search_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_search_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -488,7 +488,7 @@ class TestRequestAttributes:
         assert captured[attrs.RETRIEVAL_TOP_K] == 20
 
     def test_set_conclusions_create_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_conclusions_create_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_conclusions_create_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -505,7 +505,7 @@ class TestRequestAttributes:
         assert captured[attrs.CONCLUSION_COUNT] == 2
 
     def test_set_upload_file_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_upload_file_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_upload_file_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -519,7 +519,7 @@ class TestRequestAttributes:
         assert captured[attrs.AGENT_ID] == "peer-1"
 
     def test_set_get_or_create_peer_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_get_or_create_peer_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_or_create_peer_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -531,7 +531,7 @@ class TestRequestAttributes:
         assert captured[attrs.AGENT_ID] == "user-123"
 
     def test_set_get_or_create_session_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_get_or_create_session_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_or_create_session_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -543,7 +543,7 @@ class TestRequestAttributes:
         assert captured[attrs.CONVERSATION_ID] == "conv-1"
 
     def test_set_get_card_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_get_card_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_card_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -557,7 +557,7 @@ class TestRequestAttributes:
         assert captured[attrs.PEER_TARGET] == "bob"
 
     def test_set_set_card_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_set_card_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_set_card_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -582,21 +582,21 @@ class TestResponseAttributes:
         return span, captured
 
     def test_set_chat_response_attrs(self):
-        from netra.instrumentation.honcho.utils import set_chat_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_chat_response_attrs
 
         span, captured = self._capture_span()
         set_chat_response_attrs(span, "Hello world")
         assert captured[attrs.RESPONSE_LENGTH] == 11
 
     def test_set_chat_response_attrs_none(self):
-        from netra.instrumentation.honcho.utils import set_chat_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_chat_response_attrs
 
         span, captured = self._capture_span()
         set_chat_response_attrs(span, None)
         assert attrs.RESPONSE_LENGTH not in captured
 
     def test_set_add_messages_response_attrs_captures_message_details(self):
-        from netra.instrumentation.honcho.utils import set_add_messages_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_add_messages_response_attrs
 
         span, captured = self._capture_span()
         msg1 = _FakeObj(id="msg-1", content="hello", peer_id="alice", session_id="sess-1", token_count=5)
@@ -613,7 +613,7 @@ class TestResponseAttributes:
         assert output["messages"][0]["token_count"] == 5
 
     def test_set_session_context_response_attrs_captures_all_fields(self):
-        from netra.instrumentation.honcho.utils import set_session_context_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_session_context_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="ctx message", peer_id="alice", session_id="sess-1", token_count=10)
@@ -646,7 +646,7 @@ class TestResponseAttributes:
         assert output["peer_card"] == ["fact1", "fact2"]
 
     def test_set_search_response_attrs_captures_message_details(self):
-        from netra.instrumentation.honcho.utils import set_search_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="search result", peer_id="alice", session_id="sess-1", token_count=8)
@@ -659,14 +659,14 @@ class TestResponseAttributes:
         assert output["results"][0]["id"] == "msg-1"
 
     def test_set_card_response_attrs(self):
-        from netra.instrumentation.honcho.utils import set_card_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_card_response_attrs
 
         span, captured = self._capture_span()
         set_card_response_attrs(span, ["fact1", "fact2"])
         assert captured[attrs.RESPONSE_CARD_ITEM_COUNT] == 2
 
     def test_set_peer_context_response_attrs_captures_all_fields(self):
-        from netra.instrumentation.honcho.utils import set_peer_context_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_peer_context_response_attrs
 
         span, captured = self._capture_span()
         response = _FakeObj(
@@ -713,7 +713,7 @@ class TestPaginatedResponseHandling:
         return pg
 
     def test_search_response_with_sync_page(self):
-        from netra.instrumentation.honcho.utils import set_search_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="found", peer_id="alice", session_id="sess-1", token_count=3)
@@ -727,7 +727,7 @@ class TestPaginatedResponseHandling:
         assert output["results"][0]["content"] == "found"
 
     def test_search_response_with_list(self):
-        from netra.instrumentation.honcho.utils import set_search_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="result", peer_id="alice", session_id="sess-1", token_count=4)
@@ -735,7 +735,7 @@ class TestPaginatedResponseHandling:
         assert captured[attrs.RESPONSE_RESULT_COUNT] == 1
 
     def test_list_peers_response_with_sync_page_captures_peer_data(self):
-        from netra.instrumentation.honcho.utils import set_list_peers_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_list_peers_response_attrs
 
         span, captured = self._capture_span()
         peer1 = _FakeObj(id="alice", workspace_id="ws-1", metadata={"role": "user"})
@@ -752,7 +752,7 @@ class TestPaginatedResponseHandling:
         assert output["page"] == 1
 
     def test_messages_response_with_sync_page_captures_pagination(self):
-        from netra.instrumentation.honcho.utils import set_messages_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_messages_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="hello", peer_id="alice", session_id="sess-1", token_count=5)
@@ -768,7 +768,7 @@ class TestPaginatedResponseHandling:
         assert output["messages"][0]["id"] == "msg-1"
 
     def test_add_messages_response_with_list(self):
-        from netra.instrumentation.honcho.utils import set_add_messages_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_add_messages_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="stored", peer_id="alice", session_id="sess-1", token_count=4)
@@ -777,7 +777,7 @@ class TestPaginatedResponseHandling:
         assert "output" in captured
 
     def test_conclusions_create_response_captures_details(self):
-        from netra.instrumentation.honcho.utils import set_conclusions_create_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_conclusions_create_response_attrs
 
         span, captured = self._capture_span()
         c1 = _FakeObj(
@@ -798,7 +798,7 @@ class TestPaginatedResponseHandling:
         assert output["conclusions"][0]["level"] == "explicit"
 
     def test_conclusions_response_attrs_with_sync_page(self):
-        from netra.instrumentation.honcho.utils import set_conclusions_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_conclusions_response_attrs
 
         span, captured = self._capture_span()
         c1 = _FakeObj(id="conc-1", content="fact", observer_id="alice", observed_id="bob", level="deductive")
@@ -812,21 +812,21 @@ class TestPaginatedResponseHandling:
         assert output["page"] == 1
 
     def test_response_attrs_handle_none(self):
-        from netra.instrumentation.honcho.utils import set_search_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_response_attrs
 
         span, captured = self._capture_span()
         set_search_response_attrs(span, None)
         assert attrs.RESPONSE_RESULT_COUNT not in captured
 
     def test_representation_response_attrs(self):
-        from netra.instrumentation.honcho.utils import set_representation_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_representation_response_attrs
 
         span, captured = self._capture_span()
         set_representation_response_attrs(span, "Alice likes dark mode and prefers concise answers.")
         assert captured["output"] == "Alice likes dark mode and prefers concise answers."
 
     def test_get_or_create_peer_response_captures_full_data(self):
-        from netra.instrumentation.honcho.utils import set_get_or_create_peer_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_or_create_peer_response_attrs
 
         span, captured = self._capture_span()
         peer = _FakeObj(id="alice", workspace_id="ws-1", metadata={"role": "assistant"})
@@ -840,7 +840,7 @@ class TestPaginatedResponseHandling:
         assert output["metadata"] == {"role": "assistant"}
 
     def test_get_or_create_session_response_captures_full_data(self):
-        from netra.instrumentation.honcho.utils import set_get_or_create_session_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_or_create_session_response_attrs
 
         span, captured = self._capture_span()
         session = _FakeObj(id="session-1", workspace_id="ws-1", metadata={"topic": "greetings"}, is_active=True)
@@ -855,7 +855,7 @@ class TestPaginatedResponseHandling:
         assert output["metadata"] == {"topic": "greetings"}
 
     def test_queue_status_response_captures_all_fields(self):
-        from netra.instrumentation.honcho.utils import set_queue_status_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_queue_status_response_attrs
 
         span, captured = self._capture_span()
         session_status = _FakeObj(
@@ -893,7 +893,7 @@ class TestUploadFileResponse:
         return span, captured
 
     def test_upload_file_response_captures_message_data(self):
-        from netra.instrumentation.honcho.utils import set_upload_file_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_upload_file_response_attrs
 
         span, captured = self._capture_span()
         msg = _FakeObj(id="msg-1", content="file content", peer_id="alice", session_id="sess-1", token_count=50)
@@ -919,7 +919,7 @@ class TestNewOperationAttributes:
         return span, captured
 
     def test_set_list_peers_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_list_peers_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_list_peers_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -932,7 +932,7 @@ class TestNewOperationAttributes:
         assert "input" in captured
 
     def test_set_list_peers_response_attrs(self):
-        from netra.instrumentation.honcho.utils import set_list_peers_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_list_peers_response_attrs
 
         span, captured = self._capture_span()
         peer1 = _FakeObj(id="alice", workspace_id="ws-1", metadata={"role": "user"})
@@ -947,7 +947,7 @@ class TestNewOperationAttributes:
         assert output["peers"][0]["workspace_id"] == "ws-1"
 
     def test_set_session_peers_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_session_peers_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_session_peers_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -961,7 +961,7 @@ class TestNewOperationAttributes:
         assert "input" in captured
 
     def test_set_session_peers_response_attrs(self):
-        from netra.instrumentation.honcho.utils import set_session_peers_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_session_peers_response_attrs
 
         span, captured = self._capture_span()
         peer1 = _FakeObj(id="alice", workspace_id="ws-1")
@@ -974,7 +974,7 @@ class TestNewOperationAttributes:
         assert output["peers"][0]["id"] == "alice"
 
     def test_set_session_set_metadata_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_session_set_metadata_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_session_set_metadata_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -988,7 +988,7 @@ class TestNewOperationAttributes:
         assert "input" in captured
 
     def test_set_peer_set_metadata_request_attrs(self):
-        from netra.instrumentation.honcho.utils import set_peer_set_metadata_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_peer_set_metadata_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -1014,7 +1014,7 @@ class TestInputOutputAttributes:
         return span, captured
 
     def test_chat_sets_input_and_output(self):
-        from netra.instrumentation.honcho.utils import set_chat_request_attrs, set_chat_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_chat_request_attrs, set_chat_response_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -1030,7 +1030,10 @@ class TestInputOutputAttributes:
         assert captured["output"] == "AI is artificial intelligence."
 
     def test_add_messages_sets_input_and_output(self):
-        from netra.instrumentation.honcho.utils import set_add_messages_request_attrs, set_add_messages_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import (
+            set_add_messages_request_attrs,
+            set_add_messages_response_attrs,
+        )
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -1046,7 +1049,7 @@ class TestInputOutputAttributes:
         assert "output" in captured
 
     def test_search_sets_input_and_output(self):
-        from netra.instrumentation.honcho.utils import set_search_request_attrs, set_search_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_search_request_attrs, set_search_response_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -1062,7 +1065,7 @@ class TestInputOutputAttributes:
         assert "output" in captured
 
     def test_get_or_create_peer_sets_input(self):
-        from netra.instrumentation.honcho.utils import set_get_or_create_peer_request_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_get_or_create_peer_request_attrs
 
         span, captured = self._capture_span()
         instance = Mock()
@@ -1073,7 +1076,7 @@ class TestInputOutputAttributes:
         assert "alice" in captured["input"]
 
     def test_conclusions_create_sets_input_and_output(self):
-        from netra.instrumentation.honcho.utils import (
+        from netra.instrumentation.libraries.honcho.utils import (
             set_conclusions_create_request_attrs,
             set_conclusions_create_response_attrs,
         )
@@ -1091,7 +1094,7 @@ class TestInputOutputAttributes:
         assert "output" in captured
 
     def test_session_context_sets_input_and_output(self):
-        from netra.instrumentation.honcho.utils import (
+        from netra.instrumentation.libraries.honcho.utils import (
             set_session_context_request_attrs,
             set_session_context_response_attrs,
         )
@@ -1110,7 +1113,7 @@ class TestInputOutputAttributes:
         assert "output" in captured
 
     def test_streaming_sets_output(self):
-        from netra.instrumentation.honcho.wrappers import StreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import StreamingChatWrapper
 
         span, captured = self._capture_span()
 
@@ -1143,7 +1146,7 @@ class TestSerializationEdgeCases:
     """Test edge cases in _serialize_obj and _jsonify_value."""
 
     def test_circular_reference_does_not_crash(self):
-        from netra.instrumentation.honcho.utils import _serialize_obj
+        from netra.instrumentation.libraries.honcho.utils import _serialize_obj
 
         a = _FakeObj(name="a")
         b = _FakeObj(name="b", parent=a)
@@ -1154,7 +1157,7 @@ class TestSerializationEdgeCases:
         assert result["name"] == "a"
 
     def test_deeply_nested_object_degrades_gracefully(self):
-        from netra.instrumentation.honcho.utils import _serialize_obj
+        from netra.instrumentation.libraries.honcho.utils import _serialize_obj
 
         current = _FakeObj(value="leaf")
         for i in range(20):
@@ -1165,19 +1168,19 @@ class TestSerializationEdgeCases:
         assert result["value"] == "level-19"
 
     def test_serialize_obj_with_none(self):
-        from netra.instrumentation.honcho.utils import _serialize_obj
+        from netra.instrumentation.libraries.honcho.utils import _serialize_obj
 
         assert _serialize_obj(None) is None
 
     def test_serialize_obj_with_primitive(self):
-        from netra.instrumentation.honcho.utils import _serialize_obj
+        from netra.instrumentation.libraries.honcho.utils import _serialize_obj
 
         assert _serialize_obj("hello") is None
         assert _serialize_obj(42) is None
 
     def test_card_response_serializes_items(self):
         """S4: set_card_response_attrs should serialize items, not pass raw objects."""
-        from netra.instrumentation.honcho.utils import set_card_response_attrs
+        from netra.instrumentation.libraries.honcho.utils import set_card_response_attrs
 
         span = Mock()
         span.is_recording.return_value = True
@@ -1196,7 +1199,7 @@ class TestSerializationEdgeCases:
 
     def test_streaming_close_finalizes_span(self):
         """S1: close() should finalize the span without consuming remaining chunks."""
-        from netra.instrumentation.honcho.wrappers import StreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import StreamingChatWrapper
 
         span = Mock()
 
@@ -1220,7 +1223,7 @@ class TestSerializationEdgeCases:
         """S1: aclose() should finalize the span."""
         import asyncio
 
-        from netra.instrumentation.honcho.wrappers import AsyncStreamingChatWrapper
+        from netra.instrumentation.libraries.honcho.wrappers import AsyncStreamingChatWrapper
 
         span = Mock()
 

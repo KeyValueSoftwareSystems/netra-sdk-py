@@ -14,6 +14,7 @@ import importlib.util
 import io
 import logging
 import pathlib
+import re
 import subprocess
 import sys
 import textwrap
@@ -24,18 +25,18 @@ import pytest
 import wrapt
 import wrapt.importer
 
-from netra.instrumentation import triggers
-from netra.instrumentation.activation import (
+from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
+from netra.instrumentation.wiring import triggers
+from netra.instrumentation.wiring.activation import (
     Activation,
     apply_traceloop_instrumentation,
     build_activations,
     is_distribution_installed,
 )
-from netra.instrumentation.deferred_activation import _LEDGER, register_lazy_instrumentations
-from netra.instrumentation.instruments import ALL_INSTRUMENTS, DEFAULT_INSTRUMENTS, InstrumentSet, _Origin
-from netra.instrumentation.registry import CUSTOM_INSTRUMENTORS, InstrumentorSpec
-from netra.instrumentation.selection import partition_by_origin, select_instrumentations
-from netra.instrumentation.triggers import INSTRUMENT_TRIGGERS, INTENTIONALLY_EAGER_INSTRUMENTS
+from netra.instrumentation.wiring.deferral import _LEDGER, register_lazy_instrumentations
+from netra.instrumentation.wiring.registry import CUSTOM_INSTRUMENTORS, InstrumentorSpec
+from netra.instrumentation.wiring.selection import partition_by_origin, select_instrumentations
+from netra.instrumentation.wiring.triggers import INSTRUMENT_TRIGGERS, INTENTIONALLY_EAGER_INSTRUMENTS
 
 pytestmark = pytest.mark.unit
 
@@ -45,7 +46,7 @@ def reset_activation_ledger() -> Generator[None, None, None]:
     """Clear the process-wide ledger between tests.
 
     The ledger is module scope so the exactly-once invariant holds per process
-    (see ``netra.instrumentation.deferred_activation``).  Tests re-register the same synthetic
+    (see ``netra.instrumentation.wiring.deferral``).  Tests re-register the same synthetic
     instrument names repeatedly, so without this the second test to use a name
     would find it already claimed.
     """
@@ -82,7 +83,7 @@ def probe_package(tmp_path: object, monkeypatch: pytest.MonkeyPatch) -> Generato
 
 def _register(triggers: dict, activations: List[Activation], monkeypatch: pytest.MonkeyPatch) -> None:
     """Register *activations* against a trigger table containing only *triggers*."""
-    monkeypatch.setattr("netra.instrumentation.deferred_activation._TRIGGERS_BY_NAME", triggers)
+    monkeypatch.setattr("netra.instrumentation.wiring.deferral._TRIGGERS_BY_NAME", triggers)
     register_lazy_instrumentations(activations)
 
 
@@ -163,7 +164,7 @@ def test_activation_failure_is_logged_and_does_not_break_the_import(
 
     _register({"PROBE": (module_name,)}, [Activation("PROBE", explode)], monkeypatch)
 
-    with caplog.at_level(logging.ERROR, logger="netra.instrumentation.activation"):
+    with caplog.at_level(logging.ERROR, logger="netra.instrumentation.wiring.activation"):
         module = importlib.import_module(module_name)
 
     assert module.VALUE == 1, "a failing instrumentor broke the client's own import"
@@ -186,7 +187,7 @@ def test_a_failing_activation_does_not_prevent_the_next_one(
         monkeypatch,
     )
 
-    with caplog.at_level(logging.ERROR, logger="netra.instrumentation.activation"):
+    with caplog.at_level(logging.ERROR, logger="netra.instrumentation.wiring.activation"):
         importlib.import_module(module_name)
 
     assert calls == ["ran"]
@@ -242,7 +243,7 @@ def test_concurrent_activations_leave_stdout_and_stderr_intact(
     # contextlib.redirect_stdout saves the displaced stream per instance, so
     # two threads entering and leaving out of order restore each other's
     # buffers and sys.stdout stays a discarded StringIO for the whole process.
-    from netra.instrumentation.activation import _suppressed_output
+    from netra.instrumentation.wiring.activation import _suppressed_output
 
     first = probe_package("netra_probe_stdout_one")
     second = probe_package("netra_probe_stdout_two")
@@ -278,7 +279,7 @@ def test_concurrent_activations_leave_stdout_and_stderr_intact(
 
 
 def test_suppressed_output_restores_streams_after_a_failure() -> None:
-    from netra.instrumentation.activation import _suppressed_output
+    from netra.instrumentation.wiring.activation import _suppressed_output
 
     real_stdout, real_stderr = sys.stdout, sys.stderr
 
@@ -290,7 +291,7 @@ def test_suppressed_output_restores_streams_after_a_failure() -> None:
 
 
 def test_suppressed_output_swallows_writes_inside_the_block() -> None:
-    from netra.instrumentation.activation import _suppressed_output
+    from netra.instrumentation.wiring.activation import _suppressed_output
 
     with _suppressed_output():
         print("traceloop warning that must not reach the client")
@@ -358,6 +359,53 @@ def test_no_trigger_names_an_instrument_that_can_never_activate() -> None:
     )
 
     assert unreachable == [], f"{unreachable} have trigger modules but no CUSTOM_INSTRUMENTORS entry"
+
+
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "instrument",
+    sorted(CUSTOM_INSTRUMENTORS, key=lambda member: member.name),
+)
+def test_registered_instrumentor_module_resolves(instrument: InstrumentSet) -> None:
+    # InstrumentorSpec.module is a string, so a wrong path is not a NameError at
+    # import time -- it surfaces as an ImportError inside run_activation, which
+    # deliberately swallows it so a broken instrumentor cannot break the client's
+    # import. The instrumentation then silently produces no telemetry. Nothing
+    # else in the suite would notice, so check the paths resolve.
+    unresolvable = []
+    for spec in CUSTOM_INSTRUMENTORS[instrument]:
+        if not all(is_distribution_installed(dist) for dist in spec.required_distributions):
+            continue  # candidate for a library this environment does not have
+        try:
+            if importlib.util.find_spec(spec.module) is None:
+                unresolvable.append(spec.module)
+        except (ImportError, ModuleNotFoundError, ValueError):
+            unresolvable.append(spec.module)
+
+    assert unresolvable == [], (
+        f"{instrument.name} names {unresolvable}, which does not resolve to a module. "
+        "Activation would fail silently and the instrumentation would emit nothing."
+    )
+
+
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "instrument",
+    sorted(CUSTOM_INSTRUMENTORS, key=lambda member: member.name),
+)
+def test_registered_instrumentor_class_exists_in_its_module(instrument: InstrumentSet) -> None:
+    # Same failure mode one level down: the module resolves but the class name
+    # is stale, so getattr fails inside the suppressed activation path.
+    missing = []
+    for spec in CUSTOM_INSTRUMENTORS[instrument]:
+        if not all(is_distribution_installed(dist) for dist in spec.required_distributions):
+            continue
+        try:
+            module = importlib.import_module(spec.module)
+        except Exception:
+            pytest.skip(f"{spec.module} is not importable in this environment")
+        if not hasattr(module, spec.class_name):
+            missing.append(f"{spec.module}.{spec.class_name}")
+
+    assert missing == [], f"{instrument.name} names {missing}, which do not exist."
 
 
 @pytest.mark.parametrize(  # type: ignore[misc]
@@ -436,7 +484,7 @@ def test_naming_an_unimplemented_instrument_warns(caplog: pytest.LogCaptureFixtu
     # PYRAMID is selectable but ships no instrumentor, so enabling it does
     # nothing.  A caller who typed its name should not have to raise the log
     # level to find that out.
-    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.activation"):
+    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.wiring.activation"):
         build_activations(select_instrumentations({InstrumentSet.PYRAMID}, None), should_enrich_metrics=True)
 
     assert "PYRAMID" in caplog.text
@@ -447,7 +495,7 @@ def test_expanding_all_does_not_warn_about_unimplemented_instruments(
 ) -> None:
     # InstrumentSet.ALL sweeps in six unimplemented members every time; warning
     # about them would make the warning above worthless noise.
-    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.activation"):
+    with caplog.at_level(logging.WARNING, logger="netra.instrumentation.wiring.activation"):
         build_activations(select_instrumentations({InstrumentSet.ALL}, None), should_enrich_metrics=True)
 
     assert "No instrumentor registered" not in caplog.text
@@ -659,7 +707,7 @@ def test_selection_never_imports_traceloop() -> None:
         """
         import sys
         from netra.instrumentation.instruments import InstrumentSet
-        from netra.instrumentation.selection import select_instrumentations
+        from netra.instrumentation.wiring.selection import select_instrumentations
 
         for requested, blocked in (
             (None, None),
@@ -687,3 +735,54 @@ def test_netra_owned_instrumentations_are_never_delegated_to_traceloop() -> None
     netra_owned = {instrument.name for instrument in CUSTOM_INSTRUMENTORS}
 
     assert enabled.isdisjoint(netra_owned)
+
+
+# The OTel scope name of every instrumentor reaches the backend on each span and
+# dashboards key off it, so it is a wire contract. It used to be `__name__`,
+# which meant moving the vendor packages under `libraries/` silently rewrote all
+# 24 of them. These pin it so the next move cannot.
+
+_LIBRARIES_DIR = pathlib.Path(__file__).parent.parent / "netra" / "instrumentation" / "libraries"
+
+
+def _tracer_name_constant(package: pathlib.Path) -> str | None:
+    """Read the literal assigned to ``_TRACER_NAME`` in *package*, without importing it."""
+    for source_file in sorted(package.rglob("*.py")):
+        tree = ast.parse(source_file.read_text())
+        for node in ast.walk(tree):
+            if isinstance(node, ast.Assign) and isinstance(node.value, ast.Constant):
+                if any(isinstance(t, ast.Name) and t.id == "_TRACER_NAME" for t in node.targets):
+                    return str(node.value.value)
+    return None
+
+
+@pytest.mark.parametrize(  # type: ignore[misc]
+    "package",
+    sorted((p for p in _LIBRARIES_DIR.iterdir() if p.is_dir() and not p.name.startswith("_")), key=lambda p: p.name),
+    ids=lambda p: p.name,
+)
+def test_exported_scope_name_is_pinned_to_the_library_not_the_file_path(package: pathlib.Path) -> None:
+    scope = _tracer_name_constant(package)
+    if scope is None:
+        pytest.skip(f"{package.name} creates no tracer of its own")
+
+    assert scope == f"netra.instrumentation.{package.name}", (
+        f"{package.name} exports scope {scope!r}. The contract is "
+        f"'netra.instrumentation.{package.name}' regardless of where the package sits on disk -- "
+        "changing it breaks every backend query and dashboard filtering on scope name."
+    )
+
+
+def test_no_instrumentor_derives_its_scope_name_from_its_module_path() -> None:
+    # get_tracer(__name__) is how the scope name became coupled to the directory
+    # layout in the first place.
+    offenders = [
+        str(source_file.relative_to(_LIBRARIES_DIR.parent.parent.parent))
+        for source_file in sorted(_LIBRARIES_DIR.rglob("*.py"))
+        if re.search(r"get_(?:tracer|meter)\(\s*\n?\s*__name__", source_file.read_text())
+    ]
+
+    assert offenders == [], (
+        f"{offenders} pass __name__ to get_tracer/get_meter. Use the package's _TRACER_NAME "
+        "constant so the exported scope survives the file being moved."
+    )

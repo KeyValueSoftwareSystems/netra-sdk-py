@@ -17,7 +17,7 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
-from netra.instrumentation.hermes_agent import NetraHermesAgentInstrumentor
+from netra.instrumentation.libraries.hermes_agent import NetraHermesAgentInstrumentor
 from netra.processors.session_span_processor import SessionSpanProcessor
 
 TURN_SPAN_NAME = "hermes-agent.turn"
