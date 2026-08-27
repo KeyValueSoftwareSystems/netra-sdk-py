@@ -23,29 +23,14 @@ from netra.instrumentation.instruments import (
 
 logger = logging.getLogger(__name__)
 
-# Traceloop instrumentors Netra replaces with its own implementation.  Letting
-# traceloop install these too would double-instrument the same call sites.
-#
-# Held as names, not enum members: naming a member means importing
-# ``traceloop.sdk``, which costs ~620 ms and is what deferred activation exists
-# to avoid.  A name the installed traceloop-sdk does not define simply never
-# matches.
-TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA: frozenset[str] = frozenset(
-    {
-        "AGNO",
-        "COHERE",
-        "GOOGLE_GENERATIVEAI",
-        "GROQ",
-        "MISTRAL",
-        "OPENAI",
-        "PYMYSQL",
-        "QDRANT",
-        "REDIS",
-        "REQUESTS",
-        "URLLIB3",
-        "WEAVIATE",
-    }
-)
+# An instrumentation Netra implements itself must never also be delegated to
+# traceloop, or the same call sites are patched twice.  That is enforced by
+# ``_Origin``: a member tagged ``_Origin.CUSTOM`` is routed to Netra's own
+# registry by :func:`partition_by_origin` and never reaches
+# ``traceloop_instrument_names``.  ``tests/test_lazy_instrumentation.py``'s
+# ``test_every_registered_instrumentor_belongs_to_the_custom_family`` fails if
+# a member with a ``CUSTOM_INSTRUMENTORS`` entry is ever tagged
+# ``_Origin.TRACELOOP``, which is the only way the two families could overlap.
 
 
 @dataclass(frozen=True)
@@ -57,10 +42,16 @@ class InstrumentationSelection:
             members to enable.  Names rather than members so that resolving
             them — and importing traceloop — can wait until activation.
         custom_instruments: Instrumentations Netra applies itself.
+        instruments_were_named_by_caller: Whether these instrumentations come
+            from a set the caller wrote out, rather than from
+            :data:`DEFAULT_INSTRUMENTS` or an ``InstrumentSet.ALL`` expansion.
+            Only a named instrumentation deserves a warning when the SDK has no
+            instrumentor for it — ``ALL`` sweeps in six such members every time.
     """
 
     traceloop_instrument_names: frozenset[str]
     custom_instruments: frozenset[InstrumentSet]
+    instruments_were_named_by_caller: bool = False
 
 
 NOTHING_SELECTED = InstrumentationSelection(frozenset(), frozenset())
@@ -96,6 +87,7 @@ def select_instrumentations(
         # Neither family has an "empty means everything" fallback: a request
         # naming no instrumentation of a family enables none of that family.
         custom_instruments=frozenset(requested_custom - blocked_custom),
+        instruments_were_named_by_caller=bool(requested) and not enable_everything,
     )
 
 
@@ -142,12 +134,11 @@ def partition_by_origin(
 def _select_traceloop_names(requested: set[str], blocked: set[str]) -> frozenset[str]:
     """Reduce a requested/blocked pair to the traceloop instruments to enable.
 
-    What the caller asked for, minus what they blocked, minus the instruments
-    Netra implements itself.  ``requested`` already accounts for the ``None``
-    and ``ALL`` cases: :func:`select_instrumentations` expands those to
-    :data:`DEFAULT_INSTRUMENTS` and :data:`ALL_INSTRUMENTS` before partitioning,
-    so an empty ``requested`` here means the caller named instruments and none
-    of them were traceloop-backed.
+    What the caller asked for, minus what they blocked.  ``requested`` already
+    accounts for the ``None`` and ``ALL`` cases: :func:`select_instrumentations`
+    expands those to :data:`DEFAULT_INSTRUMENTS` and :data:`ALL_INSTRUMENTS`
+    before partitioning, so an empty ``requested`` here means the caller named
+    instruments and none of them were traceloop-backed.
 
     **Deliberate behaviour change.**  Previously an empty ``requested`` fell
     through to "every traceloop instrument the environment has", mirroring
@@ -156,9 +147,8 @@ def _select_traceloop_names(requested: set[str], blocked: set[str]) -> frozenset
     named Netra-backed instruments *and* blocked at least one traceloop one.
     ``Netra.init(instruments={InstrumentSet.OPENAI},
     block_instruments={InstrumentSet.ANTHROPIC})`` therefore enabled langchain,
-    bedrock, vertexai and the rest — the opposite of what it reads as, and a
-    direct contradiction of the first rule above.  Blocking one instrument now
-    never enables another.
+    bedrock, vertexai and the rest — the opposite of what it reads as.  Blocking
+    one instrument now never enables another.
 
     Args:
         requested: Names of the traceloop instruments the caller asked for.
@@ -167,4 +157,4 @@ def _select_traceloop_names(requested: set[str], blocked: set[str]) -> frozenset
     Returns:
         Names of the traceloop instruments to enable.
     """
-    return frozenset(requested - blocked - TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA)
+    return frozenset(requested - blocked)

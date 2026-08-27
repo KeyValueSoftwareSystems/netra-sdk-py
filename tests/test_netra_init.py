@@ -12,6 +12,7 @@ import pytest
 
 from netra import Netra
 from netra.config import Config
+from netra.instrumentation.instruments import DEFAULT_INSTRUMENTS
 
 
 class TestNetraInitialization:
@@ -67,8 +68,7 @@ class TestNetraInitialization:
         # Verify instrumentations were initialized
         mock_init_instrumentations.assert_called_once_with(
             should_enrich_metrics=True,
-            base64_image_uploader=None,
-            instruments=None,
+            instruments=DEFAULT_INSTRUMENTS,
             block_instruments=None,
         )
 
