@@ -19,7 +19,7 @@ triggers per instrument are expected: the first to fire activates, the rest
 become no-ops.
 
 An instrument absent from this table is applied immediately instead
-(``netra.instrumentation.lazy``), so an incomplete table costs startup latency
+(``netra.instrumentation.deferred_activation``), so an incomplete table costs startup latency
 rather than telemetry.  ``tests/test_lazy_instrumentation.py`` fails when a
 member of ``DEFAULT_INSTRUMENTS`` has no entry here.
 """
@@ -106,7 +106,6 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.PYMYSQL: ("pymysql",),
     InstrumentSet.REDIS: ("redis",),
     InstrumentSet.SQLALCHEMY: ("sqlalchemy",),
-    InstrumentSet.SQLITE3: ("sqlite3",),
     InstrumentSet.AIOPG: ("aiopg",),
     # Queues, brokers and task runners
     InstrumentSet.AIO_PIKA: ("aio_pika",),
@@ -120,7 +119,6 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.REMOULADE: ("remoulade",),
     # Misc libraries
     InstrumentSet.ASYNCCLICK: ("asyncclick",),
-    InstrumentSet.ASYNCIO: ("asyncio",),
     InstrumentSet.CLICK: ("click",),
     InstrumentSet.GRPC: ("grpc",),
     InstrumentSet.JINJA2: ("jinja2",),

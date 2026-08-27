@@ -215,7 +215,6 @@ class Netra:
             # Instrument all supported modules
             init_instrumentations(
                 should_enrich_metrics=True,
-                base64_image_uploader=None,
                 instruments=effective_instruments,
                 block_instruments=block_instruments,
             )
