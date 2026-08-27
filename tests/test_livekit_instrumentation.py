@@ -19,9 +19,9 @@ from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from wrapt import ObjectProxy
 
-from netra.instrumentation import livekit as livekit_instrumentation
-from netra.instrumentation.livekit import NetraLiveKitInstrumentor
-from netra.instrumentation.livekit.call_span import (
+from netra.instrumentation.libraries import livekit as livekit_instrumentation
+from netra.instrumentation.libraries.livekit import NetraLiveKitInstrumentor
+from netra.instrumentation.libraries.livekit.call_span import (
     _MAX_OPEN_CALL_SPANS,
     CALL_SPAN_FIELD,
     REROOTED_ATTRIBUTE,
@@ -30,9 +30,9 @@ from netra.instrumentation.livekit.call_span import (
     call_spans,
     end_all_call_spans,
 )
-from netra.instrumentation.livekit.provider_binding import _ShieldedTracerProvider
-from netra.instrumentation.livekit.trace_processor import SpanMappingProcessor, record_stt_usage
-from netra.instrumentation.livekit.utils import (
+from netra.instrumentation.libraries.livekit.provider_binding import _ShieldedTracerProvider
+from netra.instrumentation.libraries.livekit.trace_processor import SpanMappingProcessor, record_stt_usage
+from netra.instrumentation.libraries.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     AGENT_TURN_SPAN_NAME,
     CALL_SPAN_NAME,
@@ -56,7 +56,7 @@ from netra.instrumentation.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
-from netra.instrumentation.livekit.wrappers import _listen_for_metrics, wrap_aclose, wrap_start
+from netra.instrumentation.libraries.livekit.wrappers import _listen_for_metrics, wrap_aclose, wrap_start
 from netra.processors.root_span_processor import RootSpanProcessor
 from netra.processors.session_span_processor import SessionSpanProcessor
 from netra.span_wrapper import SpanType

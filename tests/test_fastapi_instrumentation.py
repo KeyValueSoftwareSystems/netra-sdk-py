@@ -4,7 +4,7 @@ Tests focusing on core functionality, single-span middleware, and input/output c
 """
 
 import json
-from typing import Collection
+from typing import Any, Collection
 from unittest.mock import AsyncMock, Mock, patch
 
 import fastapi
@@ -12,27 +12,26 @@ from fastapi import HTTPException
 from opentelemetry.trace import Span, StatusCode
 from starlette.routing import Match
 
-from netra.instrumentation.fastapi import (
+from netra.instrumentation.http.headers import SENSITIVE_HEADERS as _SENSITIVE_HEADERS
+from netra.instrumentation.http.headers import sanitize_asgi_headers as sanitize_headers
+from netra.instrumentation.libraries.fastapi import (
     NetraFastAPIInstrumentor,
     _InstrumentedFastAPI,
     get_default_span_details,
     get_route_details,
 )
-from netra.instrumentation.fastapi.middleware import (
+from netra.instrumentation.libraries.fastapi.middleware import (
     DEFAULT_ERROR_STATUS_CODE_RANGE,
     NetraFastAPIMiddleware,
     _asgi_getter,
 )
-from netra.instrumentation.fastapi.utils import (
-    _SENSITIVE_HEADERS,
+from netra.instrumentation.libraries.fastapi.utils import (
     build_request_url,
     get_error_message,
-    parse_body,
-    sanitize_headers,
     set_span_input,
     set_span_output,
 )
-from netra.instrumentation.fastapi.version import __version__
+from netra.instrumentation.libraries.fastapi.version import __version__
 
 
 class TestNetraFastAPIInstrumentor:
@@ -56,7 +55,7 @@ class TestNetraFastAPIInstrumentor:
         assert isinstance(dependencies, Collection)
         assert any("fastapi" in dep for dep in dependencies)
 
-    @patch("netra.instrumentation.fastapi.get_tracer")
+    @patch("netra.instrumentation.libraries.fastapi.get_tracer")
     def test_instrument_app_with_default_parameters(self, mock_get_tracer: Mock) -> None:
         """Test instrument_app method with default parameters."""
         app = fastapi.FastAPI()
@@ -69,7 +68,7 @@ class TestNetraFastAPIInstrumentor:
         assert hasattr(app, "_original_build_middleware_stack")
         mock_get_tracer.assert_called_once()
 
-    @patch("netra.instrumentation.fastapi.get_tracer")
+    @patch("netra.instrumentation.libraries.fastapi.get_tracer")
     def test_instrument_app_with_custom_parameters(self, mock_get_tracer: Mock) -> None:
         """Test instrument_app method with custom parameters."""
         app = fastapi.FastAPI()
@@ -94,7 +93,7 @@ class TestNetraFastAPIInstrumentor:
         app = fastapi.FastAPI()
         app._is_instrumented_by_opentelemetry = True
 
-        with patch("netra.instrumentation.fastapi.logger") as mock_logger:
+        with patch("netra.instrumentation.libraries.fastapi.logger") as mock_logger:
             NetraFastAPIInstrumentor.instrument_app(app)
             mock_logger.warning.assert_called_once()
 
@@ -111,7 +110,7 @@ class TestNetraFastAPIInstrumentor:
         assert not hasattr(app, "_original_build_middleware_stack")
         assert app.build_middleware_stack == original_build
 
-    @patch("netra.instrumentation.fastapi.fastapi.FastAPI")
+    @patch("netra.instrumentation.libraries.fastapi.fastapi.FastAPI")
     def test_instrument_patches_fastapi_class(self, mock_fastapi_class: Mock) -> None:
         """Test _instrument method patches FastAPI class."""
         instrumentor = NetraFastAPIInstrumentor()
@@ -121,7 +120,7 @@ class TestNetraFastAPIInstrumentor:
 
         assert fastapi.FastAPI == _InstrumentedFastAPI
 
-    @patch("netra.instrumentation.fastapi.fastapi.FastAPI")
+    @patch("netra.instrumentation.libraries.fastapi.fastapi.FastAPI")
     def test_uninstrument_restores_original_fastapi(self, mock_fastapi_class: Mock) -> None:
         """Test _uninstrument method restores original FastAPI class."""
         instrumentor = NetraFastAPIInstrumentor()
@@ -262,7 +261,7 @@ class TestNetraFastAPIMiddleware:
 class TestInstrumentedFastAPI:
     """Test _InstrumentedFastAPI class functionality."""
 
-    @patch("netra.instrumentation.fastapi.NetraFastAPIInstrumentor.instrument_app")
+    @patch("netra.instrumentation.libraries.fastapi.NetraFastAPIInstrumentor.instrument_app")
     def test_initialization(self, mock_instrument_app: Mock) -> None:
         """Test _InstrumentedFastAPI initialization."""
         app = _InstrumentedFastAPI()
@@ -283,7 +282,7 @@ class TestInstrumentedFastAPI:
 
         assert isinstance(_InstrumentedFastAPI._instrumented_fastapi_apps, weakref.WeakSet)
 
-        with patch("netra.instrumentation.fastapi.NetraFastAPIInstrumentor.instrument_app"):
+        with patch("netra.instrumentation.libraries.fastapi.NetraFastAPIInstrumentor.instrument_app"):
             app = _InstrumentedFastAPI()
             assert app in _InstrumentedFastAPI._instrumented_fastapi_apps
             count_before = len(_InstrumentedFastAPI._instrumented_fastapi_apps)
@@ -346,8 +345,8 @@ class TestUtilityFunctions:
 
         assert result is None
 
-    @patch("netra.instrumentation.fastapi.utils.get_route_details")
-    @patch("netra.instrumentation.fastapi.utils.sanitize_method")
+    @patch("netra.instrumentation.libraries.fastapi.utils.get_route_details")
+    @patch("netra.instrumentation.libraries.fastapi.utils.sanitize_method")
     def test_get_default_span_details_with_route_and_method(
         self, mock_sanitize_method: Mock, mock_get_route_details: Mock
     ) -> None:
@@ -361,8 +360,8 @@ class TestUtilityFunctions:
         assert span_name == "GET"
         assert attributes == {}
 
-    @patch("netra.instrumentation.fastapi.utils.get_route_details")
-    @patch("netra.instrumentation.fastapi.utils.sanitize_method")
+    @patch("netra.instrumentation.libraries.fastapi.utils.get_route_details")
+    @patch("netra.instrumentation.libraries.fastapi.utils.sanitize_method")
     def test_get_default_span_details_no_route(self, mock_sanitize_method: Mock, mock_get_route_details: Mock) -> None:
         """Test get_default_span_details with no route."""
         mock_get_route_details.return_value = None
@@ -374,8 +373,8 @@ class TestUtilityFunctions:
         assert span_name == "GET"
         assert attributes == {}
 
-    @patch("netra.instrumentation.fastapi.utils.get_route_details")
-    @patch("netra.instrumentation.fastapi.utils.sanitize_method")
+    @patch("netra.instrumentation.libraries.fastapi.utils.get_route_details")
+    @patch("netra.instrumentation.libraries.fastapi.utils.sanitize_method")
     def test_get_default_span_details_other_method(
         self, mock_sanitize_method: Mock, mock_get_route_details: Mock
     ) -> None:
@@ -472,29 +471,31 @@ class TestUrlBuilder:
 
 
 class TestBodyParsing:
-    """Test body parsing utilities."""
+    """Bodies are parsed by the shared HTTP pipeline, asserted through the span.
 
-    def test_parse_body_json(self) -> None:
-        """Test parsing a JSON body."""
-        raw = b'{"key": "value"}'
-        result = parse_body(raw)
-        assert result == {"key": "value"}
+    These used to call a FastAPI-local ``parse_body``; the parsing now comes
+    from ``netra.instrumentation.http.body``, so they assert on the attribute
+    that actually ships instead of on an internal helper.
+    """
 
-    def test_parse_body_text(self) -> None:
-        """Test parsing a plain text body."""
-        raw = b"Hello, world!"
-        result = parse_body(raw)
-        assert result == "Hello, world!"
+    @staticmethod
+    def _recorded_body(raw: bytes) -> Any:
+        span = Mock()
+        span.is_recording.return_value = True
+        set_span_output(span, 200, [], raw)
+        return json.loads(span.set_attribute.call_args[0][1])
 
-    def test_parse_body_empty(self) -> None:
-        """Test parsing an empty body."""
-        assert parse_body(b"") is None
+    def test_json_body_is_recorded_as_an_object(self) -> None:
+        assert self._recorded_body(b'{"key": "value"}')["body"] == {"key": "value"}
 
-    def test_parse_body_binary(self) -> None:
-        """Test parsing binary content."""
-        raw = bytes(range(256))
-        result = parse_body(raw)
-        assert "<binary content:" in result
+    def test_plain_text_body_is_recorded_as_text(self) -> None:
+        assert self._recorded_body(b"Hello, world!")["body"] == "Hello, world!"
+
+    def test_empty_body_omits_the_body_key(self) -> None:
+        assert "body" not in self._recorded_body(b"")
+
+    def test_binary_body_is_recorded_as_a_size_placeholder(self) -> None:
+        assert "<binary content:" in self._recorded_body(bytes(range(256)))["body"]
 
 
 class TestSpanInputOutput:
@@ -753,8 +754,8 @@ class TestW3CTracePropagation:
             return {"type": "http.request", "body": b""}
 
         with (
-            patch("netra.instrumentation.fastapi.middleware.extract") as mock_extract,
-            patch("netra.instrumentation.fastapi.middleware.context_api") as mock_ctx,
+            patch("netra.instrumentation.libraries.fastapi.middleware.extract") as mock_extract,
+            patch("netra.instrumentation.libraries.fastapi.middleware.context_api") as mock_ctx,
         ):
             mock_extract.return_value = Mock()
             mock_ctx.attach.return_value = Mock()

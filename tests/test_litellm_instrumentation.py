@@ -4,8 +4,8 @@ from unittest.mock import MagicMock, Mock, patch
 import pytest
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.litellm import LiteLLMInstrumentor, should_suppress_instrumentation
-from netra.instrumentation.litellm.wrappers import (
+from netra.instrumentation.libraries.litellm import LiteLLMInstrumentor, should_suppress_instrumentation
+from netra.instrumentation.libraries.litellm.wrappers import (
     is_streaming_response,
     model_as_dict,
     set_request_attributes,
@@ -39,9 +39,9 @@ class TestLiteLLMInstrumentor:
         assert isinstance(dependencies, Collection)
         assert "litellm >= 1.0.0" in dependencies
 
-    @patch("netra.instrumentation.litellm.wrap_function_wrapper")
-    @patch("netra.instrumentation.litellm.get_tracer")
-    @patch("netra.instrumentation.litellm.logger")
+    @patch("netra.instrumentation.libraries.litellm.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.litellm.get_tracer")
+    @patch("netra.instrumentation.libraries.litellm.logger")
     def test_instrument_with_default_parameters(self, mock_logger, mock_get_tracer, mock_wrap):
         """Test _instrument method with default parameters."""
         # Arrange
@@ -57,8 +57,8 @@ class TestLiteLLMInstrumentor:
         # completion, acompletion, responses, aresponses, embedding, aembedding, image_generation, aimage_generation
         assert mock_wrap.call_count == 8
 
-    @patch("netra.instrumentation.litellm.wrap_function_wrapper")
-    @patch("netra.instrumentation.litellm.get_tracer")
+    @patch("netra.instrumentation.libraries.litellm.wrap_function_wrapper")
+    @patch("netra.instrumentation.libraries.litellm.get_tracer")
     def test_instrument_with_custom_tracer_provider(self, mock_get_tracer, mock_wrap):
         """Test _instrument method with custom tracer provider."""
         # Arrange
@@ -76,21 +76,24 @@ class TestLiteLLMInstrumentor:
         )
         assert mock_wrap.call_count == 8
 
-    @patch("netra.instrumentation.litellm.wrap_function_wrapper", side_effect=ImportError("No module named 'litellm'"))
-    @patch("netra.instrumentation.litellm.logger")
+    @patch(
+        "netra.instrumentation.libraries.litellm.wrap_function_wrapper",
+        side_effect=ImportError("No module named 'litellm'"),
+    )
+    @patch("netra.instrumentation.libraries.litellm.logger")
     def test_instrument_with_import_error(self, mock_logger, mock_wrap):
         """Test _instrument method handles import error gracefully."""
         # Arrange
         instrumentor = LiteLLMInstrumentor()
 
-        with patch("netra.instrumentation.litellm.get_tracer"):
+        with patch("netra.instrumentation.libraries.litellm.get_tracer"):
             # Act
             instrumentor._instrument()
 
             # Assert
             assert mock_logger.error.called
 
-    @patch("netra.instrumentation.litellm.unwrap")
+    @patch("netra.instrumentation.libraries.litellm.unwrap")
     def test_uninstrument(self, mock_unwrap):
         """Test _uninstrument method unwraps LiteLLM functions."""
         # Arrange
@@ -102,8 +105,8 @@ class TestLiteLLMInstrumentor:
         # Assert — same eight methods that _instrument wraps
         assert mock_unwrap.call_count == 8
 
-    @patch("netra.instrumentation.litellm.unwrap", side_effect=ModuleNotFoundError("litellm"))
-    @patch("netra.instrumentation.litellm.logger")
+    @patch("netra.instrumentation.libraries.litellm.unwrap", side_effect=ModuleNotFoundError("litellm"))
+    @patch("netra.instrumentation.libraries.litellm.logger")
     def test_uninstrument_with_import_error(self, mock_logger, mock_unwrap):
         """Test _uninstrument method handles import error gracefully."""
         # Arrange
@@ -119,10 +122,10 @@ class TestLiteLLMInstrumentor:
 class TestWrappers:
     """Test wrapper functionality in the LiteLLM instrumentation module."""
 
-    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    @patch("netra.instrumentation.libraries.litellm.wrappers.record_span_timing")
     def test_completion_wrapper_non_streaming(self, mock_record_timing):
         """Test completion_wrapper for non-streaming requests."""
-        from netra.instrumentation.litellm.wrappers import completion_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import completion_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -145,10 +148,10 @@ class TestWrappers:
         mock_tracer.start_as_current_span.assert_called_once()
         assert result == wrapped.return_value
 
-    @patch("netra.instrumentation.litellm.wrappers.StreamingWrapper")
+    @patch("netra.instrumentation.libraries.litellm.wrappers.StreamingWrapper")
     def test_completion_wrapper_streaming(self, mock_streaming_wrapper_class):
         """Test completion_wrapper for streaming requests."""
-        from netra.instrumentation.litellm.wrappers import completion_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import completion_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -181,7 +184,7 @@ class TestWrappers:
 
     def test_acompletion_wrapper_non_streaming(self):
         """Test acompletion_wrapper for non-streaming requests."""
-        from netra.instrumentation.litellm.wrappers import acompletion_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import acompletion_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -201,10 +204,10 @@ class TestWrappers:
         assert callable(wrapper)
         mock_tracer.start_as_current_span.assert_not_called()  # Should not be called until wrapper is invoked
 
-    @patch("netra.instrumentation.litellm.wrappers.AsyncStreamingWrapper")
+    @patch("netra.instrumentation.libraries.litellm.wrappers.AsyncStreamingWrapper")
     def test_acompletion_wrapper_streaming(self, mock_streaming_wrapper_class):
         """Test acompletion_wrapper for streaming requests."""
-        from netra.instrumentation.litellm.wrappers import acompletion_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import acompletion_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -232,10 +235,10 @@ class TestWrappers:
         # Verify wrapper creation doesn't call tracer methods yet
         mock_tracer.start_span.assert_not_called()
 
-    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    @patch("netra.instrumentation.libraries.litellm.wrappers.record_span_timing")
     def test_embedding_wrapper(self, mock_record_timing):
         """Test embedding_wrapper for embedding requests."""
-        from netra.instrumentation.litellm.wrappers import embedding_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import embedding_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -260,7 +263,7 @@ class TestWrappers:
 
     def test_aembedding_wrapper(self):
         """Test aembedding_wrapper for async embedding requests."""
-        from netra.instrumentation.litellm.wrappers import aembedding_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import aembedding_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -280,10 +283,10 @@ class TestWrappers:
         assert callable(wrapper)
         mock_tracer.start_as_current_span.assert_not_called()  # Should not be called until wrapper is invoked
 
-    @patch("netra.instrumentation.litellm.wrappers.record_span_timing")
+    @patch("netra.instrumentation.libraries.litellm.wrappers.record_span_timing")
     def test_image_generation_wrapper(self, mock_record_timing):
         """Test image_generation_wrapper for image generation requests."""
-        from netra.instrumentation.litellm.wrappers import image_generation_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import image_generation_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -308,7 +311,7 @@ class TestWrappers:
 
     def test_aimage_generation_wrapper(self):
         """Test aimage_generation_wrapper for async image generation requests."""
-        from netra.instrumentation.litellm.wrappers import aimage_generation_wrapper
+        from netra.instrumentation.libraries.litellm.wrappers import aimage_generation_wrapper
 
         # Arrange
         mock_tracer = Mock()
@@ -379,7 +382,7 @@ class TestUtilityFunctions:
         assert is_streaming_response({"key": "value"}) is False
         assert is_streaming_response(b"bytes") is False
 
-    @patch("netra.instrumentation.litellm.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.litellm.utils.context_api.get_value")
     def test_should_suppress_instrumentation_true(self, mock_get_value):
         """Test should_suppress_instrumentation returns True when suppression is enabled."""
         # Arrange
@@ -391,7 +394,7 @@ class TestUtilityFunctions:
         # Assert
         assert result is True
 
-    @patch("netra.instrumentation.litellm.utils.context_api.get_value")
+    @patch("netra.instrumentation.libraries.litellm.utils.context_api.get_value")
     def test_should_suppress_instrumentation_false(self, mock_get_value):
         """Test should_suppress_instrumentation returns False when suppression is disabled."""
         # Arrange
