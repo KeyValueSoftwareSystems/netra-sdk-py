@@ -17,15 +17,22 @@ _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrument
 _MAX_ROOT_CANDIDATES = 4096
 _ROOT_CANDIDATE_TTL_SECONDS = 600.0
 
-# Durable per-span marker set on a span the moment it is classified as a
-# root-block candidate.  It is a plain *instance attribute* — deliberately NOT
-# an OTel span attribute — so it travels with the span into its export batch
-# without consuming the span's bounded attribute capacity and without being
-# evicted by ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`` when later instrumentation adds
-# attributes.  Being off the attribute map, it is never serialised to the
-# backend, so nothing needs to strip it before export.  The exporter can still
-# recognise a blocked root even if the registry entry was evicted (TTL/overflow)
-# or cleared (shutdown) between ``on_start`` and export.
+# Durable per-span marker set on a span classified as a root-block candidate.
+# It is a plain *instance attribute* — deliberately NOT an OTel span attribute —
+# so it travels with the span into its export batch without consuming the span's
+# bounded attribute capacity and without being evicted by
+# ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT`` when later instrumentation adds attributes.
+# Being off the attribute map, it is never serialised to the backend, so nothing
+# needs to strip it before export.  The exporter can then recognise a blocked
+# root even if the registry entry was evicted (TTL/overflow) or cleared
+# (shutdown) between ``on_start`` and export.
+#
+# It is stamped at ``on_start`` *and* re-stamped at ``on_end``: the SDK's
+# ``Span.end()`` calls ``on_end(self._readable_span())``, handing the processor
+# (and therefore the export batch) a fresh ``ReadableSpan`` built from a fixed
+# field list, which an instance attribute is not part of.  The ``on_start``
+# marker consequently never reaches the exporter on a real SDK span — see
+# ``_mark_candidate_on_export_copy``.
 ROOT_BLOCK_CANDIDATE_FIELD = "_netra_root_block_candidate"
 
 # Process-global registry of "root-block candidate" spans: spans emitted by an
@@ -134,7 +141,8 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
             logger.debug("RootInstrumentFilterProcessor.on_start failed", exc_info=True)
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Start the TTL clock for a just-ended candidate, then prune expired entries.
+        """Mark the export-bound span copy, start the TTL clock for a just-ended
+        candidate, then prune expired entries.
 
         Entries are **not** cleared per-span — once a candidate ends its entry
         survives for ``_ROOT_CANDIDATE_TTL_SECONDS`` so that children exporting
@@ -143,9 +151,12 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         never evicted before it finishes.
 
         Args:
-            span: The span that is being ended.
+            span: The span that is being ended.  On a real SDK span this is the
+                ``ReadableSpan`` that goes into the export batch, not the live
+                span marked at ``on_start``.
         """
         try:
+            self._mark_candidate_on_export_copy(span)
             self._mark_ended(span)
             self._evict_stale_candidates()
         except Exception:
@@ -204,8 +215,34 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         self._mark_candidate(span)
         self._record_candidate(span_id, parent_ctx)
 
+    def _mark_candidate_on_export_copy(self, span: ReadableSpan) -> None:
+        """Re-stamp the candidacy marker on the span object that reaches the exporter.
+
+        ``Span.end()`` does not hand ``on_end`` the live span marked at
+        ``on_start``: it calls ``on_end(self._readable_span())``, and
+        ``_readable_span()`` builds a fresh ``ReadableSpan`` from a fixed list of
+        fields that an instance attribute is not part of.  The ``on_start``
+        marker is therefore always absent from the object the export batch
+        carries, and candidacy has to be resolved again here — cheaply, from the
+        same scope string — on the copy the exporter will actually read.
+
+        Without this, ``FilteringSpanExporter`` sees no in-batch candidate and
+        falls back to the cross-batch registry, which it only consults when some
+        batch span's *parent* is a registry entry.  A blocked root with no
+        children in the batch — any standalone redis / requests / sqlalchemy
+        call — is then nobody's parent, matches nothing, and is exported instead
+        of dropped.
+
+        Args:
+            span: The ending span, as it will be handed to the exporter.
+        """
+        instr_name = self._resolve_instrument_name(span)
+        if instr_name is None or instr_name in self._allowed:
+            return
+        self._mark_candidate(span)
+
     @staticmethod
-    def _mark_candidate(span: Span) -> None:
+    def _mark_candidate(span: ReadableSpan) -> None:
         """Stamp *span* with the durable root-block-candidate marker.
 
         The marker is a plain instance attribute (see ``ROOT_BLOCK_CANDIDATE_FIELD``),
@@ -213,7 +250,8 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         limit and is never exported.
 
         Args:
-            span: The candidate span being started.
+            span: The candidate span being started, or the ``ReadableSpan`` copy
+                of it being ended.
         """
         try:
             setattr(span, ROOT_BLOCK_CANDIDATE_FIELD, True)
@@ -294,7 +332,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         return cast(Optional[SpanContext], parent)
 
     @staticmethod
-    def _resolve_instrument_name(span: Span) -> Optional[str]:
+    def _resolve_instrument_name(span: ReadableSpan) -> Optional[str]:
         """Return the instrument name *span* is subject to, or ``None``.
 
         Answers both "did an auto-instrumentation library produce this span?" and

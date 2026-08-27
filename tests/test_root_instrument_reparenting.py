@@ -474,6 +474,92 @@ def test_candidate_marker_survives_span_attribute_limit():
 
 
 # ---------------------------------------------------------------------------
+# End to end on real SDK spans
+#
+# The FakeSpan doubles above hand the exporter the *same object* the processor
+# marked at on_start.  A real ``Span`` does not: ``Span.end()`` calls
+# ``on_end(self._readable_span())``, a fresh ``ReadableSpan`` built from a fixed
+# field list that carries no instance attributes.  These tests drive a real
+# TracerProvider so that copy is in the loop.
+# ---------------------------------------------------------------------------
+
+
+def make_sdk_pipeline(allowed: set[str]):
+    """A real provider whose exporter is the real FilteringSpanExporter."""
+    from opentelemetry.sdk.trace import TracerProvider
+    from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+
+    recorder = RecordingExporter()
+    provider = TracerProvider()
+    provider.add_span_processor(RootInstrumentFilterProcessor(allowed))
+    provider.add_span_processor(SimpleSpanProcessor(FilteringSpanExporter(recorder, patterns=[])))
+    return provider, recorder
+
+
+def exported_names(recorder: RecordingExporter) -> list[str]:
+    return [s.name for s in recorder.exported]
+
+
+def test_childless_blocked_root_on_a_real_span_is_dropped():
+    # The leak this guards against: a blocked root with no children is nobody's
+    # parent, so the exporter's cross-batch registry lookup never fires for it.
+    # It is dropped only if the export copy itself carries the candidacy marker.
+    provider, recorder = make_sdk_pipeline({"openai"})
+
+    provider.get_tracer(scope("redis")).start_span("SET").end()
+
+    assert exported_names(recorder) == []
+
+
+def test_childless_allowed_root_on_a_real_span_is_exported():
+    provider, recorder = make_sdk_pipeline({"openai"})
+
+    provider.get_tracer(scope("openai")).start_span("openai.chat").end()
+
+    assert exported_names(recorder) == ["openai.chat"]
+
+
+def test_blocked_instrumentation_span_under_a_manual_root_is_kept_on_real_spans():
+    # Only *root-connected* candidates are dropped: the same redis span that is
+    # dropped at the root survives under a manual span, which is never a candidate.
+    provider, recorder = make_sdk_pipeline({"openai"})
+
+    manual_root = provider.get_tracer("my.app.tracer").start_span("cache-lookup-workflow")
+    with trace.use_span(manual_root, end_on_exit=False):
+        provider.get_tracer(scope("redis")).start_span("GET").end()
+    manual_root.end()
+
+    assert exported_names(recorder) == ["GET", "cache-lookup-workflow"]
+    assert recorder.exported[0].parent.span_id == manual_root.get_span_context().span_id
+
+
+def test_the_export_copy_of_a_blocked_span_carries_the_candidate_marker():
+    # Pins the mechanism behind the three tests above: the marker set on the live
+    # span at on_start is absent from the ReadableSpan the SDK hands downstream,
+    # so the processor has to re-stamp it at on_end.
+    from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor, TracerProvider
+
+    from netra.exporters.utils import is_root_block_candidate
+
+    seen: list[ReadableSpan] = []
+
+    class CaptureProcessor(SpanProcessor):
+        def on_end(self, span: ReadableSpan) -> None:
+            seen.append(span)
+
+    provider = TracerProvider()
+    provider.add_span_processor(RootInstrumentFilterProcessor({"openai"}))
+    provider.add_span_processor(CaptureProcessor())
+
+    live_span = provider.get_tracer(scope("redis")).start_span("SET")
+    live_span.end()
+
+    (export_copy,) = seen
+    assert export_copy is not live_span  # the SDK snapshots the span on end
+    assert is_root_block_candidate(export_copy) is True
+
+
+# ---------------------------------------------------------------------------
 # Third-party scopes: instrumentations Netra enables but does not author
 # ---------------------------------------------------------------------------
 
