@@ -4,12 +4,12 @@ import threading
 from typing import Any, Optional
 
 from netra.config import Config
-from netra.redteam.client import RedteamHttpClient
+from netra.redteam.client import RedTeamHttpClient
 from netra.redteam.constants import LOG_PREFIX, MAX_AGENT_RESPONSE_CHARS, SPAN_NAME
-from netra.redteam.exceptions import RedteamError
-from netra.redteam.handler import RedteamAgentHandler, execute_handler
-from netra.redteam.models import RedteamResult, RunPromptItem, RunResultItem
-from netra.redteam.utils import resolve_max_concurrency, validate_redteam_inputs
+from netra.redteam.exceptions import RedTeamError
+from netra.redteam.handler import RedTeamAgentHandler, execute_handler
+from netra.redteam.models import RedTeamResult, RunPromptItem, RunResultItem
+from netra.redteam.utils import resolve_max_concurrency, validate_red_team_inputs
 from netra.shutdown_hooks import register_shutdown_hook, unregister_shutdown_hook
 from netra.span_wrapper import SpanWrapper
 from netra.utils import run_async_safely, truncate_string
@@ -17,7 +17,7 @@ from netra.utils import run_async_safely, truncate_string
 logger = logging.getLogger(__name__)
 
 
-class Redteam:
+class RedTeam:
     """Public API for triggering an existing red-team config and driving its
     multi-turn adversarial conversation loop against a local agent function.
     """
@@ -26,18 +26,18 @@ class Redteam:
 
     def __init__(self, config: Config) -> None:
         self._config = config
-        self._client = RedteamHttpClient(config)
+        self._client = RedTeamHttpClient(config)
 
     def close(self) -> None:
         """Release resources held by the redteam client."""
         self._client.close()
 
-    def run_redteam(
+    def run_red_team(
         self,
         config_id: str,
-        handler: RedteamAgentHandler,
+        handler: RedTeamAgentHandler,
         max_concurrency: Optional[int] = None,
-    ) -> Optional[RedteamResult]:
+    ) -> Optional[RedTeamResult]:
         """Trigger an existing red-team config and drive its run to completion.
 
         Fetches the run's prompt list once, then drives every session's
@@ -53,16 +53,16 @@ class Redteam:
                 Capped at 5. Defaults to 5.
 
         Returns:
-            A :class:`RedteamResult`, or ``None`` if the inputs are invalid
+            A :class:`RedTeamResult`, or ``None`` if the inputs are invalid
             (logged, no network call made).
 
         Raises:
-            netra.redteam.exceptions.RedteamError: Or a subclass, for any
+            netra.redteam.exceptions.RedTeamError: Or a subclass, for any
                 failure other than invalid input. Carries ``.run_id`` when a
                 run was already created, and the run is best-effort cancelled
                 server-side before this is raised.
         """
-        if not validate_redteam_inputs(config_id, handler, max_concurrency):
+        if not validate_red_team_inputs(config_id, handler, max_concurrency):
             return None
 
         effective_concurrency = resolve_max_concurrency(max_concurrency)
@@ -73,7 +73,7 @@ class Redteam:
 
         run_id = create_result.get("run_id")
         if not run_id:
-            raise RedteamError(f"Backend did not return a run_id for config '{config_id}'")
+            raise RedTeamError(f"Backend did not return a run_id for config '{config_id}'")
 
         stop_event = threading.Event()
 
@@ -99,7 +99,7 @@ class Redteam:
             except Exception as exc:
                 # A fatal error would otherwise leave the run orphaned as
                 # "running" server-side with no run_id in hand to cancel it.
-                if isinstance(exc, RedteamError):
+                if isinstance(exc, RedTeamError):
                     exc.run_id = run_id
                 try:
                     self._client.cancel(run_id)
@@ -128,7 +128,7 @@ class Redteam:
         status = "cancelled" if interrupted else self._client.get_run_status(run_id)
         run_number = progress.get("runNumber") if progress else None
 
-        return RedteamResult(
+        return RedTeamResult(
             success=status == "completed",
             status=status,
             run_id=run_id,
@@ -150,7 +150,7 @@ class Redteam:
     def _drive_all_sessions(
         self,
         run_id: str,
-        handler: RedteamAgentHandler,
+        handler: RedTeamAgentHandler,
         prompts: list[RunPromptItem],
         max_concurrency: int,
         stop_event: threading.Event,
@@ -184,7 +184,7 @@ class Redteam:
     async def _drive_session(
         self,
         run_id: str,
-        handler: RedteamAgentHandler,
+        handler: RedTeamAgentHandler,
         prompt: RunPromptItem,
         stop_event: threading.Event,
     ) -> None:
@@ -199,7 +199,7 @@ class Redteam:
 
             with SpanWrapper(
                 SPAN_NAME,
-                attributes={Config.TRACE_ORIGIN_KEY: Config.TRACE_ORIGIN_REDTEAM},
+                attributes={Config.TRACE_ORIGIN_KEY: Config.TRACE_ORIGIN_RED_TEAM},
                 module_name=LOG_PREFIX,
             ):
                 output: Optional[str] = None

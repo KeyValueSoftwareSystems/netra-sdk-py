@@ -35,12 +35,12 @@ def parse_env_float(env_var: str, default: float) -> float:
         return default
 
 
-def validate_redteam_inputs(
+def validate_red_team_inputs(
     config_id: str,
     handler: Optional[Callable[..., Any]],
     max_concurrency: Optional[int],
 ) -> bool:
-    """Validate required inputs for ``run_redteam`` before any network call.
+    """Validate required inputs for ``run_red_team`` before any network call.
 
     Args:
         config_id: The red-team config identifier.

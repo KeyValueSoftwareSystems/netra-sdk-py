@@ -3,8 +3,8 @@
 from typing import Optional
 
 
-class RedteamError(Exception):
-    """Base class for all redteam-related errors.
+class RedTeamError(Exception):
+    """Base class for all red-team-related errors.
 
     Attributes:
         run_id: The run this error relates to, when known, so a caller can
@@ -16,22 +16,22 @@ class RedteamError(Exception):
         self.run_id = run_id
 
 
-class RedteamAuthError(RedteamError):
+class RedTeamAuthError(RedTeamError):
     """Missing/invalid API key, or the feature is disabled for the org."""
 
 
-class RedteamConfigError(RedteamError):
+class RedTeamConfigError(RedTeamError):
     """Missing, malformed, or unusable config/run/prompt."""
 
 
-class RedteamRunError(RedteamError):
+class RedTeamRunError(RedTeamError):
     """A run is already active for this config, or not in a status that
     accepts the requested operation."""
 
 
-class RedteamGenerationError(RedteamError):
+class RedTeamGenerationError(RedTeamError):
     """Prompt generation failed on the backend."""
 
 
-class RedteamGenerationTimeoutError(RedteamError):
+class RedTeamGenerationTimeoutError(RedTeamError):
     """Prompt generation didn't finish before the deadline."""

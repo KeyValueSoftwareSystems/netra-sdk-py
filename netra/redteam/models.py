@@ -64,8 +64,8 @@ class RunResultItem:
 
 
 @dataclass(slots=True)
-class RedteamResult:
-    """Aggregated outcome of a ``run_redteam()`` call.
+class RedTeamResult:
+    """Aggregated outcome of a ``run_red_team()`` call.
 
     Attributes:
         success: True iff ``status == "completed"``.

@@ -26,12 +26,12 @@ from netra.redteam.constants import (
     URL_SUBMIT_TURN,
 )
 from netra.redteam.exceptions import (
-    RedteamAuthError,
-    RedteamConfigError,
-    RedteamError,
-    RedteamGenerationError,
-    RedteamGenerationTimeoutError,
-    RedteamRunError,
+    RedTeamAuthError,
+    RedTeamConfigError,
+    RedTeamError,
+    RedTeamGenerationError,
+    RedTeamGenerationTimeoutError,
+    RedTeamRunError,
 )
 from netra.redteam.models import RunPromptItem, RunResultItem, SubmitTurnResult
 from netra.redteam.utils import parse_env_float, unwrap_envelope
@@ -39,19 +39,19 @@ from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
 
-_STATUS_TO_ERROR: dict[int, type[RedteamError]] = {
-    400: RedteamConfigError,
-    401: RedteamAuthError,
-    403: RedteamAuthError,
-    404: RedteamConfigError,
-    409: RedteamRunError,
-    422: RedteamConfigError,
-    502: RedteamGenerationError,
-    503: RedteamGenerationTimeoutError,
+_STATUS_TO_ERROR: dict[int, type[RedTeamError]] = {
+    400: RedTeamConfigError,
+    401: RedTeamAuthError,
+    403: RedTeamAuthError,
+    404: RedTeamConfigError,
+    409: RedTeamRunError,
+    422: RedTeamConfigError,
+    502: RedTeamGenerationError,
+    503: RedTeamGenerationTimeoutError,
 }
 
 
-class RedteamHttpClient:
+class RedTeamHttpClient:
     """Internal HTTP client for redteam API endpoints.
 
     Raises typed exceptions from :mod:`netra.redteam.exceptions` on failure.
@@ -63,7 +63,7 @@ class RedteamHttpClient:
         """Initialize the redteam HTTP client.
 
         Raises:
-            RedteamAuthError: If ``NETRA_OTLP_ENDPOINT`` is not configured.
+            RedTeamAuthError: If ``NETRA_OTLP_ENDPOINT`` is not configured.
         """
         self._client = self._create_client(config)
 
@@ -77,7 +77,7 @@ class RedteamHttpClient:
     def _create_client(self, config: Config) -> httpx.Client:
         endpoint = (config.otlp_endpoint or "").strip()
         if not endpoint:
-            raise RedteamAuthError("NETRA_OTLP_ENDPOINT is required to use Netra.redteam")
+            raise RedTeamAuthError("NETRA_OTLP_ENDPOINT is required to use Netra.red_team")
 
         base_url = self._resolve_base_url(endpoint)
         headers = self._build_headers(config)
@@ -96,9 +96,9 @@ class RedteamHttpClient:
             headers["x-api-key"] = config.api_key
         return headers
 
-    def _to_typed_error(self, response: Optional[httpx.Response], exc: Exception) -> RedteamError:
+    def _to_typed_error(self, response: Optional[httpx.Response], exc: Exception) -> RedTeamError:
         message = extract_error_message(response, exc)
-        error_cls = _STATUS_TO_ERROR.get(response.status_code, RedteamError) if response is not None else RedteamError
+        error_cls = _STATUS_TO_ERROR.get(response.status_code, RedTeamError) if response is not None else RedTeamError
         return error_cls(message)
 
     def create_run(self, config_id: str) -> dict[str, Any]:
@@ -121,13 +121,13 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def await_run_ready(self, config_id: str) -> dict[str, Any]:
         """Poll ``create_run`` until the run is ``"running"`` or a deadline elapses.
 
         Raises:
-            RedteamGenerationTimeoutError: If the deadline elapses first.
+            RedTeamGenerationTimeoutError: If the deadline elapses first.
         """
         interval = parse_env_float(ENV_GENERATION_POLL_INTERVAL, DEFAULT_GENERATION_POLL_INTERVAL_S)
         deadline_s = parse_env_float(ENV_GENERATION_TIMEOUT, DEFAULT_GENERATION_TIMEOUT_S)
@@ -138,7 +138,7 @@ class RedteamHttpClient:
             if result.get("status") != "generating":
                 return result
             if time.monotonic() - start > deadline_s:
-                raise RedteamGenerationTimeoutError(
+                raise RedTeamGenerationTimeoutError(
                     f"Prompt generation for config '{config_id}' did not finish within {deadline_s}s"
                 )
             time.sleep(interval)
@@ -154,7 +154,7 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def get_prompts(self, run_id: str) -> list[RunPromptItem]:
         """Fetch the full prompt list for a run. Should be called exactly once per run."""
@@ -223,7 +223,7 @@ class RedteamHttpClient:
                 return SubmitTurnResult(done=True)
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def get_progress(self, run_id: str) -> dict[str, Any]:
         """Fetch the opaque progress blob for a run."""
@@ -236,7 +236,7 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def get_results_page(
         self, run_id: str, page: int, limit: int = RESULTS_PAGE_LIMIT, evaluator_id: Optional[str] = None
@@ -256,7 +256,7 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def get_all_results(self, run_id: str) -> list[RunResultItem]:
         """Fetch every page of graded results for a run."""
@@ -293,7 +293,7 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc
 
     def cancel(self, run_id: str) -> dict[str, Any]:
         """Cancel an in-progress run."""
@@ -306,4 +306,4 @@ class RedteamHttpClient:
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
-            raise RedteamError(extract_error_message(response, exc)) from exc
+            raise RedTeamError(extract_error_message(response, exc)) from exc

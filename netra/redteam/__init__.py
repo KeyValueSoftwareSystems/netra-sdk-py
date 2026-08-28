@@ -1,27 +1,27 @@
-from netra.redteam.api import Redteam
+from netra.redteam.api import RedTeam
 from netra.redteam.exceptions import (
-    RedteamAuthError,
-    RedteamConfigError,
-    RedteamError,
-    RedteamGenerationError,
-    RedteamGenerationTimeoutError,
-    RedteamRunError,
+    RedTeamAuthError,
+    RedTeamConfigError,
+    RedTeamError,
+    RedTeamGenerationError,
+    RedTeamGenerationTimeoutError,
+    RedTeamRunError,
 )
-from netra.redteam.handler import RedteamAgentHandler, RedteamAgentResponse
-from netra.redteam.models import RedteamResult, RunPromptItem, RunResultItem, SubmitTurnResult
+from netra.redteam.handler import RedTeamAgentHandler, RedTeamAgentResponse
+from netra.redteam.models import RedTeamResult, RunPromptItem, RunResultItem, SubmitTurnResult
 
 __all__ = [
-    "Redteam",
-    "RedteamAgentHandler",
-    "RedteamAgentResponse",
-    "RedteamResult",
+    "RedTeam",
+    "RedTeamAgentHandler",
+    "RedTeamAgentResponse",
+    "RedTeamResult",
     "RunPromptItem",
     "RunResultItem",
     "SubmitTurnResult",
-    "RedteamError",
-    "RedteamAuthError",
-    "RedteamConfigError",
-    "RedteamRunError",
-    "RedteamGenerationError",
-    "RedteamGenerationTimeoutError",
+    "RedTeamError",
+    "RedTeamAuthError",
+    "RedTeamConfigError",
+    "RedTeamRunError",
+    "RedTeamGenerationError",
+    "RedTeamGenerationTimeoutError",
 ]

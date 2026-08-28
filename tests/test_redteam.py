@@ -14,20 +14,20 @@ import httpx
 import pytest
 
 from netra.redteam.exceptions import (
-    RedteamAuthError,
-    RedteamConfigError,
-    RedteamError,
-    RedteamGenerationError,
-    RedteamGenerationTimeoutError,
-    RedteamRunError,
+    RedTeamAuthError,
+    RedTeamConfigError,
+    RedTeamError,
+    RedTeamGenerationError,
+    RedTeamGenerationTimeoutError,
+    RedTeamRunError,
 )
 from netra.redteam.handler import execute_handler
-from netra.redteam.models import RedteamResult, RunPromptItem, RunResultItem, SubmitTurnResult
+from netra.redteam.models import RedTeamResult, RunPromptItem, RunResultItem, SubmitTurnResult
 from netra.redteam.utils import (
     parse_env_float,
     resolve_max_concurrency,
     unwrap_envelope,
-    validate_redteam_inputs,
+    validate_red_team_inputs,
 )
 
 # ---------------------------------------------------------------------------
@@ -92,16 +92,16 @@ class TestModels:
         assert item.score is None
         assert item.session_id is None
 
-    def test_redteam_result_defaults(self) -> None:
-        result = RedteamResult(success=True, status="completed", run_id="r1", config_id="c1")
+    def test_red_team_result_defaults(self) -> None:
+        result = RedTeamResult(success=True, status="completed", run_id="r1", config_id="c1")
         assert result.results == []
         assert result.run_number is None
         assert result.progress is None
         assert result.risk_score is None
 
-    def test_redteam_error_run_id(self) -> None:
-        assert RedteamError("boom").run_id is None
-        assert RedteamError("boom", run_id="r1").run_id == "r1"
+    def test_red_team_error_run_id(self) -> None:
+        assert RedTeamError("boom").run_id is None
+        assert RedTeamError("boom", run_id="r1").run_id == "r1"
 
 
 # ---------------------------------------------------------------------------
@@ -183,27 +183,27 @@ class TestParseEnvFloat:
         assert parse_env_float("NETRA_REDTEAM_TEST_VAR", 1.0) == 1.0
 
 
-class TestValidateRedteamInputs:
+class TestValidateRedTeamInputs:
     def test_valid_inputs(self) -> None:
-        assert validate_redteam_inputs("cfg-1", lambda p, s, t: "ok", 5) is True
+        assert validate_red_team_inputs("cfg-1", lambda p, s, t: "ok", 5) is True
 
     def test_missing_config_id(self) -> None:
-        assert validate_redteam_inputs("", lambda p, s, t: "ok", None) is False
+        assert validate_red_team_inputs("", lambda p, s, t: "ok", None) is False
 
     def test_non_callable_handler(self) -> None:
-        assert validate_redteam_inputs("cfg-1", "not-a-fn", None) is False  # type: ignore[arg-type]
+        assert validate_red_team_inputs("cfg-1", "not-a-fn", None) is False  # type: ignore[arg-type]
 
     def test_zero_max_concurrency(self) -> None:
-        assert validate_redteam_inputs("cfg-1", lambda p, s, t: "ok", 0) is False
+        assert validate_red_team_inputs("cfg-1", lambda p, s, t: "ok", 0) is False
 
     def test_negative_max_concurrency(self) -> None:
-        assert validate_redteam_inputs("cfg-1", lambda p, s, t: "ok", -1) is False
+        assert validate_red_team_inputs("cfg-1", lambda p, s, t: "ok", -1) is False
 
     def test_non_int_max_concurrency(self) -> None:
-        assert validate_redteam_inputs("cfg-1", lambda p, s, t: "ok", 2.5) is False  # type: ignore[arg-type]
+        assert validate_red_team_inputs("cfg-1", lambda p, s, t: "ok", 2.5) is False  # type: ignore[arg-type]
 
     def test_none_max_concurrency_is_valid(self) -> None:
-        assert validate_redteam_inputs("cfg-1", lambda p, s, t: "ok", None) is True
+        assert validate_red_team_inputs("cfg-1", lambda p, s, t: "ok", None) is True
 
 
 class TestResolveMaxConcurrency:
@@ -234,37 +234,37 @@ class TestUnwrapEnvelope:
 # ---------------------------------------------------------------------------
 
 
-class TestRedteamHttpClient:
+class TestRedTeamHttpClient:
     def test_create_client_with_valid_config(self) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         assert client._client is not None
         client.close()
 
     def test_create_client_strips_telemetry_suffix(self) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
-        client = RedteamHttpClient(_make_config(endpoint="https://api.getnetra.ai/telemetry"))
+        client = RedTeamHttpClient(_make_config(endpoint="https://api.getnetra.ai/telemetry"))
         assert "/telemetry" not in str(client._client.base_url)
         client.close()
 
     def test_create_client_raises_on_empty_endpoint(self) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
-        with pytest.raises(RedteamAuthError):
-            RedteamHttpClient(_make_config(endpoint=""))
+        with pytest.raises(RedTeamAuthError):
+            RedTeamHttpClient(_make_config(endpoint=""))
 
     def test_close_is_idempotent(self) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         client.close()
         client.close()  # should not raise
 
     @patch("netra.redteam.client.httpx.Client")
     def test_create_run_running(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(
@@ -272,13 +272,13 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         result = client.create_run("cfg-1")
         assert result == {"run_id": "run-1", "config_id": "cfg-1", "status": "running"}
 
     @patch("netra.redteam.client.httpx.Client")
     def test_create_run_generating_has_no_run_id(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(
@@ -286,7 +286,7 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         result = client.create_run("cfg-1")
         assert result["status"] == "generating"
         assert "run_id" not in result
@@ -294,7 +294,7 @@ class TestRedteamHttpClient:
     @patch("netra.redteam.client.time.sleep", return_value=None)
     @patch("netra.redteam.client.httpx.Client")
     def test_await_run_ready_polls_until_running(self, mock_client_cls: MagicMock, _mock_sleep: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.side_effect = [
@@ -306,7 +306,7 @@ class TestRedteamHttpClient:
         ]
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         result = client.await_run_ready("cfg-1")
         assert result == {"run_id": "run-1", "config_id": "cfg-1", "status": "running"}
         assert mock_instance.post.call_count == 3
@@ -317,7 +317,7 @@ class TestRedteamHttpClient:
     def test_await_run_ready_times_out(
         self, mock_client_cls: MagicMock, mock_monotonic: MagicMock, _mock_sleep: MagicMock
     ) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         # First call establishes `start`; every call after must read past the deadline.
         mock_monotonic.side_effect = [0.0] + [10_000.0] * 10
@@ -327,13 +327,13 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
-        with pytest.raises(RedteamGenerationTimeoutError):
+        client = RedTeamHttpClient(_make_config())
+        with pytest.raises(RedTeamGenerationTimeoutError):
             client.await_run_ready("cfg-1")
 
     @patch("netra.redteam.client.httpx.Client")
     def test_get_prompts(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.get.return_value = _mock_response(
@@ -353,14 +353,14 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         prompts = client.get_prompts("run-1")
         assert len(prompts) == 1
         assert prompts[0] == RunPromptItem(id="p1", prompt="hi", evaluator_id="e1", evaluator_slug="slug-1")
 
     @patch("netra.redteam.client.httpx.Client")
     def test_get_run_status_maps_generating_to_completed(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.get.return_value = _mock_response(
@@ -368,12 +368,12 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         assert client.get_run_status("run-1") == "completed"
 
     @patch("netra.redteam.client.httpx.Client")
     def test_get_run_status_passes_through(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.get.return_value = _mock_response(
@@ -381,12 +381,12 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         assert client.get_run_status("run-1") == "cancelled"
 
     @patch("netra.redteam.client.httpx.Client")
     def test_submit_turn_continue(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(
@@ -394,7 +394,7 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         result = client.submit_turn(
             run_id="run-1", prompt_id="p1", session_id="s1", turn_index=1, prompt_text="hi", output="reply"
         )
@@ -405,13 +405,13 @@ class TestRedteamHttpClient:
 
     @patch("netra.redteam.client.httpx.Client")
     def test_submit_turn_error_field(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(200, {"success": True, "data": {"done": True}})
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         client.submit_turn(
             run_id="run-1", prompt_id="p1", session_id="s1", turn_index=1, prompt_text="hi", error="boom"
         )
@@ -421,13 +421,13 @@ class TestRedteamHttpClient:
 
     @patch("netra.redteam.client.httpx.Client")
     def test_submit_turn_409_normalized_to_done(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(409, {"error": {"message": "already submitted"}})
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         result = client.submit_turn(
             run_id="run-1", prompt_id="p1", session_id="s1", turn_index=1, prompt_text="hi", output="reply"
         )
@@ -436,30 +436,30 @@ class TestRedteamHttpClient:
     @pytest.mark.parametrize(
         "status_code,expected_exc",
         [
-            (400, RedteamConfigError),
-            (401, RedteamAuthError),
-            (403, RedteamAuthError),
-            (404, RedteamConfigError),
-            (422, RedteamConfigError),
-            (502, RedteamGenerationError),
-            (503, RedteamGenerationTimeoutError),
+            (400, RedTeamConfigError),
+            (401, RedTeamAuthError),
+            (403, RedTeamAuthError),
+            (404, RedTeamConfigError),
+            (422, RedTeamConfigError),
+            (502, RedTeamGenerationError),
+            (503, RedTeamGenerationTimeoutError),
         ],
     )
     @patch("netra.redteam.client.httpx.Client")
     def test_get_prompts_error_mapping(self, mock_client_cls: MagicMock, status_code: int, expected_exc: type) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.get.return_value = _mock_response(status_code, {"error": {"message": "failed"}})
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         with pytest.raises(expected_exc):
             client.get_prompts("run-1")
 
     @patch("netra.redteam.client.httpx.Client")
     def test_create_run_409_raises_run_error(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(
@@ -467,25 +467,25 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
-        with pytest.raises(RedteamRunError):
+        client = RedTeamHttpClient(_make_config())
+        with pytest.raises(RedTeamRunError):
             client.create_run("cfg-1")
 
     @patch("netra.redteam.client.httpx.Client")
     def test_cancel_409_raises_run_error(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(409, {"error": {"message": "Run is not in RUNNING status."}})
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
-        with pytest.raises(RedteamRunError):
+        client = RedTeamHttpClient(_make_config())
+        with pytest.raises(RedTeamRunError):
             client.cancel("run-1")
 
     @patch("netra.redteam.client.httpx.Client")
     def test_get_all_results_paginates(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
         from netra.redteam.constants import RESULTS_PAGE_LIMIT
 
         first_page_items = [
@@ -501,7 +501,7 @@ class TestRedteamHttpClient:
         ]
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         results = client.get_all_results("run-1")
         assert len(results) == RESULTS_PAGE_LIMIT + 1
         assert results[-1].status == "fail"
@@ -509,7 +509,7 @@ class TestRedteamHttpClient:
 
     @patch("netra.redteam.client.httpx.Client")
     def test_get_risk_score(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.get.return_value = _mock_response(
@@ -517,39 +517,39 @@ class TestRedteamHttpClient:
         )
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         assert client.get_risk_score("cfg-1") == {"configId": "cfg-1", "latestSafetyScore": 90}
 
     @patch("netra.redteam.client.httpx.Client")
     def test_cancel_success(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.client import RedteamHttpClient
+        from netra.redteam.client import RedTeamHttpClient
 
         mock_instance = MagicMock()
         mock_instance.post.return_value = _mock_response(200, {"success": True, "data": {"status": "cancelled"}})
         mock_client_cls.return_value = mock_instance
 
-        client = RedteamHttpClient(_make_config())
+        client = RedTeamHttpClient(_make_config())
         assert client.cancel("run-1") == {"status": "cancelled"}
 
 
 # ---------------------------------------------------------------------------
-# api.py — the public Redteam class
+# api.py — the public RedTeam class
 # ---------------------------------------------------------------------------
 
 
-class TestRedteam:
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_returns_none_on_invalid_inputs(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+class TestRedTeam:
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_returns_none_on_invalid_inputs(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="", handler=lambda p, s, t: "ok")
         assert result is None
         mock_client_cls.return_value.create_run.assert_not_called()
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_polls_through_generation_gating(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_polls_through_generation_gating(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"config_id": "cfg-1", "status": "generating"}
@@ -561,16 +561,16 @@ class TestRedteam:
         mock_client.get_risk_score.return_value = {}
         mock_client.get_run_status.return_value = "completed"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.success is True
         mock_client.await_run_ready.assert_called_once_with("cfg-1")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_empty_prompts_still_succeeds(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_empty_prompts_still_succeeds(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -580,17 +580,17 @@ class TestRedteam:
         mock_client.get_risk_score.return_value = {}
         mock_client.get_run_status.return_value = "completed"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.success is True
         assert result.results == []
         mock_client.submit_turn.assert_not_called()
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_multi_turn_loop_threads_prompt_and_index(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_multi_turn_loop_threads_prompt_and_index(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -615,8 +615,8 @@ class TestRedteam:
         def handler(prompt: str, session_id: str, turn_index: int) -> str:
             return f"reply-to-{prompt}"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=handler)
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=handler)
 
         assert result is not None and result.success is True
         assert len(submit_calls) == 3
@@ -624,9 +624,9 @@ class TestRedteam:
         assert [c["prompt_text"] for c in submit_calls] == ["turn1", "turn2", "turn3"]
         assert [c["output"] for c in submit_calls] == ["reply-to-turn1", "reply-to-turn2", "reply-to-turn3"]
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_sessions_do_not_cross_talk(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_sessions_do_not_cross_talk(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -653,8 +653,8 @@ class TestRedteam:
         def handler(prompt: str, session_id: str, turn_index: int) -> str:
             return f"reply-{prompt}"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=handler, max_concurrency=3)
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=handler, max_concurrency=3)
 
         assert result is not None and result.success is True
         # 3 sessions x 2 turns = 6 total submissions, each session sees only its own prompt lineage
@@ -669,9 +669,9 @@ class TestRedteam:
             assert calls[1]["prompt_id"] == session_id
             assert calls[1]["prompt_text"] == f"prompt-{session_id[-1]}-t2"
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_handler_error_submitted_but_run_completes(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_handler_error_submitted_but_run_completes(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -685,8 +685,8 @@ class TestRedteam:
         def bad_handler(prompt: str, session_id: str, turn_index: int) -> str:
             raise ValueError("agent exploded")
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=bad_handler)
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=bad_handler)
 
         assert result is not None
         assert result.success is True  # overall run completion, not per-turn pass rate
@@ -694,42 +694,42 @@ class TestRedteam:
         assert submitted["error"] == "agent exploded"
         assert submitted["output"] is None
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_fatal_submit_failure_propagates(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_fatal_submit_failure_propagates(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
         mock_client.get_prompts.return_value = [RunPromptItem(id="p1", prompt="hi", evaluator_id="e1")]
-        mock_client.submit_turn.side_effect = RedteamError("network died")
+        mock_client.submit_turn.side_effect = RedTeamError("network died")
 
-        rt = Redteam(_make_config())
-        with pytest.raises(RedteamError) as exc_info:
-            rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        with pytest.raises(RedTeamError) as exc_info:
+            rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         # Carries run_id so the caller can inspect/manually cancel, and the
         # run is best-effort cancelled server-side before the error propagates.
         assert exc_info.value.run_id == "run-1"
         mock_client.cancel.assert_called_once_with("run-1")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_fatal_failure_cancel_error_does_not_mask_original(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_fatal_failure_cancel_error_does_not_mask_original(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
         mock_client.get_prompts.return_value = [RunPromptItem(id="p1", prompt="hi", evaluator_id="e1")]
-        mock_client.submit_turn.side_effect = RedteamError("network died")
-        mock_client.cancel.side_effect = RedteamError("cancel also failed")
+        mock_client.submit_turn.side_effect = RedTeamError("network died")
+        mock_client.cancel.side_effect = RedTeamError("cancel also failed")
 
-        rt = Redteam(_make_config())
-        with pytest.raises(RedteamError, match="network died"):
-            rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        with pytest.raises(RedTeamError, match="network died"):
+            rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_keyboard_interrupt_returns_cancelled_result(self, mock_client_cls: MagicMock) -> None:
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_keyboard_interrupt_returns_cancelled_result(self, mock_client_cls: MagicMock) -> None:
         """A KeyboardInterrupt mid-run is swallowed into a cancelled result, not raised."""
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -743,39 +743,39 @@ class TestRedteam:
             stop_event.set()
             raise KeyboardInterrupt
 
-        with patch.object(Redteam, "_drive_all_sessions", fake_drive_all):
-            rt = Redteam(_make_config())
-            result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        with patch.object(RedTeam, "_drive_all_sessions", fake_drive_all):
+            rt = RedTeam(_make_config())
+            result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.status == "cancelled"
         assert result.success is False
         mock_client.get_run_status.assert_not_called()
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_progress_failure_is_best_effort(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_progress_failure_is_best_effort(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
         mock_client.get_prompts.return_value = [RunPromptItem(id="p1", prompt="hi", evaluator_id="e1")]
         mock_client.submit_turn.return_value = SubmitTurnResult(done=True)
         mock_client.get_all_results.return_value = []
-        mock_client.get_progress.side_effect = RedteamError("progress endpoint down")
+        mock_client.get_progress.side_effect = RedTeamError("progress endpoint down")
         mock_client.get_risk_score.return_value = {"latestSafetyScore": 80}
         mock_client.get_run_status.return_value = "completed"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.success is True
         assert result.progress is None
         assert result.risk_score == {"latestSafetyScore": 80}
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_risk_score_failure_is_best_effort(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_risk_score_failure_is_best_effort(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -783,20 +783,20 @@ class TestRedteam:
         mock_client.submit_turn.return_value = SubmitTurnResult(done=True)
         mock_client.get_all_results.return_value = []
         mock_client.get_progress.return_value = {"runNumber": 3}
-        mock_client.get_risk_score.side_effect = RedteamError("risk score endpoint down")
+        mock_client.get_risk_score.side_effect = RedTeamError("risk score endpoint down")
         mock_client.get_run_status.return_value = "completed"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.success is True
         assert result.risk_score is None
         assert result.run_number == 3
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_final_status_not_completed_is_unsuccessful(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_final_status_not_completed_is_unsuccessful(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -807,60 +807,60 @@ class TestRedteam:
         mock_client.get_risk_score.return_value = {}
         mock_client.get_run_status.return_value = "failed"
 
-        rt = Redteam(_make_config())
-        result = rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        result = rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert result is not None
         assert result.status == "failed"
         assert result.success is False
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_missing_run_id_raises(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_missing_run_id_raises(self, mock_client_cls: MagicMock) -> None:
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"status": "running"}  # malformed: no run_id
 
-        rt = Redteam(_make_config())
-        with pytest.raises(RedteamError):
-            rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        with pytest.raises(RedTeamError):
+            rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
+    @patch("netra.redteam.api.RedTeamHttpClient")
     def test_get_results_delegates_to_client(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         expected = [RunResultItem(evaluator_id="e1", status="pass")]
         mock_client.get_all_results.return_value = expected
 
-        rt = Redteam(_make_config())
+        rt = RedTeam(_make_config())
         assert rt.get_results("run-1") is expected
         mock_client.get_all_results.assert_called_once_with("run-1")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
+    @patch("netra.redteam.api.RedTeamHttpClient")
     def test_cancel_delegates_to_client(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.cancel.return_value = {"status": "cancelled"}
 
-        rt = Redteam(_make_config())
+        rt = RedTeam(_make_config())
         assert rt.cancel("run-1") == {"status": "cancelled"}
         mock_client.cancel.assert_called_once_with("run-1")
 
-    @patch("netra.redteam.api.RedteamHttpClient")
+    @patch("netra.redteam.api.RedTeamHttpClient")
     def test_close_delegates_to_client(self, mock_client_cls: MagicMock) -> None:
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
-        rt = Redteam(_make_config())
+        rt = RedTeam(_make_config())
         rt.close()
         mock_client.close.assert_called_once()
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_unregisters_shutdown_hook_after_completion(self, mock_client_cls: MagicMock) -> None:
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_unregisters_shutdown_hook_after_completion(self, mock_client_cls: MagicMock) -> None:
         import netra.shutdown_hooks as sh
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
@@ -871,25 +871,25 @@ class TestRedteam:
         mock_client.get_risk_score.return_value = {}
         mock_client.get_run_status.return_value = "completed"
 
-        rt = Redteam(_make_config())
-        rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert len(sh._hooks) == 0
 
-    @patch("netra.redteam.api.RedteamHttpClient")
-    def test_run_redteam_unregisters_shutdown_hook_even_if_drive_raises(self, mock_client_cls: MagicMock) -> None:
+    @patch("netra.redteam.api.RedTeamHttpClient")
+    def test_run_red_team_unregisters_shutdown_hook_even_if_drive_raises(self, mock_client_cls: MagicMock) -> None:
         """Even on a fatal error mid-run, the hook is still unregistered (finally block)."""
         import netra.shutdown_hooks as sh
-        from netra.redteam.api import Redteam
+        from netra.redteam.api import RedTeam
 
         mock_client = mock_client_cls.return_value
         mock_client.create_run.return_value = {"run_id": "run-1", "status": "running"}
         mock_client.get_prompts.return_value = [RunPromptItem(id="p1", prompt="hi", evaluator_id="e1")]
-        mock_client.submit_turn.side_effect = RedteamError("boom")
+        mock_client.submit_turn.side_effect = RedTeamError("boom")
 
-        rt = Redteam(_make_config())
-        with pytest.raises(RedteamError):
-            rt.run_redteam(config_id="cfg-1", handler=lambda p, s, t: "ok")
+        rt = RedTeam(_make_config())
+        with pytest.raises(RedTeamError):
+            rt.run_red_team(config_id="cfg-1", handler=lambda p, s, t: "ok")
 
         assert len(sh._hooks) == 0
 

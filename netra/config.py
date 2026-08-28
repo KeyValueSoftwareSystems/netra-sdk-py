@@ -50,7 +50,7 @@ class Config:
     # so the FE/BE can distinguish them from normal workflow invocations.
     TRACE_ORIGIN_KEY = "netra.trace.origin"
     TRACE_ORIGIN_EVALUATION = "evaluation"
-    TRACE_ORIGIN_REDTEAM = "redteam"
+    TRACE_ORIGIN_RED_TEAM = "redteam"
 
     def __init__(
         self,
