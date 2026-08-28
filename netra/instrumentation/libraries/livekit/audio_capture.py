@@ -259,6 +259,39 @@ class SessionAudioCoordinator:
                 trace_id=ended_trace_id,
             )
 
+    def on_tts_node_started(self, *, parent_span_id: str) -> None:
+        """Clear stale agent speech when a ``tts_node`` from a different turn starts.
+
+        Both ``agent_speaking`` and ``tts_node`` are children of the same
+        ``agent_turn`` span.  When a ``tts_node`` starts under a *different*
+        ``agent_turn`` than the stale ``agent_speaking``, the audio it
+        generates belongs to a new turn and must not be attributed to the
+        old span.  Clearing ``_active_speech`` here makes subsequent frames
+        hit the existing ``is None`` guard in :meth:`on_frame`.
+
+        A ``tts_node`` from the *same* turn (same parent) is a no-op, so
+        trailing frames from the current utterance are never disturbed.
+
+        Args:
+            parent_span_id: Hex id of the ``tts_node``'s parent
+                (the ``agent_turn`` span), or ``""`` if unknown.
+        """
+        if not self._agent_speech_ended:
+            return
+        active = self._active_speech[SpeakerRole.AGENT]
+        if active is None:
+            return
+        if not active.parent_span_id or not parent_span_id:
+            return
+        if parent_span_id != active.parent_span_id:
+            self._active_speech[SpeakerRole.AGENT] = None
+            logger.debug(
+                "netra.audio: tts_node parent %s differs from agent_speaking parent %s "
+                "— clearing stale agent speech",
+                parent_span_id,
+                active.parent_span_id,
+            )
+
     # -- frame callbacks ----------------------------------------------------
 
     def on_frame(self, role: SpeakerRole, frame: "AudioFrame") -> None:
@@ -338,6 +371,8 @@ class SessionAudioCoordinator:
         if not getattr(event, "interrupted", False):
             self._agent_playback_started_at = None
             self._agent_capture_started_at = None
+            if self._agent_speech_ended:
+                self._active_speech[SpeakerRole.AGENT] = None
             return
         span_id = self._interrupted_agent_span_id or self._last_agent_span_id
         if not span_id or self._sender is None:

@@ -61,9 +61,8 @@ AGENT_TURN_SPAN_NAME = "agent_turn"
 USER_TURN_SPAN_NAME = "user_turn"
 
 # The speaking spans LiveKit creates for each run of speech. Due to a context
-# propagation bug in livekit-agents, ``user_speaking`` is often created without an
-# explicit OTel context, causing it to be orphaned (no parent). This package
-# detects and reparents such spans under their trace's ``agent_session``.
+# propagation bug in livekit-agents, ``user_speaking`` is sometimes created
+# without an explicit OTel context, causing it to be orphaned (no parent).
 SPEAKING_SPAN_NAMES = frozenset({"user_speaking", "agent_speaking"})
 
 # ---------------------------------------------------------------------------
