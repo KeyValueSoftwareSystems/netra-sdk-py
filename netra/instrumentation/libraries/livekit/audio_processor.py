@@ -27,7 +27,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.trace import SpanContext
 
 from netra.instrumentation.libraries.livekit.audio_capture import SessionAudioCoordinator, audio_coordinators
-from netra.instrumentation.libraries.livekit.audio_types import SPEAKING_SPAN_ROLES, SpeakerRole
+from netra.instrumentation.libraries.livekit.audio_types import SPEAKING_SPAN_ROLES, TTS_NODE_SPAN_NAME, SpeakerRole
 
 logger = logging.getLogger(__name__)
 
