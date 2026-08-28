@@ -46,10 +46,11 @@ class Config:
     LIBRARY_NAME = "netra"
     LIBRARY_VERSION = __version__
 
-    # Root-span attribute marking traces produced by evaluation/simulation runs
+    # Root-span attribute marking traces produced by evaluation/simulation/redteam runs
     # so the FE/BE can distinguish them from normal workflow invocations.
     TRACE_ORIGIN_KEY = "netra.trace.origin"
     TRACE_ORIGIN_EVALUATION = "evaluation"
+    TRACE_ORIGIN_RED_TEAM = "redteam"
 
     def __init__(
         self,

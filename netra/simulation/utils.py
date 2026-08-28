@@ -6,8 +6,7 @@ import concurrent.futures
 import inspect
 import logging
 import os
-import threading
-from typing import Any, Awaitable, Optional, TypeVar
+from typing import Any, Optional
 
 import httpx
 
@@ -19,10 +18,9 @@ from netra.simulation.constants import (
 )
 from netra.simulation.models import FileData, ProcessedFile, TaskResult
 from netra.simulation.task import BaseTask
+from netra.utils import run_async_safely as run_async_safely  # re-exported for backwards compatibility
 
 logger = logging.getLogger(__name__)
-
-_T = TypeVar("_T")
 
 
 def parse_env_float(env_var: str, default: float) -> float:
@@ -83,50 +81,6 @@ def validate_simulation_inputs(
         logger.error("netra.simulation: task must be a BaseTask instance")
         return False
     return True
-
-
-def run_async_safely(coro: Awaitable[_T]) -> _T:
-    """Run an async coroutine from synchronous code.
-
-    When called from a context that already has a running event loop (e.g. a
-    Jupyter notebook, or an async framework like FastAPI), ``asyncio.run()``
-    would raise.  In that case we spin up a **new daemon thread** with its own
-    event loop via ``asyncio.run()`` so the caller's loop is never blocked or
-    re-entered.
-
-    Args:
-        coro: The coroutine to execute.
-
-    Returns:
-        The result of the coroutine execution.
-
-    Raises:
-        Exception: Re-raises any exception from the coroutine.
-    """
-    try:
-        loop = asyncio.get_running_loop()
-    except RuntimeError:
-        loop = None
-
-    if loop and loop.is_running():
-        result_holder: dict[str, _T] = {}
-        error_holder: dict[str, BaseException] = {}
-
-        def runner() -> None:
-            try:
-                result_holder["value"] = asyncio.run(coro)  # type: ignore[arg-type]
-            except BaseException as exc:
-                error_holder["exc"] = exc
-
-        thread = threading.Thread(target=runner, daemon=True)
-        thread.start()
-        thread.join()
-
-        if "exc" in error_holder:
-            raise error_holder["exc"]
-        return result_holder.get("value")  # type: ignore[return-value]
-
-    return asyncio.run(coro)  # type: ignore[arg-type]
 
 
 def _download_single_file(file_data: FileData, timeout: float) -> ProcessedFile:
