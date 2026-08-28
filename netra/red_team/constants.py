@@ -14,10 +14,10 @@ SPAN_NAME = "Netra.Redteam.Turn"
 # Concurrency / payload limits
 # ---------------------------------------------------------------------------
 DEFAULT_MAX_CONCURRENCY = 5
-# Bounds the request payload sent to the backend, which caps output/error at 100k chars
-# anyway (SubmitRedteamTurnDto) — truncating client-side avoids sending bytes the backend
-# would just reject or discard.
-MAX_AGENT_RESPONSE_CHARS = 5000
+# Matches SubmitRedteamTurnDto's MaxLength(100000) on output/error exactly — a hard backstop
+# against a pathological agent response (not a product-level content cap), so it never trims
+# real content the backend would otherwise accept.
+MAX_AGENT_RESPONSE_CHARS = 100000
 # Matches SubmitRedteamTurnDto's `@Max(1000)` on turnIndex.
 MAX_TURN_INDEX = 1000
 RESULTS_PAGE_LIMIT = 200
