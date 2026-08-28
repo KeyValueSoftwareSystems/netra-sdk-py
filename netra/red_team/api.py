@@ -4,12 +4,12 @@ import threading
 from typing import Any, Optional
 
 from netra.config import Config
-from netra.redteam.client import RedTeamHttpClient
-from netra.redteam.constants import LOG_PREFIX, MAX_AGENT_RESPONSE_CHARS, SPAN_NAME
-from netra.redteam.exceptions import RedTeamError
-from netra.redteam.handler import RedTeamAgentHandler, execute_handler
-from netra.redteam.models import RedTeamResult, RunPromptItem, RunResultItem
-from netra.redteam.utils import resolve_max_concurrency, validate_red_team_inputs
+from netra.red_team.client import RedTeamHttpClient
+from netra.red_team.constants import LOG_PREFIX, MAX_AGENT_RESPONSE_CHARS, MAX_TURN_INDEX, SPAN_NAME
+from netra.red_team.exceptions import RedTeamError
+from netra.red_team.models import RedTeamResult, RunPromptItem, RunResultItem
+from netra.red_team.task import RedTeamAgentHandler, execute_task
+from netra.red_team.utils import resolve_max_concurrency, validate_red_team_inputs
 from netra.shutdown_hooks import register_shutdown_hook, unregister_shutdown_hook
 from netra.span_wrapper import SpanWrapper
 from netra.utils import run_async_safely, truncate_string
@@ -35,20 +35,22 @@ class RedTeam:
     def run_red_team(
         self,
         config_id: str,
-        handler: RedTeamAgentHandler,
+        task: RedTeamAgentHandler,
         max_concurrency: Optional[int] = None,
     ) -> Optional[RedTeamResult]:
         """Trigger an existing red-team config and drive its run to completion.
 
         Fetches the run's prompt list once, then drives every session's
-        turns locally against ``handler``, submitting each turn's result and
+        turns locally against ``task``, submitting each turn's result and
         following the next-prompt/turn-index response until it's done.
 
         Args:
             config_id: Identifier of a red-team config already created ahead
                 of time (e.g. in the dashboard).
-            handler: A plain callback ``(prompt, session_id, turn_index) ->
-                str | {"message": str, "session_id"?: str}``, sync or async.
+            task: A plain callback ``(prompt, session_id, turn_index) ->
+                str | {"message": str, "session_id"?: str}``, sync or async —
+                matching the ``task`` naming used in the simulation/evaluation
+                modules.
             max_concurrency: Maximum number of sessions driven in parallel.
                 Capped at 5. Defaults to 5.
 
@@ -57,12 +59,12 @@ class RedTeam:
             (logged, no network call made).
 
         Raises:
-            netra.redteam.exceptions.RedTeamError: Or a subclass, for any
+            netra.red_team.exceptions.RedTeamError: Or a subclass, for any
                 failure other than invalid input. Carries ``.run_id`` when a
                 run was already created, and the run is best-effort cancelled
                 server-side before this is raised.
         """
-        if not validate_red_team_inputs(config_id, handler, max_concurrency):
+        if not validate_red_team_inputs(config_id, task, max_concurrency):
             return None
 
         effective_concurrency = resolve_max_concurrency(max_concurrency)
@@ -86,12 +88,15 @@ class RedTeam:
 
         hook_token = register_shutdown_hook(_cancel_on_shutdown)
         try:
-            prompts = self._client.get_prompts(run_id)
-            if not prompts:
-                logger.warning("%s: run %s has no prompts", LOG_PREFIX, run_id)
-
             try:
-                self._drive_all_sessions(run_id, handler, prompts, effective_concurrency, stop_event)
+                # get_prompts is inside this block deliberately: it used to sit outside,
+                # so a fetch failure skipped straight past the cancel-on-exception handler
+                # below and left the run orphaned as "running" server-side.
+                prompts = self._client.get_prompts(run_id)
+                if not prompts:
+                    logger.warning("%s: run %s has no prompts", LOG_PREFIX, run_id)
+
+                self._drive_all_sessions(run_id, task, prompts, effective_concurrency, stop_event)
             except KeyboardInterrupt:
                 # Already cancelled server-side by _cancel_on_shutdown; report
                 # a clean cancelled result instead of an uncaught traceback.
@@ -150,7 +155,7 @@ class RedTeam:
     def _drive_all_sessions(
         self,
         run_id: str,
-        handler: RedTeamAgentHandler,
+        task: RedTeamAgentHandler,
         prompts: list[RunPromptItem],
         max_concurrency: int,
         stop_event: threading.Event,
@@ -165,7 +170,7 @@ class RedTeam:
             return
 
         def _drive_in_thread(prompt: RunPromptItem) -> None:
-            run_async_safely(self._drive_session(run_id, handler, prompt, stop_event))
+            run_async_safely(self._drive_session(run_id, task, prompt, stop_event))
 
         first_exception: Optional[BaseException] = None
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(max_concurrency, len(prompts))) as executor:
@@ -184,7 +189,7 @@ class RedTeam:
     async def _drive_session(
         self,
         run_id: str,
-        handler: RedTeamAgentHandler,
+        task: RedTeamAgentHandler,
         prompt: RunPromptItem,
         stop_event: threading.Event,
     ) -> None:
@@ -197,6 +202,12 @@ class RedTeam:
             if stop_event.is_set():
                 return
 
+            if turn_index > MAX_TURN_INDEX:
+                # Fail fast client-side instead of spending a turn on a submit the backend
+                # would just 400 on anyway.
+                stop_event.set()
+                raise RedTeamError(f"session {session_id} exceeded the {MAX_TURN_INDEX}-turn limit without finishing")
+
             with SpanWrapper(
                 SPAN_NAME,
                 attributes={Config.TRACE_ORIGIN_KEY: Config.TRACE_ORIGIN_RED_TEAM},
@@ -205,12 +216,12 @@ class RedTeam:
                 output: Optional[str] = None
                 error: Optional[str] = None
                 try:
-                    message, session_id = await execute_handler(handler, prompt_text, session_id, turn_index)
+                    message, session_id = await execute_task(task, prompt_text, session_id, turn_index)
                     output = self._truncate_output(message)
                 except Exception as exc:
                     error = str(exc)
                     logger.warning(
-                        "%s: handler failed for run_id=%s session_id=%s turn=%d: %s",
+                        "%s: task failed for run_id=%s session_id=%s turn=%d: %s",
                         LOG_PREFIX,
                         run_id,
                         session_id,

@@ -7,7 +7,7 @@ from typing import Any, Optional
 import httpx
 
 from netra.config import Config
-from netra.redteam.constants import (
+from netra.red_team.constants import (
     DEFAULT_GENERATION_POLL_INTERVAL_S,
     DEFAULT_GENERATION_TIMEOUT_S,
     DEFAULT_TIMEOUT_S,
@@ -25,7 +25,7 @@ from netra.redteam.constants import (
     URL_GET_RISK_SCORE,
     URL_SUBMIT_TURN,
 )
-from netra.redteam.exceptions import (
+from netra.red_team.exceptions import (
     RedTeamAuthError,
     RedTeamConfigError,
     RedTeamError,
@@ -33,8 +33,8 @@ from netra.redteam.exceptions import (
     RedTeamGenerationTimeoutError,
     RedTeamRunError,
 )
-from netra.redteam.models import RunPromptItem, RunResultItem, SubmitTurnResult
-from netra.redteam.utils import parse_env_float, unwrap_envelope
+from netra.red_team.models import RunPromptItem, RunResultItem, SubmitTurnResult
+from netra.red_team.utils import parse_env_float, unwrap_envelope
 from netra.utils import extract_error_message
 
 logger = logging.getLogger(__name__)
@@ -54,7 +54,7 @@ _STATUS_TO_ERROR: dict[int, type[RedTeamError]] = {
 class RedTeamHttpClient:
     """Internal HTTP client for redteam API endpoints.
 
-    Raises typed exceptions from :mod:`netra.redteam.exceptions` on failure.
+    Raises typed exceptions from :mod:`netra.red_team.exceptions` on failure.
     """
 
     __slots__ = ("_client",)
@@ -240,8 +240,14 @@ class RedTeamHttpClient:
 
     def get_results_page(
         self, run_id: str, page: int, limit: int = RESULTS_PAGE_LIMIT, evaluator_id: Optional[str] = None
-    ) -> list[dict[str, Any]]:
-        """Fetch one page of graded results."""
+    ) -> tuple[list[dict[str, Any]], bool]:
+        """Fetch one page of graded results.
+
+        Returns:
+            ``(items, has_next_page)`` — ``has_next_page`` is the backend's own
+            ``PaginatedResponseDto.hasNextPage`` field, not inferred from page length (which
+            would be wrong whenever ``total`` is an exact multiple of ``limit``).
+        """
         response: Optional[httpx.Response] = None
         try:
             url = URL_GET_RESULTS.format(run_id=run_id)
@@ -252,7 +258,8 @@ class RedTeamHttpClient:
             response.raise_for_status()
             data = unwrap_envelope(response.json())
             items = data.get("data", [])
-            return list(items) if isinstance(items, list) else []
+            has_next_page = bool(data.get("hasNextPage", len(items) >= limit))
+            return (list(items) if isinstance(items, list) else [], has_next_page)
         except httpx.HTTPStatusError as exc:
             raise self._to_typed_error(response, exc) from exc
         except Exception as exc:
@@ -263,7 +270,7 @@ class RedTeamHttpClient:
         results: list[RunResultItem] = []
         page = 1
         while True:
-            raw_items = self.get_results_page(run_id, page=page, limit=RESULTS_PAGE_LIMIT)
+            raw_items, has_next_page = self.get_results_page(run_id, page=page, limit=RESULTS_PAGE_LIMIT)
             for item in raw_items:
                 results.append(
                     RunResultItem(
@@ -277,7 +284,7 @@ class RedTeamHttpClient:
                         conversation_history=item.get("conversationHistory"),
                     )
                 )
-            if len(raw_items) < RESULTS_PAGE_LIMIT:
+            if not has_next_page:
                 break
             page += 1
         return results

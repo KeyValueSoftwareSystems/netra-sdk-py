@@ -4,7 +4,7 @@ import logging
 import os
 from typing import Any, Callable, Optional
 
-from netra.redteam.constants import DEFAULT_MAX_CONCURRENCY, LOG_PREFIX
+from netra.red_team.constants import DEFAULT_MAX_CONCURRENCY, LOG_PREFIX
 
 logger = logging.getLogger(__name__)
 
@@ -37,14 +37,14 @@ def parse_env_float(env_var: str, default: float) -> float:
 
 def validate_red_team_inputs(
     config_id: str,
-    handler: Optional[Callable[..., Any]],
+    task: Optional[Callable[..., Any]],
     max_concurrency: Optional[int],
 ) -> bool:
     """Validate required inputs for ``run_red_team`` before any network call.
 
     Args:
         config_id: The red-team config identifier.
-        handler: The user-supplied per-turn callback.
+        task: The user-supplied per-turn callback.
         max_concurrency: The requested concurrency bound, or ``None``.
 
     Returns:
@@ -53,8 +53,8 @@ def validate_red_team_inputs(
     if not config_id:
         logger.error("%s: config_id is required", LOG_PREFIX)
         return False
-    if not callable(handler):
-        logger.error("%s: handler must be a callable", LOG_PREFIX)
+    if not callable(task):
+        logger.error("%s: task must be a callable", LOG_PREFIX)
         return False
     if max_concurrency is not None and (not isinstance(max_concurrency, int) or max_concurrency <= 0):
         logger.error("%s: max_concurrency must be a positive integer", LOG_PREFIX)

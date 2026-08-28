@@ -21,7 +21,7 @@ from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
 from netra.models import Models
 from netra.prompts import Prompts
-from netra.redteam import RedTeam
+from netra.red_team import RedTeam
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
