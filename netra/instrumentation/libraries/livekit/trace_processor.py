@@ -25,7 +25,6 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.util.types import Attributes
 
-from netra.exporters.utils import set_span_parent
 from netra.instrumentation.libraries.livekit.call_span import (
     agent_name_of,
     call_id_of,
@@ -522,12 +521,6 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
         self._io_parents: "weakref.WeakValueDictionary[int, Span]" = weakref.WeakValueDictionary()
         self._io_parents_lock = threading.Lock()
 
-        # trace_id -> SpanContext of the agent_session span. Used to reparent
-        # orphaned speaking spans (user_speaking/agent_speaking) whose ambient OTel
-        # context lost the parent due to a context propagation issue in livekit-agents.
-        self._session_span_contexts: Dict[int, Any] = {}
-        self._session_span_contexts_lock = threading.Lock()
-
         # Deferred call-span close: if speaking spans are still open when
         # agent_session ends, the root close is deferred until they all end.
         # trace_id -> count of open speaking spans in that trace.
@@ -548,11 +541,7 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
                 return
             self._stamp_markers(span)
 
-            if span.name == AGENT_SESSION_SPAN_NAME:
-                self._register_session_span(span)
-
             if span.name in SPEAKING_SPAN_NAMES:
-                self._reparent_if_orphaned(span)
                 self._increment_speaking_count(span)
 
             recorder = _ConversationRecorder(span)
@@ -596,10 +585,6 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             _deregister_user_turn_span(span)
         except Exception:
             logger.debug("netra.livekit: user turn span could not be deregistered", exc_info=True)
-        try:
-            self._deregister_session_span(span)
-        except Exception:
-            logger.debug("netra.livekit: session span could not be deregistered", exc_info=True)
         try:
             self._decrement_speaking_count(span)
         except Exception:
@@ -653,77 +638,6 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
                     return
 
         end_call_span_parenting(call_span_id, status=status)
-
-    # ------------------------------------------------------------------
-    # Session span registry — for reparenting orphaned speaking spans
-    # ------------------------------------------------------------------
-
-    def _register_session_span(self, span: Span) -> None:
-        """Record the ``agent_session`` span's context for reparenting lookups.
-
-        Args:
-            span: The ``agent_session`` span that just started.
-        """
-        ctx = span.get_span_context()
-        if ctx is None or not ctx.is_valid:
-            return
-        with self._session_span_contexts_lock:
-            self._session_span_contexts[ctx.trace_id] = ctx
-
-    def _deregister_session_span(self, span: ReadableSpan) -> None:
-        """Remove the ``agent_session`` mapping when its span ends.
-
-        Args:
-            span: The span that ended (only acts on ``agent_session``).
-        """
-        if not _is_livekit_span(span) or span.name != AGENT_SESSION_SPAN_NAME:
-            return
-        ctx = span.context if hasattr(span, "context") else getattr(span, "_context", None)
-        if ctx is None:
-            ctx = span.get_span_context() if hasattr(span, "get_span_context") else None
-        if ctx is None or not getattr(ctx, "is_valid", False):
-            return
-        with self._session_span_contexts_lock:
-            self._session_span_contexts.pop(ctx.trace_id, None)
-
-    def _reparent_if_orphaned(self, span: Span) -> None:
-        """Reparent a speaking span under ``agent_session`` if it has no valid parent.
-
-        LiveKit's ``_update_user_state`` creates ``user_speaking`` without an explicit
-        OTel context, relying on the ambient context. Normally the ambient context has
-        ``user_turn`` as the current span (via ``use_span`` in audio_recognition.py),
-        so the span is correctly parented. In edge cases (``claim_user_turn``, callback
-        racing), the ambient may have no span, leaving ``user_speaking`` orphaned.
-
-        This method only acts on spans that are truly parentless — it never overrides
-        a valid parent, preserving the correct ``agent_turn``/``user_turn`` hierarchy.
-
-        Args:
-            span: A ``user_speaking`` or ``agent_speaking`` span that just started.
-        """
-        parent = getattr(span, "parent", None)
-        if parent is not None and getattr(parent, "is_valid", False):
-            return
-
-        ctx = span.get_span_context()
-        if ctx is None or not ctx.is_valid:
-            return
-
-        with self._session_span_contexts_lock:
-            session_ctx = self._session_span_contexts.get(ctx.trace_id)
-
-        if session_ctx is None:
-            return
-
-        try:
-            set_span_parent(span, session_ctx)
-            logger.debug(
-                "netra.livekit: reparented orphaned %s span under agent_session (trace=%032x)",
-                span.name,
-                ctx.trace_id,
-            )
-        except Exception:
-            logger.debug("netra.livekit: failed to reparent %s span", span.name, exc_info=True)
 
     # ------------------------------------------------------------------
     # Deferred call-span close — speaking span counting

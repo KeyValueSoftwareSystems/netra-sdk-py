@@ -754,6 +754,7 @@ class TestSessionAudioCoordinator:
             span_id=AGENT_SPAN_ID,
             parent_span_id=PARENT_SPAN_ID,
         )
+        coordinator.on_playback_started(created_at=time.time())
         coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
 
         coordinator.on_frame(SpeakerRole.AGENT, make_frame())
@@ -785,6 +786,93 @@ class TestSessionAudioCoordinator:
         coordinator.close()
 
         assert sender.mark_audio_end.call_count == 1
+
+
+class TestSessionAudioCoordinatorStaleSpeechClearing:
+    """Tests for tts_node-driven and playback_finished clearing of stale agent speech."""
+
+    TURN_A_PARENT = "aaaa000000000001"
+    TURN_B_PARENT = "bbbb000000000002"
+
+    def test_tts_node_from_different_turn_clears_stale_agent_speech(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=self.TURN_A_PARENT,
+        )
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        coordinator.on_tts_node_started(parent_span_id=self.TURN_B_PARENT)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        sender.enqueue.assert_not_called()
+
+    def test_tts_node_from_same_turn_does_not_clear(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=self.TURN_A_PARENT,
+        )
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        coordinator.on_tts_node_started(parent_span_id=self.TURN_A_PARENT)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        assert sender.enqueue.call_args.kwargs["span_id"] == AGENT_SPAN_ID
+
+    def test_tts_node_while_agent_is_still_speaking_is_a_noop(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=self.TURN_A_PARENT,
+        )
+
+        coordinator.on_tts_node_started(parent_span_id=self.TURN_B_PARENT)
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        assert sender.enqueue.call_args.kwargs["span_id"] == AGENT_SPAN_ID
+
+    def test_playback_finished_after_speech_ended_clears_stale_agent_speech(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=self.TURN_A_PARENT,
+        )
+        coordinator.on_playback_started(created_at=time.time())
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+
+        coordinator.on_playback_finished(MagicMock(interrupted=False, playback_position=2.0))
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        sender.enqueue.assert_not_called()
+
+    def test_playback_finished_while_still_speaking_does_not_clear(self) -> None:
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=TRACE_ID,
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=self.TURN_A_PARENT,
+        )
+        coordinator.on_playback_started(created_at=time.time())
+
+        coordinator.on_playback_finished(MagicMock(interrupted=False, playback_position=2.0))
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+
+        assert sender.enqueue.call_args.kwargs["span_id"] == AGENT_SPAN_ID
 
 
 class TestSessionAudioCoordinatorInterrupts:
@@ -1007,6 +1095,37 @@ class TestAudioSpanProcessor:
         processor.on_start(span)
 
         span.get_span_context.assert_not_called()
+
+    def test_a_tts_node_span_triggers_on_tts_node_started(self) -> None:
+        trace_id = 0xAAAABBBBCCCCDDDD
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator.on_speaking_start(
+            SpeakerRole.AGENT,
+            trace_id=format(trace_id, "032x"),
+            span_id=AGENT_SPAN_ID,
+            parent_span_id=format(0x1111000000000001, "016x"),
+        )
+        coordinator.on_speaking_end(SpeakerRole.AGENT, span_id=AGENT_SPAN_ID)
+        audio_coordinators.register(trace_id, coordinator)
+        processor = AudioSpanProcessor()
+
+        tts_span = make_span(
+            "tts_node",
+            trace_id=trace_id,
+            span_id=0xBBBB,
+            parent_span_id=0x2222000000000002,
+        )
+        processor.on_start(tts_span)
+
+        coordinator.on_frame(SpeakerRole.AGENT, make_frame())
+        sender.enqueue.assert_not_called()
+
+    def test_a_tts_node_span_without_a_coordinator_is_ignored(self) -> None:
+        processor = AudioSpanProcessor()
+        tts_span = make_span("tts_node", trace_id=0x9999, span_id=0xCCCC)
+
+        processor.on_start(tts_span)
 
 
 # ---------------------------------------------------------------------------
