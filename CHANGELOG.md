@@ -4,7 +4,15 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [Unreleased]
+## [1.1.0b1] - 2026-09-01
+
+### Added
+
+- **LiveKit voice-agent instrumentation** - `InstrumentSet.LIVEKIT` traces `livekit-agents` sessions, normalizing LiveKit's `lk.*` span tree into Netra's shape: a `livekit-call` root holding `agent_session`, then `user_turn` / `agent_turn` per exchange with the `llm_node`, `stt_node` and `tts_node` spans beneath. Enabled by default, and applied when `livekit.agents` is first imported. `agent_turn` spans are typed as agents and stamped with `netra.agent.name`; `llm_node` spans are typed as generations. LiveKit is also in the default root allow-list, since `agent_session` is the root of every voice trace — removing it peels the whole voice tree and leaves the provider spans underneath as orphaned roots.
+
+- **Call audio capture for LiveKit sessions** - Both speakers' audio is batched and streamed to Netra's audio ingest endpoint alongside the trace, each chunk correlated to the span it belongs to by parent span ID. **This is on by default**: the endpoint resolves to `<otlp_endpoint>/v1/audio/chunk` whenever an auth credential (`x-api-key` or `Authorization`) is configured, so an existing LiveKit deployment that upgrades will begin sending call audio. Capture is all of a call's audio or none of it, never one speaker. Settings are environment-only, with no `Netra.init()` parameter: `NETRA_AUDIO_ENDPOINT` overrides the URL, and `NETRA_AUDIO_BATCH_BYTES` (32768), `NETRA_AUDIO_BATCH_INTERVAL_MS` (1000), `NETRA_AUDIO_BUFFER_BYTES` (2097152) and `NETRA_AUDIO_MAX_REQUEST_BYTES` (262144) tune batching; out-of-range values log a warning and fall back to the default. There is no separate audio toggle — capture is part of the LiveKit instrumentation, so `Netra.init(block_instruments={InstrumentSet.LIVEKIT})` is what turns it off. The SDK logs at INFO whether capture resolved ON or OFF, and warns when an endpoint resolves but no credential is present (capture stays off).
+
+- **Audio duration and token usage on LiveKit spans** - Voice spans now carry `gen_ai.audio.duration` alongside `gen_ai.usage.prompt_tokens` and `gen_ai.usage.completion_tokens`, so audio-billed turns report usage the same way text turns do.
 
 ### Changed
 
@@ -25,6 +33,8 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 - **`httpx` and `requests` now agree on the shape of a bodiless stream** - `httpx` recorded `"body": ""` where `requests` omitted the key, for the same response. Both now omit it, matching the non-streaming path: a stream that yielded nothing is bodiless, not a body that happens to be empty.
 
 - **`CustomInstruments`, `InstrumentSet` and `DEFAULT_INSTRUMENTS` are importable from `netra.instrumentation` again** - all three were reachable as `from netra.instrumentation import ...` before activation was split out of that module in 1.0.1b1, and the split dropped them without intending to. Re-exported. The supported public path remains `from netra import NetraInstruments`.
+
+- **Session attributes now fall back to a span's declared parent context** - `SessionSpanProcessor` read `session_id`, `user_id`, `tenant_id` and custom keys from the ambient context only. A span started with an explicit `context=` is not created *inside* that context — the SDK fires `on_start` before making it current — so the ambient context belongs to whichever task happened to create the span and may carry no session baggage at all. LiveKit does exactly this, parenting every `agent_turn` onto a context snapshotted when the session started, so a turn triggered from outside the session's task tree was the one span in the trace missing `netra.session_id`. Each key now falls back to the parent context, ambient-first, so the fallback can only supply a value that was missing and never overrides one a later `Netra.set_session_id()` resolved.
 
 - **Two instrumentations were listed twice in the trigger table** - `ASYNCIO` and `SQLITE3` each had a duplicate row in `INSTRUMENT_TRIGGERS`. The duplicated values were identical so nothing was mistriggered, but the later row silently wins, and pyflakes' `F601` only fires when repeated keys have *different* values — so an edit to either copy would have been dropped without warning. Deduplicated, with a test that parses the source to catch a recurrence.
 
@@ -466,4 +476,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.0.1b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.1.0b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
