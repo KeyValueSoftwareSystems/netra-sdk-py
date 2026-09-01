@@ -1446,6 +1446,28 @@ class TestCallSpanRootsTheTrace:
         assert call.end_time is not None and session_span.end_time is not None
         assert call.end_time >= session_span.end_time
 
+    def test_re_rooting_survives_a_span_between_the_entrypoint_and_start(self, call_harness: _CallHarness) -> None:
+        # The reported failure: a @workflow-decorated entrypoint puts a span between
+        # job_entrypoint and session.start(), so job_entrypoint is no longer current
+        # -- but it is still the root that ends the moment the entrypoint returns.
+        job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
+        with trace.use_span(job, end_on_exit=False):
+            decorated = call_harness.provider.get_tracer("netra.decorators").start_span("voice-agent-session")
+        _run_call(call_harness, parent=decorated)
+        decorated.end()
+        job.end()
+
+        call = call_harness.finished(CALL_SPAN_NAME)
+        entrypoint = call_harness.finished(JOB_ENTRYPOINT_SPAN_NAME)
+        decorated_span = call_harness.finished("voice-agent-session")
+
+        assert call.parent is None, "the call span must be the trace root"
+        assert entrypoint.parent is not None
+        assert entrypoint.parent.span_id == call.context.span_id
+        # The decorator's span is untouched: it keeps the parent it was created with.
+        assert decorated_span.parent is not None
+        assert decorated_span.parent.span_id == entrypoint.context.span_id
+
     def test_job_entrypoint_records_that_it_was_re_rooted(self, call_harness: _CallHarness) -> None:
         job = call_harness.livekit_tracer.start_span(JOB_ENTRYPOINT_SPAN_NAME)
         _run_call(call_harness, parent=job)
