@@ -33,12 +33,15 @@ Rewriting a parent is legal here because both spans are still recording and the
 parent is only read at export; ``set_span_parent`` is the same helper the exporter
 uses to reparent around dropped spans.
 
-**When it does nothing.** The rewrite happens only when the current span really is
-a live, livekit-scoped ``job_entrypoint`` that has not already been re-rooted.
-``AgentSession.start()`` is also called outside a job (eval mode, direct library
-use) and can be called inside a user's own ``@workflow`` span; in those cases
+**When it does nothing.** The rewrite happens only when the trace really is rooted
+at a live, livekit-scoped ``job_entrypoint`` that has not already been re-rooted —
+whether that span is the one current at ``start()`` or sits further up, above
+spans the entrypoint opened itself (a ``@workflow`` decorator on the entrypoint is
+the common case; those spans keep their parents and ride along under
+``job_entrypoint``). ``AgentSession.start()`` is also called outside a job (eval
+mode, direct library use, a call started from a trace of the caller's own); there
 ``livekit-call`` is an ordinary child of whatever is current and no other span is
-touched. A Netra decorator's root span stays the root.
+touched. A root the caller owns stays the root.
 
 **Known limit: the end boundary is not enforced, only the start one.** The
 backdated ``start_time`` guarantees ``livekit-call`` begins no later than
@@ -241,8 +244,7 @@ def start_call_span(instance: Any, *, session_id: Optional[str] = None) -> Optio
         The started span, or ``None`` when it could not be created, in which case
         the trace keeps the shape it has today.
     """
-    parent = trace.get_current_span()
-    job_entrypoint = parent if _is_live_job_entrypoint(parent) else None
+    job_entrypoint = _job_entrypoint_to_reroot(trace.get_current_span())
 
     tracer = trace.get_tracer(_TRACER_NAME, __version__)
     # Backdated to the job entrypoint's start so the call span fully encloses both
@@ -405,11 +407,47 @@ def _reroot_trace(span: Span, job_entrypoint: Span) -> None:
     RootSpanProcessor.replace_root_span(span)
 
 
+def _job_entrypoint_to_reroot(current: Any) -> Optional[Span]:
+    """The live ``job_entrypoint`` this call should be re-rooted onto, if any.
+
+    Two spans are tested, not one, because the entrypoint is not obliged to await
+    ``session.start()`` directly:
+
+    * the span current at ``start()`` — the ordinary entrypoint, where that span
+      *is* ``job_entrypoint``;
+    * the trace's recorded root — an entrypoint that opens a span of its own
+      first, a Netra ``@workflow`` decorator on the entrypoint being the common
+      case. Such a span displaces ``job_entrypoint`` from the current-span slot
+      without changing what it is: still the root, still ending the moment the
+      entrypoint returns. Re-rooting is a statement about the root, so the root
+      is what has to be tested; whatever the entrypoint opened in between keeps
+      the parent it was created with and rides along under ``job_entrypoint``.
+
+    The current-span test is kept rather than folded into the root one: a job
+    process that restored a parent trace context
+    (``extract_subprocess_context``) gives ``job_entrypoint`` a remote parent, so
+    ``RootSpanProcessor`` never records it as a root and only the current span
+    can find it.
+
+    Args:
+        current: The span current at ``AgentSession.start()``.
+
+    Returns:
+        The span to re-root onto, or ``None`` to leave the trace as it is — no
+        job, an already-re-rooted job, or a root the caller owns.
+    """
+    if _is_live_job_entrypoint(current):
+        return current
+
+    root = RootSpanProcessor.get_root_span(current)
+    return root if _is_live_job_entrypoint(root) else None
+
+
 def _is_live_job_entrypoint(span: Any) -> bool:
     """Whether *span* is a live, livekit-scoped, not-yet-re-rooted ``job_entrypoint``.
 
     Args:
-        span: The candidate parent span.
+        span: The candidate span, or ``None`` when there is none to test.
 
     Returns:
         ``True`` only when re-rooting the trace onto it is correct.
