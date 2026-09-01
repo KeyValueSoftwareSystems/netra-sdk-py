@@ -4,6 +4,21 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.0.1] - 2026-09-01
+
+First stable release of the 1.0.1 line. Everything in it shipped in `1.0.1b1` and
+`1.0.1b2` — see those sections below for the full detail — plus one fix that had no
+entry of its own:
+
+### Fixed
+
+- **`import netra` no longer fails on Python 3.11** - `InstrumentorSpec.constructor_kwargs`
+  defaulted to a shared `mappingproxy` via `field(default=...)`. Python 3.11 changed the
+  `dataclasses` default check to reject any default whose type is unhashable, and
+  `mappingproxy` only became hashable in 3.12 — so on 3.11, and only on 3.11, building the
+  instrumentor registry raised `ValueError: mutable default <class 'mappingproxy'>` at import
+  time. The default is now supplied by a factory. 3.10 and 3.12+ were never affected.
+
 ## [1.0.1b2] - 2026-08-27
 
 ### Fixed
