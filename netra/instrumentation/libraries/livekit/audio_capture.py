@@ -91,6 +91,77 @@ class _ActiveSpeech:
     parent_span_id: str = ""
 
 
+# ---------------------------------------------------------------------------
+# Pre-speech buffering
+# ---------------------------------------------------------------------------
+# VAD detects speech onset ~200-300 ms after the user actually starts talking.
+# Frames captured during that window arrive at the proxy *before* the
+# ``user_speaking`` span opens, so they would be tagged as noise.  We buffer a
+# sliding window of recent unattributed user frames and, when the span opens,
+# split them at the span's backdated start time (LiveKit's VAD-derived onset):
+# frames at/after that time become user speech; earlier frames stay noise.
+
+# Maximum age of frames kept in the pre-speech buffer while waiting for VAD.
+# Anything older is flushed as noise so the session recording stays complete
+# during long silence between turns.
+_USER_PREBUFFER_MAX_NS: int = 500_000_000  # 500 ms
+
+# ---------------------------------------------------------------------------
+# Memory budget (per session)
+#
+# At 24 kHz mono 16-bit (the livekit-agents default), one 20 ms frame is
+# 480 samples × 2 bytes = 960 bytes of PCM.  A 500 ms window holds at most
+# 25 frames.  Each _BufferedFrame stores ~960 B PCM + ~100 B Python object
+# overhead ≈ 1060 B.  Total peak ≈ 25 × 1060 ≈ **26 KB per session**.
+#
+#   peak_bytes ≈ (window_ms / frame_ms) × (sample_rate × channels × 2 × frame_ms / 1000 + 100)
+#
+# For custom frame sizes or sample rates, plug the numbers into the formula
+# above.  Even at 48 kHz stereo the buffer stays under 110 KB.
+# ---------------------------------------------------------------------------
+
+
+class _BufferedFrame:
+    """A user audio frame buffered before VAD detected speech.
+
+    Stores an eagerly-copied snapshot of the PCM data (LiveKit reuses frame
+    buffers) together with the capture timestamp.  Also presents the ``data``,
+    ``sample_rate``, and ``num_channels`` surface that
+    :meth:`AudioChunkSender.enqueue` reads, so it can be passed directly
+    without an intermediate wrapper.
+    """
+
+    __slots__ = ("_pcm", "sample_rate", "num_channels", "timestamp_ns")
+
+    def __init__(self, pcm_bytes: bytes, sample_rate: int, num_channels: int, timestamp_ns: int) -> None:
+        self._pcm = pcm_bytes
+        self.sample_rate = sample_rate
+        self.num_channels = num_channels
+        self.timestamp_ns = timestamp_ns
+
+    @property
+    def data(self) -> bytes:
+        return self._pcm
+
+
+def _bisect_frames(frames: List["_BufferedFrame"], target_ns: int) -> int:
+    """Return the index of the first frame with ``timestamp_ns >= target_ns``.
+
+    Frames must be sorted by ``timestamp_ns`` (monotonic capture order).
+    Uses a simple binary search — the buffer is small (~25 entries at most)
+    so a linear scan would be fine too, but bisect is O(log n) and equally
+    readable.
+    """
+    lo, hi = 0, len(frames)
+    while lo < hi:
+        mid = (lo + hi) >> 1
+        if frames[mid].timestamp_ns < target_ns:
+            lo = mid + 1
+        else:
+            hi = mid
+    return lo
+
+
 class SessionAudioCoordinator:
     """Routes one AgentSession's audio frames to the sender, tagged by span.
 
@@ -120,6 +191,11 @@ class SessionAudioCoordinator:
         self._active_speech: Dict[SpeakerRole, Optional[_ActiveSpeech]] = {role: None for role in SpeakerRole}
         self._session_trace_id = ""
         self._agent_speech_ended = False
+
+        # Pre-speech buffer: recent user frames captured before VAD detected
+        # speech.  Flushed with span attribution on ``on_speaking_start`` or
+        # as noise when older than ``_USER_PREBUFFER_MAX_NS``.
+        self._user_prebuffer: List[_BufferedFrame] = []
 
         # The agent span most recently opened, kept after it closes: LiveKit
         # routinely ends the ``agent_speaking`` span *before* it reports the
@@ -170,6 +246,7 @@ class SessionAudioCoordinator:
         trace_id: str,
         span_id: str,
         parent_span_id: str = "",
+        start_time_ns: Optional[int] = None,
     ) -> None:
         """Attribute subsequent frames from *role* to a newly opened span.
 
@@ -178,11 +255,19 @@ class SessionAudioCoordinator:
         This prevents preemptive TTS audio (synthesized during the user's turn
         but never played) from being misattributed to the previous agent span.
 
+        When *role* is :attr:`SpeakerRole.USER`, prebuffered frames are split
+        at the span's backdated ``start_time_ns`` (LiveKit sets this from VAD
+        ``speech_duration``): frames at/after that time are attributed to the
+        speaking span; earlier frames are sent as noise.
+
         Args:
             role: The speaker whose span opened.
             trace_id: Hex trace id of the span.
             span_id: Hex id of the span.
             parent_span_id: Hex id of the speaking span's parent, or ``""``.
+            start_time_ns: Span start time in nanoseconds. For user speech this
+                is LiveKit's VAD-derived onset; when omitted, the whole
+                prebuffer is attributed to the span.
         """
         self._active_speech[role] = _ActiveSpeech(
             span_id=span_id,
@@ -200,8 +285,15 @@ class SessionAudioCoordinator:
             self._agent_capture_started_at = None
             self._agent_playback_trim_reported = False
             self._playback_trim_event = None
-        if role is SpeakerRole.USER and self._agent_speech_ended:
-            self._active_speech[SpeakerRole.AGENT] = None
+        if role is SpeakerRole.USER:
+            self._flush_prebuffer(
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                trace_id=trace_id,
+                speech_start_ns=start_time_ns,
+            )
+            if self._agent_speech_ended:
+                self._active_speech[SpeakerRole.AGENT] = None
         logger.debug(
             "netra.audio: %s speaking started — span_id=%s parent_span_id=%s",
             role.value,
@@ -300,6 +392,14 @@ class SessionAudioCoordinator:
         Stamps the capture time here, the earliest point the frame is seen, so
         the timeline is not skewed by time spent queued.
 
+        For the **user** role, frames captured *before* a ``user_speaking``
+        span is active are buffered rather than sent immediately.  When the
+        span opens, :meth:`on_speaking_start` flushes the buffer with the
+        correct span attribution, recovering the speech-onset frames that
+        arrive before VAD has fired.  Frames older than
+        :data:`_USER_PREBUFFER_MAX_NS` are flushed as noise so the full
+        session recording stays intact.
+
         Args:
             role: The speaker the frame came from.
             frame: The frame LiveKit just captured.
@@ -318,13 +418,147 @@ class SessionAudioCoordinator:
             self._agent_capture_started_at = time.time()
 
         active = self._active_speech[role]
+        timestamp_ns = time.time_ns()
+
+        if role is SpeakerRole.USER and active is None:
+            self._prebuffer_user_frame(frame, timestamp_ns)
+            return
+
         self._sender.enqueue(
             frame,
             role=role,
             span_id=active.span_id if active is not None else "",
             parent_span_id=active.parent_span_id if active is not None else "",
             trace_id=(active.trace_id if active is not None else "") or self._session_trace_id,
-            timestamp_ns=time.time_ns(),
+            timestamp_ns=timestamp_ns,
+        )
+
+    # -- pre-speech buffer --------------------------------------------------
+
+    def _prebuffer_user_frame(self, frame: "AudioFrame", timestamp_ns: int) -> None:
+        """Buffer a user frame for retroactive attribution when speech starts.
+
+        Copies the PCM bytes immediately (LiveKit reuses frame buffers) and
+        evicts entries older than :data:`_USER_PREBUFFER_MAX_NS` as noise.
+
+        Eviction uses a fast-path gate: the scan is skipped entirely when the
+        oldest buffered frame is still within the window.  Since frames arrive
+        in monotonic order, ``self._user_prebuffer[0]`` is always the oldest.
+        """
+        self._user_prebuffer.append(
+            _BufferedFrame(
+                pcm_bytes=bytes(frame.data),
+                sample_rate=frame.sample_rate,
+                num_channels=frame.num_channels,
+                timestamp_ns=timestamp_ns,
+            )
+        )
+        if timestamp_ns - self._user_prebuffer[0].timestamp_ns > _USER_PREBUFFER_MAX_NS:
+            self._evict_stale_prebuffer(timestamp_ns)
+
+    def _evict_stale_prebuffer(self, now_ns: int) -> None:
+        """Flush prebuffered frames older than the window as noise."""
+        if not self._user_prebuffer:
+            return
+        cutoff = now_ns - _USER_PREBUFFER_MAX_NS
+        first_keep = 0
+        for i, entry in enumerate(self._user_prebuffer):
+            if entry.timestamp_ns >= cutoff:
+                first_keep = i
+                break
+        else:
+            first_keep = len(self._user_prebuffer)
+
+        if first_keep == 0:
+            return
+
+        stale = self._user_prebuffer[:first_keep]
+        self._user_prebuffer = self._user_prebuffer[first_keep:]
+        for entry in stale:
+            self._enqueue_prebuffered(entry, span_id="", parent_span_id="")
+
+    def _flush_prebuffer(
+        self,
+        *,
+        span_id: str,
+        parent_span_id: str,
+        trace_id: str,
+        speech_start_ns: Optional[int],
+    ) -> None:
+        """Split the prebuffer at VAD's speech onset and enqueue both parts.
+
+        Frames at/after *speech_start_ns* are attributed to the speaking span.
+        Earlier frames are noise (true silence before the utterance).  When
+        *speech_start_ns* is unknown, the whole buffer is treated as speech —
+        that recovers onset frames at the cost of possibly including a little
+        leading silence.
+
+        Because frames are in monotonic timestamp order, the split is computed
+        once and both halves are dispatched as contiguous slices — no per-frame
+        comparison inside the loop.
+        """
+        if not self._user_prebuffer:
+            return
+        frames = self._user_prebuffer
+        self._user_prebuffer = []
+
+        if speech_start_ns is None:
+            split = 0
+        else:
+            split = _bisect_frames(frames, speech_start_ns)
+
+        noise = frames[:split]
+        speech = frames[split:]
+
+        for entry in noise:
+            self._enqueue_prebuffered(entry, span_id="", parent_span_id="")
+        for entry in speech:
+            self._enqueue_prebuffered(
+                entry,
+                span_id=span_id,
+                parent_span_id=parent_span_id,
+                trace_id=trace_id,
+            )
+        logger.debug(
+            "netra.audio: flushed prebuffer to span %s — speech=%d noise=%d start_ns=%s",
+            span_id,
+            len(speech),
+            len(noise),
+            speech_start_ns,
+        )
+
+    def _flush_prebuffer_as_noise(self) -> None:
+        """Send remaining prebuffered user frames as noise (no span)."""
+        if not self._user_prebuffer:
+            return
+        frames = self._user_prebuffer
+        self._user_prebuffer = []
+        for entry in frames:
+            self._enqueue_prebuffered(entry, span_id="", parent_span_id="")
+
+    def _enqueue_prebuffered(
+        self,
+        entry: _BufferedFrame,
+        *,
+        span_id: str,
+        parent_span_id: str,
+        trace_id: str = "",
+    ) -> None:
+        """Enqueue a previously buffered frame with the given attribution.
+
+        *entry* already presents the ``data``/``sample_rate``/``num_channels``
+        surface that :meth:`AudioChunkSender.enqueue` reads, so it is passed
+        directly — no intermediate wrapper needed.
+        """
+        if self._sender is None:
+            return
+        self._sender.enqueue(
+            entry,
+            role=SpeakerRole.USER,
+            span_id=span_id,
+            parent_span_id=parent_span_id,
+            trace_id=trace_id or self._session_trace_id,
+            timestamp_ns=entry.timestamp_ns,
         )
 
     # -- interrupt callbacks ------------------------------------------------
@@ -429,6 +663,7 @@ class SessionAudioCoordinator:
         agent active speech in place for trailing frames), this teardown path
         forcibly clears both roles and signals their end to the sender.
         """
+        self._flush_prebuffer_as_noise()
         for role in SpeakerRole:
             active = self._active_speech[role]
             self._active_speech[role] = None
@@ -974,15 +1209,17 @@ async def start_audio_capture(session: "AgentSession", *, config: "Config", sess
             return
 
         coordinator = SessionAudioCoordinator(sender=sender)
+
+        # Registration must happen before ``sender.start()``: the await yields
+        # to the event loop, letting LiveKit's background tasks create
+        # ``user_speaking`` spans that ``AudioSpanProcessor`` looks up via
+        # ``audio_coordinators``.  Registering after the yield would make those
+        # early spans invisible, causing their frames to be attributed as noise
+        # instead of user speech.
+        audio_coordinators.register(trace_id, coordinator)
+
         await sender.start()
 
-        # Registered before attaching, not after: from here on the sender owns a
-        # background task and an HTTP client, and the registry is the only handle
-        # anything has for closing them. ``attach`` patches third-party objects
-        # that may refuse assignment, so it is exactly the step that can raise —
-        # and a raise between start() and register() would strand both resources
-        # for the life of the process. ``attach`` does not need the registry.
-        audio_coordinators.register(trace_id, coordinator)
         try:
             coordinator.attach(session)
         except Exception:
