@@ -43,12 +43,16 @@ class _SpeakingSpan(NamedTuple):
         coordinator: The coordinator capturing that call's audio.
         span_context: The span's own context, for its trace and span ids.
         parent_span_id: Hex id of the speaking span's parent, or ``""`` if none.
+        start_time_ns: Span start time in nanoseconds, or ``None`` if unknown.
+            For ``user_speaking``, LiveKit backdates this from VAD
+            ``speech_duration`` so it marks the estimated speech onset.
     """
 
     role: SpeakerRole
     coordinator: SessionAudioCoordinator
     span_context: SpanContext
     parent_span_id: str
+    start_time_ns: Optional[int]
 
 
 class _TtsNodeSpan(NamedTuple):
@@ -83,6 +87,7 @@ class AudioSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 trace_id=format(speaking.span_context.trace_id, _TRACE_ID_HEX_DIGITS),
                 span_id=format(speaking.span_context.span_id, _SPAN_ID_HEX_DIGITS),
                 parent_span_id=speaking.parent_span_id,
+                start_time_ns=speaking.start_time_ns,
             )
             return
 
@@ -150,6 +155,7 @@ def _resolve_speaking_span(span: Union[Span, ReadableSpan]) -> Optional[_Speakin
             coordinator=coordinator,
             span_context=span_context,
             parent_span_id=_parent_span_id_hex(span),
+            start_time_ns=_span_start_time_ns(span),
         )
     except Exception:
         logger.debug("netra.audio: could not resolve a speaking span", exc_info=True)
@@ -207,3 +213,13 @@ def _parent_span_id_hex(span: Union[Span, ReadableSpan]) -> str:
     if not isinstance(parent_span_id, int) or not parent_span_id:
         return ""
     return format(parent_span_id, _SPAN_ID_HEX_DIGITS)
+
+
+def _span_start_time_ns(span: Union[Span, ReadableSpan]) -> Optional[int]:
+    """Return *span*'s start time in nanoseconds, if available.
+
+    LiveKit backdates ``user_speaking`` from VAD ``speech_duration``, so this
+    is the estimated speech onset rather than when the span object was created.
+    """
+    start_time = getattr(span, "start_time", None)
+    return start_time if isinstance(start_time, int) else None

@@ -23,6 +23,7 @@ from netra.config import Config
 from netra.instrumentation.libraries.livekit.audio_capture import (
     AudioCoordinatorRegistry,
     SessionAudioCoordinator,
+    _BufferedFrame,
     audio_coordinators,
     build_audio_sender,
     start_audio_capture,
@@ -701,10 +702,73 @@ class TestSessionAudioCoordinator:
 
         coordinator.on_frame(SpeakerRole.USER, make_frame())
 
+        # User frames between turns are prebuffered (for retroactive
+        # attribution when VAD detects speech).  Flushing happens either on
+        # the next ``on_speaking_start`` or at ``close()``.
+        sender.enqueue.assert_not_called()
+
+        coordinator.close()
+
         kwargs = sender.enqueue.call_args.kwargs
         assert kwargs["span_id"] == ""
         assert kwargs["parent_span_id"] == ""
         assert kwargs["trace_id"] == TRACE_ID
+
+    def test_prebuffered_user_frames_are_attributed_to_the_speech_span(self) -> None:
+        """Frames captured before VAD fires are retroactively attributed."""
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator._session_trace_id = TRACE_ID
+
+        coordinator.on_frame(SpeakerRole.USER, make_frame(value=111))
+        coordinator.on_frame(SpeakerRole.USER, make_frame(value=222))
+
+        sender.enqueue.assert_not_called()
+
+        coordinator.on_speaking_start(
+            SpeakerRole.USER,
+            trace_id=TRACE_ID,
+            span_id=USER_SPAN_ID,
+            parent_span_id=PARENT_SPAN_ID,
+        )
+
+        assert sender.enqueue.call_count == 2
+        for call in sender.enqueue.call_args_list:
+            assert call.kwargs["span_id"] == USER_SPAN_ID
+            assert call.kwargs["parent_span_id"] == PARENT_SPAN_ID
+            assert call.kwargs["trace_id"] == TRACE_ID
+            assert call.kwargs["role"] is SpeakerRole.USER
+
+    def test_prebuffer_split_uses_span_start_time(self) -> None:
+        """Only frames at/after VAD's backdated onset become user speech."""
+        sender = MagicMock()
+        coordinator = SessionAudioCoordinator(sender=sender)
+        coordinator._session_trace_id = TRACE_ID
+
+        t0 = 1_000_000_000
+        coordinator._user_prebuffer = [
+            _BufferedFrame(pcm_bytes=b"\x01\x00", sample_rate=SAMPLE_RATE_HZ, num_channels=1, timestamp_ns=t0),
+            _BufferedFrame(
+                pcm_bytes=b"\x02\x00", sample_rate=SAMPLE_RATE_HZ, num_channels=1, timestamp_ns=t0 + 100_000_000
+            ),
+            _BufferedFrame(
+                pcm_bytes=b"\x03\x00", sample_rate=SAMPLE_RATE_HZ, num_channels=1, timestamp_ns=t0 + 200_000_000
+            ),
+        ]
+
+        speech_start = t0 + 150_000_000
+        coordinator.on_speaking_start(
+            SpeakerRole.USER,
+            trace_id=TRACE_ID,
+            span_id=USER_SPAN_ID,
+            parent_span_id=PARENT_SPAN_ID,
+            start_time_ns=speech_start,
+        )
+
+        assert sender.enqueue.call_count == 3
+        span_ids = [call.kwargs["span_id"] for call in sender.enqueue.call_args_list]
+        # First two frames predate speech onset → noise; third is speech.
+        assert span_ids == ["", "", USER_SPAN_ID]
 
     def test_both_speakers_are_streamed(self) -> None:
         sender = MagicMock()
