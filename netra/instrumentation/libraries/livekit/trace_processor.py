@@ -259,6 +259,17 @@ _CALL_ID_FIELD = "_netra_livekit_call_id"
 _user_turn_spans: "weakref.WeakValueDictionary[int, Span]" = weakref.WeakValueDictionary()
 _user_turn_lock = threading.Lock()
 
+# Streaming transcript for the open ``user_turn`` in each call, built from LiveKit's
+# ``user_input_transcribed`` events. LiveKit only writes ``lk.user_transcript`` onto
+# the span when end-of-utterance *commits* the turn — so a mid-speech hangup leaves
+# the span with no transcript even though the LiveKit UI already showed one. This
+# buffer is what lets ``end_orphaned_user_turn_span`` stamp what was heard.
+#
+# Mirrors LiveKit's own accumulation in ``AudioRecognition``: finals append, interims
+# overlay. Cleared when a turn starts or ends so one turn cannot inherit another's
+# words.
+_user_transcripts: Dict[int, Tuple[str, str]] = {}
+
 
 def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.Context]) -> None:
     """Make *span* the turn STT usage is attributed to in its call.
@@ -277,6 +288,8 @@ def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.C
     setattr(span, _CALL_ID_FIELD, call_id)
     with _user_turn_lock:
         _user_turn_spans[call_id] = span
+        # Fresh turn — drop any leftover from a previous one in this call.
+        _user_transcripts[call_id] = ("", "")
 
 
 def _deregister_user_turn_span(span: ReadableSpan) -> None:
@@ -300,6 +313,99 @@ def _deregister_user_turn_span(span: ReadableSpan) -> None:
         registered = _user_turn_spans.get(call_id)
         if registered is not None and registered.get_span_context().span_id == context.span_id:
             del _user_turn_spans[call_id]
+            _user_transcripts.pop(call_id, None)
+
+
+def record_user_transcript(call_id: int, transcript: str, *, is_final: bool) -> None:
+    """Accumulate one LiveKit ``user_input_transcribed`` sample for the open turn.
+
+    The LiveKit UI shows these as they stream; the OTel ``user_turn`` span only
+    receives ``lk.user_transcript`` when the turn is committed by EOU. Keeping the
+    running text here is what fills that gap when the session closes mid-speech.
+
+    Args:
+        call_id: The call the transcript belongs to.
+        transcript: The text LiveKit reported on this event — a final fragment or
+            the current interim overlay.
+        is_final: Whether this is a final (append) or interim (replace overlay).
+    """
+    if not transcript:
+        return
+    with _user_turn_lock:
+        # Only accumulate while a turn is open for this call — otherwise a late
+        # event after deregister would seed the *next* turn's buffer.
+        if call_id not in _user_turn_spans:
+            return
+        finals, _interim = _user_transcripts.get(call_id, ("", ""))
+        if is_final:
+            finals = f"{finals} {transcript}".strip()
+            _user_transcripts[call_id] = (finals, "")
+        else:
+            _user_transcripts[call_id] = (finals, transcript)
+
+
+def _transcript_for(call_id: int) -> Optional[str]:
+    """Return the accumulated transcript for *call_id*, or ``None`` if empty.
+
+    Args:
+        call_id: The call to read.
+
+    Returns:
+        Finals plus any current interim overlay, or ``None``.
+    """
+    finals, interim = _user_transcripts.get(call_id, ("", ""))
+    if interim:
+        combined = f"{finals} {interim}".strip()
+        return combined or None
+    return finals or None
+
+
+def end_orphaned_user_turn_span(call_id: int) -> None:
+    """End a still-recording ``user_turn`` span that LiveKit left open.
+
+    When the user hangs up mid-speech, LiveKit's ``_aclose_impl`` may end
+    ``user_speaking`` without ending its parent ``user_turn``, because the turn
+    never completed naturally — no end-of-utterance, no end-of-speech.  An unended
+    span is never queued by ``BatchSpanProcessor`` and therefore never exported,
+    leaving ``user_speaking`` orphaned in the backend: it carries a ``parent_id``
+    that resolves to nothing.
+
+    LiveKit also never writes ``lk.user_transcript`` in that path — that attribute
+    is set only when EOU commits the turn — even though streaming transcripts were
+    already emitted on ``user_input_transcribed``. Any text buffered by
+    :func:`record_user_transcript` is stamped here before the span ends.
+
+    Called from ``wrap_aclose`` after LiveKit's ``_aclose_impl`` has returned, so
+    LiveKit has had its full chance to end the span itself.  Only acts on spans
+    that are still recording — a span LiveKit did end is left untouched.
+
+    Args:
+        call_id: The call the turn belongs to — the ``livekit-call`` span's own
+            span id, as ``call_id_of_session`` reports it.
+    """
+    with _user_turn_lock:
+        span = _user_turn_spans.get(call_id)
+        transcript = _transcript_for(call_id)
+    if span is None:
+        return
+    if not span.is_recording():
+        return
+    logger.debug("netra.livekit: ending orphaned user_turn span for call %x", call_id)
+    try:
+        span.set_attribute("netra.turn.interrupted_by_session_close", True)
+    except Exception:
+        logger.debug("netra.livekit: could not mark orphaned user_turn span", exc_info=True)
+    if transcript:
+        try:
+            # Goes through the set_attribute wrapper so CONVERSATION_MAP fills
+            # gen_ai.completion the same way a normal committed turn does.
+            span.set_attribute("lk.user_transcript", transcript)
+        except Exception:
+            logger.debug("netra.livekit: could not stamp orphaned user_turn transcript", exc_info=True)
+    try:
+        span.end()
+    except Exception:
+        logger.debug("netra.livekit: could not end orphaned user_turn span", exc_info=True)
 
 
 def record_stt_usage(call_id: int, metrics_payload: Any) -> None:
