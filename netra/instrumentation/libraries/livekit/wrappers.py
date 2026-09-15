@@ -42,7 +42,11 @@ from netra.instrumentation.libraries.livekit.call_span import (
     end_call_span_of_session,
     start_call_span,
 )
-from netra.instrumentation.libraries.livekit.trace_processor import record_stt_usage
+from netra.instrumentation.libraries.livekit.trace_processor import (
+    end_orphaned_user_turn_span,
+    record_stt_usage,
+    record_user_transcript,
+)
 from netra.instrumentation.libraries.livekit.utils import NETRA_CLOSE_REASON, STT_METRICS_TYPE
 from netra.session_manager import SessionManager
 
@@ -60,11 +64,19 @@ WrappedAsync = Callable[..., Awaitable[Any]]
 # LiveKit's ``AgentSession`` event carrying every plugin's metrics.
 _METRICS_EVENT = "metrics_collected"
 
+# LiveKit's ``AgentSession`` event carrying streaming user transcripts (interim and
+# final). Fired as the user speaks — the same feed the LiveKit UI renders — and
+# the only place the text reaches us before EOU commits it onto the span.
+_TRANSCRIPT_EVENT = "user_input_transcribed"
+
 # Instance attribute marking a session whose metrics this package already listens
 # to. One subscription per session, however many times ``start()`` is called on it:
 # a second listener would record every STT sample twice and double the audio
 # duration and token counts the call is billed on.
 _METRICS_SUBSCRIBED_FIELD = "_netra_livekit_metrics_subscribed"
+
+# Same idea for the transcript listener.
+_TRANSCRIPT_SUBSCRIBED_FIELD = "_netra_livekit_transcript_subscribed"
 
 
 # ---------------------------------------------------------------------------
@@ -315,14 +327,75 @@ def _listen_for_metrics(instance: "AgentSession", handler: Callable[[Any], None]
         instance: The ``AgentSession`` to subscribe to.
         handler: The callback to register.
     """
+    _listen_for_event(instance, _METRICS_EVENT, handler)
+
+
+def _subscribe_user_transcript(instance: "AgentSession") -> None:
+    """Buffer streaming user transcripts for the open ``user_turn`` span.
+
+    LiveKit's UI shows these as they arrive; the OTel span only gets
+    ``lk.user_transcript`` when EOU commits the turn. Buffering them here is what
+    lets a mid-speech hangup still export the words that were already transcribed.
+
+    Subscribed at most once per session, for the same retry reasons as
+    :func:`_subscribe_stt_usage`.
+
+    Args:
+        instance: The ``AgentSession`` that is starting.
+    """
+    if getattr(instance, _TRANSCRIPT_SUBSCRIBED_FIELD, False):
+        return
+
+    def on_transcript(event: Any) -> None:
+        """Record one ``user_input_transcribed`` event.
+
+        Args:
+            event: LiveKit's ``UserInputTranscribedEvent``.
+        """
+        try:
+            call_id = call_id_of_session(instance)
+            if call_id is None:
+                return
+            transcript = getattr(event, "transcript", None)
+            if not isinstance(transcript, str) or not transcript:
+                return
+            is_final = bool(getattr(event, "is_final", False))
+            record_user_transcript(call_id, transcript, is_final=is_final)
+        except Exception:
+            logger.debug("netra.livekit: user transcript could not be recorded", exc_info=True)
+
+    _listen_for_event(instance, _TRANSCRIPT_EVENT, on_transcript)
+
+    try:
+        setattr(instance, _TRANSCRIPT_SUBSCRIBED_FIELD, True)
+    except Exception:
+        logger.debug("netra.livekit: could not mark the session as transcript-subscribed", exc_info=True)
+
+
+def _listen_for_event(instance: "AgentSession", event_name: str, handler: Callable[[Any], None]) -> None:
+    """Subscribe *handler* to a session event via ``rtc.EventEmitter``.
+
+    Prefers the base ``EventEmitter.on`` so session-level deprecation warnings on
+    specific events (e.g. ``metrics_collected``) do not appear in the user's logs
+    for listeners the user did not add.
+
+    Args:
+        instance: The ``AgentSession`` to subscribe to.
+        event_name: The event name.
+        handler: The callback to register.
+    """
     try:
         from livekit import rtc
     except ImportError:
-        logger.debug("netra.livekit: livekit.rtc is unavailable; subscribing through the session", exc_info=True)
-        instance.on(_METRICS_EVENT, handler)
+        logger.debug(
+            "netra.livekit: livekit.rtc is unavailable; subscribing to %s through the session",
+            event_name,
+            exc_info=True,
+        )
+        instance.on(event_name, handler)
         return
 
-    rtc.EventEmitter.on(instance, _METRICS_EVENT, handler)
+    rtc.EventEmitter.on(instance, event_name, handler)
 
 
 # ---------------------------------------------------------------------------
@@ -598,6 +671,15 @@ async def wrap_start(
                     exc_info=True,
                 )
 
+            try:
+                _subscribe_user_transcript(instance)
+            except Exception:
+                logger.warning(
+                    "netra.livekit: could not subscribe to user transcripts; interrupted user_turn "
+                    "spans may export without the words already shown in the LiveKit UI",
+                    exc_info=True,
+                )
+
             result = await wrapped(*args, **kwargs)
     except BaseException:
         # A session that never started will never be closed, so neither end path
@@ -672,6 +754,18 @@ async def wrap_aclose(
     try:
         return await wrapped(*args, **kwargs)
     finally:
+        # LiveKit's ``_aclose_impl`` may end ``user_speaking`` without ending its
+        # parent ``user_turn`` when the user hangs up mid-speech (the turn never
+        # completed naturally).  An unended span is never exported, so
+        # ``user_speaking`` arrives at the backend with a ``parent_id`` that
+        # resolves to nothing.  Ending the orphan here — after ``_aclose_impl``
+        # has had its chance — ensures both spans reach the exporter.
+        try:
+            call_id = call_id_of_session(instance)
+            if call_id is not None:
+                end_orphaned_user_turn_span(call_id)
+        except Exception:
+            logger.debug("netra.livekit: could not end orphaned user_turn span", exc_info=True)
         try:
             await _after_close(instance)
         except Exception:
