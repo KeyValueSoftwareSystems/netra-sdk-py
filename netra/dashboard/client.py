@@ -303,12 +303,19 @@ class DashboardHttpClient:
             )
             return None
 
-    def get_session_details(self, session_id: str) -> Any:
+    def get_session_details(
+        self,
+        session_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> Any:
         """
         Get full details for a session including its traces.
 
         Args:
             session_id: Session identifier.
+            start_time: Optional start of the time window in ISO 8601 UTC format.
+            end_time: Optional end of the time window in ISO 8601 UTC format.
 
         Returns:
             The session detail response data or None on error.
@@ -321,7 +328,13 @@ class DashboardHttpClient:
         try:
             url = f"/public/dashboard/session/{session_id}"
 
-            response = self._client.get(url)
+            params: Dict[str, str] = {}
+            if start_time:
+                params["startTime"] = start_time
+            if end_time:
+                params["endTime"] = end_time
+
+            response = self._client.get(url, params=params)
             response.raise_for_status()
             data = response.json()
             return data
