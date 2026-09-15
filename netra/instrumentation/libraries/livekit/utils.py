@@ -386,8 +386,10 @@ CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     # tts_request: the text handed to the TTS provider. The words are the agent's.
     "lk.input_text": ConversationTarget(ConversationSide.PROMPT, "assistant"),
     # user_turn: the STT transcript — the output of the transcription. The words are
-    # the caller's.
+    # the caller's. ``lk.pii.user_transcript`` is the same key after LiveKit's PII
+    # rename; both are accepted so older and newer livekit-agents agree.
     "lk.user_transcript": ConversationTarget(ConversationSide.COMPLETION, "user"),
+    "lk.pii.user_transcript": ConversationTarget(ConversationSide.COMPLETION, "user"),
 }
 
 # span name -> ``netra.span.type``.
