@@ -16,6 +16,12 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
   **Requires a backend carrying the matching change.** An older backend ignores the two parameters rather than rejecting them, so a windowed call against one silently returns the whole session. Separately, on an updated backend the endpoint now validates its query string, so an unrecognized query parameter — something no SDK version sends — returns a 400 where it was previously ignored.
 
+### Fixed
+
+- **LiveKit user-speech onset is no longer missing from call audio** - VAD opens the `user_speaking` span ~200–300 ms after the caller actually starts talking, so frames that arrived in that window were tagged as noise (or dropped) because no speaking span was active yet. User frames captured while no `user_speaking` span is open are now held in a short pre-speech buffer (~500 ms / ~26 KB at the livekit-agents default rate). When the span opens, the buffer is split at LiveKit's VAD-backdated `start_time`: frames at or after that onset are attributed to the speaking span; earlier frames stay noise. Frames older than the window flush as noise so long silence between turns still records. The audio coordinator is also registered before `sender.start()` yields to the event loop, so speaking spans created during that await are visible and not mis-tagged as noise.
+
+- **Mid-speech hangups no longer orphan `user_speaking` under a missing `user_turn`** - When the caller hangs up mid-utterance, LiveKit's `_aclose_impl` can end `user_speaking` without ending its parent `user_turn` (the turn never reached end-of-utterance). An unended span is never queued by `BatchSpanProcessor`, so the backend received `user_speaking` with a `parent_id` that resolved to nothing. After LiveKit's close path returns, the SDK now ends any still-recording `user_turn` for that call and stamps `netra.turn.interrupted_by_session_close`. Streaming `user_input_transcribed` events are buffered for the open turn (finals append, interims overlay, matching LiveKit's own accumulation) and stamped as `lk.user_transcript` on that forced end — LiveKit only writes that attribute when EOU commits the turn, so a mid-speech hangup previously exported the turn with no words even though the LiveKit UI had already shown them. `lk.pii.user_transcript` is also accepted in the conversation map so older and newer `livekit-agents` agree.
+
 ## [1.1.0b1] - 2026-09-01
 
 ### Added
