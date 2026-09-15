@@ -207,21 +207,38 @@ class Dashboard:
         data = result.get("data", {})
         return data
 
-    def get_session_details(self, session_id: str) -> Any:
+    def get_session_details(
+        self,
+        session_id: str,
+        start_time: Optional[str] = None,
+        end_time: Optional[str] = None,
+    ) -> Any:
         """
         Get full details for a session including its traces, tokens, costs, and tool calls.
 
         Args:
             session_id: Session identifier.
+            start_time: Optional start of the time window (ISO 8601 UTC timestamp with
+                milliseconds, e.g. 2026-09-01T00:00:00.000Z). Omit for no lower bound.
+            end_time: Optional end of the time window (ISO 8601 UTC timestamp with
+                milliseconds). Omit for no upper bound.
 
         Returns:
             Dict containing sessionId and traces, or None on error.
+
+        Note:
+            The window is applied per span before traces are aggregated, so a trace that
+            straddles a bound is reported from its in-window spans only.
         """
         if not session_id:
             logger.error("netra.dashboard: session_id is required to fetch session detail")
             return None
 
-        result = self._client.get_session_details(session_id=session_id)
+        result = self._client.get_session_details(
+            session_id=session_id,
+            start_time=start_time,
+            end_time=end_time,
+        )
         if not isinstance(result, dict):
             return result
 
