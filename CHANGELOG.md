@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.1.0b2] - 2026-09-15
+
+### Added
+
+- **`get_session_details` accepts an optional time window** - `Netra.dashboard.get_session_details(session_id, start_time=..., end_time=...)` now takes two optional ISO 8601 UTC timestamps and forwards them to the session details endpoint as `startTime` / `endTime` query parameters. Each bound is independent: `start_time` alone leaves the window open-ended on the right, `end_time` alone open-ended on the left, and omitting both is exactly the previous behavior — the request is byte-identical to before, down to the absence of a query string. **The response shape is unchanged** (`{"sessionId": ..., "traces": [...]}`, each trace carrying the same `tokens`, `cost`, `models` and `toolCalls` keys), so existing callers need no changes.
+
+  Timestamps must carry milliseconds and a `Z` suffix (`2026-09-01T00:00:00.000Z`). The backend rejects any other shape with a 400, which the SDK logs and surfaces as `None`, matching how every other dashboard utility reports a failed request. Note that `datetime.isoformat()` does not produce this format.
+
+  The window filters individual spans before they are aggregated per trace, so a trace straddling a bound is returned with its tokens, cost, latency, models and tool calls computed from its in-window spans only, rather than being dropped.
+
+  **Requires a backend carrying the matching change.** An older backend ignores the two parameters rather than rejecting them, so a windowed call against one silently returns the whole session. Separately, on an updated backend the endpoint now validates its query string, so an unrecognized query parameter — something no SDK version sends — returns a 400 where it was previously ignored.
+
 ## [1.1.0b1] - 2026-09-01
 
 ### Added
@@ -476,4 +488,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.1.0b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.1.0b2]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
