@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.1.0b4] - 2026-09-21
+
+### Added
+
+- **Opt-in TTL caching for `Netra.prompts.get_prompt`** - `get_prompt(name, label, use_cache=..., cache_ttl=...)` can now serve a prompt version from a process-local in-memory cache instead of calling the backend. **It is off by default** (`use_cache=False`), so a call that does not name it is byte-identical to before — same request, same return value. With `use_cache=True` the entry is keyed on name *and* label, so `production` and `staging` of the same prompt never share a slot. The default lifetime is `PROMPT_CACHE_TTL_SECONDS` (60 s); `cache_ttl` overrides it for that call only, and a value of zero or less stores nothing rather than caching forever. Only a successful lookup is cached — `None` and `{}` are what the client returns for a failed or missing prompt, and neither is stored, so an outage cannot pin a hole in the cache for a full TTL.
+
+  Entries expire against a monotonic clock, so a system clock adjustment cannot extend or collapse a TTL. The cache is per-process and per-initialized SDK, never shared between processes, so a prompt edited in the dashboard can still be served from an older revision by any worker whose entry has not yet expired — the TTL is the staleness bound. `Netra.prompts.clear_cache()` drops every entry, and `Netra.shutdown()` now clears it too.
+
+- **Opt-in TTL caching for `Netra.models.get_model_pricing`** - `get_model_pricing(name=None, use_cache=..., cache_ttl=...)` takes the same two parameters and is likewise **off by default**. The key covers the `name` filter, with unfiltered calls under their own key, so a filtered and an unfiltered call do not serve each other's results. The default lifetime is `MODEL_PRICING_CACHE_TTL_SECONDS` (300 s) — longer than prompts, since pricing tables move rarely — again overridable per call via `cache_ttl` and skipped entirely for a non-positive value. What is cached is the unwrapped `data` list, matching what the method returns; the client's failure sentinel and a response whose `data` is not a list both return early without writing, so only a well-formed response is stored.
+
+  **A cache hit returns the same list and dicts as the previous hit, not a copy.** Mutating a returned entry — sorting it in place, editing a price — corrupts what every later caller sees until the TTL elapses; copy before mutating. `Netra.models.clear_cache()` drops every entry, and `Netra.shutdown()` clears it too.
+
 ## [1.1.0b3] - 2026-09-15
 
 ### Fixed
@@ -180,10 +192,6 @@ entry of its own:
 - **Add `USER_ID` to `SessionFilterField`** - Session stats and session summary queries can now filter by `user_id`.
 
 - **Fix OpenAI streaming wrapper span lifecycle** - Made `_finalize_span()` idempotent with a `_span_ended` guard, added `close()` and `__del__()` to both sync and async wrappers so spans are properly finalized even on early exit or GC. `AsyncStreamingWrapper` now exposes `aclose()` per the async iterator protocol, with `close()` as an async alias for OpenAI SDK compatibility.
-
-- **Add opt-in TTL caching for `get_prompt`** - `Netra.prompts.get_prompt` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `PROMPT_CACHE_TTL_SECONDS` (60); override per call with `cache_ttl`. Use `Netra.prompts.clear_cache()` to invalidate cached entries.
-
-- **Add opt-in TTL caching for `get_model_pricing`** - `Netra.models.get_model_pricing` now accepts `use_cache` and `cache_ttl` parameters for in-memory caching. Default TTL is `MODEL_PRICING_CACHE_TTL_SECONDS` (300); override per call with `cache_ttl`. Use `Netra.models.clear_cache()` to invalidate cached entries.
 
 - **Add instrumentation for Hermes Agent** - New monkey-patching based instrumentation for the `hermes-agent` SDK (>= 0.17.0). Captures conversation runs, skill invocations (single, stacked, and bundle), tool executions, function calls, and approval gates as OpenTelemetry spans with full input/output attributes, token usage, and model metadata.
 
@@ -501,4 +509,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.1.0b3]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.1.0b4]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
