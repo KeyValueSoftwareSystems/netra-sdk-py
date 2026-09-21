@@ -33,6 +33,9 @@ import httpx
 from opentelemetry import context as otel_context
 
 from netra.instrumentation.libraries.livekit.audio_types import (
+    AUDIO_DRAIN_STATUS_ABORTED,
+    AUDIO_DRAIN_STATUS_COMPLETE,
+    AUDIO_DRAIN_STATUS_PENDING,
     CONTENT_TYPE_PCM,
     DEFAULT_CHANNEL_COUNT,
     DEFAULT_SAMPLE_RATE_HZ,
@@ -280,6 +283,10 @@ class AudioSenderStats:
         errors: Failed POST attempts, including ones a retry then recovered.
         circuit_tripped: Whether the call gave up on the endpoint entirely.
         total_send_time_ms: Wall-clock spent inside POSTs, for the average below.
+        drain_status: Teardown outcome — ``pending`` until ``end_session``, then
+            ``complete`` or ``aborted``.
+        session_last_sent: Whether the bodyless session-last POST was accepted.
+        queue_remaining: Frames still queued when drain was aborted (else 0).
     """
 
     chunks_sent: int = 0
@@ -289,6 +296,34 @@ class AudioSenderStats:
     errors: int = 0
     circuit_tripped: bool = False
     total_send_time_ms: float = 0.0
+    drain_status: str = AUDIO_DRAIN_STATUS_PENDING
+    session_last_sent: bool = False
+    queue_remaining: int = 0
+
+    @property
+    def delivery_complete(self) -> bool:
+        """True when every captured frame was delivered and teardown finished cleanly."""
+        return (
+            self.drain_status == AUDIO_DRAIN_STATUS_COMPLETE
+            and self.session_last_sent
+            and self.frames_dropped == 0
+            and not self.circuit_tripped
+        )
+
+    def incomplete_reasons(self) -> List[str]:
+        """Machine-readable reasons the call's audio is incomplete, if any."""
+        reasons: List[str] = []
+        if self.drain_status == AUDIO_DRAIN_STATUS_ABORTED:
+            reasons.append("drain_aborted")
+        elif self.drain_status == AUDIO_DRAIN_STATUS_PENDING:
+            reasons.append("drain_pending")
+        if self.frames_dropped > 0:
+            reasons.append("frames_dropped")
+        if self.circuit_tripped:
+            reasons.append("circuit_tripped")
+        if not self.session_last_sent:
+            reasons.append("session_last_missing")
+        return reasons
 
     def __str__(self) -> str:
         """Render the counters as a single log-friendly line."""
@@ -296,7 +331,8 @@ class AudioSenderStats:
         return (
             f"chunks={self.chunks_sent} frames={self.frames_sent} "
             f"bytes={self.bytes_sent} dropped={self.frames_dropped} "
-            f"errors={self.errors} avg_latency={average_ms:.1f}ms"
+            f"errors={self.errors} avg_latency={average_ms:.1f}ms "
+            f"drain={self.drain_status} complete={self.delivery_complete}"
         )
 
 
@@ -448,6 +484,7 @@ class AudioChunkSender:
         try:
             await asyncio.wait_for(self._queue.put(_SessionEndMarker()), timeout=_seconds_until(deadline))
         except asyncio.TimeoutError:
+            self._mark_drain_aborted()
             logger.warning("netra.audio: could not signal session end before the teardown deadline")
 
     async def _await_send_task(self, deadline: float) -> None:
@@ -466,13 +503,22 @@ class AudioChunkSender:
         try:
             await asyncio.wait_for(task, timeout=_seconds_until(deadline))
         except asyncio.TimeoutError:
+            self._mark_drain_aborted()
             logger.warning("netra.audio: send loop did not drain before the teardown deadline; cancelling")
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
         except asyncio.CancelledError:
             raise
         except Exception:
+            self._mark_drain_aborted()
             logger.warning("netra.audio: send loop ended with an error", exc_info=True)
+
+    def _mark_drain_aborted(self) -> None:
+        """Record that teardown cut the send loop short of a clean session-last."""
+        if self.stats.drain_status == AUDIO_DRAIN_STATUS_COMPLETE:
+            return
+        self.stats.drain_status = AUDIO_DRAIN_STATUS_ABORTED
+        self.stats.queue_remaining = self._queue.qsize()
 
     def _estimate_drain_timeout(self) -> float:
         """Compute a drain budget proportional to the work still queued.
@@ -672,6 +718,8 @@ class AudioChunkSender:
             if isinstance(message, _SessionEndMarker):
                 await self._drain_batches(batches)
                 await self._await_inflight_posts()
+                self.stats.drain_status = AUDIO_DRAIN_STATUS_COMPLETE
+                self.stats.queue_remaining = 0
                 return
 
             await self._handle_message(message, batches)
@@ -1098,6 +1146,11 @@ class AudioChunkSender:
             return
 
         await semaphore.acquire()
+        if self._circuit_tripped:
+            # A concurrent POST may have tripped the circuit while we waited for
+            # a slot; do not put another request on the wire.
+            semaphore.release()
+            return
         task = asyncio.create_task(
             self._run_inflight_post(
                 pcm=pcm,
@@ -1149,6 +1202,8 @@ class AudioChunkSender:
             self.stats.chunks_sent += 1
             self.stats.frames_sent += frame_count
             self.stats.bytes_sent += len(pcm)
+            if headers.get(HEADER_SESSION_LAST) == HEADER_VALUE_TRUE:
+                self.stats.session_last_sent = True
         finally:
             if semaphore is not None:
                 semaphore.release()
