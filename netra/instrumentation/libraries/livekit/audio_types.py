@@ -161,3 +161,23 @@ NETRA_AUDIO_SENT_CHUNKS = "netra.audio.sent_chunks"
 NETRA_AUDIO_DROPPED_FRAMES = "netra.audio.dropped_frames"
 NETRA_AUDIO_ERRORS = "netra.audio.errors"
 NETRA_AUDIO_CIRCUIT_TRIPPED = "netra.audio.circuit_tripped"
+
+# Overall delivery verdict and teardown outcome. ``complete`` is true only when
+# the queue drained cleanly, the session-last marker was accepted, nothing was
+# dropped, and the circuit never tripped. ``drain_status`` distinguishes a clean
+# finish from an abrupt cancel (teardown budget exhausted / send loop cancelled).
+NETRA_AUDIO_COMPLETE = "netra.audio.complete"
+NETRA_AUDIO_DRAIN_STATUS = "netra.audio.drain_status"
+NETRA_AUDIO_SESSION_LAST_SENT = "netra.audio.session_last_sent"
+NETRA_AUDIO_QUEUE_REMAINING = "netra.audio.queue_remaining"
+NETRA_AUDIO_INCOMPLETE_REASON = "netra.audio.incomplete_reason"
+
+# Values for ``NETRA_AUDIO_DRAIN_STATUS``.
+AUDIO_DRAIN_STATUS_PENDING = "pending"
+AUDIO_DRAIN_STATUS_COMPLETE = "complete"
+AUDIO_DRAIN_STATUS_ABORTED = "aborted"
+
+# Dedicated span opened after the audio sender drains. ``agent_session`` is already
+# ended by then, and the OTel SDK silently ignores ``set_attributes`` on an ended
+# span, so delivery counters cannot ride on it — they go on this span instead.
+AUDIO_DELIVERY_SPAN_NAME = "audio.delivery.metadata"
