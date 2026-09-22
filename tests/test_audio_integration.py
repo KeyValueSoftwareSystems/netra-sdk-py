@@ -32,6 +32,9 @@ from netra.instrumentation.libraries.livekit.audio_capture import (
 from netra.instrumentation.libraries.livekit.audio_processor import AudioSpanProcessor
 from netra.instrumentation.libraries.livekit.audio_sender import AudioChunkSender
 from netra.instrumentation.libraries.livekit.audio_types import (
+    AUDIO_DELIVERY_SPAN_NAME,
+    AUDIO_DRAIN_STATUS_ABORTED,
+    AUDIO_DRAIN_STATUS_COMPLETE,
     HEADER_HEARD_MS,
     HEADER_LAST_CHUNK,
     HEADER_PARENT_SPAN_ID,
@@ -41,9 +44,14 @@ from netra.instrumentation.libraries.livekit.audio_types import (
     HEADER_SESSION_LAST,
     HEADER_SPAN_ID,
     HEADER_TRACE_ID,
+    NETRA_AUDIO_COMPLETE,
+    NETRA_AUDIO_DRAIN_STATUS,
     NETRA_AUDIO_DROPPED_FRAMES,
+    NETRA_AUDIO_INCOMPLETE_REASON,
+    NETRA_AUDIO_QUEUE_REMAINING,
     NETRA_AUDIO_SENT_BYTES,
     NETRA_AUDIO_SENT_CHUNKS,
+    NETRA_AUDIO_SESSION_LAST_SENT,
     SpeakerRole,
     pcm_byte_offset_at,
 )
@@ -543,9 +551,12 @@ class TestAudioChunkSenderFailures:
 
         assert sender.stats.circuit_tripped is True
         assert sender.stats.chunks_sent == 0
-        # One rejected attempt, then nothing further — not one per frame, and no
-        # retry of a credential that cannot become valid mid-call.
-        assert len(recorder.snapshot()) == 1
+        assert sender.stats.delivery_complete is False
+        # Up to ``_MAX_INFLIGHT_POSTS`` may already be on the wire when the first
+        # 401 trips the circuit; nothing further is accepted after that.
+        assert 1 <= len(recorder.snapshot()) <= 4
+        assert "circuit_tripped" in sender.stats.incomplete_reasons()
+        assert "session_last_missing" in sender.stats.incomplete_reasons()
 
     def test_a_server_error_is_retried_then_given_up_on(self, ingest_server) -> None:
         url, recorder = ingest_server
@@ -615,6 +626,38 @@ class TestAudioChunkSenderFailures:
         # The two internal waits share the 0.5s deadline. Taking it each would put
         # this at 1s+, and the pre-fix 30s-per-wait default at a minute.
         assert elapsed < 1.5, f"teardown took {elapsed:.2f}s for a 0.5s budget"
+
+    def test_a_clean_call_reports_delivery_complete(self, ingest_server) -> None:
+        url, _ = ingest_server
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            enqueue_frames(sender, 2, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+
+        sender = run_call(url, scenario)
+
+        assert sender.stats.drain_status == AUDIO_DRAIN_STATUS_COMPLETE
+        assert sender.stats.session_last_sent is True
+        assert sender.stats.frames_dropped == 0
+        assert sender.stats.circuit_tripped is False
+        assert sender.stats.delivery_complete is True
+        assert sender.stats.incomplete_reasons() == []
+
+    def test_an_aborted_drain_reports_incomplete_delivery(self, ingest_server) -> None:
+        url, recorder = ingest_server
+        recorder.delay_seconds = 2.0
+
+        async def drive() -> AudioChunkSender:
+            sender = build_sender(url, max_batch_frames=1)
+            await sender.start()
+            enqueue_frames(sender, 4, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+            await sender.end_session(drain_timeout_seconds=0.5)
+            return sender
+
+        sender = asyncio.run(drive())
+
+        assert sender.stats.drain_status == AUDIO_DRAIN_STATUS_ABORTED
+        assert sender.stats.delivery_complete is False
+        assert "drain_aborted" in sender.stats.incomplete_reasons()
 
     def test_a_tripped_circuit_does_not_warn_once_per_open_span(self, ingest_server, caplog) -> None:
         url, recorder = ingest_server
@@ -1204,6 +1247,23 @@ class TestSessionWiring:
         yield
         audio_coordinators.pop_all()
 
+    @pytest.fixture
+    def span_exporter(self, monkeypatch):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        # Global TracerProvider cannot be overridden once set; bind our tracer
+        # through get_tracer so the delivery-span path uses this provider.
+        monkeypatch.setattr(
+            "opentelemetry.trace.get_tracer",
+            lambda name, version=None, **kwargs: provider.get_tracer(name, version),
+        )
+        return exporter, provider
+
     def test_the_sender_is_built_from_the_configured_limits(self) -> None:
         config = MagicMock(
             api_key="key",
@@ -1230,32 +1290,82 @@ class TestSessionWiring:
 
         assert build_audio_sender(config, "session-1") is None
 
-    def test_stopping_a_call_unregisters_it_and_records_what_was_sent(self) -> None:
+    def test_stopping_a_call_exports_a_delivery_span(self, span_exporter) -> None:
+        exporter, provider = span_exporter
         sender = MagicMock()
-        sender.stats = MagicMock(bytes_sent=4096, chunks_sent=3, frames_dropped=1, errors=0, circuit_tripped=False)
+        sender.stats = MagicMock(
+            bytes_sent=4096,
+            chunks_sent=3,
+            frames_dropped=1,
+            errors=0,
+            circuit_tripped=False,
+            drain_status=AUDIO_DRAIN_STATUS_COMPLETE,
+            session_last_sent=True,
+            queue_remaining=0,
+            delivery_complete=False,
+        )
+        sender.stats.incomplete_reasons.return_value = ["frames_dropped"]
         sender.end_session = _async_noop
         coordinator = SessionAudioCoordinator(sender=sender)
         audio_coordinators.register(0x99, coordinator)
-        session_span = MagicMock()
+
+        # Real (ended) parent: mirrors production, where agent_session is already
+        # closed by the time drain finishes and set_attributes on it is a no-op.
+        session_span = provider.get_tracer("test").start_span("agent_session")
+        session_span.end()
 
         asyncio.run(stop_audio_capture(0x99, session_span=session_span))
 
         assert audio_coordinators.get(0x99) is None
-        stamped = session_span.set_attributes.call_args.args[0]
-        assert stamped[NETRA_AUDIO_SENT_BYTES] == 4096
-        assert stamped[NETRA_AUDIO_SENT_CHUNKS] == 3
-        assert stamped[NETRA_AUDIO_DROPPED_FRAMES] == 1
+        delivery = [s for s in exporter.get_finished_spans() if s.name == AUDIO_DELIVERY_SPAN_NAME]
+        assert len(delivery) == 1
+        attrs = dict(delivery[0].attributes or {})
+        assert attrs[NETRA_AUDIO_SENT_BYTES] == 4096
+        assert attrs[NETRA_AUDIO_SENT_CHUNKS] == 3
+        assert attrs[NETRA_AUDIO_DROPPED_FRAMES] == 1
+        assert attrs[NETRA_AUDIO_COMPLETE] is False
+        assert attrs[NETRA_AUDIO_DRAIN_STATUS] == AUDIO_DRAIN_STATUS_COMPLETE
+        assert attrs[NETRA_AUDIO_SESSION_LAST_SENT] is True
+        assert attrs[NETRA_AUDIO_QUEUE_REMAINING] == 0
+        assert attrs[NETRA_AUDIO_INCOMPLETE_REASON] == "frames_dropped"
+        assert delivery[0].parent.span_id == session_span.get_span_context().span_id
 
-    def test_stopping_a_call_twice_is_harmless(self) -> None:
+    def test_stopping_a_call_twice_is_harmless(self, span_exporter) -> None:
+        exporter, provider = span_exporter
         sender = MagicMock()
         sender.end_session = _async_noop
+        sender.stats = MagicMock(
+            bytes_sent=0,
+            chunks_sent=0,
+            frames_dropped=0,
+            errors=0,
+            circuit_tripped=False,
+            drain_status=AUDIO_DRAIN_STATUS_COMPLETE,
+            session_last_sent=True,
+            queue_remaining=0,
+            delivery_complete=True,
+        )
+        sender.stats.incomplete_reasons.return_value = []
         audio_coordinators.register(0x99, SessionAudioCoordinator(sender=sender))
-        session_span = MagicMock()
+        session_span = provider.get_tracer("test").start_span("agent_session")
+        session_span.end()
 
         asyncio.run(stop_audio_capture(0x99, session_span=session_span))
         asyncio.run(stop_audio_capture(0x99, session_span=session_span))
 
-        assert session_span.set_attributes.call_count == 1
+        delivery = [s for s in exporter.get_finished_spans() if s.name == AUDIO_DELIVERY_SPAN_NAME]
+        assert len(delivery) == 1
+
+    def test_ended_agent_session_does_not_accept_late_attributes(self, span_exporter) -> None:
+        """Document why delivery stats cannot ride on agent_session itself."""
+        exporter, provider = span_exporter
+        session_span = provider.get_tracer("test").start_span("agent_session")
+        session_span.end()
+        session_span.set_attributes({NETRA_AUDIO_COMPLETE: True})
+
+        finished = [s for s in exporter.get_finished_spans() if s.name == "agent_session"]
+        assert len(finished) == 1
+        assert NETRA_AUDIO_COMPLETE not in (finished[0].attributes or {})
 
     def test_a_failed_attach_leaves_no_sender_running(self, ingest_server) -> None:
         url, _ = ingest_server
