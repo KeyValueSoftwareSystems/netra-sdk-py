@@ -34,12 +34,18 @@ from netra.instrumentation.libraries.livekit.audio_sender import (
     AudioChunkSender,
 )
 from netra.instrumentation.libraries.livekit.audio_types import (
+    AUDIO_DELIVERY_SPAN_NAME,
     CREDENTIAL_HEADER_NAMES,
     NETRA_AUDIO_CIRCUIT_TRIPPED,
+    NETRA_AUDIO_COMPLETE,
+    NETRA_AUDIO_DRAIN_STATUS,
     NETRA_AUDIO_DROPPED_FRAMES,
     NETRA_AUDIO_ERRORS,
+    NETRA_AUDIO_INCOMPLETE_REASON,
+    NETRA_AUDIO_QUEUE_REMAINING,
     NETRA_AUDIO_SENT_BYTES,
     NETRA_AUDIO_SENT_CHUNKS,
+    NETRA_AUDIO_SESSION_LAST_SENT,
     SpeakerRole,
 )
 
@@ -1371,22 +1377,52 @@ def _close_from_outside(
 
 
 def _stamp_audio_stats(session_span: "Span", sender: AudioChunkSender) -> None:
-    """Record the call's audio delivery counters on its session span.
+    """Export the call's audio delivery counters on a dedicated delivery span.
+
+    Stamping onto ``agent_session`` itself does not work on the real close path:
+    LiveKit ends that span inside ``_aclose_impl``, and the OTel SDK no-ops
+    ``set_attributes`` on an already-ended span (only logging a warning). By the
+    time the sender has drained we only know the final counters, so they ride on
+    a short ``netra.audio.delivery`` child of the session span's context instead —
+    same trace, parented under ``agent_session``, and actually exported.
 
     Args:
-        session_span: The still-recording ``agent_session`` span.
+        session_span: The (typically already-ended) ``agent_session`` span, used
+            only as the parent context so the delivery span shares its trace.
         sender: The sender whose statistics to record.
     """
     stats = sender.stats
+    attributes: Dict[str, Any] = {
+        NETRA_AUDIO_SENT_BYTES: stats.bytes_sent,
+        NETRA_AUDIO_SENT_CHUNKS: stats.chunks_sent,
+        NETRA_AUDIO_DROPPED_FRAMES: stats.frames_dropped,
+        NETRA_AUDIO_ERRORS: stats.errors,
+        NETRA_AUDIO_CIRCUIT_TRIPPED: stats.circuit_tripped,
+        NETRA_AUDIO_COMPLETE: stats.delivery_complete,
+        NETRA_AUDIO_DRAIN_STATUS: stats.drain_status,
+        NETRA_AUDIO_SESSION_LAST_SENT: stats.session_last_sent,
+        NETRA_AUDIO_QUEUE_REMAINING: stats.queue_remaining,
+    }
+    reasons = stats.incomplete_reasons()
+    if reasons:
+        attributes[NETRA_AUDIO_INCOMPLETE_REASON] = ",".join(reasons)
+
     try:
-        session_span.set_attributes(
-            {
-                NETRA_AUDIO_SENT_BYTES: stats.bytes_sent,
-                NETRA_AUDIO_SENT_CHUNKS: stats.chunks_sent,
-                NETRA_AUDIO_DROPPED_FRAMES: stats.frames_dropped,
-                NETRA_AUDIO_ERRORS: stats.errors,
-                NETRA_AUDIO_CIRCUIT_TRIPPED: stats.circuit_tripped,
-            }
-        )
+        from opentelemetry import trace
+        from opentelemetry.trace import Status, StatusCode
+
+        from netra.instrumentation.libraries.livekit.version import __version__
+
+        # Same tracer scope as ``livekit-call``, so root-instrument filtering keeps
+        # this span under the livekit allow-list rather than peeling it off.
+        tracer = trace.get_tracer("netra.instrumentation.livekit", __version__)
+        parent_ctx = trace.set_span_in_context(session_span)
+        delivery_span = tracer.start_span(AUDIO_DELIVERY_SPAN_NAME, context=parent_ctx)
+        try:
+            delivery_span.set_attributes(attributes)
+            if not stats.delivery_complete:
+                delivery_span.set_status(Status(StatusCode.ERROR, ",".join(reasons) if reasons else "audio incomplete"))
+        finally:
+            delivery_span.end()
     except Exception:
-        logger.debug("netra.audio: could not stamp audio stats on the session span", exc_info=True)
+        logger.debug("netra.audio: could not export audio delivery span", exc_info=True)
