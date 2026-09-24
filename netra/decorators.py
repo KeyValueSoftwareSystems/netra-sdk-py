@@ -38,6 +38,54 @@ F_Callable = TypeVar("F_Callable", bound=Callable[..., Any])
 C = TypeVar("C", bound=type)
 
 
+_MAX_SERIALIZED_LENGTH = 1000
+
+
+def _bounded_default(value: Any) -> str:
+    """
+    JSON ``default`` hook that avoids stringifying huge binary payloads in full.
+
+    ``str(bytes)`` of a 30 MB payload builds a ~120 MB string only to be cut to
+    ``_MAX_SERIALIZED_LENGTH`` characters. Slicing first yields the same leading
+    characters at a fraction of the cost.
+
+    Args:
+        value: The non-JSON-native value to convert.
+
+    Returns:
+        The string form of the value.
+    """
+    if isinstance(value, (bytes, bytearray)):
+        return str(value[:_MAX_SERIALIZED_LENGTH])
+    if isinstance(value, memoryview):
+        return str(value[:_MAX_SERIALIZED_LENGTH].tobytes())
+    return str(value)
+
+
+def _json_dumps_truncated(value: Any, limit: int = _MAX_SERIALIZED_LENGTH) -> str:
+    """
+    Serialize a value to JSON, stopping as soon as ``limit`` characters are produced.
+
+    Produces the same result as ``json.dumps(value, default=str)[:limit]`` without
+    encoding the remainder of large structures.
+
+    Args:
+        value: The value to serialize.
+        limit: The maximum number of characters to return.
+
+    Returns:
+        The (possibly truncated) JSON string.
+    """
+    chunks = []
+    length = 0
+    for chunk in json.JSONEncoder(default=_bounded_default).iterencode(value):
+        chunks.append(chunk)
+        length += len(chunk)
+        if length >= limit:
+            break
+    return "".join(chunks)[:limit]
+
+
 def _serialize_value(value: Any) -> str:
     """
     Safely serialize a value to string for span attributes.
@@ -52,9 +100,9 @@ def _serialize_value(value: Any) -> str:
         if isinstance(value, (str, int, float, bool, type(None))):
             return str(value)
         elif isinstance(value, (list, dict, tuple)):
-            return json.dumps(value, default=str)[:1000]  # Limit size
+            return _json_dumps_truncated(value)
         else:
-            return str(value)[:1000]  # Limit size
+            return _bounded_default(value)[:_MAX_SERIALIZED_LENGTH]
     except Exception:
         return str(type(value).__name__)
 
@@ -72,6 +120,9 @@ def _add_span_attributes(
         kwargs: The keyword arguments to the function.
         entity_type: The entity type.
     """
+    if not span.is_recording():
+        return
+
     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.type", entity_type)
 
     try:
@@ -131,7 +182,7 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         result: The result to serialize and add as an attribute.
     """
     try:
-        if _span_has_output(span):
+        if not span.is_recording() or _span_has_output(span):
             return
         serialized_output = _serialize_value(result)
         span.set_attribute("output", serialized_output)

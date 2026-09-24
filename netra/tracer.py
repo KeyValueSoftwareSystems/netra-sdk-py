@@ -95,6 +95,7 @@ class Tracer:
                 exporter = original_exporter
 
             from netra.processors import (
+                HeaderRedactionSpanProcessor,
                 InstrumentationSpanProcessor,
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
@@ -129,6 +130,8 @@ class Tracer:
 
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
+
+            provider.add_span_processor(HeaderRedactionSpanProcessor())
 
             if self.cfg.disable_batch:
                 provider.add_span_processor(SimpleSpanProcessor(exporter))
