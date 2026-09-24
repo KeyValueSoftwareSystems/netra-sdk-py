@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Security
+
+- **Raised the `json-repair` floor to `0.60.1`** ([GHSA-xf7x-x43h-rpqh](https://github.com/advisories/GHSA-xf7x-x43h-rpqh), CVSS 7.5) - versions below `0.60.1` resolve a circular `$ref` in a caller-supplied JSON Schema by following it in an unbounded loop, pinning CPU indefinitely. The dependency constraint was already a range (`>=0.44.1,<1.0.0`) rather than a hard pin, but the floor still allowed the vulnerable release to resolve, and it's what the currently published PyPI release hard-pins. `netra-sdk`'s only call site (`netra/utils.py::truncate_and_repair_json`) calls `repair_json(json_str)` without a `schema` argument, so this specific loop was never reachable through the SDK itself — this closes the dependency-scanner alert and removes the exposure for any consumer that might add schema-based repair later. No behavior change otherwise; `repair_json`'s signature is backward compatible for the arguments the SDK passes.
+
 ## [1.1.0b4] - 2026-09-21
 
 ### Added
