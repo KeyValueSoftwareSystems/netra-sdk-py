@@ -117,6 +117,9 @@ class Tracer:
             # ORDER MATTERS: InstrumentationSpanProcessor must precede SpanIOProcessor
             # because SpanIOProcessor chains its writes through InstrumentationSpanProcessor's
             # wrapped set_attribute for truncation. See _wrap_set_attribute docstrings.
+            # It also redacts sensitive HTTP header attributes in on_end (see its
+            # own docstring), which must precede the exporting span processor added
+            # below -- satisfied here with room to spare.
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
             provider.add_span_processor(SpanIOProcessor())

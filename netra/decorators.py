@@ -38,6 +38,66 @@ F_Callable = TypeVar("F_Callable", bound=Callable[..., Any])
 C = TypeVar("C", bound=type)
 
 
+_MAX_SERIALIZED_LENGTH = 1000
+
+
+def _bounded_default(value: Any) -> Optional[str]:
+    """
+    JSON ``default`` hook that avoids stringifying huge binary payloads in full.
+
+    ``str(bytes)`` of a 30 MB payload builds a ~120 MB string only to be cut to
+    ``_MAX_SERIALIZED_LENGTH`` characters. Slicing first yields the same leading
+    characters at a fraction of the cost.
+
+    Args:
+        value: The non-JSON-native value to convert.
+
+    Returns:
+        The string form of the value, or ``None`` if a bytes-like value isn't
+        valid UTF-8 (matching OTel's own attribute-cleaning behavior).
+    """
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # Slice the raw bytes to the limit *before* decoding -- decoding (like
+        # ``str()``) is an O(payload size) pass, and this is the only place
+        # that guards against it running over a huge buffer.
+        raw = value[:_MAX_SERIALIZED_LENGTH]
+        if isinstance(raw, memoryview):
+            raw = raw.tobytes()  # bytes/bytearray decode() directly; memoryview has no decode()
+        try:
+            decoded = raw.decode()
+        except UnicodeDecodeError:
+            logger.warning("Byte attribute could not be decoded.")
+            return None
+    else:
+        decoded = str(value)
+
+    return decoded[:_MAX_SERIALIZED_LENGTH]
+
+
+def _json_dumps_truncated(value: Any, limit: int = _MAX_SERIALIZED_LENGTH) -> str:
+    """
+    Serialize a value to JSON, stopping as soon as ``limit`` characters are produced.
+
+    Produces the same result as ``json.dumps(value, default=str)[:limit]`` without
+    encoding the remainder of large structures.
+
+    Args:
+        value: The value to serialize.
+        limit: The maximum number of characters to return.
+
+    Returns:
+        The (possibly truncated) JSON string.
+    """
+    chunks = []
+    length = 0
+    for chunk in json.JSONEncoder(default=_bounded_default).iterencode(value):
+        chunks.append(chunk)
+        length += len(chunk)
+        if length >= limit:
+            break
+    return "".join(chunks)[:limit]
+
+
 def _serialize_value(value: Any) -> str:
     """
     Safely serialize a value to string for span attributes.
@@ -52,9 +112,10 @@ def _serialize_value(value: Any) -> str:
         if isinstance(value, (str, int, float, bool, type(None))):
             return str(value)
         elif isinstance(value, (list, dict, tuple)):
-            return json.dumps(value, default=str)[:1000]  # Limit size
+            return _json_dumps_truncated(value)
         else:
-            return str(value)[:1000]  # Limit size
+            bounded = _bounded_default(value)
+            return bounded[:_MAX_SERIALIZED_LENGTH] if bounded is not None else ""
     except Exception:
         return str(type(value).__name__)
 
@@ -72,6 +133,9 @@ def _add_span_attributes(
         kwargs: The keyword arguments to the function.
         entity_type: The entity type.
     """
+    if not span.is_recording():
+        return
+
     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.type", entity_type)
 
     try:
@@ -131,7 +195,7 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         result: The result to serialize and add as an attribute.
     """
     try:
-        if _span_has_output(span):
+        if not span.is_recording() or _span_has_output(span):
             return
         serialized_output = _serialize_value(result)
         span.set_attribute("output", serialized_output)

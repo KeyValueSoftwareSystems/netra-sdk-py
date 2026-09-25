@@ -13,6 +13,8 @@ differ only in the shape they read from, not in policy.
 
 from typing import Dict, FrozenSet, Iterable, Mapping, Tuple
 
+from netra.config import get_active_config
+
 REDACTED = "[REDACTED]"
 
 SENSITIVE_HEADERS: FrozenSet[str] = frozenset(
@@ -28,6 +30,21 @@ SENSITIVE_HEADERS: FrozenSet[str] = frozenset(
 )
 
 
+def get_sensitive_headers() -> FrozenSet[str]:
+    """Return the built-in sensitive headers plus any configured extras.
+
+    Returns:
+        :data:`SENSITIVE_HEADERS` merged with the active config's
+        ``redact_headers``, or :data:`SENSITIVE_HEADERS` alone when
+        ``Netra.init()`` has not run or configured no extras.
+    """
+
+    extras = getattr(get_active_config(), "redact_headers", None)
+    if not isinstance(extras, frozenset) or not extras:
+        return SENSITIVE_HEADERS
+    return SENSITIVE_HEADERS | extras
+
+
 def sanitize_header_mapping(headers: Mapping[str, str]) -> Dict[str, str]:
     """Redact sensitive values in a string-keyed header mapping.
 
@@ -39,7 +56,8 @@ def sanitize_header_mapping(headers: Mapping[str, str]) -> Dict[str, str]:
         A new dict with sensitive values replaced by :data:`REDACTED`. Header
         names are returned as the mapping yielded them.
     """
-    return {name: REDACTED if name.lower() in SENSITIVE_HEADERS else value for name, value in headers.items()}
+    sensitive = get_sensitive_headers()
+    return {name: REDACTED if name.lower() in sensitive else value for name, value in headers.items()}
 
 
 def sanitize_asgi_headers(raw_headers: Iterable[Tuple[bytes, bytes]]) -> Dict[str, str]:
@@ -54,8 +72,9 @@ def sanitize_asgi_headers(raw_headers: Iterable[Tuple[bytes, bytes]]) -> Dict[st
         headers replaced by :data:`REDACTED`. Values are decoded as latin-1,
         which is the encoding the ASGI spec defines for header bytes.
     """
+    sensitive = get_sensitive_headers()
     sanitized: Dict[str, str] = {}
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1").lower()
-        sanitized[name] = REDACTED if name in SENSITIVE_HEADERS else value_bytes.decode("latin-1")
+        sanitized[name] = REDACTED if name in sensitive else value_bytes.decode("latin-1")
     return sanitized

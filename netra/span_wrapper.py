@@ -19,6 +19,14 @@ logger = logging.getLogger(__name__)
 # Baggage key for local-only blocked spans patterns
 _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
 
+# Only GeneratorExit (early .close()/GC of a generator paused mid-``yield``
+# inside a ``with`` block) is normal completion. StopIteration/StopAsyncIteration
+# are Exception subclasses and, unlike GeneratorExit, are never swallowed here:
+# a ``for``/``async for`` loop already consumes them internally before they can
+# reach ``__exit__``, so one escaping is a real bug (e.g. manual ``next()``
+# misuse) and should be recorded as a span error rather than hidden.
+_NORMAL_COMPLETION_EXCEPTIONS = (GeneratorExit,)
+
 
 class ActionModel(BaseModel):  # type: ignore[misc]
     start_time: str = str((datetime.now().timestamp() * 1_000_000_000))
@@ -154,6 +162,9 @@ class SpanWrapper:
 
     def __exit__(self, exc_type: Optional[type], exc_val: Optional[Exception], exc_tb: Any) -> Literal[False]:
         """End the span wrapper, calculate duration, handle errors, and close OpenTelemetry span."""
+        if exc_type is not None and issubclass(exc_type, _NORMAL_COMPLETION_EXCEPTIONS):
+            exc_type, exc_val, exc_tb = None, None, None
+
         self.end_time = time.time()
         duration_ms = (self.end_time - self.start_time) * 1000 if self.start_time is not None else None
 
