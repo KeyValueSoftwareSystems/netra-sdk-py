@@ -64,14 +64,14 @@ def _bounded_default(value: Any) -> Optional[str]:
         if isinstance(raw, memoryview):
             raw = raw.tobytes()  # bytes/bytearray decode() directly; memoryview has no decode()
         try:
-            value = raw.decode()
+            decoded = raw.decode()
         except UnicodeDecodeError:
             logger.warning("Byte attribute could not be decoded.")
             return None
     else:
-        value = str(value)
+        decoded = str(value)
 
-    return value[:_MAX_SERIALIZED_LENGTH]
+    return decoded[:_MAX_SERIALIZED_LENGTH]
 
 
 def _json_dumps_truncated(value: Any, limit: int = _MAX_SERIALIZED_LENGTH) -> str:
@@ -114,7 +114,8 @@ def _serialize_value(value: Any) -> str:
         elif isinstance(value, (list, dict, tuple)):
             return _json_dumps_truncated(value)
         else:
-            return _bounded_default(value)[:_MAX_SERIALIZED_LENGTH]
+            bounded = _bounded_default(value)
+            return bounded[:_MAX_SERIALIZED_LENGTH] if bounded is not None else ""
     except Exception:
         return str(type(value).__name__)
 
