@@ -7,7 +7,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 ## [1.1.0] - 2026-09-25
 
 First stable release of the 1.1.0 line. Everything below shipped across `1.1.0b1`–`1.1.0b4`,
-plus the `json-repair` security fix under **Security**.
+plus the changes that landed after `1.1.0b4`: `NETRA_REDACT_HEADERS`, redaction of upstream
+header attributes, the generator-exit and non-recording-span fixes, and the `json-repair`
+security fix under **Security**.
 
 ### Added
 
@@ -32,6 +34,8 @@ plus the `json-repair` security fix under **Security**.
 - **Opt-in TTL caching for `Netra.models.get_model_pricing`** - `get_model_pricing(name=None, use_cache=..., cache_ttl=...)` takes the same two parameters and is likewise **off by default**. The key covers the `name` filter, with unfiltered calls under their own key, so a filtered and an unfiltered call do not serve each other's results. The default lifetime is `MODEL_PRICING_CACHE_TTL_SECONDS` (300 s) — longer than prompts, since pricing tables move rarely — again overridable per call via `cache_ttl` and skipped entirely for a non-positive value. What is cached is the unwrapped `data` list, matching what the method returns; the client's failure sentinel and a response whose `data` is not a list both return early without writing, so only a well-formed response is stored.
 
   **A cache hit returns the same list and dicts as the previous hit, not a copy.** Mutating a returned entry — sorting it in place, editing a price — corrupts what every later caller sees until the TTL elapses; copy before mutating. `Netra.models.clear_cache()` drops every entry, and `Netra.shutdown()` clears it too.
+
+- **`NETRA_REDACT_HEADERS` extends the set of redacted HTTP headers** - A comma-separated list of header names (case-insensitive, surrounding whitespace ignored) merged with the built-in set: `authorization`, `cookie`, `set-cookie`, `x-api-key`, `api-key`, `x-auth-token` and `proxy-authorization`. The merged set applies both to Netra's own HTTP header capture and to the header attributes recorded by upstream OTel instrumentations (see **Security**). The variable can only be set in the environment; there is no `Netra.init()` parameter. It is read when `Netra.init()` builds the config, so the list cannot be changed after initialization, and it can only add headers, never remove a built-in one.
 
 ### Changed
 
@@ -61,11 +65,17 @@ plus the `json-repair` security fix under **Security**.
 
 - **Mid-speech hangups no longer orphan `user_speaking` under a missing `user_turn`** - When the caller hangs up mid-utterance, LiveKit's `_aclose_impl` can end `user_speaking` without ending its parent `user_turn` (the turn never reached end-of-utterance). An unended span is never queued by `BatchSpanProcessor`, so the backend received `user_speaking` with a `parent_id` that resolved to nothing. After LiveKit's close path returns, the SDK now ends any still-recording `user_turn` for that call and stamps `netra.turn.interrupted_by_session_close`. Streaming `user_input_transcribed` events are buffered for the open turn (finals append, interims overlay, matching LiveKit's own accumulation) and stamped as `lk.user_transcript` on that forced end — LiveKit only writes that attribute when EOU commits the turn, so a mid-speech hangup previously exported the turn with no words even though the LiveKit UI had already shown them. `lk.pii.user_transcript` is also accepted in the conversation map so older and newer `livekit-agents` agree.
 
+- **Closing a generator early no longer marks its span as an error** - When a generator paused at a `yield` inside `with Netra.start_span(...)` is closed with `.close()`, or garbage-collected before it is exhausted, Python raises `GeneratorExit` at the `yield`. `SpanWrapper` recorded that as an exception, so a consumer that simply stopped iterating produced an errored span. `GeneratorExit` is now treated as normal completion. `StopIteration` and `StopAsyncIteration` are still recorded as errors: a `for` loop consumes them internally, so one reaching the span means a manual `next()` call went wrong.
+
+- **Decorators skip attribute capture on non-recording spans, and bound the cost of serializing binary values** - `@workflow`, `@agent`, `@task` and `@span` now return early when the span is not recording (sampled out, for example), instead of serializing arguments and return values that would be discarded. Bytes-like values (`bytes`, `bytearray`, `memoryview`) are sliced to the 1000-character attribute limit *before* they are decoded, so a 30 MB payload no longer builds a ~120 MB string only to truncate it, and JSON serialization of lists and dicts stops once it reaches the limit. **Bytes are now decoded as UTF-8 rather than passed through `str()`**: a `b"hello"` argument is recorded as `hello` where it was previously `b'hello'`. Bytes that are not valid UTF-8 are recorded as an empty string (as `null` inside a list or dict) and a warning is logged, matching OTel's own attribute cleaning.
+
 ### Removed
 
 - **`TRACELOOP_INSTRUMENTS_REPLACED_BY_NETRA`** - the set could never match anything: eight of its twelve names belong to `InstrumentSet` members tagged `_Origin.CUSTOM` (which never reach traceloop selection) and the other four name no member at all. The invariant it was meant to protect — that Netra's own instrumentations are never also delegated to traceloop — is enforced by `_Origin` and covered by `test_every_registered_instrumentor_belongs_to_the_custom_family`.
 
 ### Security
+
+- **Sensitive headers recorded by upstream OTel instrumentations are now redacted** - When header capture is turned on for an upstream OpenTelemetry HTTP instrumentation, it records headers as `http.request.header.*` / `http.response.header.*` span attributes. Netra's header redaction only covered its own HTTP capture, so these attributes were exported exactly as recorded, including `Authorization`, `Cookie` and API-key values. `InstrumentationSpanProcessor` now replaces them with `[REDACTED]` in `on_end`, before the exporting processor runs. It matches both the built-in set and any names added through `NETRA_REDACT_HEADERS`, allowing for the upstream key format (`x-api-key` is recorded as `http.request.header.x_api_key`). Header attributes that are not on the list are left unchanged.
 
 - **Raised the `json-repair` floor to `0.60.1`** ([GHSA-xf7x-x43h-rpqh](https://github.com/advisories/GHSA-xf7x-x43h-rpqh), CVSS 7.5) - versions below `0.60.1` resolve a circular `$ref` in a caller-supplied JSON Schema by following it in an unbounded loop, pinning CPU indefinitely. The dependency constraint was already a range (`>=0.44.1,<1.0.0`) rather than a hard pin, but the floor still allowed the vulnerable release to resolve, and it's what the currently published PyPI release hard-pins. `netra-sdk`'s only call site (`netra/utils.py::truncate_and_repair_json`) calls `repair_json(json_str)` without a `schema` argument, so this specific loop was never reachable through the SDK itself — this closes the dependency-scanner alert and removes the exposure for any consumer that might add schema-based repair later. No behavior change otherwise; `repair_json`'s signature is backward compatible for the arguments the SDK passes.
 
