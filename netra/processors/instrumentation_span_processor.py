@@ -1,13 +1,14 @@
-"""Span processor for instrumentation name recording and attribute truncation."""
+"""Span processor for instrumentation name recording, attribute truncation, and header redaction."""
 
 import logging
 import os
-from typing import Any, Callable, Mapping, Optional, Set, Union
+from typing import Any, Callable, FrozenSet, Mapping, Optional, Set, Union
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 from netra.config import Config, get_attribute_max_len
+from netra.instrumentation.http.headers import REDACTED, get_sensitive_headers
 from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES, InstrumentSet
 
 logger = logging.getLogger(__name__)
@@ -22,6 +23,28 @@ _NETRA_INSTRUMENTATION_PREFIX = "netra.instrumentation."
 _HTTPX_INSTRUMENTATION = "httpx"
 _URL_ATTRIBUTE_KEYS = frozenset({"http.url", "url.full"})
 _DEFAULT_BLOCKED_URL_PATTERNS = frozenset({"getnetra", "githubusercontent"})
+
+# The semantic-convention prefixes upstream OTel instrumentations record headers
+# under (``opentelemetry.util.http.normalise_{request,response}_header_name``).
+_HEADER_ATTRIBUTE_PREFIXES = ("http.request.header.", "http.response.header.")
+
+
+def _normalised_sensitive_headers() -> FrozenSet[str]:
+    """Return the sensitive header names in attribute-key form.
+
+    The upstream instrumentations lower-case header names and replace ``-``
+    with ``_`` when building the attribute key, so ``x-api-key`` is recorded
+    as ``http.request.header.x_api_key``.
+    """
+    return frozenset(name.replace("-", "_") for name in get_sensitive_headers())
+
+
+def _header_name(key: str) -> Optional[str]:
+    """Return the header part of a header attribute key, or ``None`` for any other key."""
+    for prefix in _HEADER_ATTRIBUTE_PREFIXES:
+        if key.startswith(prefix):
+            return key.removeprefix(prefix)
+    return None
 
 
 def _load_blocked_url_patterns() -> frozenset[str]:
@@ -71,6 +94,10 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
     patterns (e.g., internal service URLs).
     """
 
+    def __init__(self) -> None:
+        """Snapshot the sensitive header set once; the active config is fixed by the time processors are built."""
+        self._sensitive_headers = _normalised_sensitive_headers()
+
     def on_start(
         self,
         span: Span,
@@ -96,7 +123,26 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             logger.exception("Error in on_start processing")
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Called when a span is ended. No-op for this processor."""
+        """Redact sensitive ``http.{request,response}.header.*`` attributes recorded by
+        upstream OTel instrumentations, replacing their values with ``[REDACTED]``.
+
+        Must run before the exporting span processor: every processor's ``on_end``
+        receives the same span, so redacting here is what the exporter sees. This
+        processor is registered well before the exporter (see ``tracer.py``), and
+        no other processor reads these attribute keys, so this placement is safe.
+
+        Args:
+            span: The ended span.
+        """
+        try:
+            attributes = getattr(span, "_attributes", None)
+            if not attributes:
+                return
+
+            for key in [key for key in attributes if _header_name(key) in self._sensitive_headers]:
+                attributes[key] = (REDACTED,)
+        except Exception:
+            logger.exception("Error redacting header attributes on span")
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Forces export of all spans. No-op for this processor.

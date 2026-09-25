@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional
 
 from opentelemetry.util.re import parse_env_headers
 
@@ -118,6 +118,8 @@ class Config:
         self.trial_block_duration_seconds = self._get_int_config(
             None, "TRIAL_BLOCK_DURATION_SECONDS", default=_DEFAULT_TRIAL_BLOCK_DURATION_SECONDS
         )
+
+        self.redact_headers = self._get_redact_headers()
 
         self._resolve_audio_settings()
 
@@ -326,6 +328,11 @@ class Config:
             logger = logging.getLogger(__name__)
             logger.warning(f"Failed to parse NETRA_RESOURCE_ATTRS: {e}")
             return {}
+
+    def _get_redact_headers(self) -> FrozenSet[str]:
+        """Get extra HTTP headers to redact from ``NETRA_REDACT_HEADERS``."""
+        env_value = os.getenv("NETRA_REDACT_HEADERS", "")
+        return frozenset(name.strip().lower() for name in env_value.split(",") if name.strip())
 
     def _get_int_config(self, param: Optional[int], env_var: str, default: int) -> int:
         """Get integer configuration from parameter or environment variable."""
