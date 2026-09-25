@@ -1,4 +1,3 @@
-from netra.processors.header_redaction_span_processor import HeaderRedactionSpanProcessor
 from netra.processors.instrumentation_span_processor import InstrumentationSpanProcessor
 from netra.processors.llm_trace_identifier_span_processor import LlmTraceIdentifierSpanProcessor
 from netra.processors.local_filtering_span_processor import LocalFilteringSpanProcessor
@@ -17,5 +16,4 @@ __all__ = [
     "LocalFilteringSpanProcessor",
     "RootInstrumentFilterProcessor",
     "RootSpanProcessor",
-    "HeaderRedactionSpanProcessor",
 ]

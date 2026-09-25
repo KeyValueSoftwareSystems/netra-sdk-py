@@ -41,7 +41,7 @@ C = TypeVar("C", bound=type)
 _MAX_SERIALIZED_LENGTH = 1000
 
 
-def _bounded_default(value: Any) -> str:
+def _bounded_default(value: Any) -> Optional[str]:
     """
     JSON ``default`` hook that avoids stringifying huge binary payloads in full.
 
@@ -53,13 +53,25 @@ def _bounded_default(value: Any) -> str:
         value: The non-JSON-native value to convert.
 
     Returns:
-        The string form of the value.
+        The string form of the value, or ``None`` if a bytes-like value isn't
+        valid UTF-8 (matching OTel's own attribute-cleaning behavior).
     """
-    if isinstance(value, (bytes, bytearray)):
-        return str(value[:_MAX_SERIALIZED_LENGTH])
-    if isinstance(value, memoryview):
-        return str(value[:_MAX_SERIALIZED_LENGTH].tobytes())
-    return str(value)
+    if isinstance(value, (bytes, bytearray, memoryview)):
+        # Slice the raw bytes to the limit *before* decoding -- decoding (like
+        # ``str()``) is an O(payload size) pass, and this is the only place
+        # that guards against it running over a huge buffer.
+        raw = value[:_MAX_SERIALIZED_LENGTH]
+        if isinstance(raw, memoryview):
+            raw = raw.tobytes()  # bytes/bytearray decode() directly; memoryview has no decode()
+        try:
+            value = raw.decode()
+        except UnicodeDecodeError:
+            logger.warning("Byte attribute could not be decoded.")
+            return None
+    else:
+        value = str(value)
+
+    return value[:_MAX_SERIALIZED_LENGTH]
 
 
 def _json_dumps_truncated(value: Any, limit: int = _MAX_SERIALIZED_LENGTH) -> str:

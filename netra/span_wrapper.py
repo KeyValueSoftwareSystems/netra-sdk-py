@@ -19,7 +19,13 @@ logger = logging.getLogger(__name__)
 # Baggage key for local-only blocked spans patterns
 _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
 
-_NORMAL_COMPLETION_EXCEPTIONS = (GeneratorExit, StopIteration, StopAsyncIteration)
+# Only GeneratorExit (early .close()/GC of a generator paused mid-``yield``
+# inside a ``with`` block) is normal completion. StopIteration/StopAsyncIteration
+# are Exception subclasses and, unlike GeneratorExit, are never swallowed here:
+# a ``for``/``async for`` loop already consumes them internally before they can
+# reach ``__exit__``, so one escaping is a real bug (e.g. manual ``next()``
+# misuse) and should be recorded as a span error rather than hidden.
+_NORMAL_COMPLETION_EXCEPTIONS = (GeneratorExit,)
 
 
 class ActionModel(BaseModel):  # type: ignore[misc]

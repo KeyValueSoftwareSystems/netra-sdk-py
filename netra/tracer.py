@@ -95,7 +95,6 @@ class Tracer:
                 exporter = original_exporter
 
             from netra.processors import (
-                HeaderRedactionSpanProcessor,
                 InstrumentationSpanProcessor,
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
@@ -118,6 +117,9 @@ class Tracer:
             # ORDER MATTERS: InstrumentationSpanProcessor must precede SpanIOProcessor
             # because SpanIOProcessor chains its writes through InstrumentationSpanProcessor's
             # wrapped set_attribute for truncation. See _wrap_set_attribute docstrings.
+            # It also redacts sensitive HTTP header attributes in on_end (see its
+            # own docstring), which must precede the exporting span processor added
+            # below -- satisfied here with room to spare.
             provider.add_span_processor(InstrumentationSpanProcessor())
             provider.add_span_processor(SessionSpanProcessor())
             provider.add_span_processor(SpanIOProcessor())
@@ -130,8 +132,6 @@ class Tracer:
 
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
-
-            provider.add_span_processor(HeaderRedactionSpanProcessor())
 
             if self.cfg.disable_batch:
                 provider.add_span_processor(SimpleSpanProcessor(exporter))
