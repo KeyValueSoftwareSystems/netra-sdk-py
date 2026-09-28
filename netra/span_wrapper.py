@@ -12,7 +12,7 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from pydantic import BaseModel
 
 from netra.config import Config
-from netra.session_manager import SessionManager
+from netra.session_manager import _ENTITY_ATTR_SUFFIXES, SessionManager
 
 logger = logging.getLogger(__name__)
 
@@ -110,6 +110,10 @@ class SpanWrapper:
         self._local_block_token: Optional[object] = None
         # Detach token for the entity stack pushed in __enter__ (if any)
         self._entity_token: Optional[object] = None
+        # The name this span was registered under in SessionManager. Captured at
+        # __enter__ and used to unregister in __exit__, so a later rename() (which
+        # changes self.name) cannot orphan the by-name registry entry.
+        self._registered_name: Optional[str] = None
 
         if isinstance(as_type, SpanType):
             self.attributes["netra.span.type"] = as_type.value
@@ -153,6 +157,7 @@ class SpanWrapper:
         # Register with SessionManager for name-based lookup
         try:
             SessionManager.register_span(self.name, self.span)
+            self._registered_name = self.name
             # Optionally set as current span for SDK consumers that rely on it
             SessionManager.set_current_span(self.span)
         except Exception:
@@ -201,7 +206,9 @@ class SpanWrapper:
         if self.span:
             # Unregister from SessionManager before ending span
             try:
-                SessionManager.unregister_span(self.name, self.span)
+                # Unregister under the name we registered with, not self.name,
+                # which rename() may have changed since __enter__.
+                SessionManager.unregister_span(self._registered_name or self.name, self.span)
             except Exception:
                 logger.exception("Failed to unregister span '%s' from SessionManager", self.name)
         if self._span_cm is not None:
@@ -260,6 +267,53 @@ class SpanWrapper:
         # Also set on the span if it exists
         if self.span:
             self.span.set_attribute(key, value)
+        return self
+
+    def rename(self, new_name: str, update_span_name: bool = True) -> "SpanWrapper":
+        """Rename this span's entity after it has been opened.
+
+        Use this when a span is opened under a placeholder (e.g. an id) and the
+        human-readable name only becomes known later. It coordinates the three
+        places a name lives so the dashboard reflects the final name:
+
+        1. Rebinds this span's frame on the entity stack, so **child spans
+           started after this call** inherit the new ``netra.<entity>.name``.
+        2. Re-stamps ``netra.<entity>.name`` on this (still-open) span.
+        3. Optionally calls ``span.update_name`` so the OpenTelemetry span name
+           matches too (set ``update_span_name=False`` to keep the OTel name).
+
+        Note: spans already started under the old name are not retroactively
+        updated — OpenTelemetry writes their attribute at start. Rename as early
+        as possible; a name known before open should be passed to ``start_span``.
+
+        Args:
+            new_name: The new name for the span/entity.
+            update_span_name: When True (default), also update the OTel span name.
+
+        Returns:
+            The span wrapper (for chaining).
+        """
+        if not isinstance(new_name, str) or not new_name:
+            logger.warning("rename: new_name must be a non-empty string; ignoring")
+            return self
+
+        # 1 + 2: rebind the entity frame and re-stamp the attribute on this span.
+        if self._entity_type and self._entity_token is not None:
+            SessionManager.rename_entity(self._entity_type, new_name, self._entity_token)
+            attr_suffix = _ENTITY_ATTR_SUFFIXES.get(self._entity_type)
+            if attr_suffix and self.span:
+                self.span.set_attribute(f"{Config.LIBRARY_NAME}.{attr_suffix}", new_name)
+
+        if self.span:
+            # Keep the by-name registry in sync so get_span_by_name resolves under
+            # the new name and __exit__ unregisters under it (via _registered_name).
+            SessionManager.rekey_span(self._registered_name or self.name, new_name, self.span)
+            self._registered_name = new_name
+            # 3: keep the OTel span name in sync unless told otherwise.
+            if update_span_name:
+                self.span.update_name(new_name)
+
+        self.name = new_name
         return self
 
     def set_prompt(self, prompt: str) -> "SpanWrapper":

@@ -54,6 +54,17 @@ _ENTITY_STACK_KEYS: Dict[str, str] = {
 # A single frame on an entity stack: an opaque per-push id plus the entity name.
 _EntityFrame = Tuple[object, str]
 
+# Maps each entity type to the ``netra.<suffix>`` attribute key that carries its
+# name onto spans. Single source of truth shared by
+# ``get_current_entity_attributes`` (stamps at span start) and ``rename_entity``
+# (re-stamps on a live span), so the two never drift.
+_ENTITY_ATTR_SUFFIXES: Dict[str, str] = {
+    "workflow": "workflow.name",
+    "task": "task.name",
+    "agent": "agent.name",
+    "span": "span.name",
+}
+
 # Current span and span registries are per-thread execution bookkeeping that
 # must NOT be shared across threads. ContextVars give thread-isolated,
 # copy-on-write storage (rebind, never mutate-in-place) so concurrent workers
@@ -233,6 +244,48 @@ class SessionManager:
             logger.exception("Failed to unregister span '%s'", name)
 
     @classmethod
+    def rekey_span(cls, old_name: str, new_name: str, span: trace.Span) -> bool:
+        """Move a registered span from ``old_name`` to ``new_name`` in the by-name
+        registry, so ``get_span_by_name`` follows a rename.
+
+        Only the name→span index (``_spans_by_name_var``) is updated; the
+        active-span list (``_active_spans_var``, keyed by identity) is deliberately
+        left untouched, so this cannot be expressed as unregister + register
+        (``register_span`` would re-append to the active list and leak it).
+
+        Args:
+            old_name: The name the span is currently registered under.
+            new_name: The name to register it under instead.
+            span: The span instance to move (matched by identity).
+
+        Returns:
+            True if the span was found under ``old_name`` and moved (or the names
+            are equal); False if no matching registration was found.
+        """
+        if old_name == new_name:
+            return True
+        try:
+            by_name = _spans_by_name_var.get()
+            stack = by_name.get(old_name)
+            if not stack:
+                return False
+            idx = next((i for i in range(len(stack) - 1, -1, -1) if stack[i] is span), None)
+            if idx is None:
+                return False
+            new_by_name = dict(by_name)
+            remaining = stack[:idx] + stack[idx + 1 :]
+            if remaining:
+                new_by_name[old_name] = remaining
+            else:
+                new_by_name.pop(old_name, None)
+            new_by_name[new_name] = new_by_name.get(new_name, ()) + (span,)
+            _spans_by_name_var.set(new_by_name)
+            return True
+        except Exception:
+            logger.exception("Failed to rekey span '%s' -> '%s'", old_name, new_name)
+            return False
+
+    @classmethod
     def get_trace_id(cls) -> Optional[str]:
         """
         Return the trace ID of the currently active span.
@@ -335,6 +388,52 @@ class SessionManager:
         return removed_name
 
     @classmethod
+    def rename_entity(cls, entity_type: str, new_name: str, token: Optional[object] = None) -> Optional[str]:
+        """Rename an existing entity frame in place, keeping its ``frame_id``.
+
+        Rebinds the matched frame in the current OTel context to ``new_name`` so
+        that spans started *after* this call read the new name from the stack
+        (their ``netra.<entity>.name`` is stamped at their own ``on_start``).
+        The frame keeps its original ``frame_id``, so the matching
+        :meth:`pop_entity` still removes exactly this frame.
+
+        This does NOT retroactively update spans that were already started under
+        the old name — their attribute was written at start and, once exported,
+        cannot be changed. Callers that also want the *current* span updated must
+        re-stamp it themselves (see :meth:`SpanWrapper.rename`).
+
+        Args:
+            entity_type: Type of entity (workflow, task, agent, span).
+            new_name: The new entity name.
+            token: The token returned by the matching ``push_entity``. When
+                ``None``, the top frame is renamed instead.
+
+        Returns:
+            The previous name of the renamed frame, or ``None`` if the entity
+            type is unknown, the stack is empty, or no frame matched ``token``.
+        """
+        key = _ENTITY_STACK_KEYS.get(entity_type)
+        if key is None:
+            return None
+        frames = _read_entity_frames(entity_type)
+        if not frames:
+            return None
+
+        if token is None:
+            index = len(frames) - 1
+        else:
+            match = next((i for i in range(len(frames) - 1, -1, -1) if frames[i][0] is token), None)
+            if match is None:
+                # Frame already removed or belongs to a context we can't see.
+                return None
+            index = match
+
+        frame_id, old_name = frames[index]
+        new_frames = frames[:index] + ((frame_id, new_name),) + frames[index + 1 :]
+        otel_context.attach(otel_context.set_value(key, new_frames))
+        return old_name
+
+    @classmethod
     def get_current_entity_attributes(cls) -> Dict[str, str]:
         """
         Get current entity attributes for span annotation.
@@ -344,12 +443,7 @@ class SessionManager:
         """
         attributes = {}
 
-        for entity_type, attr_suffix in (
-            ("workflow", "workflow.name"),
-            ("task", "task.name"),
-            ("agent", "agent.name"),
-            ("span", "span.name"),
-        ):
+        for entity_type, attr_suffix in _ENTITY_ATTR_SUFFIXES.items():
             name = _current_entity_name(entity_type)
             if name is not None:
                 attributes[f"{Config.LIBRARY_NAME}.{attr_suffix}"] = name
