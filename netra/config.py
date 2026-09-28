@@ -1,7 +1,7 @@
 import json
 import logging
 import os
-from typing import Any, Dict, FrozenSet, List, Optional
+from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from opentelemetry.util.re import parse_env_headers
 
@@ -120,6 +120,8 @@ class Config:
         )
 
         self.redact_headers = self._get_redact_headers()
+
+        self.propagate_baggage_hosts = self._get_propagate_baggage_hosts()
 
         self._resolve_audio_settings()
 
@@ -333,6 +335,12 @@ class Config:
         """Get extra HTTP headers to redact from ``NETRA_REDACT_HEADERS``."""
         env_value = os.getenv("NETRA_REDACT_HEADERS", "")
         return frozenset(name.strip().lower() for name in env_value.split(",") if name.strip())
+
+    def _get_propagate_baggage_hosts(self) -> Tuple[str, ...]:
+        """Resolve the internal-host allowlist from ``NETRA_PROPAGATE_BAGGAGE_HOSTS`` (comma-separated); entries are lowercased with leading dots stripped, empty when unset (fail-closed)."""
+        raw = os.getenv("NETRA_PROPAGATE_BAGGAGE_HOSTS", "").split(",")
+        normalized = (host.strip().lstrip(".").lower() for host in raw)
+        return tuple(host for host in normalized if host)
 
     def _get_int_config(self, param: Optional[int], env_var: str, default: int) -> int:
         """Get integer configuration from parameter or environment variable."""
