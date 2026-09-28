@@ -4,13 +4,13 @@ from typing import Any, Callable, Dict, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
-from opentelemetry.propagate import inject
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from opentelemetry.util.http import remove_url_credentials
 from wrapt import ObjectProxy
 
 from netra.instrumentation.http.body import new_body_buffer
+from netra.instrumentation.http.propagation import inject_context
 from netra.instrumentation.libraries.httpx.utils import (
     get_default_span_name,
     set_span_input,
@@ -326,9 +326,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             ) as span:
                 try:
                     set_span_input(span, request)
-                    headers = dict(request.headers)
-                    inject(headers)
-                    request.headers.update(headers)
+                    inject_context(request.headers, url)
                 except Exception as e:
                     logger.debug("netra.instrumentation.libraries.httpx: failed to set span input: %s", e)
 
@@ -362,9 +360,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             context = context_api.attach(set_span_in_context(span))
             try:
                 set_span_input(span, request)
-                headers = dict(request.headers)
-                inject(headers)
-                request.headers.update(headers)
+                inject_context(request.headers, url)
             except Exception as e:
                 logger.debug("netra.instrumentation.libraries.httpx: failed to set span input: %s", e)
 
@@ -444,9 +440,7 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             ) as span:
                 try:
                     set_span_input(span, request)
-                    headers = dict(request.headers)
-                    inject(headers)
-                    request.headers.update(headers)
+                    inject_context(request.headers, url)
                 except Exception as e:
                     logger.debug("netra.instrumentation.libraries.httpx: failed to set span input: %s", e)
 
@@ -479,9 +473,7 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             context = context_api.attach(set_span_in_context(span))
             try:
                 set_span_input(span, request)
-                headers = dict(request.headers)
-                inject(headers)
-                request.headers.update(headers)
+                inject_context(request.headers, url)
             except Exception as e:
                 logger.debug("netra.instrumentation.libraries.httpx: failed to set span input: %s", e)
 
