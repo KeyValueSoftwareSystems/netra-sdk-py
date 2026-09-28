@@ -37,7 +37,6 @@ from opentelemetry.instrumentation.utils import (
     suppress_http_instrumentation,
 )
 from opentelemetry.metrics import Histogram, get_meter
-from opentelemetry.propagate import inject
 from opentelemetry.semconv.attributes.error_attributes import ERROR_TYPE
 from opentelemetry.semconv.attributes.network_attributes import (
     NETWORK_PEER_ADDRESS,
@@ -58,6 +57,7 @@ from opentelemetry.util.http import (
 )
 from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
+from netra.instrumentation.http.propagation import inject_context
 from netra.instrumentation.libraries.aiohttp.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -182,7 +182,18 @@ def _instrument(
             else:
                 headers_dict = dict(headers)
 
-            inject(headers_dict)
+            # Resolve against the session base_url so a relative path
+            # (ClientSession(base_url=...) + session.get("/x")) still exposes the
+            # real destination host to the baggage-propagation allowlist check.
+            propagate_url = url
+            base_url = getattr(self, "_base_url", None)
+            if base_url is not None:
+                try:
+                    propagate_url = str(base_url.join(URL(url_str)))
+                except Exception:
+                    propagate_url = url
+
+            inject_context(headers_dict, propagate_url)
             kwargs["headers"] = headers_dict
 
             with suppress_http_instrumentation():
