@@ -393,6 +393,30 @@ class Netra:
             logger.warning("set_tenant_id: Tenant ID must be provided for setting tenant_id.")
 
     @classmethod
+    def update_span_name(cls, name: str) -> None:
+        """
+        Rename the currently active span, keeping its entity name in sync.
+
+        For a span opened by ``@agent`` / ``@task`` / ``@workflow`` / ``@span`` or by
+        ``start_span`` with an AGENT or TOOL type, this also updates its
+        ``netra.<entity>.name`` and the name inherited by child spans started after
+        this call. Child spans already started keep the old name. Only the active
+        span is renamed: called inside a child span, the enclosing agent is untouched.
+        With no active span it logs a warning and does nothing.
+
+        Args:
+            name: The new span name
+        """
+        if not isinstance(name, str) or not name:
+            logger.warning("update_span_name: name must be a non-empty string; ignoring")
+            return
+        span = trace.get_current_span()
+        if not span.get_span_context().is_valid:
+            logger.warning("update_span_name: no active span to rename")
+            return
+        SessionManager.update_span_name(span, name)
+
+    @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
         """
         Set a custom attribute on the current active span.

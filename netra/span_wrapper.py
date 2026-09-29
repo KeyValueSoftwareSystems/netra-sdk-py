@@ -110,6 +110,9 @@ class SpanWrapper:
         self._local_block_token: Optional[object] = None
         # Detach token for the entity stack pushed in __enter__ (if any)
         self._entity_token: Optional[object] = None
+        # Name the span was registered under at __enter__; __exit__ unregisters
+        # under it because update_span_name changes self.name, not the registry key.
+        self._registered_name: Optional[str] = None
 
         if isinstance(as_type, SpanType):
             self.attributes["netra.span.type"] = as_type.value
@@ -149,10 +152,13 @@ class SpanWrapper:
             name=self.name, kind=SpanKind.CLIENT, attributes=self.attributes
         )
         self.span = self._span_cm.__enter__()
+        if self._entity_type:
+            SessionManager.bind_span_to_entity(self.span, self._entity_type, self._entity_token)
 
         # Register with SessionManager for name-based lookup
         try:
             SessionManager.register_span(self.name, self.span)
+            self._registered_name = self.name
             # Optionally set as current span for SDK consumers that rely on it
             SessionManager.set_current_span(self.span)
         except Exception:
@@ -201,7 +207,7 @@ class SpanWrapper:
         if self.span:
             # Unregister from SessionManager before ending span
             try:
-                SessionManager.unregister_span(self.name, self.span)
+                SessionManager.unregister_span(self._registered_name or self.name, self.span)
             except Exception:
                 logger.exception("Failed to unregister span '%s' from SessionManager", self.name)
         if self._span_cm is not None:
@@ -260,6 +266,35 @@ class SpanWrapper:
         # Also set on the span if it exists
         if self.span:
             self.span.set_attribute(key, value)
+        return self
+
+    def update_span_name(self, new_name: str) -> "SpanWrapper":
+        """Rename this span, keeping its entity name in sync.
+
+        Use this when a span is opened under a placeholder (e.g. an id) and the
+        human-readable name only becomes known later. Besides the OpenTelemetry
+        span name, for ``AGENT`` / ``TOOL`` spans it updates
+        ``netra.agent.name`` / ``netra.task.name`` on this span and on child
+        spans started *after* this call.
+
+        Child spans that already started keep the old entity name: it is stamped
+        when they start. Called before the span is entered, it just changes the
+        name the span will start with.
+
+        Args:
+            new_name: The new span name. A non-string or empty value is ignored
+                with a warning.
+
+        Returns:
+            The span wrapper (for chaining).
+        """
+        if not isinstance(new_name, str) or not new_name:
+            logger.warning("update_span_name: new_name must be a non-empty string; ignoring")
+            return self
+
+        if self.span:
+            SessionManager.update_span_name(self.span, new_name)
+        self.name = new_name
         return self
 
     def set_prompt(self, prompt: str) -> "SpanWrapper":
