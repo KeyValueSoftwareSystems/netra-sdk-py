@@ -1,5 +1,7 @@
 import contextvars
 import logging
+import threading
+import weakref
 from contextlib import contextmanager
 from datetime import datetime
 from enum import Enum
@@ -35,15 +37,15 @@ _SESSION_ATTR_KEYS: Dict[str, str] = {
 # instrumentation re-attaches the active OTel context inside worker threads,
 # which lets spans created there inherit the parent workflow's entity names.
 #
-# Each key maps to an immutable tuple of frames, where a frame is
-# ``(frame_id, entity_name)``. ``push_entity`` appends a frame tagged with a
-# unique ``frame_id`` and returns that id as the token; ``pop_entity`` removes
-# the frame with the matching id. This is deliberately NOT modelled as OTel
-# ``attach``/``detach``: detach requires strict LIFO ordering, which the
-# deferred pop of streaming/generator spans cannot guarantee (a generator may
-# be finished out of creation order, or abandoned entirely). Removing a frame
-# by id is order-independent, so interleaved or partially-consumed generators
-# cannot corrupt or leak another entity's context.
+# Each key maps to an immutable tuple of ``_EntityFrame`` objects.
+# ``push_entity`` appends a fresh frame and returns that frame as the token;
+# ``pop_entity`` removes the frame that is the token (matched by identity).
+# This is deliberately NOT modelled as OTel ``attach``/``detach``: detach
+# requires strict LIFO ordering, which the deferred pop of streaming/generator
+# spans cannot guarantee (a generator may be finished out of creation order, or
+# abandoned entirely). Removing a frame by identity is order-independent, so
+# interleaved or partially-consumed generators cannot corrupt or leak another
+# entity's context.
 _ENTITY_STACK_KEYS: Dict[str, str] = {
     "workflow": "netra.workflow_stack",
     "task": "netra.task_stack",
@@ -51,8 +53,35 @@ _ENTITY_STACK_KEYS: Dict[str, str] = {
     "span": "netra.span_stack",
 }
 
-# A single frame on an entity stack: an opaque per-push id plus the entity name.
-_EntityFrame = Tuple[object, str]
+
+class _EntityFrame:
+    """A single frame on an entity stack: a per-push identity holding the entity name.
+
+    ``name`` is mutable on purpose. Every OTel context copy that contains this
+    frame (the pushing context, contexts restored by a nested scope's detach,
+    asyncio task copies, worker-thread contexts) shares this one object, so
+    :meth:`SessionManager.rename_entity` updates the name everywhere at once.
+    Rebinding the stack in the context instead would be reverted by the next
+    enclosing detach. A single attribute store is atomic under the GIL, so
+    concurrent readers see either the old or the new name.
+    """
+
+    __slots__ = ("name",)
+
+    def __init__(self, name: str) -> None:
+        self.name = name
+
+
+# Maps each entity type to the ``netra.<suffix>`` attribute key that carries its
+# name onto spans. Single source of truth shared by
+# ``get_current_entity_attributes`` (stamps at span start) and
+# ``SessionManager.update_span_name`` (re-stamps on a live span), so the two never drift.
+_ENTITY_ATTR_SUFFIXES: Dict[str, str] = {
+    "workflow": "workflow.name",
+    "task": "task.name",
+    "agent": "agent.name",
+    "span": "span.name",
+}
 
 # Current span and span registries are per-thread execution bookkeeping that
 # must NOT be shared across threads. ContextVars give thread-isolated,
@@ -68,12 +97,22 @@ _active_spans_var: "contextvars.ContextVar[Tuple[trace.Span, ...]]" = contextvar
     "netra_active_spans", default=()
 )
 
+# The entity frame each entity span owns, as ``(entity_type, push_entity token)``,
+# so renaming a span renames exactly its own frame rather than whatever frame is on
+# top of the stack. Unlike the ContextVars above this is process-wide: the
+# threading instrumentation makes a span current inside worker threads, and a
+# rename there must still resolve. Weak keys drop an entry once its span is
+# garbage-collected, so spans ended on deferred paths (generators, streams)
+# cannot leak it.
+_span_entity_frames: "weakref.WeakKeyDictionary[trace.Span, Tuple[str, object]]" = weakref.WeakKeyDictionary()
+_span_entity_frames_lock = threading.Lock()
+
 
 def _read_entity_frames(entity_type: str) -> Tuple[_EntityFrame, ...]:
     """Read the current entity-stack frames for ``entity_type`` from the OTel context.
 
     The stack is stored under the OTel context key mapped in
-    ``_ENTITY_STACK_KEYS`` as an immutable tuple of ``(frame_id, name)`` frames.
+    ``_ENTITY_STACK_KEYS`` as an immutable tuple of ``_EntityFrame`` objects.
     Reading tolerates a missing or malformed value (returns an empty stack)
     because the key may be absent in a freshly propagated worker context.
 
@@ -104,7 +143,7 @@ def _current_entity_name(entity_type: str) -> Optional[str]:
         ``None`` if the stack is empty or ``entity_type`` is unknown.
     """
     frames = _read_entity_frames(entity_type)
-    return frames[-1][1] if frames else None
+    return frames[-1].name if frames else None
 
 
 # The baggage keys that carry session identity. ``SessionSpanProcessor.on_start``
@@ -233,6 +272,48 @@ class SessionManager:
             logger.exception("Failed to unregister span '%s'", name)
 
     @classmethod
+    def bind_span_to_entity(cls, span: trace.Span, entity_type: str, token: Optional[object]) -> None:
+        """Record that ``span`` owns the entity frame pushed with ``token``.
+
+        Lets :meth:`update_span_name` rename the span's own entity frame. No-op
+        when ``token`` is ``None`` (``push_entity`` got an unknown entity type).
+
+        Args:
+            span: The entity's span.
+            entity_type: Type of entity (workflow, task, agent, span).
+            token: The token returned by the ``push_entity`` call for this span.
+        """
+        if token is None:
+            return
+        with _span_entity_frames_lock:
+            _span_entity_frames[span] = (entity_type, token)
+
+    @classmethod
+    def update_span_name(cls, span: trace.Span, new_name: str) -> None:
+        """Rename ``span``, keeping its entity name in sync.
+
+        Always updates the OpenTelemetry span name. If ``span`` is an entity span
+        (bound via :meth:`bind_span_to_entity`), also re-stamps its
+        ``netra.<entity>.name`` and renames its entity frame, so child spans
+        started after this call inherit the new name. Child spans already started
+        keep the old name; it was stamped when they started.
+
+        The by-name span registry stays keyed by the name the span started with,
+        which is what every caller passes to :meth:`unregister_span`.
+
+        Args:
+            span: The span to rename.
+            new_name: The new span name.
+        """
+        with _span_entity_frames_lock:
+            entity_frame = _span_entity_frames.get(span)
+        if entity_frame is not None:
+            entity_type, token = entity_frame
+            cls.rename_entity(token, new_name)
+            span.set_attribute(f"{Config.LIBRARY_NAME}.{_ENTITY_ATTR_SUFFIXES[entity_type]}", new_name)
+        span.update_name(new_name)
+
+    @classmethod
     def get_trace_id(cls) -> Optional[str]:
         """
         Return the trace ID of the currently active span.
@@ -285,13 +366,13 @@ class SessionManager:
         key = _ENTITY_STACK_KEYS.get(entity_type)
         if key is None:
             return None
-        # A fresh object() is a process-unique identity for this exact push, so
+        # A fresh frame is a process-unique identity for this exact push, so
         # pop_entity can find and remove this frame even if frames are removed
         # out of order (interleaved streaming spans).
-        frame_id: object = object()
+        frame = _EntityFrame(entity_name)
         frames = _read_entity_frames(entity_type)
-        otel_context.attach(otel_context.set_value(key, frames + ((frame_id, entity_name),)))
-        return frame_id
+        otel_context.attach(otel_context.set_value(key, frames + (frame,)))
+        return frame
 
     @classmethod
     def pop_entity(cls, entity_type: str, token: Optional[object] = None) -> Optional[str]:
@@ -320,19 +401,46 @@ class SessionManager:
 
         if token is None:
             # Legacy path: no token to match, remove the most recent frame.
-            removed_name = frames[-1][1]
+            removed_name = frames[-1].name
             new_frames = frames[:-1]
         else:
-            index = next((i for i in range(len(frames) - 1, -1, -1) if frames[i][0] is token), None)
+            index = next((i for i in range(len(frames) - 1, -1, -1) if frames[i] is token), None)
             if index is None:
                 # Frame already removed (or belongs to a context we can't see);
                 # do not touch the stack.
                 return None
-            removed_name = frames[index][1]
+            removed_name = frames[index].name
             new_frames = frames[:index] + frames[index + 1 :]
 
         otel_context.attach(otel_context.set_value(key, new_frames))
         return removed_name
+
+    @classmethod
+    def rename_entity(cls, token: object, new_name: str) -> None:
+        """Rename the entity frame pushed with ``token``, in place.
+
+        Spans started *after* this call read the new name from the stack (their
+        ``netra.<entity>.name`` is stamped at their own ``on_start``) in every
+        context that holds the frame: the pushing context, contexts restored when
+        a nested scope detaches, asyncio tasks and worker threads that copied it.
+        The frame's identity is unchanged, so the matching :meth:`pop_entity`
+        still removes exactly this frame.
+
+        This does NOT retroactively update spans that were already started under
+        the old name — their attribute was written at start and, once exported,
+        cannot be changed. Callers that also want the *current* span updated must
+        re-stamp it themselves (see :meth:`update_span_name`).
+
+        No-op if ``token`` is not a token returned by :meth:`push_entity`.
+        Renaming an already-popped frame is harmless: no stack holds it.
+
+        Args:
+            token: The token returned by the matching ``push_entity``.
+            new_name: The new entity name.
+        """
+        if not isinstance(token, _EntityFrame):
+            return
+        token.name = new_name
 
     @classmethod
     def get_current_entity_attributes(cls) -> Dict[str, str]:
@@ -344,12 +452,7 @@ class SessionManager:
         """
         attributes = {}
 
-        for entity_type, attr_suffix in (
-            ("workflow", "workflow.name"),
-            ("task", "task.name"),
-            ("agent", "agent.name"),
-            ("span", "span.name"),
-        ):
+        for entity_type, attr_suffix in _ENTITY_ATTR_SUFFIXES.items():
             name = _current_entity_name(entity_type)
             if name is not None:
                 attributes[f"{Config.LIBRARY_NAME}.{attr_suffix}"] = name
@@ -378,10 +481,10 @@ class SessionManager:
             Dictionary containing all stack contents
         """
         return {
-            "workflows": [name for _, name in _read_entity_frames("workflow")],
-            "tasks": [name for _, name in _read_entity_frames("task")],
-            "agents": [name for _, name in _read_entity_frames("agent")],
-            "spans": [name for _, name in _read_entity_frames("span")],
+            "workflows": [frame.name for frame in _read_entity_frames("workflow")],
+            "tasks": [frame.name for frame in _read_entity_frames("task")],
+            "agents": [frame.name for frame in _read_entity_frames("agent")],
+            "spans": [frame.name for frame in _read_entity_frames("span")],
         }
 
     @staticmethod

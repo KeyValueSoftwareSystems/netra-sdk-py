@@ -463,6 +463,7 @@ def _create_function_wrapper(
 
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
+            SessionManager.bind_span_to_entity(span, entity_type, entity_token)
             try:
                 span.set_attribute("netra.span.type", as_type.value)
             except Exception:
@@ -526,6 +527,7 @@ def _create_function_wrapper(
 
             tracer = trace.get_tracer(module_name)
             span = tracer.start_span(span_name)
+            SessionManager.bind_span_to_entity(span, entity_type, entity_token)
             # Set span type if provided
             if as_type is not None:
                 try:
