@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.0] - 2026-09-29
+
+### Added
+
+- **`update_span_name` renames the active span after it has started** - `Netra.update_span_name(name)` renames the currently active span, and `SpanWrapper.update_span_name(new_name)` renames the span a `Netra.start_span(...)` block holds (it returns the wrapper, so calls chain). This is for spans opened under a placeholder, such as an ID, whose readable name is only known later. If the span belongs to an entity (opened by `@workflow`, `@agent`, `@task` or `@span`, or by `start_span` with `SpanType.AGENT` or `SpanType.TOOL`), its `netra.<entity>.name` attribute changes too, and child spans started after the rename inherit the new name. This holds across asyncio tasks and worker threads that share the entity's context. **Child spans that already started keep the old name**, because entity names are stamped when a span starts. Only the active span is renamed, so calling it inside a child span leaves the enclosing agent unchanged. With no active span, or a name that is empty or not a string, the call logs a warning and does nothing. On a `SpanWrapper` that has not been entered yet, it just sets the name the span will start with.
+
+### Security
+
+- **Session identity no longer leaks to third-party hosts through the `baggage` header** - Netra stores `session_id`, `user_id`, `tenant_id` and custom session keys as W3C baggage. The global OpenTelemetry propagator writes baggage into a `baggage:` header on every outbound request, so Netra's `httpx` and `requests` instrumentations were sending those identifiers to every host called, LLM providers included. Both now remove the `baggage` header unless the destination host is on an allowlist. Trace context (`traceparent` / `tracestate`) is still sent everywhere.
+
+  **Baggage is now sent to no host by default.** Services that read session identity from incoming baggage stop receiving it until their hosts are added to `NETRA_PROPAGATE_BAGGAGE_HOSTS`. This is a comma-separated list, case-insensitive, and a leading dot is ignored. An entry matches the host itself and its subdomains: `mycorp.net` matches `api.mycorp.net` but not `notmycorp.net`. The variable can only be set in the environment (there is no `Netra.init()` parameter) and is read when `Netra.init()` builds the config. The whole header is gated, so a `baggage` header your code sets on a request itself is also removed for hosts that are not on the list.
+
+  Only the `httpx` and `requests` instrumentations are covered. Requests made through `aiohttp`, `urllib`, `urllib3` or `grpc`, and the trace context passed to child processes through the environment, still carry baggage as before.
+
 ## [1.1.0] - 2026-09-25
 
 First stable release of the 1.1.0 line. Everything below shipped across `1.1.0b1`–`1.1.0b4`,
@@ -514,4 +528,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.1.0]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.0]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
