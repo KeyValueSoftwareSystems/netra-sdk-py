@@ -21,7 +21,7 @@ from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
 from netra.models import Models
 from netra.prompts import Prompts
-from netra.session_manager import _ENTITY_ATTR_SUFFIXES, ConversationType, SessionManager
+from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
@@ -393,89 +393,28 @@ class Netra:
             logger.warning("set_tenant_id: Tenant ID must be provided for setting tenant_id.")
 
     @classmethod
-    def set_entity_name(cls, entity_type: str, name: str, update_span_name: bool = True) -> None:
-        """Rename the current (innermost open) entity of ``entity_type``.
+    def update_span_name(cls, name: str) -> None:
+        """
+        Rename the currently active span, keeping its entity name in sync.
 
-        Use when an entity — an ``agent`` or ``task`` span, typically — was opened
-        under a placeholder id and its display name only becomes known later. This
-        rebinds the top frame on that entity's stack (so child spans started after
-        this inherit the new name) and re-stamps ``netra.<entity>.name`` on the
-        entity's own span. Spans already started under the old name are not
-        retroactively updated.
-
-        The entity's span is located in the by-name registry (which is kept in
-        step with each rename). If it is not there — e.g. a decorator-only path
-        that never registered a span — the frame is still rebound but the span is
-        left untouched, rather than mutating whatever span happens to be active
-        (which would be an open child span). Prefer :meth:`SpanWrapper.rename`
-        when you hold the span wrapper — it always targets the exact span.
+        For a span opened by ``@agent`` / ``@task`` / ``@workflow`` / ``@span`` or by
+        ``start_span`` with an AGENT or TOOL type, this also updates its
+        ``netra.<entity>.name`` and the name inherited by child spans started after
+        this call. Child spans already started keep the old name. Only the active
+        span is renamed: called inside a child span, the enclosing agent is untouched.
+        With no active span it logs a warning and does nothing.
 
         Args:
-            entity_type: One of ``workflow``, ``task``, ``agent``, ``span``.
-            name: The new entity name.
-            update_span_name: When True (default), also update the OTel span name.
+            name: The new span name
         """
-        if entity_type not in _ENTITY_ATTR_SUFFIXES:
-            logger.error(
-                "set_entity_name: entity_type must be one of %s, got %r",
-                sorted(_ENTITY_ATTR_SUFFIXES),
-                entity_type,
-            )
-            return
         if not isinstance(name, str) or not name:
-            logger.error("set_entity_name: name must be a non-empty string, got %r", name)
+            logger.warning("update_span_name: name must be a non-empty string; ignoring")
             return
-
-        # Rebind the top frame (token=None) so future child spans inherit the name.
-        old_name = SessionManager.rename_entity(entity_type, name)
-        if old_name is None:
-            logger.warning(
-                "set_entity_name: no open '%s' entity to rename; is a span of that type active?",
-                entity_type,
-            )
+        span = trace.get_current_span()
+        if not span.get_span_context().is_valid:
+            logger.warning("update_span_name: no active span to rename")
             return
-
-        attr_key = f"{Config.LIBRARY_NAME}.{_ENTITY_ATTR_SUFFIXES[entity_type]}"
-
-        # Locate the entity's OWN span, not the active span: when a child span is
-        # open, trace.get_current_span() is that child, and stamping/renaming it
-        # would corrupt the child while leaving the entity's span stale. The span
-        # is registered under its current name (old_name here), because every
-        # rename re-keys the registry below.
-        target = SessionManager.get_span_by_name(old_name)
-        if target is None:
-            logger.warning(
-                "set_entity_name: rebound the '%s' frame but its span is not in the registry "
-                "(e.g. a decorator-only span); '%s' on the span was not updated. Use "
-                "SpanWrapper.rename() to update the span directly.",
-                entity_type,
-                attr_key,
-            )
-            return
-
-        # Keep the registry keyed by the current name so a repeated rename resolves.
-        SessionManager.rekey_span(old_name, name, target)
-        try:
-            if getattr(target, "is_recording", lambda: False)():
-                target.set_attribute(attr_key, name)
-                if update_span_name:
-                    target.update_name(name)
-        except Exception:
-            logger.exception("set_entity_name: failed to update span for renamed '%s' entity", entity_type)
-
-    @classmethod
-    def set_agent_name(cls, name: str, update_span_name: bool = True) -> None:
-        """Rename the current agent entity. Convenience for ``set_entity_name("agent", ...)``.
-
-        Solves the case where an agent span is opened under an id and renamed once
-        the display name is known: this updates ``netra.agent.name`` on the agent's
-        own span and the name inherited by later child spans.
-
-        Args:
-            name: The new agent name.
-            update_span_name: When True (default), also update the agent's OTel span name.
-        """
-        cls.set_entity_name("agent", name, update_span_name=update_span_name)
+        SessionManager.update_span_name(span, name)
 
     @classmethod
     def set_custom_attributes(cls, key: str, value: Any) -> None:
