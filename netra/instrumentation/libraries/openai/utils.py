@@ -1,6 +1,7 @@
 import json
 import logging
-from typing import Any, Dict
+import math
+from typing import Any, Dict, Optional, TypeGuard
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
@@ -9,7 +10,14 @@ from opentelemetry.semconv_ai import (
 )
 from opentelemetry.trace import Span
 
+from netra.config import Config
+from netra.span_wrapper import ATTRIBUTE, UsageModel
+
 logger = logging.getLogger(__name__)
+
+# A provider-reported cost covers the whole call (prompt, completion, cache read and write).
+PROVIDER_REPORTED_USAGE_TYPE = "total"
+CUSTOM_USAGE_ATTRIBUTE = f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}"
 
 
 def should_suppress_instrumentation() -> bool:
@@ -166,6 +174,7 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
 
     if usage := response_dict.get("usage"):
         _set_usage_attributes(span, usage)
+        _set_custom_usage_attribute(span, usage, response_dict.get("model") or "")
 
     _set_response_message_attributes(span, response_dict)
 
@@ -233,6 +242,56 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
     total_tokens = usage.get("total_tokens")
     if total_tokens is not None:
         span.set_attribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
+
+
+def _is_valid_cost(value: object) -> TypeGuard[float]:
+    """Return True for a finite, non-negative int or float (bools are rejected)."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return False
+    return math.isfinite(value) and value >= 0
+
+
+def _resolve_provider_reported_cost(usage: Dict[str, Any]) -> Optional[float]:
+    """Resolve the USD cost a provider reported in ``usage.cost`` (e.g. OpenRouter).
+
+    OpenRouter reports ``cost`` in credits, where one credit is one US dollar.
+    For BYOK calls (``is_byok`` is True) ``cost`` is only OpenRouter's fee, so
+    ``cost_details.upstream_inference_cost`` is added to give the real spend.
+    For non-BYOK calls the upstream cost equals ``cost`` and is not added.
+
+    Returns:
+        The cost in USD, or None when ``cost`` is absent or invalid, or when a
+        BYOK call lacks a valid upstream cost. None means the backend should
+        price the span from its token counts instead.
+    """
+    cost = usage.get("cost")
+    if not _is_valid_cost(cost):
+        return None
+
+    if usage.get("is_byok") is not True:
+        return float(cost)
+
+    cost_details = usage.get("cost_details")
+    upstream_cost = cost_details.get("upstream_inference_cost") if isinstance(cost_details, dict) else None
+    if not _is_valid_cost(upstream_cost):
+        # Recording only OpenRouter's fee would under-report spend; leave pricing to the backend.
+        logger.debug("BYOK usage has no valid upstream_inference_cost; skipping provider-reported cost")
+        return None
+    return float(cost) + float(upstream_cost)
+
+
+def _set_custom_usage_attribute(span: Span, usage: Dict[str, Any], model: str) -> None:
+    """Record a provider-reported cost as a single ``total`` Netra custom usage entry.
+
+    Token counts are not repeated here (``units_used`` is omitted from the JSON)
+    because they are already recorded as ``gen_ai.usage.*`` attributes.
+    """
+    cost_in_usd = _resolve_provider_reported_cost(usage)
+    if cost_in_usd is None:
+        return
+
+    entry = UsageModel(model=model, usage_type=PROVIDER_REPORTED_USAGE_TYPE, cost_in_usd=cost_in_usd)
+    span.set_attribute(CUSTOM_USAGE_ATTRIBUTE, json.dumps([entry.model_dump(exclude={"units_used"})]))
 
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
