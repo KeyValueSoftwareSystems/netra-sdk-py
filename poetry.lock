@@ -1381,15 +1381,18 @@ i18n = ["Babel (>=2.7)"]
 
 [[package]]
 name = "json-repair"
-version = "0.44.1"
+version = "0.63.5"
 description = "A package to repair broken json strings"
 optional = false
-python-versions = ">=3.9"
+python-versions = ">=3.10"
 groups = ["main"]
 files = [
-    {file = "json_repair-0.44.1-py3-none-any.whl", hash = "sha256:51d82532c3b8263782a301eb7904c75dce5fee8c0d1aba490287fc0ab779ac50"},
-    {file = "json_repair-0.44.1.tar.gz", hash = "sha256:1130eb9733b868dac1340b43cb2effebb519ae6d52dd2d0728c6cca517f1e0b4"},
+    {file = "json_repair-0.63.5-py3-none-any.whl", hash = "sha256:0e39b3066f7829b4bd7fc614e463cfd4ff7a4c46f82f5b65431fc11e29a74c81"},
+    {file = "json_repair-0.63.5.tar.gz", hash = "sha256:75a6a1a4ea954935dd3fb69b6e49ac0e3e3d69b4290127a0c8d37af93b709f3a"},
 ]
+
+[package.extras]
+schema = ["jsonschema (>=4.21) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\"", "pydantic (>=2) ; python_full_version < \"3.15.0a0\" or python_full_version >= \"3.15.0\""]
 
 [[package]]
 name = "langcodes"
@@ -6029,4 +6032,4 @@ presidio = ["presidio-analyzer", "presidio-anonymizer", "stanza", "transformers"
 [metadata]
 lock-version = "2.1"
 python-versions = ">=3.10,<3.14"
-content-hash = "4438422c54a5b85c91ce2a97676d3e579106344fa7ffef905533073aa1af7954"
+content-hash = "b690c6091b5bf657712ffe041e90c7db7446c379cf67291933aa0e4f3af872e1"

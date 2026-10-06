@@ -4,6 +4,24 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.1] - 2026-10-06
+
+### Added
+
+- **OpenAI instrumentation records the cost a provider reports in `usage.cost`** - Some OpenAI-compatible providers, OpenRouter among them, return the cost of a call in the response's `usage.cost` field. The OpenAI instrumentation now records it on the LLM span as a single `netra.usage` entry with `usage_type: "total"`, holding the response's `model` and `cost_in_usd`. This applies to every call path that records response usage, both streaming and non-streaming. The entry has no `units_used`, because token counts are already on the span as `gen_ai.usage.*`. OpenRouter reports cost in credits, and one credit is one US dollar. For BYOK calls (`usage.is_byok` is `true`), `cost` is only OpenRouter's fee, so `cost_details.upstream_inference_cost` is added to it to give the actual spend. **If the cost is missing or invalid, nothing is recorded** and the backend prices the span from its token counts as before. The same applies to a BYOK call with no valid upstream cost, because recording the fee alone would under-report spend. A valid cost is a finite, non-negative number. Booleans, negative values, `NaN` and infinity are rejected. A response that carries no `usage.cost` produces exactly the same span as before.
+
+### Fixed
+
+- **`set_root_output_stream` now records output when the consumer stops iterating early** - The root output used to be written only when the stream raised `StopIteration`. A consumer that hit `break` or called `.close()` left the root span without `netra.user.output`, or with only part of the output when the inner stream was a Netra-instrumented wrapper that had not finalized yet. Iteration now runs through an internal generator whose `finally` block commits the output whenever iteration ends: on exhaustion, on `break`, or on an explicit close. Before the output is read, the inner stream is finalized. A generator is closed, and a Netra instrumentation wrapper has its `_finalize()` or `_finalize_span()` called. This only happens if the inner stream has not already produced its output, so an inner span is never ended twice. If the root span has already ended when the output arrives, a warning is logged and the output is dropped.
+
+  **On async streams, an early `break` in a long-lived event loop can still lose the output.** Python does not close an abandoned async generator straight away. asyncio schedules `aclose()` for a later loop iteration, and if the root span ends first, the output is dropped. Exhausting the stream, calling `aclose()`, and `asyncio.run()` are not affected. In other cases, use `async with Netra.set_root_output_stream(stream) as wrapped:`, which commits the output when the block exits.
+
+- **`set_root_output_stream` now records re-iterable values straight away instead of wrapping them** - A `list`, `tuple`, `str`, `dict` or another object that has `__iter__` but no `__next__` is not a stream. Only single-pass iterators (objects with `__next__` or `__anext__`) and Netra-instrumented stream wrappers are wrapped now. For any other iterable, the value is written to the root span as soon as `set_root_output_stream` is called. The original object is returned unchanged, and a warning recommends `Netra.set_root_output()` for values that are already fully built.
+
+### Changed
+
+- **`stream_utils` no longer imports from the rest of Netra** - `wrap_stream_for_root_output(stream, commit_fn)` now takes a callback in place of the root span. `SessionManager` creates that callback, and it serializes the output and sets it on the root span. This removes the circular import between `netra.instrumentation.capture.stream_utils` and `netra.session_manager`. These are internal modules, and `Netra.set_root_output_stream()` is unaffected.
+
 ## [1.2.0] - 2026-09-29
 
 ### Added
@@ -215,10 +233,6 @@ entry of its own:
 - **Add instrumentation for Hermes Agent** - New monkey-patching based instrumentation for the `hermes-agent` SDK (>= 0.17.0). Captures conversation runs, skill invocations (single, stacked, and bundle), tool executions, function calls, and approval gates as OpenTelemetry spans with full input/output attributes, token usage, and model metadata.
 
 - **Fix span attributes in OpenAI instrumentation** - Assistant completions no longer emit empty entries when the model returns `content: null` alongside tool calls, request messages now correctly handle non-dictionary objects (such as Pydantic ChatCompletionMessage instances) by converting them with model_as_dict() instead of skipping them, and assistant `tool_calls` arrays as well as `tool_call_id` values on tool messages are now captured and serialized as indexed prompt and completion span attributes.
-
-- **Fix set_root_output_stream handling** – `set_root_output_stream` now forces a commit of the inner stream to capture output when a stream exits early (for example, via `break` or `.close()`). It also correctly handles plain iterables by setting their output immediately with a warning recommending `Netra.set_root_output()`. Only true single-pass iterators are wrapped as streams.
-
-- **Refactor stream wrapper architecture to use callback injection** - `stream_utils` is now a pure utility module with no Netra-internal imports. The commit logic (serialize and set attribute on root span) is injected as a callback from `SessionManager`, eliminating the circular dependency between `stream_utils` and `SessionManager`.
 
 ## [0.1.96] - 2026-07-23
 
@@ -532,4 +546,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.2.0]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
