@@ -8,11 +8,11 @@ from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
 
 from netra.instrumentation.libraries.groq.utils import (
-    model_as_dict,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.message_builder import model_as_dict
 from netra.instrumentation.span_utils import record_span_timing
 
 logger = logging.getLogger(__name__)

@@ -5,6 +5,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.message_builder import build_messages
+
 logger = logging.getLogger(__name__)
 
 
@@ -25,8 +27,7 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if transcript := kwargs.get("transcript"):
         character_count = len(transcript)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(transcript))
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(transcript)}]))
 
     if voice := kwargs.get("voice"):
         if isinstance(voice, dict):
@@ -59,7 +60,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
     try:
         if isinstance(response, dict):
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))
-            span.set_attribute("gen_ai.prompt.1.role", "Output")
+            span.set_attribute("output", build_messages([{"role": "Output", "content": ""}]))
             if "duration" in response:
                 span.set_attribute("gen_ai.audio.duration", response["duration"] / 60)
 
@@ -73,8 +74,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
 
             if hasattr(response, "text") and response.text:
                 span.set_attribute("gen_ai.response.text", response.text)
-                span.set_attribute("gen_ai.prompt.1.content", response.text)
-                span.set_attribute("gen_ai.prompt.1.role", "Output")
+                span.set_attribute("output", build_messages([{"role": "Output", "content": response.text}]))
 
             return
 
