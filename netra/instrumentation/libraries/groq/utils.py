@@ -6,6 +6,12 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, SpanAttributes
 from opentelemetry.trace import Span
 
+from netra.instrumentation.message_builder import (
+    build_chat_input,
+    build_completion_output,
+    build_messages,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -15,17 +21,6 @@ def should_suppress_instrumentation() -> bool:
         context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY)
         or context_api.get_value(SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY)
     )
-
-
-def model_as_dict(input_object: Any) -> Any:
-    """Convert SDK model object to a plain dict."""
-    if hasattr(input_object, "model_dump"):
-        return input_object.model_dump()
-    if hasattr(input_object, "to_dict"):
-        return input_object.to_dict()
-    if isinstance(input_object, dict):
-        return input_object
-    return {}
 
 
 def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
@@ -57,23 +52,13 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 
 
 def _set_chat_input(span: Span, messages: Any, prompt: Any) -> None:
+    """Set structured input from messages or prompt string."""
     if isinstance(messages, list) and messages:
-        for index, message in enumerate(messages):
-            if isinstance(message, dict):
-                role = message.get("role", "user")
-                content = message.get("content", "")
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(content))
-            elif hasattr(message, "role") and hasattr(message, "content"):
-                role = message.role
-                content = message.content
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", str(content))
+        span.set_attribute("input", build_chat_input(messages))
         return
 
     if isinstance(prompt, str) and prompt:
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", prompt)
+        span.set_attribute("input", build_messages([{"role": "user", "content": prompt}]))
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -109,27 +94,5 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
 
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
-    message_index = 0
-
-    # Completion API-like
-    if choices := response_dict.get("choices"):
-        for choice in choices:
-            if message := choice.get("message"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
-                )
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
-                )
-                message_index += 1
-            elif delta := choice.get("delta"):
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
-                )
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", delta.get("content", "")
-                )
-                message_index += 1
-
-            if finish_reason := choice.get("finish_reason"):
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
+    """Set structured output from a response dict."""
+    span.set_attribute("output", build_completion_output(response_dict))

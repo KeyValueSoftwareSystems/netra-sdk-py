@@ -21,6 +21,8 @@ from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer, set_span_in_
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
+from netra.instrumentation.message_builder import build_messages
+
 logger = logging.getLogger(__name__)
 
 _instruments = ("cohere >=4.2.7, <6",)
@@ -83,50 +85,36 @@ def _set_input_attributes(span: Span, llm_request_type: LLMRequestTypeValues, kw
     _set_span_attribute(span, SpanAttributes.LLM_PRESENCE_PENALTY, kwargs.get("presence_penalty"))
 
     if should_send_prompts():
+        entries = []
         if llm_request_type == LLMRequestTypeValues.COMPLETION:
-            _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", kwargs.get("prompt"))
+            if prompt := kwargs.get("prompt"):
+                entries.append({"role": "user", "content": prompt})
         elif llm_request_type == LLMRequestTypeValues.CHAT:
             messages = kwargs.get("messages")
             if messages:
-                for index, message in enumerate(messages):
+                for message in messages:
                     if hasattr(message, "content"):
-                        _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.role", "user")
-                        _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.content", message.content)
+                        entries.append({"role": "user", "content": message.content})
                     elif isinstance(message, dict):
-                        _set_span_attribute(
-                            span, f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message.get("role", "user")
-                        )
-                        _set_span_attribute(
-                            span, f"{SpanAttributes.LLM_PROMPTS}.{index}.content", message.get("content")
-                        )
-            else:
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", kwargs.get("message"))
+                        role = message.get("role", "user")
+                        content = message.get("content")
+                        if content is not None:
+                            entries.append({"role": role, "content": content})
+            elif msg := kwargs.get("message"):
+                entries.append({"role": "user", "content": msg})
         elif llm_request_type == LLMRequestTypeValues.RERANK:
-            documents = kwargs.get("documents", [])
-            for index, document in enumerate(documents):
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.role", "system")
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.content", document)
+            for document in kwargs.get("documents", []):
+                entries.append({"role": "system", "content": document})
+            if query := kwargs.get("query"):
+                entries.append({"role": "user", "content": query})
 
-            _set_span_attribute(
-                span,
-                f"{SpanAttributes.LLM_PROMPTS}.{len(documents)}.role",
-                "user",
-            )
-            _set_span_attribute(
-                span,
-                f"{SpanAttributes.LLM_PROMPTS}.{len(documents)}.content",
-                kwargs.get("query"),
-            )
+        if entries:
+            span.set_attribute("input", build_messages(entries))
 
     return
 
 
 def _set_span_chat_response(span: Span, response: Any) -> None:
-    index = 0
-    prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{index}"
-
     _set_span_attribute(span, GEN_AI_RESPONSE_ID, response.id)
 
     if hasattr(response, "message") and hasattr(response.message, "content"):
@@ -135,8 +123,7 @@ def _set_span_chat_response(span: Span, response: Any) -> None:
             if hasattr(content_item, "text"):
                 text_content.append(content_item.text)
         if text_content:
-            _set_span_attribute(span, f"{prefix}.content", "\n".join(text_content))
-            _set_span_attribute(span, f"{prefix}.role", "assistant")
+            span.set_attribute("output", build_messages([{"role": "assistant", "content": "\n".join(text_content)}]))
 
     if not hasattr(response, "usage") or response.usage is None:
         logger.debug("No usage information found in response")
@@ -188,28 +175,30 @@ def _set_span_generations_response(span: Span, response: Any) -> None:
     else:
         generations = response  # Cohere v4
 
-    for index, generation in enumerate(generations):
-        prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{index}"
-        _set_span_attribute(span, f"{prefix}.content", generation.text)
-        _set_span_attribute(span, f"gen_ai.response.{index}.id", generation.id)
+    entries = []
+    for generation in generations:
+        if generation.text:
+            entry = {"role": "assistant", "content": generation.text}
+            if generation_id := getattr(generation, "id", None):
+                entry["id"] = generation_id
+            entries.append(entry)
+    if entries:
+        span.set_attribute("output", build_messages(entries))
 
 
 def _set_span_rerank_response(span: Span, response: Any) -> None:
     _set_span_attribute(span, GEN_AI_RESPONSE_ID, response.id)
-    for idx, doc in enumerate(response.results):
-        prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{idx}"
-        _set_span_attribute(span, f"{prefix}.role", "assistant")
+    entries = []
+    for doc in response.results:
         content = f"Doc {doc.index}, Score: {doc.relevance_score}"
         if doc.document:
             if hasattr(doc.document, "text"):
                 content += f"\n{doc.document.text}"
             else:
                 content += f"\n{doc.document.get('text')}"
-        _set_span_attribute(
-            span,
-            f"{prefix}.content",
-            content,
-        )
+        entries.append({"role": "assistant", "content": content})
+    if entries:
+        span.set_attribute("output", build_messages(entries))
 
 
 @dont_throw  # type: ignore[misc]
@@ -280,10 +269,8 @@ def _build_from_streaming_response(
             _set_span_attribute(span, GEN_AI_RESPONSE_ID, response_id)
 
         if should_send_prompts() and content_parts:
-            prefix = f"{SpanAttributes.LLM_COMPLETIONS}.0"
             full_content = "".join(content_parts)
-            _set_span_attribute(span, f"{prefix}.content", full_content)
-            _set_span_attribute(span, f"{prefix}.role", "assistant")
+            span.set_attribute("output", build_messages([{"role": "assistant", "content": full_content}]))
 
         if usage_info and hasattr(usage_info, "billed_units") and usage_info.billed_units:
             input_tokens = None

@@ -21,6 +21,7 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
     set_pydantic_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.message_builder import build_messages
 
 logger = logging.getLogger(__name__)
 
@@ -74,19 +75,19 @@ class InstrumentedAgentRun:
         if not self._parent_span or not self._parent_span.is_recording():
             return
 
-        # Extract the same data that _set_end_node_attributes uses
         data = _safe_get_attribute(node, "data")
         if not data:
             return
 
-        # Get the final output and set it on parent span
         output = _safe_get_attribute(data, "output")
         if output is not None:
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
             _safe_set_attribute(
-                self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+                self._parent_span,
+                "output",
+                build_messages(
+                    [{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH], "finish_reason": "completed"}]
+                ),
             )
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
     async def next(self, node: Any = None) -> Any:
         """Manual iteration with instrumentation"""
@@ -140,9 +141,9 @@ def agent_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     set_pydantic_request_attributes(span, kwargs, "agent.run")
 
                     if user_prompt:
-                        _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                        _safe_set_attribute(
-                            span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
+                        span.set_attribute(
+                            "input",
+                            build_messages([{"role": "user", "content": str(user_prompt)[:MAX_CONTENT_LENGTH]}]),
                         )
 
                     # Execute the original async method
@@ -191,9 +192,10 @@ def agent_run_sync_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 set_pydantic_request_attributes(span, kwargs, "agent.run_sync")
 
                 if user_prompt:
-                    _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
                     _safe_set_attribute(
-                        span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
+                        span,
+                        "input",
+                        build_messages([{"role": "user", "content": str(user_prompt)[:MAX_CONTENT_LENGTH]}]),
                     )
 
                 start_time = time.time()
@@ -265,9 +267,8 @@ class InstrumentedAgentRunContext:
         set_pydantic_request_attributes(self._span, self._kwargs, "agent.iter")
 
         if self._user_prompt:
-            _safe_set_attribute(self._span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            _safe_set_attribute(
-                self._span, f"{SpanAttributes.LLM_PROMPTS}.0.content", self._user_prompt, MAX_CONTENT_LENGTH
+            self._span.set_attribute(
+                "input", build_messages([{"role": "user", "content": str(self._user_prompt)[:MAX_CONTENT_LENGTH]}])
             )
 
         return InstrumentedAgentRun(result, self._tracer, "pydantic_ai.agent.iter", self._span)  # type: ignore[return-value]
@@ -278,7 +279,6 @@ class InstrumentedAgentRunContext:
             result = await self._agent_run.__aexit__(exc_type, exc_val, exc_tb)
 
             if exc_type is None:
-                _safe_set_attribute(self._span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "streaming")
                 self._span.set_status(Status(StatusCode.OK))
             else:
                 _handle_span_error(self._span, exc_val)
@@ -386,19 +386,15 @@ class InstrumentedAgentRunFromStream:
         if output is None:
             return
 
-        # Set assistant content on current iter span
-        if current_span and current_span.is_recording():
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
+        output_json = build_messages(
+            [{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH], "finish_reason": "completed"}]
+        )
 
-        # Set assistant content on parent run_stream span
+        if current_span and current_span.is_recording():
+            _safe_set_attribute(current_span, "output", output_json)
+
         if self._parent_span and self._parent_span.is_recording():
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
-                self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
-            )
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
+            _safe_set_attribute(self._parent_span, "output", output_json)
 
     def __getattr__(self, name: str) -> Any:
         """Delegate other attributes to the wrapped AgentRun"""
@@ -494,19 +490,15 @@ class InstrumentedStreamedRunResultIterable:
         if output is None:
             return
 
-        # Set assistant content on current iter span
-        if current_span and current_span.is_recording():
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
+        output_json = build_messages(
+            [{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH], "finish_reason": "completed"}]
+        )
 
-        # Set assistant content on parent run_stream span
+        if current_span and current_span.is_recording():
+            _safe_set_attribute(current_span, "output", output_json)
+
         if self._parent_span and self._parent_span.is_recording():
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
-                self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
-            )
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
+            _safe_set_attribute(self._parent_span, "output", output_json)
 
     def __getattr__(self, name) -> Any:  # type: ignore[no-untyped-def]
         """Delegate other attributes to the wrapped StreamedRunResult"""
@@ -559,14 +551,15 @@ class InstrumentedStreamedRunResult:
         if not data:
             return
 
-        # Get the final output and set it on parent span
         output = _safe_get_attribute(data, "output")
         if output is not None:
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
             _safe_set_attribute(
-                self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+                self._parent_span,
+                "output",
+                build_messages(
+                    [{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH], "finish_reason": "streaming"}]
+                ),
             )
-            _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
     def _finalize_parent_span(self) -> None:
         """Finalize parent span when streaming is complete"""
@@ -616,8 +609,9 @@ def agent_run_stream_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-a
             set_pydantic_request_attributes(span, kwargs, "agent.run_stream")
 
             if user_prompt:
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
+                _safe_set_attribute(
+                    span, "input", build_messages([{"role": "user", "content": str(user_prompt)[:MAX_CONTENT_LENGTH]}])
+                )
 
             # Execute the original method to get the async context manager
             start_time = time.time()

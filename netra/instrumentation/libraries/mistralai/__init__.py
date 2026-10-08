@@ -26,6 +26,7 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
+from netra.instrumentation.message_builder import build_messages
 
 logger = logging.getLogger(__name__)
 
@@ -108,43 +109,25 @@ def _set_input_attributes(
     if should_send_prompts():
         if llm_request_type == LLMRequestTypeValues.CHAT:
             messages = kwargs.get("messages", [])
-            for index, message in enumerate(messages):
-                # Handle both dict and object message formats
+            entries = []
+            for message in messages:
                 if hasattr(message, "content"):
-                    content = message.content
-                    role = message.role
+                    content, role = message.content, message.role
                 else:
                     content = message.get("content", "")
                     role = message.get("role", "user")
-
-                _set_span_attribute(
-                    span,
-                    f"{SpanAttributes.LLM_PROMPTS}.{index}.content",
-                    content,
-                )
-                _set_span_attribute(
-                    span,
-                    f"{SpanAttributes.LLM_PROMPTS}.{index}.role",
-                    role,
-                )
+                if content is not None and content != "":
+                    entries.append({"role": role, "content": str(content)})
+            if entries:
+                span.set_attribute("input", build_messages(entries))
         else:
             input_data = kwargs.get("input") or kwargs.get("inputs")
-
             if isinstance(input_data, str):
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                _set_span_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
+                span.set_attribute("input", build_messages([{"role": "user", "content": input_data}]))
             elif isinstance(input_data, list):
-                for index, prompt in enumerate(input_data):
-                    _set_span_attribute(
-                        span,
-                        f"{SpanAttributes.LLM_PROMPTS}.{index}.role",
-                        "user",
-                    )
-                    _set_span_attribute(
-                        span,
-                        f"{SpanAttributes.LLM_PROMPTS}.{index}.content",
-                        str(prompt),
-                    )
+                entries = [{"role": "user", "content": str(p)} for p in input_data]
+                if entries:
+                    span.set_attribute("input", build_messages(entries))
 
 
 @dont_throw
@@ -158,41 +141,38 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
 
     if should_send_prompts():
         choices = getattr(response, "choices", None) or response.get("choices", []) if hasattr(response, "get") else []
-        for index, choice in enumerate(choices):
-            prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{index}"
-
-            # Handle both object and dict choice formats
+        entries = []
+        for choice in choices:
             if hasattr(choice, "finish_reason"):
                 finish_reason = choice.finish_reason
-                message = choice.message
-            else:
+            elif isinstance(choice, dict):
                 finish_reason = choice.get("finish_reason")
+            else:
+                finish_reason = None
+
+            if hasattr(choice, "message"):
+                message = choice.message
+            elif isinstance(choice, dict):
                 message = choice.get("message", {})
+            else:
+                continue
 
-            _set_span_attribute(
-                span,
-                f"{prefix}.finish_reason",
-                finish_reason,
-            )
-
-            # Handle message content
             if hasattr(message, "content"):
-                content = message.content
-                role = message.role
+                content, role = message.content, message.role
             else:
                 content = message.get("content", "")
                 role = message.get("role", "assistant")
 
-            _set_span_attribute(
-                span,
-                f"{prefix}.content",
-                (content if isinstance(content, str) else json.dumps(content)),
-            )
-            _set_span_attribute(
-                span,
-                f"{prefix}.role",
-                role,
-            )
+            if content is not None and content != "":
+                entry = {
+                    "role": role,
+                    "content": content if isinstance(content, str) else json.dumps(content),
+                }
+                if finish_reason:
+                    entry["finish_reason"] = finish_reason
+                entries.append(entry)
+        if entries:
+            span.set_attribute("output", build_messages(entries))
 
     # Handle model attribute
     if hasattr(response, "model"):

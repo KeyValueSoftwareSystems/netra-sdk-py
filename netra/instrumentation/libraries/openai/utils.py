@@ -11,6 +11,11 @@ from opentelemetry.semconv_ai import (
 from opentelemetry.trace import Span
 
 from netra.config import Config
+from netra.instrumentation.message_builder import (
+    build_chat_input,
+    build_completion_output,
+    build_response_api_input,
+)
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
 logger = logging.getLogger(__name__)
@@ -23,21 +28,6 @@ CUSTOM_USAGE_ATTRIBUTE = f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}"
 def should_suppress_instrumentation() -> bool:
     """Check if instrumentation should be suppressed"""
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
-
-
-def model_as_dict(input_object: Any) -> Any:
-    """Convert OpenAI model object to dictionary"""
-    if hasattr(input_object, "model_dump"):
-        return input_object.model_dump()
-
-    elif hasattr(input_object, "to_dict"):
-        return input_object.to_dict()
-
-    elif isinstance(input_object, dict):
-        return input_object
-
-    else:
-        return {}
 
 
 def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
@@ -77,90 +67,15 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 
 
 def _set_chat_completion_input(span: Span, messages: Any) -> None:
-    """Set completion API input attributes"""
+    """Set structured input from Chat Completions messages."""
     if not isinstance(messages, list) or not messages:
         return
-
-    prompt_index = 0
-    for message in messages:
-        if not isinstance(message, dict):
-            message = model_as_dict(message)
-        if not message:
-            continue
-
-        role = message.get("role", "user")
-
-        if content := message.get("content"):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", str(content))
-            if role == "tool" and message.get("tool_call_id"):
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", message["tool_call_id"])
-            prompt_index += 1
-
-        for tc in message.get("tool_calls") or []:
-            func = tc.get("function", {}) if isinstance(tc, dict) else getattr(tc, "function", None)
-            if func is None:
-                continue
-            name = func.get("name", "") if isinstance(func, dict) else getattr(func, "name", "")
-            arguments = func.get("arguments", "") if isinstance(func, dict) else getattr(func, "arguments", "")
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", "assistant")
-            span.set_attribute(
-                f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content",
-                json.dumps({"name": name, "arguments": arguments}),
-            )
-            tc_id = tc.get("id") if isinstance(tc, dict) else getattr(tc, "id", None)
-            if tc_id:
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", tc_id)
-            prompt_index += 1
+    span.set_attribute("input", build_chat_input(messages))
 
 
 def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
-    """Set response API input attributes"""
-    message_index = 0
-
-    # Handle instructions as system message
-    if instructions := kwargs.get("instructions"):
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "system")
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", instructions)
-        message_index += 1
-
-    # Handle input messages
-    if input_data := kwargs.get("input"):
-        if isinstance(input_data, str):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "user")
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", input_data)
-        elif isinstance(input_data, list) and input_data:
-            for message in input_data:
-                if isinstance(message, dict):
-                    msg_type = message.get("type", "")
-                    if msg_type == "function_call":
-                        name = message.get("name", "")
-                        arguments = message.get("arguments", "")
-                        if name or arguments:
-                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "assistant")
-                            span.set_attribute(
-                                f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
-                                json.dumps({"name": name, "arguments": arguments}),
-                            )
-                            message_index += 1
-                    elif msg_type == "function_call_output":
-                        output_val = str(message.get("output") or "")
-                        if output_val:
-                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", "tool")
-                            span.set_attribute(
-                                f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content",
-                                output_val,
-                            )
-                            message_index += 1
-                    elif msg_type in ("reasoning", "reasoning_summary"):
-                        continue
-                    else:
-                        role = message.get("role", "user")
-                        content = message.get("content")
-                        if content:
-                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role", role)
-                            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content", str(content))
-                            message_index += 1
+    """Set structured input from Responses API kwargs."""
+    span.set_attribute("input", build_response_api_input(kwargs))
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -294,71 +209,6 @@ def _set_custom_usage_attribute(span: Span, usage: Dict[str, Any], model: str) -
     span.set_attribute(CUSTOM_USAGE_ATTRIBUTE, json.dumps([entry.model_dump(exclude={"units_used"})]))
 
 
-def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
-    """Helper to set response message attributes."""
-    message_index = 0
-
-    if output_text := response_dict.get("output_text"):
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", output_text)
-        message_index += 1
-
-    if output := response_dict.get("output"):
-        for element in output:
-            if element.get("type") == "function_call":
-                name = element.get("name", "")
-                arguments = element.get("arguments", "")
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
-                    json.dumps({"name": name, "arguments": arguments}),
-                )
-                message_index += 1
-            elif content := element.get("content"):
-                for chunk in content:
-                    if text := chunk.get("text"):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", text)
-                        message_index += 1
-
-    if choices := response_dict.get("choices"):
-        for choice in choices:
-            if message := choice.get("message"):
-                if content := message.get("content"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
-                    )
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
-                    message_index += 1
-                for tc in message.get("tool_calls") or []:
-                    func = tc.get("function", {})
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
-                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
-                    )
-                    if tc_id := tc.get("id"):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
-                    message_index += 1
-            elif delta := choice.get("delta"):
-                if content := delta.get("content"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
-                    )
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
-                    message_index += 1
-                for tc in delta.get("tool_calls") or []:
-                    func = tc.get("function", {})
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
-                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
-                    )
-                    if tc_id := tc.get("id"):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
-                    message_index += 1
-
-            if finish_reason := choice.get("finish_reason"):
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
-
-    return message_index
+def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
+    """Set structured output from a response dict."""
+    span.set_attribute("output", build_completion_output(response_dict))

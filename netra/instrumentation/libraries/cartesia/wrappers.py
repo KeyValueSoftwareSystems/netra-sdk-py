@@ -11,6 +11,7 @@ from netra.instrumentation.libraries.cartesia.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.message_builder import build_messages
 
 logger = logging.getLogger(__name__)
 
@@ -167,7 +168,7 @@ class SttWebsocketProxy(ObjectProxy):  # type: ignore[misc]
                         transcripts.append(text)
                     elif result.get("type") == "done":
                         full_text = "".join(transcripts)
-                        self._span.set_attribute("gen_ai.prompt.1.content", full_text)
+                        self._span.set_attribute("output", build_messages([{"role": "Output", "content": full_text}]))
                 except Exception as e:
                     logger.debug("Failed to set Cartesia STT response attributes from result: %s", e)
                 yield result
