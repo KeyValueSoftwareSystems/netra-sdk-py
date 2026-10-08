@@ -100,7 +100,30 @@ class _ShieldedTracerProvider(trace_sdk.TracerProvider):  # type: ignore[misc]
         return result
 
     def shutdown(self) -> None:
-        """Absorb LiveKit's per-job teardown of Netra's tracing pipeline."""
+        """Absorb LiveKit's per-job teardown — but flush first.
+
+        LiveKit calls ``shutdown()`` on every job cleanup.  Propagating that
+        would permanently disable Netra's ``BatchSpanProcessor`` for every
+        later job in the process, so the actual shutdown is still absorbed.
+
+        However, the job worker typically exits 2–3 s after session close.
+        ``livekit-call`` and ``agent_session`` — the trace root and its
+        primary child — end at hangup and land in the batch buffer last.
+        Without a flush here they are silently dropped whenever the process
+        dies before the next batch tick or before ``atexit`` runs.
+
+        Flushing the delegate is safe: it only drains the exporter queue
+        and leaves the pipeline alive for any later job in the same process.
+        """
+        flush = getattr(self._delegate, "force_flush", None)
+        if flush is not None:
+            try:
+                flush()
+            except Exception:
+                logger.debug(
+                    "netra.livekit: force_flush inside absorbed shutdown failed",
+                    exc_info=True,
+                )
         logger.debug(
             "netra.livekit: absorbed a TracerProvider shutdown; Netra owns this provider's lifecycle",
         )

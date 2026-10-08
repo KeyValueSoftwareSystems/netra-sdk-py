@@ -15,7 +15,7 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
-from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from wrapt import ObjectProxy
 
@@ -941,6 +941,33 @@ class TestShieldedTracerProvider:
         delegate.get_tracer("x").start_span("s").end()
 
         assert len(exporter.get_finished_spans()) == 1, "the delegate's pipeline must survive LiveKit's teardown"
+
+    def test_shutdown_flushes_before_absorbing(self) -> None:
+        """livekit-call / agent_session end at hangup and sit in the batch buffer.
+
+        The job worker exits ~2-3 s later. Without a flush inside the absorbed
+        shutdown those spans are dropped — the trace loses its root. Regression
+        test for the fix: shutdown must force_flush the delegate even though it
+        does not propagate the actual shutdown.
+        """
+        delegate = TracerProvider()
+        exporter = InMemorySpanExporter()
+        delegate.add_span_processor(BatchSpanProcessor(exporter))
+
+        tracer = delegate.get_tracer("livekit-agents")
+        tracer.start_span("livekit-call").end()
+        tracer.start_span("agent_session").end()
+
+        _ShieldedTracerProvider(delegate).shutdown()
+
+        assert (
+            len(exporter.get_finished_spans()) >= 2
+        ), "shutdown must flush the delegate so late-ending spans are exported"
+
+        delegate.get_tracer("x").start_span("post-shutdown").end()
+        delegate.force_flush()
+        names = {s.name for s in exporter.get_finished_spans()}
+        assert "post-shutdown" in names, "the delegate's pipeline must survive LiveKit's teardown"
 
     def test_get_tracer_delegates(self) -> None:
         delegate = TracerProvider()
