@@ -189,7 +189,10 @@ def extract_llm_output_messages(response: Any) -> Iterator[Tuple[str, Any]]:
                         role = message.get("role", "assistant")
                         content = message.get("content")
                         if content:
-                            entries.append({"role": role, "content": str(content)})
+                            entry = {"role": role, "content": str(content)}
+                            if finish_reason := choice.get("finish_reason"):
+                                entry["finish_reason"] = finish_reason
+                            entries.append(entry)
         except Exception:
             pass
     if entries:
