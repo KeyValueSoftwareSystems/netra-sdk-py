@@ -23,6 +23,7 @@ from netra.instrumentation.libraries.openai.utils import (
     _join_json_array,
     should_send_prompts,
 )
+from netra.instrumentation.message_builder import build_messages
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -70,13 +71,13 @@ def set_request_attributes(span: Any, args: Tuple[Any, ...], kwargs: Dict[str, A
 
     if contents := kwargs.get("contents"):
         if isinstance(contents, str):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", contents)
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
+            span.set_attribute("input", build_messages([{"role": "user", "content": contents}]))
             return
 
         content_list = contents if isinstance(contents, list) else [contents]
+        entries = []
 
-        for index, content in enumerate(content_list):
+        for content in content_list:
             role = getattr(content, "role", "user")
             text = None
 
@@ -94,8 +95,10 @@ def set_request_attributes(span: Any, args: Tuple[Any, ...], kwargs: Dict[str, A
                 role = "user"
 
             if text:
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", text)
-                span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", role)
+                entries.append({"role": role, "content": text})
+
+        if entries:
+            span.set_attribute("input", build_messages(entries))
 
 
 def set_response_attributes(span: Any, response: Any) -> None:
@@ -104,8 +107,7 @@ def set_response_attributes(span: Any, response: Any) -> None:
         return
 
     if isinstance(response, str):
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response)
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+        span.set_attribute("output", build_messages([{"role": "assistant", "content": response}]))
         return
 
     usage = _extract_usage_metadata(response)
@@ -129,26 +131,25 @@ def set_response_attributes(span: Any, response: Any) -> None:
 
         if isinstance(response, dict):
             if isinstance(text := response.get("content"), str) and text:
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", text)
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+                span.set_attribute("output", build_messages([{"role": "assistant", "content": text}]))
                 return
 
         candidates = getattr(response, "candidates", None)
         if isinstance(candidates, list):
-            for index, candidate in enumerate(candidates):
+            entries = []
+            for candidate in candidates:
                 content = getattr(candidate, "content", None)
                 if content is None:
                     continue
-
                 parts = getattr(content, "parts", None)
                 if not isinstance(parts, list):
                     continue
-
                 for part in parts:
                     if isinstance(text := getattr(part, "text", None), str):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", text)
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", "assistant")
+                        entries.append({"role": "assistant", "content": text})
                         break
+            if entries:
+                span.set_attribute("output", build_messages(entries))
 
 
 def _extract_usage_metadata(response: Any) -> Any:
