@@ -19,7 +19,7 @@ from functools import lru_cache, partial
 from importlib import import_module
 from importlib.metadata import distributions
 from io import StringIO
-from typing import TYPE_CHECKING, AbstractSet, Callable, Iterator, NamedTuple, Optional, TextIO
+from typing import TYPE_CHECKING, AbstractSet, Any, Callable, Iterator, NamedTuple, Optional, TextIO
 
 from netra.instrumentation.instruments import InstrumentSet
 from netra.instrumentation.wiring.registry import CUSTOM_INSTRUMENTORS, SUBPROCESS_INSTRUMENTOR, InstrumentorSpec
@@ -273,7 +273,16 @@ def _apply_instrumentor(spec: InstrumentorSpec) -> None:
     instrumentor_class = getattr(import_module(spec.module), spec.class_name)
     instrumentor = instrumentor_class(**spec.constructor_kwargs)
     if not instrumentor.is_instrumented_by_opentelemetry:
-        instrumentor.instrument()
+        instrumentor.instrument(**_instrument_kwargs(spec))
+
+
+def _instrument_kwargs(spec: InstrumentorSpec) -> dict[str, Any]:
+    """Resolve *spec*'s ``instrument()`` keyword arguments from its factory path, if any."""
+    if spec.instrument_kwargs_factory is None:
+        return {}
+    module_name, _, function_name = spec.instrument_kwargs_factory.partition(":")
+    factory: Callable[[], dict[str, Any]] = getattr(import_module(module_name), function_name)
+    return factory()
 
 
 def _resolve_traceloop_instruments(names: AbstractSet[str]) -> set["Instruments"]:
