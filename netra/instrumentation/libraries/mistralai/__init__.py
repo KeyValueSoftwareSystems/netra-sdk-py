@@ -143,6 +143,13 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
         choices = getattr(response, "choices", None) or response.get("choices", []) if hasattr(response, "get") else []
         entries = []
         for choice in choices:
+            if hasattr(choice, "finish_reason"):
+                finish_reason = choice.finish_reason
+            elif isinstance(choice, dict):
+                finish_reason = choice.get("finish_reason")
+            else:
+                finish_reason = None
+
             if hasattr(choice, "message"):
                 message = choice.message
             elif isinstance(choice, dict):
@@ -157,12 +164,13 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
                 role = message.get("role", "assistant")
 
             if content is not None and content != "":
-                entries.append(
-                    {
-                        "role": role,
-                        "content": content if isinstance(content, str) else json.dumps(content),
-                    }
-                )
+                entry = {
+                    "role": role,
+                    "content": content if isinstance(content, str) else json.dumps(content),
+                }
+                if finish_reason:
+                    entry["finish_reason"] = finish_reason
+                entries.append(entry)
         if entries:
             span.set_attribute("output", build_messages(entries))
 
