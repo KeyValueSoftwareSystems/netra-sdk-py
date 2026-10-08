@@ -26,12 +26,6 @@ def _safe_set_attribute(span: Any, key: str, value: Any, max_length: Optional[in
     span.set_attribute(key, str_value)
 
 
-def _truncate(value: Any, max_len: int = MAX_CONTENT_LENGTH) -> str:
-    """Convert to string and truncate to max_len."""
-    s = str(value)
-    return s[:max_len] if len(s) > max_len else s
-
-
 def _safe_get_attribute(obj: Any, attr_name: str, default: Any = None) -> Any:
     """Safely get attribute from object with default fallback."""
     return getattr(obj, attr_name, default) if hasattr(obj, attr_name) else default
@@ -57,7 +51,10 @@ def _set_assistant_response_content(span: Any, result: Any, finish_reason: str =
 
     output = _safe_get_attribute(result, "output")
     if output is not None:
-        span.set_attribute("output", build_messages([{"role": "assistant", "content": _truncate(output)}]))
+        entry = {"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH]}
+        if finish_reason:
+            entry["finish_reason"] = finish_reason
+        _safe_set_attribute(span, "output", build_messages([entry]))
 
 
 def set_pydantic_request_attributes(
@@ -116,7 +113,9 @@ def set_pydantic_response_attributes(span: Any, result: Any) -> None:
     # Set output content if available
     output = _safe_get_attribute(result, "output")
     if output is not None:
-        span.set_attribute("output", build_messages([{"role": "assistant", "content": _truncate(output)}]))
+        _safe_set_attribute(
+            span, "output", build_messages([{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH]}])
+        )
 
 
 def should_suppress_instrumentation() -> bool:
@@ -173,7 +172,9 @@ def _set_user_prompt_node_attributes(span: Any, node: Any) -> None:
     # User prompt content
     user_prompt = _safe_get_attribute(node, "user_prompt")
     if user_prompt:
-        span.set_attribute("input", build_messages([{"role": "user", "content": _truncate(user_prompt)}]))
+        _safe_set_attribute(
+            span, "input", build_messages([{"role": "user", "content": str(user_prompt)[:MAX_CONTENT_LENGTH]}])
+        )
         _safe_set_attribute(span, "pydantic_ai.user_prompt", user_prompt, MAX_CONTENT_LENGTH)
 
     # Instructions
@@ -236,7 +237,7 @@ def _set_model_request_node_attributes(span: Any, node: Any) -> None:
                 _safe_set_attribute(span, f"pydantic_ai.request.parts.{i}.role", role)
 
             if content and role:
-                input_entries.append({"role": role, "content": _truncate(content)})
+                input_entries.append({"role": role, "content": str(content)[:MAX_CONTENT_LENGTH]})
 
             # Timestamp, tool call information
             _safe_set_attribute(
@@ -253,7 +254,7 @@ def _set_model_request_node_attributes(span: Any, node: Any) -> None:
             )
 
         if input_entries:
-            span.set_attribute("input", build_messages(input_entries))
+            _safe_set_attribute(span, "input", build_messages(input_entries))
 
     # Request metadata
     _safe_set_attribute(span, "pydantic_ai.request.model_name", _safe_get_attribute(request, "model_name"))
@@ -280,7 +281,7 @@ def _set_call_tools_node_attributes(span: Any, node: Any) -> None:
             content = _safe_get_attribute(part, "content")
             if content:
                 _safe_set_attribute(span, f"pydantic_ai.response.parts.{i}.content", content, MAX_CONTENT_LENGTH)
-                output_entries.append({"role": "assistant", "content": _truncate(content)})
+                output_entries.append({"role": "assistant", "content": str(content)[:MAX_CONTENT_LENGTH]})
 
             # Tool call information
             _safe_set_attribute(
@@ -294,7 +295,7 @@ def _set_call_tools_node_attributes(span: Any, node: Any) -> None:
             )
 
         if output_entries:
-            span.set_attribute("output", build_messages(output_entries))
+            _safe_set_attribute(span, "output", build_messages(output_entries))
 
     # Usage information
     usage = _safe_get_attribute(response, "usage")
@@ -351,7 +352,9 @@ def _set_end_node_attributes(span: Any, node: Any) -> None:
     # Final output
     output = _safe_get_attribute(data, "output")
     if output is not None:
-        span.set_attribute("output", build_messages([{"role": "assistant", "content": _truncate(output)}]))
+        _safe_set_attribute(
+            span, "output", build_messages([{"role": "assistant", "content": str(output)[:MAX_CONTENT_LENGTH]}])
+        )
         _safe_set_attribute(span, "pydantic_ai.final_output", output, MAX_CONTENT_LENGTH)
 
     # Cost information

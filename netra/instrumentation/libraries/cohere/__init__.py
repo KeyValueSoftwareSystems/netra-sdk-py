@@ -178,7 +178,10 @@ def _set_span_generations_response(span: Span, response: Any) -> None:
     entries = []
     for generation in generations:
         if generation.text:
-            entries.append({"role": "assistant", "content": generation.text})
+            entry = {"role": "assistant", "content": generation.text}
+            if generation_id := getattr(generation, "id", None):
+                entry["id"] = generation_id
+            entries.append(entry)
     if entries:
         span.set_attribute("output", build_messages(entries))
 
