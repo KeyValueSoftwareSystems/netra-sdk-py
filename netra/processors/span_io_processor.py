@@ -6,6 +6,7 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 from netra.netra_logger import get_logger
+from netra.instrumentation.message_builder import build_messages
 
 logger = get_logger(__name__)
 
@@ -27,7 +28,7 @@ SetAttributeFunc = Callable[[str, Any], None]
 
 def _build_messages(index_map: Dict[int, Dict[str, str]]) -> str:
     """Serialize an index→message dict to a JSON array ordered by index."""
-    return json.dumps([index_map[i] for i in sorted(index_map)])
+    return build_messages([index_map[i] for i in sorted(index_map)])
 
 
 def _extract_traceloop_input(raw: Any) -> str:

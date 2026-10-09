@@ -26,6 +26,7 @@ def reset_netra_state() -> Generator[None, None, None]:
     and doesn't interfere with other tests.
     """
     # Import here to avoid circular imports
+    import netra.config as config_module
     from netra import Netra
 
     # Reset state before test
@@ -34,9 +35,11 @@ def reset_netra_state() -> Generator[None, None, None]:
 
     yield
 
-    # Reset state after test
+    # Reset state after test. ``Netra.init()`` installs the process-wide active
+    # config, which may be a mock here; clear it so limits do not leak across tests.
     with Netra._init_lock:
         Netra._initialized = False
+    config_module._active_config = None
 
 
 @pytest.fixture  # type: ignore
