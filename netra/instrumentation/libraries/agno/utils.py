@@ -399,7 +399,7 @@ def update_active_span_with_system_prompt(messages: Any) -> None:
         if first_user_content is not None:
             msg_list.append({"role": "user", "content": first_user_content})
 
-        span.set_attribute("input", json.dumps(msg_list))
+        span.set_attribute("input", build_messages(msg_list))
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to update span with system prompt: %s", e)
 
@@ -1067,63 +1067,6 @@ def set_agentos_response_output(
         span.set_attribute("output", json.dumps(output_data))
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to set agentos response output: %s", e)
-
-
-def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
-    """Set structured ``input`` attribute from agno message objects."""
-    if not messages or not span.is_recording():
-        return
-    try:
-        entries = []
-        for msg in messages:
-            role = getattr(msg, "role", None)
-            if role is None:
-                continue
-            raw = getattr(msg, "content", None)
-            if raw is None:
-                tool_calls = getattr(msg, "tool_calls", None)
-                if tool_calls:
-                    try:
-                        content = json.dumps(_normalize(tool_calls, clean=True))
-                    except Exception:
-                        content = _safe_str(tool_calls)
-                else:
-                    content = ""
-            elif isinstance(raw, str):
-                content = raw
-            else:
-                try:
-                    content = json.dumps(_normalize(raw, clean=False))
-                except Exception:
-                    content = _safe_str(raw)
-            entries.append({"role": str(role), "content": content})
-        if entries:
-            span.set_attribute("input", build_messages(entries))
-    except Exception as e:
-        logger.debug("netra.instrumentation.libraries.agno: failed to set prompt attributes: %s", e)
-
-
-def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None:
-    """Set structured ``output`` attribute from a JSON output string."""
-    if not output_str or not span.is_recording():
-        return
-    try:
-        completions = json.loads(output_str)
-        entries = []
-        for msg in completions:
-            role = msg.get("role", "assistant")
-            content = msg.get("content") or msg.get("tool_calls", "")
-            if content:
-                entries.append(
-                    {
-                        "role": str(role),
-                        "content": content if isinstance(content, str) else json.dumps(content),
-                    }
-                )
-        if entries:
-            span.set_attribute("output", build_messages(entries))
-    except Exception as e:
-        logger.debug("netra.instrumentation.libraries.agno: failed to set completion attributes: %s", e)
 
 
 def extract_agentos_attributes(

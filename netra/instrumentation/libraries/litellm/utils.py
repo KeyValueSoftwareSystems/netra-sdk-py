@@ -59,14 +59,14 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 
 def _set_chat_completion_input(span: Span, messages: Any) -> None:
     """Set structured input from Chat Completions messages."""
-    if not isinstance(messages, list) or not messages:
-        return
-    span.set_attribute("input", build_chat_input(messages))
+    if input_json := build_chat_input(messages):
+        span.set_attribute("input", input_json)
 
 
 def _set_chat_response_input(span: Span, kwargs: Dict[str, Any]) -> None:
     """Set structured input from Responses API kwargs."""
-    span.set_attribute("input", build_response_api_input(kwargs))
+    if input_json := build_response_api_input(kwargs):
+        span.set_attribute("input", input_json)
 
 
 def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
@@ -109,4 +109,5 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     """Set structured output from a response dict."""
-    span.set_attribute("output", build_completion_output(response_dict))
+    if output_json := build_completion_output(response_dict):
+        span.set_attribute("output", output_json)
