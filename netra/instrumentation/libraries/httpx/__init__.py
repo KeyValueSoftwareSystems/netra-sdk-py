@@ -8,7 +8,11 @@ from wrapt import wrap_function_wrapper
 
 from netra.instrumentation.libraries.httpx.utils import get_default_span_name
 from netra.instrumentation.libraries.httpx.version import __version__
-from netra.instrumentation.libraries.httpx.wrappers import async_send_wrapper, send_wrapper
+from netra.instrumentation.libraries.httpx.wrappers import (
+    async_send_wrapper,
+    build_redirect_request_wrapper,
+    send_wrapper,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -48,6 +52,12 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Failed to instrument httpx: {e}")
 
+        # Private httpx API, separate so its absence never costs the send spans.
+        try:
+            wrap_function_wrapper("httpx._client", "BaseClient._build_redirect_request", build_redirect_request_wrapper)
+        except Exception as e:
+            logger.warning(f"Failed to guard httpx redirects; baggage may follow cross-host redirects: {e}")
+
     def _uninstrument(self, **kwargs: Any) -> None:
         """Uninstrument httpx.Client.send and httpx.AsyncClient.send.
 
@@ -59,3 +69,7 @@ class HTTPXInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             unwrap("httpx.AsyncClient", "send")
         except (AttributeError, ModuleNotFoundError):
             logger.error("Failed to uninstrument httpx")
+        try:
+            unwrap("httpx._client.BaseClient", "_build_redirect_request")
+        except (AttributeError, ModuleNotFoundError):
+            logger.debug("httpx redirect guard was not installed")

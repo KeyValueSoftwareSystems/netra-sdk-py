@@ -10,7 +10,7 @@ from opentelemetry.util.http import remove_url_credentials
 from wrapt import ObjectProxy
 
 from netra.instrumentation.http.body import new_body_buffer
-from netra.instrumentation.http.propagation import inject_context
+from netra.instrumentation.http.propagation import guard_redirect_baggage, inject_context
 from netra.instrumentation.libraries.httpx.utils import (
     get_default_span_name,
     set_span_input,
@@ -500,3 +500,15 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             context_api.detach(context)
 
     return wrapper
+
+
+def build_redirect_request_wrapper(wrapped: Callable[..., Any], instance: Any, args: Any, kwargs: Any) -> Any:
+    """Strip baggage from an httpx redirect request whose target is not allowlisted.
+
+    httpx follows redirects inside ``Client.send``, so the send wrappers inject
+    once and every later hop reuses the previous hop's headers.
+    ``BaseClient._build_redirect_request`` builds each hop, sync and async.
+    """
+    request = wrapped(*args, **kwargs)
+    guard_redirect_baggage(request.headers, str(request.url), "httpx")
+    return request

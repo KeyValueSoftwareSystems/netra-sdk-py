@@ -42,7 +42,9 @@ class TestHTTPXInstrumentor:
         instrumentor._instrument()
 
         mock_get_tracer.assert_called_once()
-        assert mock_wrap.call_count == 2
+        # Client.send, AsyncClient.send, and the redirect guard.
+        assert mock_wrap.call_count == 3
+        assert mock_wrap.call_args_list[2].args[:2] == ("httpx._client", "BaseClient._build_redirect_request")
 
     @patch("netra.instrumentation.libraries.httpx.get_tracer")
     @patch("netra.instrumentation.libraries.httpx.wrap_function_wrapper")
@@ -56,16 +58,16 @@ class TestHTTPXInstrumentor:
         instrumentor._instrument(tracer_provider=mock_tracer_provider)
 
         mock_get_tracer.assert_called_once()
-        assert mock_wrap.call_count == 2
+        assert mock_wrap.call_count == 3
 
     @patch("netra.instrumentation.libraries.httpx.unwrap")
     def test_uninstrument(self, mock_unwrap):
-        """Test _uninstrument method calls unwrap for both sync and async clients."""
+        """Test _uninstrument method calls unwrap for both clients and the redirect guard."""
         instrumentor = HTTPXInstrumentor()
 
         instrumentor._uninstrument()
 
-        assert mock_unwrap.call_count == 2
+        assert mock_unwrap.call_count == 3
 
 
 class TestUtilityFunctions:

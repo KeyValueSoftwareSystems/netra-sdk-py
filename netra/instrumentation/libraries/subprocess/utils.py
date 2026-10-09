@@ -5,6 +5,8 @@ from typing import Any, Dict, Mapping, Optional
 from opentelemetry import context as context_api
 from opentelemetry import propagate, trace
 
+from netra.instrumentation.http.propagation import inject_local
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,7 +42,7 @@ def inject_subprocess_context(
     """
     if env is None:
         carrier: Dict[str, str] = dict(os.environ)
-        propagate.inject(carrier)
+        inject_local(carrier)
         _log_traceparent(carrier.get("traceparent"))
         return carrier
 
@@ -48,7 +50,7 @@ def inject_subprocess_context(
 
     if uses_bytes:
         str_carrier: Dict[str, str] = {}
-        propagate.inject(str_carrier)
+        inject_local(str_carrier)
         result: Dict[Any, Any] = dict(env)
         for key, value in str_carrier.items():
             result[key.encode()] = value.encode()
@@ -56,7 +58,7 @@ def inject_subprocess_context(
         return result
 
     carrier_copy: Dict[Any, Any] = dict(env)
-    propagate.inject(carrier_copy)
+    inject_local(carrier_copy)
     _log_traceparent(carrier_copy.get("traceparent"))
     return carrier_copy
 
