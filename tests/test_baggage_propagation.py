@@ -13,6 +13,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 from typing import Any, Dict, Iterator, List, Tuple
 from unittest.mock import patch
+from urllib.parse import quote, unquote
 
 import pytest
 from opentelemetry import baggage
@@ -88,6 +89,12 @@ class _Recorder(BaseHTTPRequestHandler):
 
     def do_GET(self) -> None:  # noqa: N802
         type(self).received.append({k.lower(): v for k, v in self.headers.items()})
+        if self.path.startswith("/redirect?to="):
+            self.send_response(302)
+            self.send_header("Location", unquote(self.path[len("/redirect?to=") :]))
+            self.send_header("Content-Length", "0")
+            self.end_headers()
+            return
         self.send_response(200)
         self.send_header("Content-Length", "2")
         self.end_headers()
@@ -224,7 +231,10 @@ class TestRegistryWiring:
     def test_upstream_http_instrumentors_get_request_hooks(self) -> None:
         assert _instrument_kwargs(_spec(InstrumentSet.URLLIB)) == urllib_instrument_kwargs()
         assert _instrument_kwargs(_spec(InstrumentSet.URLLIB3)) == urllib3_instrument_kwargs()
-        assert _instrument_kwargs(_spec(InstrumentSet.AIOHTTP)) == aiohttp_instrument_kwargs()
+        aiohttp_kwargs = _instrument_kwargs(_spec(InstrumentSet.AIOHTTP))
+        assert aiohttp_kwargs["request_hook"] is aiohttp_instrument_kwargs()["request_hook"]
+        (trace_config,) = aiohttp_kwargs["trace_configs"]
+        assert list(trace_config.on_request_redirect)
 
 
 class TestReplacedPropagator:
@@ -327,3 +337,86 @@ class TestEndToEnd:
         for headers in received:
             assert "traceparent" in headers
             assert ("baggage" in headers) is expect_baggage
+
+
+def _get_httpx(url: str) -> None:
+    import httpx
+
+    httpx.get(url, follow_redirects=True)
+
+
+def _get_requests(url: str) -> None:
+    import requests
+
+    requests.get(url)
+
+
+def _get_urllib3(url: str) -> None:
+    import urllib3
+
+    urllib3.PoolManager().request("GET", url)
+
+
+def _get_urllib(url: str) -> None:
+    urllib.request.urlopen(url).read()
+
+
+def _get_aiohttp(url: str) -> None:
+    import aiohttp
+
+    async def fetch() -> None:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(url) as response:
+                await response.read()
+
+    asyncio.run(fetch())
+
+
+@contextmanager
+def _instrumented(instrument: InstrumentSet) -> Iterator[None]:
+    """Apply *instrument* exactly as Netra's activation does, then remove it."""
+    from importlib import import_module
+
+    spec = _spec(instrument)
+    instrumentor = getattr(import_module(spec.module), spec.class_name)()
+    instrumentor.instrument(tracer_provider=_PROVIDER, **_instrument_kwargs(spec))
+    try:
+        yield
+    finally:
+        instrumentor.uninstrument()
+
+
+@pytest.mark.parametrize(
+    ("instrument", "get"),
+    [
+        (InstrumentSet.HTTPX, _get_httpx),
+        (InstrumentSet.REQUESTS, _get_requests),
+        (InstrumentSet.URLLIB3, _get_urllib3),
+        (InstrumentSet.URLLIB, _get_urllib),
+        (InstrumentSet.AIOHTTP, _get_aiohttp),
+    ],
+)
+@pytest.mark.parametrize(
+    ("hosts", "expect_baggage_after_redirect"),
+    [(("localhost",), False), (("localhost", "127.0.0.1"), True)],
+)
+class TestRedirects:
+    """An allowlisted first hop must not carry baggage across a redirect to a host that is not."""
+
+    def test_cross_host_redirect(
+        self,
+        server: Tuple[str, List[Dict[str, str]]],
+        instrument: InstrumentSet,
+        get: Any,
+        hosts: Tuple[str, ...],
+        expect_baggage_after_redirect: bool,
+    ) -> None:
+        base, received = server
+        port = base.rsplit(":", 1)[1]
+        start = f"http://localhost:{port}/redirect?to={quote(f'http://127.0.0.1:{port}/final', safe='')}"
+        with _instrumented(instrument), allowlist(*hosts), session_span():
+            get(start)
+        assert len(received) == 2
+        first, final = received
+        assert "session_id=sess-1" in first["baggage"]
+        assert ("baggage" in final) is expect_baggage_after_redirect

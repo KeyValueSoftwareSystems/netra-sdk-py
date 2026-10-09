@@ -53,6 +53,9 @@ class InstrumentorSpec:
         instrument_kwargs_factory: ``"module:function"`` path to a callable
             returning keyword arguments for ``instrument()`` -- e.g. request
             hooks.  A string so the hook module is only imported on activation.
+            Called once per activation, so it may also prepare the target
+            library (e.g. the urllib factory installs a process-wide redirect
+            guard that is not removed on uninstrument).
     """
 
     required_distributions: tuple[str, ...]

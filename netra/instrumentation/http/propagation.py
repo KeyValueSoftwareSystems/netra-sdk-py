@@ -76,6 +76,9 @@ _hook_destinations_lock = threading.Lock()
 _gating_installed = False
 _replacement_warned = False
 
+# Clients whose redirect guard has already logged a failure at warning level.
+_redirect_guard_warned: Set[str] = set()
+
 
 def _host_allowed(url: Optional[str]) -> bool:
     """Return True when *url*'s host is on the configured internal allowlist.
@@ -242,12 +245,52 @@ def inject_context(carrier: MutableMapping[str, Any], url: Optional[str] = None)
     # "" (not None) for an unknown URL, so a missing URL never falls through to
     # a hook registration for the current span.
     inject(carrier, context=set_value(_DESTINATION_KEY, url or ""))
-    if _host_allowed(url):
-        return
     # Defence in depth: also strip a baggage header already present in the
     # carrier, or written by a propagator that ignores the context.
+    strip_baggage_unless_allowed(carrier, url)
+
+
+def strip_baggage_unless_allowed(carrier: MutableMapping[Any, Any], url: Optional[str]) -> None:
+    """Remove any ``baggage`` header from *carrier* unless *url*'s host is allowlisted.
+
+    The gated propagator only decides whether baggage is *added*.  HTTP clients
+    that follow redirects copy the previous hop's headers onto the next request
+    without injecting again, so a ``baggage`` header sent to an allowlisted host
+    would otherwise follow a cross-host redirect.  Redirect guards call this
+    with each hop's headers and destination.
+
+    Matching is case-insensitive and removes every occurrence, so it works on
+    plain dicts, ``httpx.Headers`` and aiohttp's ``CIMultiDict``.
+    """
+    if _host_allowed(url):
+        return
+    _strip_baggage(carrier)
+
+
+def _strip_baggage(carrier: MutableMapping[Any, Any]) -> None:
+    """Remove every ``baggage`` header from *carrier*, matching case-insensitively."""
     for key in [k for k in carrier if isinstance(k, str) and k.lower() == _BAGGAGE_HEADER]:
         carrier.pop(key, None)
+
+
+def guard_redirect_baggage(carrier: MutableMapping[Any, Any], url: Optional[str], client: str) -> None:
+    """Redirect-guard entry point: strip baggage for a non-allowlisted hop, failing closed.
+
+    If the allowlist check fails, baggage is removed unconditionally rather
+    than sent to an unchecked host.  The failure is logged as a warning once
+    per *client*, then at debug, so a persistent fault cannot flood the logs.
+    """
+    try:
+        strip_baggage_unless_allowed(carrier, url)
+        return
+    except Exception:
+        level = logging.DEBUG if client in _redirect_guard_warned else logging.WARNING
+        _redirect_guard_warned.add(client)
+        logger.log(level, "Failed to gate baggage on %s redirect; stripping it", client, exc_info=True)
+    try:
+        _strip_baggage(carrier)
+    except Exception:
+        logger.debug("Failed to strip baggage from %s redirect", client, exc_info=True)
 
 
 def inject_local(carrier: MutableMapping[Any, Any]) -> None:
