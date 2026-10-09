@@ -50,9 +50,8 @@ def set_request_attributes(span: Span, llm_request_type: LLMRequestTypeValues, k
         if prompt := kwargs.get("prompt"):
             span.set_attribute("input", build_messages([{"role": "user", "content": prompt}]))
     elif llm_request_type == LLMRequestTypeValues.CHAT:
-        if messages := kwargs.get("messages"):
-            if isinstance(messages, list):
-                span.set_attribute("input", build_chat_input(messages))
+        if input_json := build_chat_input(kwargs.get("messages")):
+            span.set_attribute("input", input_json)
 
 
 def set_response_attributes(span: Span, response: Any) -> None:
@@ -81,7 +80,8 @@ def set_response_attributes(span: Span, response: Any) -> None:
         if response_dict.get("id"):
             span.set_attribute(GEN_AI_RESPONSE_ID, response_dict.get("id"))
 
-        span.set_attribute("output", build_completion_output(response_dict))
+        if output_json := build_completion_output(response_dict):
+            span.set_attribute("output", output_json)
 
     except Exception:
         logger.exception("Failed to set response attributes")

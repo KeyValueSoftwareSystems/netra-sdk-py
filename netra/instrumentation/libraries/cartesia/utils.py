@@ -60,7 +60,6 @@ def set_response_attributes(span: Span, response: Any) -> None:
     try:
         if isinstance(response, dict):
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))
-            span.set_attribute("output", build_messages([{"role": "Output", "content": ""}]))
             if "duration" in response:
                 span.set_attribute("gen_ai.audio.duration", response["duration"] / 60)
 

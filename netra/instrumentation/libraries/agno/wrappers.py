@@ -34,8 +34,6 @@ from netra.instrumentation.libraries.agno.utils import (
     serialize_value,
     set_agentos_request_input,
     set_agentos_response_output,
-    set_llm_completion_attributes,
-    set_llm_prompt_attributes,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
@@ -275,7 +273,6 @@ class _LlmStreamOutputMixin:
             self._netra_output = output_str if output_str else ""
         if output_str:
             self._span.set_attribute("output", output_str)
-            set_llm_completion_attributes(self._span, output_str)
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
 
 
@@ -1203,7 +1200,6 @@ def _setup_llm_span_with_input(
         input_str = format_messages_as_input(messages)
         if input_str:
             span.set_attribute("input", input_str)
-        set_llm_prompt_attributes(span, messages)
 
     return span, ctx_token
 
@@ -1239,7 +1235,6 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     output_str = format_response_as_output(response)
                 if output_str:
                     span.set_attribute("output", output_str)
-                    set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
@@ -1337,7 +1332,6 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     output_str = format_response_as_output(response)
                 if output_str:
                     span.set_attribute("output", output_str)
-                    set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)

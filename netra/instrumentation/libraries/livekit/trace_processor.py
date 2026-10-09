@@ -76,7 +76,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
-from netra.instrumentation.message_builder import build_messages
+from netra.instrumentation.message_builder import build_messages, cap_message_content
 
 logger = logging.getLogger(__name__)
 
@@ -433,15 +433,18 @@ def record_stt_usage(call_id: int, metrics_payload: Any) -> None:
 class _ConversationRecorder:
     """Appends messages to one span's structured ``input``/``output`` attributes.
 
-    Keeps a bounded in-memory list per side (each capped independently at
-    ``MAX_CONVERSATION_MESSAGES_PER_SIDE``) so each ``append`` can rewrite the
-    JSON attribute without reading back from the span. The lists are the working
-    copies; the span attribute holds the serialised snapshot.
+    Keeps a bounded in-memory list per side so each ``append`` can rewrite the JSON
+    attribute without reading back from the span. Each side holds at most
+    ``MAX_CONVERSATION_MESSAGES_PER_SIDE`` messages, each capped at the same
+    conversation content limit the span's JSON uses, so memory stays bounded however
+    large the source content is. A child ending on another thread can append
+    concurrently, so each append-and-write runs under a lock — otherwise a stale
+    snapshot could be written last and drop a message.
 
     One instance per LiveKit span, created in ``SpanMappingProcessor.on_start``.
     """
 
-    __slots__ = ("_span", "_prompts", "_completions", "_truncated")
+    __slots__ = ("_span", "_prompts", "_completions", "_truncated", "_lock")
 
     def __init__(self, span: Span) -> None:
         """Bind this recorder to *span*.
@@ -450,9 +453,10 @@ class _ConversationRecorder:
             span: The span whose conversation this records.
         """
         self._span = span
-        self._prompts: list[Dict[str, str]] = []
-        self._completions: list[Dict[str, str]] = []
+        self._prompts: list[Dict[str, Any]] = []
+        self._completions: list[Dict[str, Any]] = []
         self._truncated = False
+        self._lock = threading.Lock()
 
     def append(self, side: ConversationSide, role: str, content: Any) -> None:
         """Append one message to ``input`` or ``output`` on the span.
@@ -468,16 +472,19 @@ class _ConversationRecorder:
             content: The message text.
         """
         messages = self._prompts if side is ConversationSide.PROMPT else self._completions
-        if len(messages) >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
-            self._mark_truncated()
-            return
-
-        messages.append({"role": role, "content": as_attribute_text(content)})
         attr_key = INPUT_ATTRIBUTE if side is ConversationSide.PROMPT else OUTPUT_ATTRIBUTE
-        self._span.set_attribute(attr_key, build_messages(messages))
+        with self._lock:
+            if len(messages) >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
+                self._mark_truncated()
+                return
+            messages.append(cap_message_content({"role": role, "content": as_attribute_text(content)}))
+            self._span.set_attribute(attr_key, build_messages(messages))
 
     def _mark_truncated(self) -> None:
-        """Stamp ``netra.conversation.truncated`` on the span (at most once)."""
+        """Stamp ``netra.conversation.truncated`` on the span (at most once).
+
+        Not synchronised: a race only costs a duplicate write of the same value.
+        """
         if self._truncated:
             return
         self._truncated = True
@@ -818,7 +825,7 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             self._io_parents[context.span_id] = span
 
     def _propagate_content_to_parent(self, span: ReadableSpan) -> None:
-        """Append *span*'s conversation content to its parent's gen_ai sequences.
+        """Append *span*'s conversation content to its parent's ``input``/``output``.
 
         Args:
             span: The span that has ended.

@@ -7,8 +7,6 @@ import json
 from typing import Collection
 from unittest.mock import MagicMock, Mock, patch
 
-from opentelemetry.semconv_ai import SpanAttributes
-
 from netra.instrumentation.libraries.openai import NetraOpenAIInstrumentor
 from netra.instrumentation.libraries.openai.utils import should_suppress_instrumentation
 
@@ -256,6 +254,9 @@ class TestResponseMessageAttributesToolCalls:
         _set_response_message_attributes(span, response_dict)
         return captured
 
+    def _output(self, response_dict):
+        return json.loads(self._capture(response_dict)["output"])
+
     def test_tool_calls_response_no_empty_assistant_entry(self):
         """When content is null and tool_calls are present, no empty assistant entry should be emitted."""
         response = {
@@ -277,16 +278,13 @@ class TestResponseMessageAttributesToolCalls:
             ]
         }
 
-        attrs = self._capture(response)
+        output = self._output(response)
 
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]) == {
-            "name": "get_weather",
-            "arguments": '{"location":"London"}',
-        }
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_abc123"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "tool_calls"
-        assert f"{SpanAttributes.LLM_COMPLETIONS}.2.role" not in attrs
+        assert len(output) == 1
+        assert output[0]["role"] == "assistant"
+        assert json.loads(output[0]["content"]) == {"name": "get_weather", "arguments": '{"location":"London"}'}
+        assert output[0]["tool_call_id"] == "call_abc123"
+        assert output[0]["finish_reason"] == "tool_calls"
 
     def test_tool_calls_response_with_content_keeps_assistant_entry(self):
         """When content is non-empty alongside tool_calls, both assistant text and tool calls are emitted."""
@@ -309,20 +307,15 @@ class TestResponseMessageAttributesToolCalls:
             ]
         }
 
-        attrs = self._capture(response)
+        output = self._output(response)
 
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "Let me check that for you."
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.role"] == "assistant"
-        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.content"]) == {
-            "name": "lookup",
-            "arguments": '{"q":"test"}',
-        }
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.tool_call_id"] == "call_xyz"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.2.finish_reason"] == "tool_calls"
+        assert output[0] == {"role": "assistant", "content": "Let me check that for you."}
+        assert json.loads(output[1]["content"]) == {"name": "lookup", "arguments": '{"q":"test"}'}
+        assert output[1]["tool_call_id"] == "call_xyz"
+        assert output[1]["finish_reason"] == "tool_calls"
 
     def test_normal_text_response_still_works(self):
-        """A regular text response (no tool_calls) still emits the assistant entry."""
+        """A regular text response (no tool_calls) emits the assistant entry with its finish_reason."""
         response = {
             "choices": [
                 {
@@ -332,14 +325,10 @@ class TestResponseMessageAttributesToolCalls:
             ]
         }
 
-        attrs = self._capture(response)
-
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "Hello there!"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "stop"
+        assert self._output(response) == [{"role": "assistant", "content": "Hello there!", "finish_reason": "stop"}]
 
     def test_multiple_tool_calls_in_single_response(self):
-        """Multiple tool_calls in one message produce sequential indexed entries without an empty leader."""
+        """Multiple tool_calls in one message produce sequential entries without an empty leader."""
         response = {
             "choices": [
                 {
@@ -364,13 +353,12 @@ class TestResponseMessageAttributesToolCalls:
             ]
         }
 
-        attrs = self._capture(response)
+        output = self._output(response)
 
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_1"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.tool_call_id"] == "call_2"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.2.finish_reason"] == "tool_calls"
+        assert [entry["tool_call_id"] for entry in output] == ["call_1", "call_2"]
+        assert all(entry["role"] == "assistant" for entry in output)
+        assert "finish_reason" not in output[0]
+        assert output[1]["finish_reason"] == "tool_calls"
 
     def test_delta_tool_calls_no_empty_entry(self):
         """Delta branch (streaming) also skips empty content when tool_calls present."""
@@ -392,12 +380,24 @@ class TestResponseMessageAttributesToolCalls:
             ]
         }
 
-        attrs = self._capture(response)
+        output = self._output(response)
 
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert "search" in attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.tool_call_id"] == "call_stream"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.1.finish_reason"] == "tool_calls"
+        assert len(output) == 1
+        assert "search" in output[0]["content"]
+        assert output[0]["tool_call_id"] == "call_stream"
+        assert output[0]["finish_reason"] == "tool_calls"
+
+    def test_legacy_text_completion_is_captured(self):
+        """Legacy Completions API choices carry their text in ``choices[].text``."""
+        response = {"choices": [{"text": "Once upon a time", "finish_reason": "length"}]}
+
+        assert self._output(response) == [
+            {"role": "assistant", "content": "Once upon a time", "finish_reason": "length"}
+        ]
+
+    def test_response_without_messages_writes_no_output(self):
+        """A response with no output messages (e.g. embeddings) leaves ``output`` untouched."""
+        assert "output" not in self._capture({"data": [{"embedding": [0.1, 0.2]}], "usage": {}})
 
 
 class TestChatCompletionInputToolCalls:
@@ -413,6 +413,9 @@ class TestChatCompletionInputToolCalls:
         _set_chat_completion_input(span, messages)
         return captured
 
+    def _input(self, messages):
+        return json.loads(self._capture(messages)["input"])
+
     def test_pydantic_model_message_is_captured(self):
         """Non-dict messages with model_dump() are converted and captured."""
         pydantic_msg = Mock()
@@ -426,15 +429,13 @@ class TestChatCompletionInputToolCalls:
             pydantic_msg,
         ]
 
-        attrs = self._capture(messages)
-
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Hi"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"] == "Hello!"
+        assert self._input(messages) == [
+            {"role": "user", "content": "Hi"},
+            {"role": "assistant", "content": "Hello!"},
+        ]
 
     def test_assistant_tool_calls_are_serialized(self):
-        """Assistant messages with tool_calls produce indexed entries with name/arguments JSON."""
+        """Assistant messages with tool_calls produce entries with name/arguments JSON."""
         messages = [
             {"role": "user", "content": "What's the weather?"},
             {
@@ -451,41 +452,24 @@ class TestChatCompletionInputToolCalls:
             {"role": "tool", "tool_call_id": "call_abc", "content": '{"temp": 22}'},
         ]
 
-        attrs = self._capture(messages)
+        entries = self._input(messages)
 
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "What's the weather?"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
-        assert json.loads(attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"]) == {
-            "name": "get_weather",
-            "arguments": '{"location":"London"}',
-        }
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.tool_call_id"] == "call_abc"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "tool"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.content"] == '{"temp": 22}'
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.tool_call_id"] == "call_abc"
+        assert entries[0] == {"role": "user", "content": "What's the weather?"}
+        assert entries[1]["role"] == "assistant"
+        assert json.loads(entries[1]["content"]) == {"name": "get_weather", "arguments": '{"location":"London"}'}
+        assert entries[1]["tool_call_id"] == "call_abc"
+        assert entries[2] == {"role": "tool", "content": '{"temp": 22}', "tool_call_id": "call_abc"}
 
     def test_tool_call_id_captured_on_tool_messages(self):
-        """Tool messages have their tool_call_id captured as a span attribute."""
+        """Tool messages keep their tool_call_id in the input entry."""
         messages = [
             {"role": "tool", "tool_call_id": "call_xyz", "content": "result data"},
         ]
 
-        attrs = self._capture(messages)
-
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "tool"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "result data"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.tool_call_id"] == "call_xyz"
+        assert self._input(messages) == [{"role": "tool", "content": "result data", "tool_call_id": "call_xyz"}]
 
     def test_pydantic_assistant_with_tool_calls(self):
         """A Pydantic ChatCompletionMessage with tool_calls is correctly converted and serialized."""
-        func_mock = Mock()
-        func_mock.name = "get_weather"
-        func_mock.arguments = '{"location":"Paris"}'
-        tc_mock = Mock()
-        tc_mock.id = "call_pydantic"
-        tc_mock.function = func_mock
-
         pydantic_msg = Mock()
         pydantic_msg.model_dump.return_value = {
             "role": "assistant",
@@ -505,17 +489,12 @@ class TestChatCompletionInputToolCalls:
             {"role": "tool", "tool_call_id": "call_pydantic", "content": '{"temp": 20}'},
         ]
 
-        attrs = self._capture(messages)
+        entries = self._input(messages)
 
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
-        assert json.loads(attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"]) == {
-            "name": "get_weather",
-            "arguments": '{"location":"Paris"}',
-        }
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.tool_call_id"] == "call_pydantic"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "tool"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.tool_call_id"] == "call_pydantic"
+        assert [entry["role"] for entry in entries] == ["user", "assistant", "tool"]
+        assert json.loads(entries[1]["content"]) == {"name": "get_weather", "arguments": '{"location":"Paris"}'}
+        assert entries[1]["tool_call_id"] == "call_pydantic"
+        assert entries[2]["tool_call_id"] == "call_pydantic"
 
     def test_none_content_message_is_skipped(self):
         """A message with content=None and no tool_calls is skipped entirely — no blank entry emitted."""
@@ -524,14 +503,10 @@ class TestChatCompletionInputToolCalls:
             {"role": "user", "content": "actual question"},
         ]
 
-        attrs = self._capture(messages)
+        assert self._input(messages) == [{"role": "user", "content": "actual question"}]
 
-        assert f"{SpanAttributes.LLM_PROMPTS}.0.role" in attrs
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "actual question"
-        assert f"{SpanAttributes.LLM_PROMPTS}.1.role" not in attrs
-
-    def test_contiguous_indices_with_tool_call_conversation(self):
-        """Full tool-call conversation produces contiguous prompt indices with no gaps."""
+    def test_tool_call_conversation_keeps_message_order(self):
+        """A full tool-call conversation is recorded in order with no gaps."""
         messages = [
             {"role": "user", "content": "Hello"},
             {"role": "assistant", "content": "Hi!"},
@@ -550,13 +525,13 @@ class TestChatCompletionInputToolCalls:
             {"role": "tool", "tool_call_id": "call_1", "content": '{"temp": 15}'},
         ]
 
-        attrs = self._capture(messages)
+        entries = self._input(messages)
 
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"] == "Hi!"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.tool_call_id"] == "call_1"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.role"] == "tool"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.tool_call_id"] == "call_1"
+        assert [entry["role"] for entry in entries] == ["user", "assistant", "user", "assistant", "tool"]
+        assert entries[1]["content"] == "Hi!"
+        assert entries[3]["tool_call_id"] == "call_1"
+        assert entries[4]["tool_call_id"] == "call_1"
+
+    def test_no_recordable_messages_writes_no_input(self):
+        """Messages with no content or tool calls leave ``input`` untouched."""
+        assert "input" not in self._capture([{"role": "user", "content": None}])

@@ -26,7 +26,7 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
-from netra.instrumentation.message_builder import build_messages
+from netra.instrumentation.message_builder import build_messages, model_as_dict
 
 logger = logging.getLogger(__name__)
 
@@ -95,6 +95,13 @@ def _set_span_attribute(span: Any, name: str, value: Any) -> None:
     return
 
 
+def _content_text(content: Any) -> str:
+    """Return message content as text, JSON-encoding structured content such as chunk lists."""
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, default=lambda obj: model_as_dict(obj) or str(obj))
+
+
 @dont_throw
 def _set_input_attributes(
     span: Any, llm_request_type: LLMRequestTypeValues, to_wrap: Dict[str, Any], kwargs: dict[str, Any]
@@ -117,7 +124,7 @@ def _set_input_attributes(
                     content = message.get("content", "")
                     role = message.get("role", "user")
                 if content is not None and content != "":
-                    entries.append({"role": role, "content": str(content)})
+                    entries.append({"role": role, "content": _content_text(content)})
             if entries:
                 span.set_attribute("input", build_messages(entries))
         else:
@@ -164,10 +171,7 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
                 role = message.get("role", "assistant")
 
             if content is not None and content != "":
-                entry = {
-                    "role": role,
-                    "content": content if isinstance(content, str) else json.dumps(content),
-                }
+                entry = {"role": role, "content": _content_text(content)}
                 if finish_reason:
                     entry["finish_reason"] = finish_reason
                 entries.append(entry)

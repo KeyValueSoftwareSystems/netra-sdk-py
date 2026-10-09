@@ -54,7 +54,8 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 def _set_chat_input(span: Span, messages: Any, prompt: Any) -> None:
     """Set structured input from messages or prompt string."""
     if isinstance(messages, list) and messages:
-        span.set_attribute("input", build_chat_input(messages))
+        if input_json := build_chat_input(messages):
+            span.set_attribute("input", input_json)
         return
 
     if isinstance(prompt, str) and prompt:
@@ -95,4 +96,5 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     """Set structured output from a response dict."""
-    span.set_attribute("output", build_completion_output(response_dict))
+    if output_json := build_completion_output(response_dict):
+        span.set_attribute("output", output_json)

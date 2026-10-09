@@ -1,3 +1,4 @@
+import json
 from typing import Collection
 from unittest.mock import MagicMock, Mock, patch
 
@@ -477,8 +478,7 @@ class TestUtilityFunctions:
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_TEMPERATURE, 0.7)
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_REQUEST_MAX_TOKENS, 100)
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_IS_STREAMING, False)
-        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_PROMPTS}.0.content", "Hello")
+        mock_span.set_attribute.assert_any_call("input", json.dumps([{"role": "user", "content": "Hello"}]))
 
     def test_set_request_attributes_embedding(self):
         """Test set_request_attributes for embedding."""
@@ -528,8 +528,9 @@ class TestUtilityFunctions:
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, 10)
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_COMPLETION_TOKENS, 20)
         mock_span.set_attribute.assert_any_call(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, 30)
-        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-        mock_span.set_attribute.assert_any_call(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", "Hello!")
+        mock_span.set_attribute.assert_any_call(
+            "output", json.dumps([{"role": "assistant", "content": "Hello!", "finish_reason": "stop"}])
+        )
 
     def test_set_response_attributes_embedding(self):
         """Test set_response_attributes for embedding."""

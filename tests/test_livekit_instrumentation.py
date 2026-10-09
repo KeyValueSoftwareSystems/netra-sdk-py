@@ -8,6 +8,7 @@ mocks: spans are created from a tracer whose instrumentation scope is
 
 import asyncio
 import json
+import threading
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
 import pytest
@@ -19,6 +20,8 @@ from opentelemetry.sdk.trace.export import BatchSpanProcessor, SimpleSpanProcess
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from wrapt import ObjectProxy
 
+from netra.instrumentation import message_builder
+from netra.instrumentation.capture.bounded_capture import TRUNCATION_MARKER_KEY
 from netra.instrumentation.libraries import livekit as livekit_instrumentation
 from netra.instrumentation.libraries.livekit import NetraLiveKitInstrumentor
 from netra.instrumentation.libraries.livekit.call_span import (
@@ -31,7 +34,11 @@ from netra.instrumentation.libraries.livekit.call_span import (
     end_all_call_spans,
 )
 from netra.instrumentation.libraries.livekit.provider_binding import _ShieldedTracerProvider
-from netra.instrumentation.libraries.livekit.trace_processor import SpanMappingProcessor, record_stt_usage
+from netra.instrumentation.libraries.livekit.trace_processor import (
+    _RECORDER_FIELD,
+    SpanMappingProcessor,
+    record_stt_usage,
+)
 from netra.instrumentation.libraries.livekit.utils import (
     AGENT_SESSION_SPAN_NAME,
     AGENT_TURN_SPAN_NAME,
@@ -416,6 +423,44 @@ class TestConversationIsBounded:
         assert len(_messages(attributes, "prompt")) == MAX_CONVERSATION_MESSAGES_PER_SIDE
         assert attributes[NETRA_CONVERSATION_TRUNCATED] is True
 
+    def test_oversized_message_is_capped_in_memory_and_on_the_span(
+        self, harness: _Harness, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setattr(message_builder, "get_conversation_max_len", lambda: 10)
+        span = harness.livekit_tracer.start_span("llm_node")
+        span.set_attribute("lk.response.text", "x" * 1000)
+        recorder = getattr(span, _RECORDER_FIELD)
+        span.end()
+
+        held = recorder._completions[0]
+        exported = json.loads(harness.attributes("llm_node")["output"])[0]
+        assert len(held["content"]) == 10
+        assert held[TRUNCATION_MARKER_KEY] is True
+        assert exported == held
+
+    def test_concurrent_appends_keep_every_message(self, harness: _Harness) -> None:
+        # A child ending on another thread appends to the same recorder; each
+        # append must see the previous one, or a stale snapshot is written last.
+        threads_count, per_thread = 4, MAX_CONVERSATION_MESSAGES_PER_SIDE // 4
+        span = harness.livekit_tracer.start_span("llm_request")
+        barrier = threading.Barrier(threads_count)
+
+        def emit(thread_index: int) -> None:
+            barrier.wait()
+            for index in range(per_thread):
+                span.add_event("gen_ai.user.message", {"content": f"{thread_index}-{index}"})
+
+        workers = [threading.Thread(target=emit, args=(i,)) for i in range(threads_count)]
+        for worker in workers:
+            worker.start()
+        for worker in workers:
+            worker.join()
+        span.end()
+
+        prompts = _messages(harness.attributes("llm_request"), "prompt")
+        expected = {f"{t}-{i}" for t in range(threads_count) for i in range(per_thread)}
+        assert {content for _, content in prompts} == expected
+
 
 class TestConversationEvents:
     @pytest.mark.parametrize(
@@ -748,8 +793,15 @@ class TestChildToParentPropagation:
     def test_non_llm_child_input_is_not_copied_up_as_a_message(self, harness: _Harness) -> None:
         self._child_under(harness, "llm_request_run", "httpx", {"input": "POST https://api.example.com/v1/chat"})
 
-        attributes = harness.attributes("llm_request_run")
-        assert "gen_ai.prompt.0.content" not in attributes
+        assert _messages(harness.attributes("llm_request_run"), "prompt") == []
+
+    def test_non_llm_child_message_array_is_not_copied_up(self, harness: _Harness) -> None:
+        # A JSON message array is still only trusted from an LLM-aware child.
+        self._child_under(
+            harness, "llm_request_run", "httpx", {"input": json.dumps([{"role": "user", "content": "payload"}])}
+        )
+
+        assert _messages(harness.attributes("llm_request_run"), "prompt") == []
 
     def test_llm_child_raw_io_is_copied_when_it_has_no_indexed_pairs(self, harness: _Harness) -> None:
         self._child_under(
@@ -855,6 +907,26 @@ class TestConversationReading:
 
     def test_raw_io_is_dropped_when_not_allowed(self) -> None:
         conversation = conversation_from_attributes({"input": "hi", "output": "hello"})
+
+        assert messages_for_parent(conversation, allow_raw_io=False) == []
+
+    def test_structured_io_expands_into_messages_when_allowed(self) -> None:
+        conversation = conversation_from_attributes(
+            {
+                "input": json.dumps([{"role": "system", "content": "be brief"}, {"content": "hi"}]),
+                "output": json.dumps([{"role": "assistant", "content": "hello"}]),
+            }
+        )
+
+        messages = messages_for_parent(conversation, allow_raw_io=True)
+        assert [(message.side, message.role, message.content) for message in messages] == [
+            (ConversationSide.PROMPT, "system", "be brief"),
+            (ConversationSide.PROMPT, "user", "hi"),
+            (ConversationSide.COMPLETION, "assistant", "hello"),
+        ]
+
+    def test_structured_io_is_dropped_when_not_allowed(self) -> None:
+        conversation = conversation_from_attributes({"input": json.dumps([{"role": "user", "content": "hi"}])})
 
         assert messages_for_parent(conversation, allow_raw_io=False) == []
 
