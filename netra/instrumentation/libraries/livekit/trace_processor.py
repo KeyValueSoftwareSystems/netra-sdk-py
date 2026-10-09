@@ -15,11 +15,10 @@ exactly what the parent-ward content propagation below does.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import threading
 import weakref
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
@@ -41,14 +40,11 @@ from netra.instrumentation.libraries.livekit.utils import (
     EVENT_CHOICE,
     EVENT_ROLE,
     GEN_AI_AUDIO_DURATION,
-    GEN_AI_COMPLETION_CONTENT,
-    GEN_AI_COMPLETION_ROLE,
-    GEN_AI_PROMPT_CONTENT,
-    GEN_AI_PROMPT_ROLE,
     GEN_AI_REQUEST_MODEL,
     GEN_AI_USAGE_CHARACTER_COUNT,
     GEN_AI_USAGE_COMPLETION_TOKENS,
     GEN_AI_USAGE_PROMPT_TOKENS,
+    INPUT_ATTRIBUTE,
     IO_FROM_CHILD_SPAN_NAMES,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
@@ -59,6 +55,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     NETRA_ENTITY_TYPE_BY_NAME,
     NETRA_SPAN_TYPE,
     NETRA_USAGE_SOURCE,
+    OUTPUT_ATTRIBUTE,
     SPEAKING_SPAN_NAMES,
     TTS_METRICS_ATTRIBUTE,
     USAGE_SOURCE_FRAMEWORK,
@@ -79,16 +76,11 @@ from netra.instrumentation.libraries.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
+from netra.instrumentation.message_builder import build_messages
 
 logger = logging.getLogger(__name__)
 
 SetAttributeFunc = Callable[[str, Any], None]
-
-# The indexed key pair to write for each side of the conversation convention.
-_KEYS_BY_SIDE: Dict[ConversationSide, Tuple[str, str]] = {
-    ConversationSide.PROMPT: (GEN_AI_PROMPT_ROLE, GEN_AI_PROMPT_CONTENT),
-    ConversationSide.COMPLETION: (GEN_AI_COMPLETION_ROLE, GEN_AI_COMPLETION_CONTENT),
-}
 
 # Instance attribute holding a span's ``_ConversationRecorder``. Stored on the span
 # itself so the registry in ``SpanMappingProcessor`` can stay a
@@ -439,68 +431,53 @@ def record_stt_usage(call_id: int, metrics_payload: Any) -> None:
 
 
 class _ConversationRecorder:
-    """Appends messages to one span's indexed gen_ai prompt/completion sequences.
+    """Appends messages to one span's structured ``input``/``output`` attributes.
 
-    The single place an indexed conversation attribute is written, so every source
-    that contributes to a span — mapped ``lk.*`` attributes, an expanded chat
-    context, conversation events, and a child span's content — advances the same
-    counters and cannot overwrite another source's entries. One instance per
-    LiveKit span, created in ``SpanMappingProcessor.on_start``.
+    Keeps a bounded in-memory list per side (each capped independently at
+    ``MAX_CONVERSATION_MESSAGES_PER_SIDE``) so each ``append`` can rewrite the
+    JSON attribute without reading back from the span. The lists are the working
+    copies; the span attribute holds the serialised snapshot.
+
+    One instance per LiveKit span, created in ``SpanMappingProcessor.on_start``.
     """
 
-    __slots__ = ("_span", "_next_index", "_truncated")
+    __slots__ = ("_span", "_prompts", "_completions", "_truncated")
 
     def __init__(self, span: Span) -> None:
-        """Start both index sequences at zero for *span*.
+        """Bind this recorder to *span*.
 
         Args:
             span: The span whose conversation this records.
         """
         self._span = span
-        self._next_index: Dict[ConversationSide, Iterator[int]] = {
-            ConversationSide.PROMPT: itertools.count(),
-            ConversationSide.COMPLETION: itertools.count(),
-        }
+        self._prompts: list[Dict[str, str]] = []
+        self._completions: list[Dict[str, str]] = []
         self._truncated = False
 
     def append(self, side: ConversationSide, role: str, content: Any) -> None:
-        """Append one message to the given side of the conversation.
+        """Append one message to ``input`` or ``output`` on the span.
 
-        Writes through ``span.set_attribute`` — the outermost wrapper — so the
-        values reach ``SpanIOProcessor``, which assembles them into
-        ``input``/``output``.
-
-        Silently stops at ``MAX_CONVERSATION_MESSAGES_PER_SIDE`` and marks the
-        span instead — see that constant for why an unbounded sequence is not
-        merely wasteful but destructive. The cap lives here, rather than at each
-        call site, so it covers every source that feeds a recorder: mapped
-        ``lk.*`` attributes, an expanded chat context, conversation events, and a
-        child span's propagated content.
+        Each side is capped independently at ``MAX_CONVERSATION_MESSAGES_PER_SIDE``.
+        Hitting the cap on one side does not block the other — prompts and
+        completions are separate sequences. The ``netra.conversation.truncated``
+        marker is stamped once when *any* side overflows.
 
         Args:
-            side: Which indexed sequence to append to.
-            role: The conversation role to stamp alongside the text.
+            side: PROMPT writes ``input``; COMPLETION writes ``output``.
+            role: The conversation role.
             content: The message text.
         """
-        # The budget is read off the counter itself rather than a separate
-        # decrement: ``next()`` on an ``itertools.count`` is atomic, and a span's
-        # attributes can be written from more than one thread (a child ending on
-        # another thread propagates content up through here).
-        index = next(self._next_index[side])
-        if index >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
+        messages = self._prompts if side is ConversationSide.PROMPT else self._completions
+        if len(messages) >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
             self._mark_truncated()
             return
 
-        role_key, content_key = _KEYS_BY_SIDE[side]
-        self._span.set_attribute(role_key.format(index=index), role)
-        self._span.set_attribute(content_key.format(index=index), as_attribute_text(content))
+        messages.append({"role": role, "content": as_attribute_text(content)})
+        attr_key = INPUT_ATTRIBUTE if side is ConversationSide.PROMPT else OUTPUT_ATTRIBUTE
+        self._span.set_attribute(attr_key, build_messages(messages))
 
     def _mark_truncated(self) -> None:
-        """Record on the span that the conversation was cut short by the cap.
-
-        Written at most once. The guard is not synchronised: two threads racing
-        here both write the same value, so the only cost is a duplicate write.
-        """
+        """Stamp ``netra.conversation.truncated`` on the span (at most once)."""
         if self._truncated:
             return
         self._truncated = True
@@ -605,10 +582,9 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
     ``is_zero_usage``.
 
     Conversation content — LiveKit's own ``lk.*`` attributes, its serialised chat
-    contexts, and its conversation events — all land in the indexed
-    ``gen_ai.prompt.*``/``gen_ai.completion.*`` pair that ``SpanIOProcessor``
-    assembles into ``input``/``output``. That is the convention every other Netra
-    instrumentation emits, so a voice turn renders like any other span.
+    contexts, and its conversation events — are accumulated by
+    ``_ConversationRecorder`` and written as structured ``input``/``output``
+    JSON arrays, matching the convention every other Netra instrumentation emits.
 
     Two spans carry no conversation content of their own and inherit it from a
     direct child when that child ends — see ``IO_FROM_CHILD_SPAN_NAMES`` and

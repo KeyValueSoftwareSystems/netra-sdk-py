@@ -106,13 +106,18 @@ def _record(harness: _Harness, span_name: str, attributes: Dict[str, Any]) -> Di
 
 
 def _messages(attributes: Dict[str, Any], side: str) -> List[Tuple[str, str]]:
-    """Read the indexed ``gen_ai.<side>.N.role/content`` pairs back, in index order."""
-    indices = sorted(
-        int(key.split(".")[2]) for key in attributes if key.startswith(f"gen_ai.{side}.") and key.endswith(".content")
-    )
-    return [
-        (attributes[f"gen_ai.{side}.{index}.role"], attributes[f"gen_ai.{side}.{index}.content"]) for index in indices
-    ]
+    """Read conversation messages from the structured ``input``/``output`` attribute."""
+    attr_key = "input" if side == "prompt" else "output"
+    raw = attributes.get(attr_key, "")
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [(entry.get("role", ""), entry.get("content", "")) for entry in parsed if isinstance(entry, dict)]
 
 
 class TestSpanTypeMapping:
@@ -294,10 +299,11 @@ class TestConversationMapping:
         assert _messages(attributes, "prompt") == [("system", "Be brief."), ("user", "hi")]
         assert _messages(attributes, "completion") == [("assistant", "hello")]
 
-    def test_conversation_content_does_not_write_input_directly(self, harness: _Harness) -> None:
+    def test_conversation_content_writes_structured_input(self, harness: _Harness) -> None:
         attributes = _record(harness, "agent_turn", {"lk.user_input": "hi"})
 
-        assert "input" not in attributes, "input is assembled downstream by SpanIOProcessor"
+        assert "input" in attributes, "recorder writes structured input directly"
+        assert _messages(attributes, "prompt") == [("user", "hi")]
 
 
 # A conversation long enough that expanding all of it would overflow the OTel
@@ -392,13 +398,15 @@ class TestConversationIsBounded:
         assert _messages(attributes, "completion") == [("assistant", "THE REPLY")]
 
     def test_propagated_child_content_is_capped(self, harness: _Harness) -> None:
-        # A provider span's own indexed prompts also grow with the conversation,
-        # and llm_request_run inherits them wholesale.
+        # A provider span's structured input grows with the conversation,
+        # and llm_request_run inherits the messages wholesale (subject to the cap).
         parent = harness.livekit_tracer.start_span("llm_request_run")
-        child_attributes: Dict[str, Any] = {}
-        for index in range(_OVERFLOWING_MESSAGE_COUNT):
-            child_attributes[f"gen_ai.prompt.{index}.role"] = "user"
-            child_attributes[f"gen_ai.prompt.{index}.content"] = f"turn {index}"
+        child_attributes: Dict[str, Any] = {
+            "gen_ai.request.model": "gpt-4",
+            "input": json.dumps(
+                [{"role": "user", "content": f"turn {index}"} for index in range(_OVERFLOWING_MESSAGE_COUNT)]
+            ),
+        }
         with trace.use_span(parent, end_on_exit=False):
             child = harness.tracer("openai").start_span("openai.chat", attributes=child_attributes)
             child.end()
@@ -727,10 +735,9 @@ class TestChildToParentPropagation:
             "llm_request_run",
             "openai",
             {
-                "gen_ai.prompt.0.role": "user",
-                "gen_ai.prompt.0.content": "hi",
-                "gen_ai.completion.0.role": "assistant",
-                "gen_ai.completion.0.content": "hello",
+                "gen_ai.request.model": "gpt-4",
+                "input": json.dumps([{"role": "user", "content": "hi"}]),
+                "output": json.dumps([{"role": "assistant", "content": "hello"}]),
             },
         )
 
@@ -771,21 +778,28 @@ class TestChildToParentPropagation:
             harness,
             "agent_turn",
             "openai",
-            {"gen_ai.prompt.0.role": "user", "gen_ai.prompt.0.content": "hi"},
+            {
+                "gen_ai.request.model": "gpt-4",
+                "input": json.dumps([{"role": "user", "content": "hi"}]),
+            },
         )
 
-        assert "gen_ai.prompt.0.content" not in harness.attributes("agent_turn")
+        parent_input = harness.attributes("agent_turn").get("input", "")
+        parsed = json.loads(parent_input) if parent_input else []
+        child_messages = [e for e in parsed if isinstance(e, dict) and e.get("content") == "hi"]
+        assert not child_messages, "child content should not propagate to agent_turn"
 
     def test_content_arriving_after_the_parent_ended_is_dropped(self, harness: _Harness) -> None:
         parent = harness.livekit_tracer.start_span("llm_request_run")
         with trace.use_span(parent, end_on_exit=False):
             child = harness.tracer("openai").start_span("provider.call")
-            child.set_attribute("gen_ai.prompt.0.role", "user")
-            child.set_attribute("gen_ai.prompt.0.content", "hi")
+            child.set_attribute("gen_ai.request.model", "gpt-4")
+            child.set_attribute("input", json.dumps([{"role": "user", "content": "hi"}]))
         parent.end()
         child.end()
 
-        assert "gen_ai.prompt.0.content" not in harness.attributes("llm_request_run")
+        parent_messages = _messages(harness.attributes("llm_request_run"), "prompt")
+        assert ("user", "hi") not in parent_messages
 
 
 class TestConversationReading:

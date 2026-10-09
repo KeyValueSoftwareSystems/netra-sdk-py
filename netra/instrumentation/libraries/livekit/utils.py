@@ -119,15 +119,10 @@ NETRA_CLOSE_REASON = "netra.livekit.close_reason"
 # The gen_ai conventions this package emits into
 # ---------------------------------------------------------------------------
 
-# The conversation-attribute convention SpanIOProcessor already consumes
-# (``_PROMPT_RE`` in netra/processors/span_io_processor.py). Emitting into this
-# shape rather than inventing a third convention is what makes voice turns render
-# like every other LLM span.
+# Legacy indexed attribute patterns, retained for backward-compatible reading in
+# ``conversation_from_attributes``. New writes use structured ``input``/``output``.
 GEN_AI_PROMPT_ROLE = "gen_ai.prompt.{index}.role"
 GEN_AI_PROMPT_CONTENT = "gen_ai.prompt.{index}.content"
-
-# The completion-side counterpart (``_COMPLETION_RE`` in the same processor),
-# which fills ``output``.
 GEN_AI_COMPLETION_ROLE = "gen_ai.completion.{index}.role"
 GEN_AI_COMPLETION_CONTENT = "gen_ai.completion.{index}.content"
 
@@ -201,9 +196,9 @@ NETRA_CONVERSATION_TRUNCATED = "netra.conversation.truncated"
 # ---------------------------------------------------------------------------
 
 # The attribute holding a serialised ``ChatContext`` (on ``llm_node`` and
-# ``eou_detection``). Expanded into indexed ``gen_ai.prompt.*`` attributes rather
-# than mirrored verbatim into ``input``: the raw JSON also contains non-message
-# items (``agent_config_update``, handoffs) and reads as an opaque blob.
+# ``eou_detection``). Expanded into structured ``input`` messages rather than
+# mirrored verbatim: the raw JSON also contains non-message items
+# (``agent_config_update``, handoffs) and reads as an opaque blob.
 CHAT_CTX_ATTRIBUTE = "lk.chat_ctx"
 
 # LiveKit's serialised ``TTSMetrics`` (``trace_types.ATTR_TTS_METRICS``, written on
@@ -368,11 +363,9 @@ ATTRIBUTE_MAP: Dict[str, str] = {
 # ``lk.response.text`` means the same thing on ``agent_turn`` as it does on
 # ``llm_node``, so nothing here needs gating on the span name.
 #
-# Additive: the original lk.* attribute is always preserved, and these never write
-# ``input``/``output`` directly — indexed ``gen_ai.prompt.*``/``gen_ai.completion.*``
-# attributes are emitted instead, the same convention Netra's own provider
-# instrumentations use, which is what lets ``SpanIOProcessor`` assemble a
-# multi-message ``input``.
+# Additive: the original lk.* attribute is always preserved.
+# ``_ConversationRecorder`` accumulates these into structured ``input``/``output``
+# JSON arrays.
 CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     # agent_turn: the system instructions in force for the turn. LiveKit writes it
     # before ``lk.user_input``, so it lands at prompt index 0 and the assembled
@@ -448,10 +441,8 @@ EVENT_ROLE: Dict[str, str] = {
 # Payload field names (private)
 # ---------------------------------------------------------------------------
 
-# Reads an indexed conversation attribute back off a span, for the child-to-parent
-# propagation in ``conversation_from_attributes``. The plural forms match what
-# ``SpanIOProcessor`` accepts, so a child written by any instrumentation in the SDK
-# is readable here.
+# Legacy pattern for reading indexed conversation attributes off older spans.
+# Current spans use structured ``input``/``output`` JSON; this is the fallback.
 _INDEXED_MESSAGE_RE = re.compile(r"^gen_ai\.(prompt|completion)s?\.(\d+)\.(role|content)$")
 
 _PROMPT_GROUP = "prompt"
@@ -568,12 +559,45 @@ def netra_span_type_for(span_name: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def message_dicts_from_io(raw: Optional[str]) -> List[Dict[str, Any]]:
+    """Parse a structured ``input``/``output`` JSON array into message dicts.
+
+    Returns an empty list if *raw* is absent, empty, or not a JSON array of dicts.
+    """
+    if not raw:
+        return []
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [entry for entry in parsed if isinstance(entry, dict)]
+
+
+def _parse_structured_messages(raw: Optional[str]) -> List[Tuple[str, str]]:
+    """Try to parse a structured ``input``/``output`` JSON array into ``(role, content)`` pairs.
+
+    Returns an empty list if *raw* is not a JSON array of message dicts, so the
+    caller can fall back to treating it as a single raw string.
+    """
+    pairs: List[Tuple[str, str]] = []
+    for entry in message_dicts_from_io(raw):
+        content = entry.get("content")
+        if content is None:
+            continue
+        pairs.append((entry.get("role", ""), str(content)))
+    return pairs
+
+
 def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> SpanConversation:
     """Read a finished span's conversation content back out of its attributes.
 
-    The inverse of what this package (and every other Netra instrumentation) writes
-    when it emits indexed ``gen_ai.prompt.*``/``gen_ai.completion.*`` pairs, so a
-    child span's conversation can be re-emitted onto its parent.
+    Supports two formats:
+    - **Structured**: ``input``/``output`` contain a JSON array of ``{role, content}``
+      dicts (written by current Netra instrumentations and ``_ConversationRecorder``).
+    - **Indexed** (legacy): ``gen_ai.prompt.N.role``/``gen_ai.prompt.N.content`` and
+      ``gen_ai.completion.N.*`` individual attributes.
 
     An entry carrying a role but no text is skipped — a role alone is not a message.
     An entry carrying text but no role keeps the text; the caller supplies a role.
@@ -612,6 +636,20 @@ def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> Spa
 
     prompts = _ordered_messages(prompt_entries)
     completions = _ordered_messages(completion_entries)
+
+    # When no indexed keys exist, try to parse input/output as structured JSON arrays.
+    if not prompts and raw_input:
+        structured = _parse_structured_messages(raw_input)
+        if structured:
+            prompts = structured
+            raw_input = None
+
+    if not completions and raw_output:
+        structured = _parse_structured_messages(raw_output)
+        if structured:
+            completions = structured
+            raw_output = None
+
     return SpanConversation(
         prompts=prompts,
         completions=completions,
