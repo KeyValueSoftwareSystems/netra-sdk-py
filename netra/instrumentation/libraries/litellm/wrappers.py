@@ -436,15 +436,24 @@ class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
-            if response.get("status") == "completed":
-                response_output = response.get("output", {})
+            if response.get("status") in ("completed", "incomplete"):
+                # Output items are messages (text parts), function calls and reasoning items; only messages
+                # carry ``content``, and every text part is kept rather than only the last one.
+                response_output = response.get("output") or []
+                texts = []
+                function_calls = []
                 for output in response_output:
-                    content = output.get("content")
-                    for index, chunk in enumerate(content):
-                        assistant_text = chunk.get("text", "")
-                        self._complete_response["choices"] = [
-                            {"message": {"role": "assistant", "content": assistant_text}}
-                        ]
+                    if not isinstance(output, dict):
+                        continue
+                    if output.get("type") == "function_call":
+                        function_calls.append(output)
+                    for part in output.get("content") or []:
+                        if isinstance(part, dict) and part.get("text"):
+                            texts.append(part["text"])
+                if texts:
+                    self._complete_response["choices"] = [{"message": {"role": "assistant", "content": "".join(texts)}}]
+                if function_calls:
+                    self._complete_response["output"] = function_calls
 
                 usage = response.get("usage", {})
                 self._complete_response["usage"] = usage
@@ -564,15 +573,24 @@ class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
             record_span_timing(self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
         if chunk_dict.get("response"):
             response = chunk_dict.get("response", {})
-            if response.get("status") == "completed":
-                response_output = response.get("output", {})
+            if response.get("status") in ("completed", "incomplete"):
+                # Output items are messages (text parts), function calls and reasoning items; only messages
+                # carry ``content``, and every text part is kept rather than only the last one.
+                response_output = response.get("output") or []
+                texts = []
+                function_calls = []
                 for output in response_output:
-                    content = output.get("content")
-                    for index, chunk in enumerate(content):
-                        assistant_text = chunk.get("text", "")
-                        self._complete_response["choices"] = [
-                            {"message": {"role": "assistant", "content": assistant_text}}
-                        ]
+                    if not isinstance(output, dict):
+                        continue
+                    if output.get("type") == "function_call":
+                        function_calls.append(output)
+                    for part in output.get("content") or []:
+                        if isinstance(part, dict) and part.get("text"):
+                            texts.append(part["text"])
+                if texts:
+                    self._complete_response["choices"] = [{"message": {"role": "assistant", "content": "".join(texts)}}]
+                if function_calls:
+                    self._complete_response["output"] = function_calls
 
                 usage = response.get("usage", {})
                 self._complete_response["usage"] = usage

@@ -156,7 +156,16 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
 
     if output := response_dict.get("output"):
         for element in output:
-            if content := element.get("content"):
+            if not isinstance(element, dict):
+                continue
+            if element.get("type") == "function_call":
+                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+                span.set_attribute(
+                    f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
+                    json.dumps({"name": element.get("name", ""), "arguments": element.get("arguments", "")}),
+                )
+                message_index += 1
+            elif content := element.get("content"):
                 for chunk in content:
                     if text := chunk.get("text"):
                         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
