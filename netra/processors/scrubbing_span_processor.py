@@ -19,7 +19,13 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
             r"(?:Token:\s*\S{32,})"  # scrub entire "Token: <value>" where value is 32+ non-space
             r"|(?:sk-[A-Za-z0-9]{16,})"  # scrub only the sk-... token (keep labels like "API Key:")
         ),
-        "email": re.compile(r"\b[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Z|a-z]{2,}\b", re.IGNORECASE),
+        # Linear-time: a match may only start at the beginning of a local-part run (the lookbehind), and every
+        # repeated segment is bounded. The previous `\b`-anchored pattern backtracked quadratically on inputs
+        # like "a.a.a.a..." (seconds per span at the default attribute length limit).
+        "email": re.compile(
+            r"(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]{1,64}@[A-Za-z0-9-]{1,63}(?:\.[A-Za-z0-9-]{1,63})*\.[A-Za-z]{2,63}\b",
+            re.IGNORECASE,
+        ),
         "phone": re.compile(r"(?:\+?1[-.\s]?)?\(?[0-9]{3}\)?[-.\s]?[0-9]{3}[-.\s]?[0-9]{4}"),
         # Run credit card BEFORE SSN to avoid SSN partially matching inside card numbers
         "credit_card": re.compile(r"(?<!\d)(?:4\d{15}|5[1-5]\d{14}|3[47]\d{13}|6(?:011|5\d{2})\d{12})(?!\d)"),
