@@ -44,7 +44,7 @@ class TestCohereInstrumentor:
 
         # Assert
         assert isinstance(dependencies, Collection)
-        assert "cohere >=4.2.7, <6" in dependencies
+        assert "cohere >=4.2.7, <8" in dependencies
 
     @patch("netra.instrumentation.libraries.cohere.get_tracer")
     @patch("netra.instrumentation.libraries.cohere.wrap_function_wrapper")

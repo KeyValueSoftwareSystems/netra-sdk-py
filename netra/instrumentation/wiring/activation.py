@@ -14,12 +14,13 @@ import logging
 import re
 import sys
 import threading
+import warnings
 from contextlib import contextmanager
 from functools import lru_cache, partial
 from importlib import import_module
 from importlib.metadata import distributions
 from io import StringIO
-from typing import TYPE_CHECKING, AbstractSet, Callable, Iterator, NamedTuple, Optional, TextIO
+from typing import TYPE_CHECKING, AbstractSet, Any, Callable, Iterator, NamedTuple, Optional, TextIO
 
 from netra.instrumentation.instruments import InstrumentSet
 from netra.instrumentation.wiring.registry import CUSTOM_INSTRUMENTORS, SUBPROCESS_INSTRUMENTOR, InstrumentorSpec
@@ -37,6 +38,11 @@ logger = logging.getLogger(__name__)
 _output_suppression_lock = threading.Lock()
 _output_suppression_depth = 0
 _suppressed_streams: Optional[tuple[TextIO, TextIO]] = None
+
+# Instrumentations already reported as inactive, so each is reported once per
+# process however many times its trigger fires.
+_inactive_warning_lock = threading.Lock()
+_instrumentations_warned_inactive: set[str] = set()
 
 
 class Activation(NamedTuple):
@@ -101,13 +107,37 @@ def run_activation(activation: Activation) -> None:
     """
     try:
         activation.run()
-    except Exception:
+    except Exception as exc:
         # Deliberately broad, and the only place instrumentation failures are
         # swallowed.  Deferred activation runs inside the client's own
         # ``import`` statement, where a third-party instrumentor failing to
         # patch must not break that import; and one instrumentor failing must
         # not cost the client every other instrumentation.
         logger.exception("Failed to activate instrumentation: %s", activation.name)
+        warn_instrumentation_inactive(activation.name, f"activation failed with {type(exc).__name__}: {exc}")
+
+
+def warn_instrumentation_inactive(name: str, reason: str) -> None:
+    """Tell the user, once, that an instrumentation they enabled is not tracing.
+
+    Netra's own logger is silent unless debug mode is on, and a library that is
+    installed but not instrumented produces no other signal: the customer just
+    gets no spans for it.  A ``RuntimeWarning`` is visible by default and goes
+    through the host's own warnings configuration.
+
+    Args:
+        name: The instrument's enum member name, e.g. ``"COHEREAI"``.
+        reason: Why it is inactive, e.g. the installed and supported versions.
+    """
+    with _inactive_warning_lock:
+        if name in _instrumentations_warned_inactive:
+            return
+        _instrumentations_warned_inactive.add(name)
+    warnings.warn(
+        f"Netra: {name} instrumentation is inactive ({reason}); calls to this library will not be traced.",
+        RuntimeWarning,
+        stacklevel=2,
+    )
 
 
 def apply_custom_instrumentation(instrument: InstrumentSet) -> None:
@@ -123,7 +153,7 @@ def apply_custom_instrumentation(instrument: InstrumentSet) -> None:
     """
     for spec in CUSTOM_INSTRUMENTORS.get(instrument, ()):
         if all(is_distribution_installed(name) for name in spec.required_distributions):
-            _apply_instrumentor(spec)
+            _apply_instrumentor(spec, instrument.name)
             return
 
     logger.debug("No installed distribution to instrument for: %s", instrument.name)
@@ -264,16 +294,45 @@ def _installed_distribution_names() -> frozenset[str]:
     return frozenset(names)
 
 
-def _apply_instrumentor(spec: InstrumentorSpec) -> None:
+def _apply_instrumentor(spec: InstrumentorSpec, name: Optional[str] = None) -> None:
     """Instantiate the instrumentor described by *spec* and apply it.
 
     Args:
         spec: The instrumentor to build and apply.
+        name: The instrument's enum member name, for the inactive warning.
+            Defaults to the instrumentor's class name.
     """
     instrumentor_class = getattr(import_module(spec.module), spec.class_name)
     instrumentor = instrumentor_class(**spec.constructor_kwargs)
+    if instrumentor.is_instrumented_by_opentelemetry:
+        return
+    instrumentor.instrument()
     if not instrumentor.is_instrumented_by_opentelemetry:
-        instrumentor.instrument()
+        # ``instrument()`` declines without raising when the installed library
+        # is outside the supported range, logging only to a logger Netra
+        # silences by default.
+        warn_instrumentation_inactive(name or spec.class_name, _describe_why_not_instrumented(instrumentor))
+
+
+def _describe_why_not_instrumented(instrumentor: Any) -> str:
+    """Explain why ``instrument()`` left *instrumentor* inactive.
+
+    Args:
+        instrumentor: An instrumentor whose ``instrument()`` call did not apply.
+
+    Returns:
+        The dependency conflict, naming the supported range and the installed
+        version, or a generic reason when there is none.
+    """
+    from opentelemetry.instrumentation.dependencies import get_dependency_conflicts
+
+    try:
+        conflict = get_dependency_conflicts(instrumentor.instrumentation_dependencies())
+    except Exception:
+        conflict = None
+    if conflict is not None:
+        return f"installed version is not supported: {conflict}"
+    return "the instrumentor did not apply"
 
 
 def _resolve_traceloop_instruments(names: AbstractSet[str]) -> set["Instruments"]:

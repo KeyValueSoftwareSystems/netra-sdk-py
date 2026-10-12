@@ -12,7 +12,8 @@ distribution metadata, because two cases break derivation:
 * **Namespace packages.**  ``livekit-agents`` lives under the ``livekit``
   namespace package; hooking ``livekit`` would fire while ``livekit.agents`` is
   still mid-import.  The trigger has to be the real module — ``livekit.agents``.
-  The same applies to ``google.adk``, ``google.genai`` and ``cerebras.cloud.sdk``.
+  The same applies to ``google.adk``, ``google.genai`` and ``cerebras.cloud.sdk``,
+  and to ``mistralai`` from SDK 3.x on, whose client lives at ``mistralai.client``.
 
 Values are the module names the instrumentor actually patches.  Multiple
 triggers per instrument are expected: the first to fire activates, the rest
@@ -57,7 +58,11 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.LIVEKIT: ("livekit.agents",),
     InstrumentSet.LLAMA_INDEX: ("llama_index",),
     InstrumentSet.MCP: ("mcp",),
-    InstrumentSet.MISTRALAI: ("mistralai",),
+    # SDK 3.x made `mistralai` a namespace package (its import never fires a
+    # post-import hook) and moved the client to `mistralai.client`.  1.x/2.x
+    # import `mistralai.chat` lazily, on first `client.chat` access, which is
+    # still before any chat method can run.
+    InstrumentSet.MISTRALAI: ("mistralai.chat", "mistralai.client"),
     InstrumentSet.OLLAMA: ("ollama",),
     InstrumentSet.OPENAI: ("openai",),
     # openai-agents imports as `agents`, not `openai_agents`.

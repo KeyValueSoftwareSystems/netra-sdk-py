@@ -3,10 +3,10 @@
 import json
 import logging
 import os
-from typing import Any, AsyncGenerator, Callable, Collection, Dict, Generator, Optional, Tuple, Union
+from importlib import import_module
+from types import SimpleNamespace
+from typing import Any, AsyncGenerator, Callable, Collection, Dict, Generator, List, Optional, Tuple
 
-from mistralai import AssistantMessage, ChatCompletionChoice, UsageInfo
-from mistralai.models import ChatCompletionResponse
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
 from opentelemetry.instrumentation.utils import (
@@ -31,48 +31,84 @@ logger = logging.getLogger(__name__)
 
 _instruments = ("mistralai >= 1.0.0",)
 
-WRAPPED_METHODS = [
-    {
-        "module": "mistralai.chat",
-        "object": "Chat",
-        "method": "complete",
-        "span_name": "mistralai.chat.complete",
-        "streaming": False,
-        "is_async": False,
-    },
-    {
-        "module": "mistralai.chat",
-        "object": "Chat",
-        "method": "complete_async",
-        "span_name": "mistralai.chat.complete_async",
-        "streaming": False,
-        "is_async": True,
-    },
-    {
-        "module": "mistralai.chat",
-        "object": "Chat",
-        "method": "stream",
-        "span_name": "mistralai.chat.stream",
-        "streaming": True,
-        "is_async": False,
-    },
-    {
-        "module": "mistralai.chat",
-        "object": "Chat",
-        "method": "stream_async",
-        "span_name": "mistralai.chat.stream_async",
-        "streaming": True,
-        "is_async": True,
-    },
-    {
-        "module": "mistralai.embeddings",
-        "object": "Embeddings",
-        "method": "create",
-        "span_name": "mistralai.embeddings",
-        "streaming": False,
-        "is_async": False,
-    },
-]
+
+def _wrapped_methods(package: str) -> List[Dict[str, Any]]:
+    """Return the methods to wrap when the SDK's resources live under *package*.
+
+    Args:
+        package: ``"mistralai"`` for SDK 1.x/2.x, ``"mistralai.client"`` for 3.x.
+
+    Returns:
+        One entry per wrapped method.
+    """
+    return [
+        {
+            "module": f"{package}.chat",
+            "object": "Chat",
+            "method": "complete",
+            "span_name": "mistralai.chat.complete",
+            "streaming": False,
+            "is_async": False,
+        },
+        {
+            "module": f"{package}.chat",
+            "object": "Chat",
+            "method": "complete_async",
+            "span_name": "mistralai.chat.complete_async",
+            "streaming": False,
+            "is_async": True,
+        },
+        {
+            "module": f"{package}.chat",
+            "object": "Chat",
+            "method": "stream",
+            "span_name": "mistralai.chat.stream",
+            "streaming": True,
+            "is_async": False,
+        },
+        {
+            "module": f"{package}.chat",
+            "object": "Chat",
+            "method": "stream_async",
+            "span_name": "mistralai.chat.stream_async",
+            "streaming": True,
+            "is_async": True,
+        },
+        {
+            "module": f"{package}.embeddings",
+            "object": "Embeddings",
+            "method": "create",
+            "span_name": "mistralai.embeddings",
+            "streaming": False,
+            "is_async": False,
+        },
+    ]
+
+
+# SDK 1.x/2.x.
+WRAPPED_METHODS = _wrapped_methods("mistralai")
+# SDK 3.x moved every resource under ``mistralai.client`` and made ``mistralai``
+# itself a namespace package.
+WRAPPED_METHODS_V3 = _wrapped_methods("mistralai.client")
+
+
+def _select_wrapped_methods() -> List[Dict[str, Any]]:
+    """Return the wrap table matching the installed SDK's layout.
+
+    Probes the chat module rather than the version number, so a layout change
+    is detected even in a release the table was not written for.
+
+    Returns:
+        The matching table, or an empty list when neither layout is present.
+    """
+    for table in (WRAPPED_METHODS_V3, WRAPPED_METHODS):
+        try:
+            module = import_module(table[0]["module"])
+        except ImportError:
+            continue
+        if hasattr(module, table[0]["object"]):
+            return table
+    return []
 
 
 # The exported OpenTelemetry scope name is a wire contract -- dashboards and
@@ -150,14 +186,14 @@ def _set_input_attributes(
 @dont_throw
 def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, response: Any) -> None:
     # Handle both object and dict response formats
-    response_id = getattr(response, "id", None) or response.get("id") if hasattr(response, "get") else None
+    response_id = response.get("id") if isinstance(response, dict) else getattr(response, "id", None)
     _set_span_attribute(span, GEN_AI_RESPONSE_ID, response_id)
 
     if llm_request_type == LLMRequestTypeValues.EMBEDDING:
         return
 
     if should_send_prompts():
-        choices = getattr(response, "choices", None) or response.get("choices", []) if hasattr(response, "get") else []
+        choices = (response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)) or []
         for index, choice in enumerate(choices):
             prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{index}"
 
@@ -231,55 +267,80 @@ def _set_response_attributes(span: Any, llm_request_type: LLMRequestTypeValues, 
     )
 
 
+def _new_accumulated_response() -> SimpleNamespace:
+    """Return an empty response to accumulate streamed chunks into.
+
+    Plain objects rather than the SDK's own models, whose import path differs
+    between SDK versions.
+    """
+    return SimpleNamespace(
+        id="",
+        model="",
+        choices=[],
+        usage=SimpleNamespace(prompt_tokens=0, total_tokens=0, completion_tokens=0),
+    )
+
+
+@dont_throw
+def _accumulate_chunk(accumulated_response: SimpleNamespace, res: Any) -> None:
+    """Fold one streamed chunk into *accumulated_response*.
+
+    Runs inside the caller's own iteration, so it must never raise.
+
+    Args:
+        accumulated_response: The response being built up.
+        res: One event from the SDK's stream.
+    """
+    data = getattr(res, "data", None)
+    if data is None:
+        return
+
+    if getattr(data, "model", None):
+        accumulated_response.model = data.model
+    if getattr(data, "usage", None):
+        accumulated_response.usage = data.usage
+    # ID is the same for all chunks, so it's safe to overwrite it every time
+    if getattr(data, "id", None):
+        accumulated_response.id = data.id
+
+    for idx, choice in enumerate(getattr(data, "choices", None) or []):
+        while len(accumulated_response.choices) <= idx:
+            accumulated_response.choices.append(
+                SimpleNamespace(
+                    index=len(accumulated_response.choices),
+                    message=SimpleNamespace(role="assistant", content=""),
+                    finish_reason=None,
+                )
+            )
+        accumulated_choice = accumulated_response.choices[idx]
+
+        if getattr(choice, "finish_reason", None):
+            accumulated_choice.finish_reason = choice.finish_reason
+
+        delta = getattr(choice, "delta", None)
+        if delta:
+            content = getattr(delta, "content", None)
+            if isinstance(content, str):
+                accumulated_choice.message.content += content
+            elif content:
+                # Newer SDKs may stream a list of content chunks.
+                for part in content:
+                    text = getattr(part, "text", None)
+                    if isinstance(text, str):
+                        accumulated_choice.message.content += text
+            if getattr(delta, "role", None):
+                accumulated_choice.message.role = delta.role
+
+
 def _accumulate_streaming_response(
     span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
 ) -> Generator[Any, None, None]:
-    accumulated_response = ChatCompletionResponse(
-        id="",
-        object="",
-        created=0,
-        model="",
-        choices=[],
-        usage=UsageInfo(prompt_tokens=0, total_tokens=0, completion_tokens=0),
-    )
+    accumulated_response = _new_accumulated_response()
 
     try:
         for res in response:
             yield res
-
-            data = None
-            if hasattr(res, "data"):
-                data = res.data
-
-            if data is not None and hasattr(data, "model") and data.model:
-                accumulated_response.model = data.model
-            if data is not None and hasattr(data, "usage") and data.usage:
-                accumulated_response.usage = data.usage
-            # ID is the same for all chunks, so it's safe to overwrite it every time
-            if data is not None and hasattr(data, "id") and data.id:
-                accumulated_response.id = data.id
-
-            choices = getattr(data, "choices", [])
-            for idx, choice in enumerate(choices):
-                if len(accumulated_response.choices) <= idx:
-                    accumulated_response.choices.append(
-                        ChatCompletionChoice(
-                            index=idx,
-                            message=AssistantMessage(role="assistant", content=""),
-                            finish_reason=choice.finish_reason,
-                        )
-                    )
-
-                if hasattr(choice, "finish_reason"):
-                    accumulated_response.choices[idx].finish_reason = choice.finish_reason
-
-                # Handle delta content
-                delta = getattr(choice, "delta", None)
-                if delta:
-                    if hasattr(delta, "content") and delta.content:
-                        accumulated_response.choices[idx].message.content += delta.content
-                    if hasattr(delta, "role") and delta.role:
-                        accumulated_response.choices[idx].message.role = delta.role
+            _accumulate_chunk(accumulated_response, res)
 
         _set_response_attributes(span, llm_request_type, accumulated_response)
         span.set_status(Status(StatusCode.OK))
@@ -292,52 +353,12 @@ def _accumulate_streaming_response(
 async def _aaccumulate_streaming_response(
     span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
 ) -> AsyncGenerator[Any, None]:
-    accumulated_response = ChatCompletionResponse(
-        id="",
-        object="",
-        created=0,
-        model="",
-        choices=[],
-        usage=UsageInfo(prompt_tokens=0, total_tokens=0, completion_tokens=0),
-    )
+    accumulated_response = _new_accumulated_response()
 
     try:
         async for res in response:
             yield res
-
-            data = None
-            if hasattr(res, "data"):
-                data = res.data
-
-            if data is not None and hasattr(data, "model") and data.model:
-                accumulated_response.model = data.model
-            if data is not None and hasattr(data, "usage") and data.usage:
-                accumulated_response.usage = data.usage
-            # Id is the same for all chunks, so it's safe to overwrite it every time
-            if data is not None and hasattr(data, "id") and data.id:
-                accumulated_response.id = data.id
-
-            choices = getattr(data, "choices", [])
-            for idx, choice in enumerate(choices):
-                if len(accumulated_response.choices) <= idx:
-                    accumulated_response.choices.append(
-                        ChatCompletionChoice(
-                            index=idx,
-                            message=AssistantMessage(role="assistant", content=""),
-                            finish_reason=choice.finish_reason,
-                        )
-                    )
-
-                if hasattr(choice, "finish_reason"):
-                    accumulated_response.choices[idx].finish_reason = choice.finish_reason
-
-                # Handle delta content
-                delta = getattr(choice, "delta", None)
-                if delta:
-                    if hasattr(delta, "content") and delta.content:
-                        accumulated_response.choices[idx].message.content += delta.content
-                    if hasattr(delta, "role") and delta.role:
-                        accumulated_response.choices[idx].message.role = delta.role
+            _accumulate_chunk(accumulated_response, res)
 
         _set_response_attributes(span, llm_request_type, accumulated_response)
         span.set_status(Status(StatusCode.OK))
@@ -512,6 +533,16 @@ async def _awrap(
             return response
 
 
+def _installed_version() -> str:
+    """Return the installed mistralai version, for the inactive warning."""
+    from importlib.metadata import PackageNotFoundError, version
+
+    try:
+        return version("mistralai")
+    except PackageNotFoundError:
+        return "(unknown version)"
+
+
 class MistralAiInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     """An instrumentor for Mistral AI's client library."""
 
@@ -525,7 +556,8 @@ class MistralAiInstrumentor(BaseInstrumentor):  # type: ignore[misc]
     def _instrument(self, **kwargs: Any) -> None:
         tracer_provider = kwargs.get("tracer_provider")
         tracer = get_tracer(_TRACER_NAME, __version__, tracer_provider)
-        for wrapped_method in WRAPPED_METHODS:
+        self._wrapped_methods = []
+        for wrapped_method in _select_wrapped_methods():
             module_name = wrapped_method.get("module")
             object_name = wrapped_method.get("object")
             method_name = wrapped_method.get("method")
@@ -533,14 +565,27 @@ class MistralAiInstrumentor(BaseInstrumentor):  # type: ignore[misc]
 
             wrapper_func = _awrap if is_async else _wrap
 
-            wrap_function_wrapper(
-                module_name,
-                f"{object_name}.{method_name}",
-                wrapper_func(tracer, wrapped_method),
-            )
+            try:
+                wrap_function_wrapper(
+                    module_name,
+                    f"{object_name}.{method_name}",
+                    wrapper_func(tracer, wrapped_method),
+                )
+            except (AttributeError, ImportError) as exc:
+                logger.debug("Failed to wrap %s.%s.%s: %s", module_name, object_name, method_name, exc)
+                continue
+            self._wrapped_methods.append(wrapped_method)
+
+        if not self._wrapped_methods:
+            from netra.instrumentation.wiring.activation import warn_instrumentation_inactive
+
+            warn_instrumentation_inactive("MISTRALAI", f"no known API found in mistralai {_installed_version()}")
 
     def _uninstrument(self, **kwargs: Any) -> None:
-        for wrapped_method in WRAPPED_METHODS:
+        # BaseInstrumentor is a singleton whose __init__ reruns on every
+        # construction, so the table recorded at instrument time is re-derived
+        # when it is not there.
+        for wrapped_method in getattr(self, "_wrapped_methods", None) or _select_wrapped_methods():
             module_name = wrapped_method.get("module")
             object_name = wrapped_method.get("object")
             method_name = wrapped_method.get("method")
@@ -549,3 +594,4 @@ class MistralAiInstrumentor(BaseInstrumentor):  # type: ignore[misc]
                 f"{module_name}.{object_name}",
                 method_name,
             )
+        self._wrapped_methods = []
