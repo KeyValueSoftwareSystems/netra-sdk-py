@@ -7,7 +7,8 @@ nested-run guard and skipped agent-name inference. It also called
 property, so every instrumented run failed.
 """
 
-from typing import Any
+import asyncio
+from typing import Any, Iterator, List
 
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
@@ -87,3 +88,85 @@ def test_response_attributes_never_raise(provider: TracerProvider) -> None:
 
 
 # --- end-to-end against the real library (skipped when pydantic-ai is absent) ---
+
+
+@pytest.fixture
+def instrumented(provider: TracerProvider) -> Iterator[None]:
+    pytest.importorskip("pydantic_ai")
+    from netra.instrumentation.libraries.pydantic_ai import NetraPydanticAIInstrumentor
+
+    instrumentor = NetraPydanticAIInstrumentor()
+    # skip_dep_check: the dependency may be installed as pydantic-ai-slim.
+    instrumentor.instrument(tracer_provider=provider, skip_dep_check=True)
+    try:
+        yield
+    finally:
+        instrumentor.uninstrument()
+
+
+def _test_agent() -> Any:
+    from pydantic_ai import Agent
+    from pydantic_ai.models.test import TestModel
+
+    return Agent(TestModel())
+
+
+def _names(exporter: InMemorySpanExporter) -> List[str]:
+    return [span.name for span in exporter.get_finished_spans()]
+
+
+@pytest.mark.unit
+def test_run_sync_leaves_the_threads_event_loop_usable(instrumented: None) -> None:
+    loop = asyncio.new_event_loop()
+    asyncio.set_event_loop(loop)
+    try:
+        result = _test_agent().run_sync("hi")
+
+        assert result.output
+        assert asyncio.get_event_loop() is loop
+        assert not loop.is_closed()
+        assert loop.run_until_complete(asyncio.sleep(0, result="ok")) == "ok"
+    finally:
+        asyncio.set_event_loop(None)
+        loop.close()
+
+
+@pytest.mark.unit
+def test_run_sync_returns_the_upstream_result_type(instrumented: None) -> None:
+    from pydantic_ai.run import AgentRunResult
+
+    assert isinstance(_test_agent().run_sync("hi"), AgentRunResult)
+
+
+@pytest.mark.unit
+def test_run_sync_infers_the_agent_name_from_the_caller(instrumented: None) -> None:
+    support_agent = _test_agent()
+    support_agent.run_sync("hi")
+    assert support_agent.name == "support_agent"
+
+
+@pytest.mark.unit
+def test_nested_run_sync_still_raises_upstream_user_error(instrumented: None) -> None:
+    from pydantic_ai.exceptions import UserError
+
+    outer = _test_agent()
+    inner = _test_agent()
+
+    @outer.tool_plain
+    def call_inner() -> str:
+        return str(inner.run_sync("nested").output)
+
+    with pytest.raises(UserError):
+        outer.run_sync("hi")
+
+
+@pytest.mark.unit
+def test_run_sync_span_is_the_parent_of_the_run_span(instrumented: None, exporter: InMemorySpanExporter) -> None:
+    _test_agent().run_sync("hi")
+
+    spans = {span.name: span for span in exporter.get_finished_spans()}
+    assert "pydantic_ai.agent.run_sync" in spans, _names(exporter)
+    assert "pydantic_ai.agent.run" in spans, _names(exporter)
+    run_sync, run = spans["pydantic_ai.agent.run_sync"], spans["pydantic_ai.agent.run"]
+    assert run.parent is not None and run.parent.span_id == run_sync.context.span_id
+    assert run_sync.attributes[SpanAttributes.LLM_USAGE_TOTAL_TOKENS]
