@@ -6,6 +6,7 @@ Minimal tests focusing on core functionality and happy path scenarios.
 import asyncio
 import json
 import types
+from types import SimpleNamespace
 from typing import Collection
 from unittest.mock import Mock, patch
 
@@ -485,3 +486,25 @@ class TestDecisionWrappers:
 
         (span,) = exp.get_finished_spans()
         assert span.status.status_code == StatusCode.ERROR
+
+
+class TestRequestAttributes:
+    """Test structured ``input`` built from GenAI request contents."""
+
+    @staticmethod
+    def _input(contents):
+        from netra.instrumentation.libraries.google_genai.utils import set_request_attributes
+
+        span = Mock()
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        set_request_attributes(span, (), {"contents": contents})
+        return json.loads(captured["input"])
+
+    def test_string_contents_become_a_user_message(self):
+        assert self._input("hello") == [{"role": "user", "content": "hello"}]
+
+    def test_content_without_a_role_defaults_to_user(self):
+        content = SimpleNamespace(role=None, parts=[SimpleNamespace(text="hi")])
+
+        assert self._input([content]) == [{"role": "user", "content": "hi"}]
