@@ -503,10 +503,13 @@ class SessionManager:
              (if one exists), so the caller's span also carries the value.
 
         The attach is deliberately never detached: ``Netra.set_session_id()`` and
-        friends are documented as process-sticky, and existing users rely on the
-        session id outliving the call that set it. For a scoped session id that
-        is restored on exit — what instrumentation wants — use
-        :meth:`attach_session_context` or :meth:`session_scope` instead.
+        friends are sticky, and existing users rely on the session id outliving
+        the call that set it. "Sticky" means for the current thread (or asyncio
+        task): the value lives in a ContextVar, so a long-lived worker thread
+        carries it into every later request it serves. For a scoped session id
+        that is restored on exit — what servers, workers and instrumentation
+        want — use :meth:`attach_session_context` or :meth:`session_scope`
+        instead, and :meth:`clear_session_context` to drop a sticky value.
 
         Args:
             session_key: Key to set (``"session_id"``, ``"user_id"``, or ``"tenant_id"``)
@@ -531,6 +534,38 @@ class SessionManager:
                 span.set_attribute(attr_key, value)
         except Exception as e:
             logger.exception(f"Failed to set session context for key={session_key}: {e}")
+
+    @staticmethod
+    def clear_session_context(session_key: Optional[str] = None) -> None:
+        """
+        Remove a session identity attribute from the sticky context.
+
+        Counterpart of :meth:`set_session_context`: it attaches a context
+        without the baggage key and never detaches it, so the removal is just
+        as sticky as the original set. Without this, a value set for one request
+        on a long-lived thread is inherited by every later request on it.
+
+        Args:
+            session_key: ``"session_id"``, ``"user_id"`` or ``"tenant_id"``, or
+                ``None`` to clear all three.
+        """
+        try:
+            if session_key is None:
+                keys: Tuple[str, ...] = _SESSION_BAGGAGE_KEYS
+            elif session_key in _SESSION_ATTR_KEYS:
+                keys = (session_key,)
+            else:
+                return
+
+            ctx = otel_context.get_current()
+            present = [key for key in keys if baggage.get_baggage(key, ctx) is not None]
+            if not present:
+                return
+            for key in present:
+                ctx = baggage.remove_baggage(key, ctx)
+            otel_context.attach(ctx)
+        except Exception as e:
+            logger.exception(f"Failed to clear session context for key={session_key}: {e}")
 
     @staticmethod
     def attach_session_context(
