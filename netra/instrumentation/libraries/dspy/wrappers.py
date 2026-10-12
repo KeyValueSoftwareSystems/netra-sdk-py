@@ -704,7 +704,6 @@ class ToolCallWrapper:
             return wrapped(*args, **kwargs)
 
         tool_name = getattr(instance, "name", "unknown_tool")
-        print(f"🔍 DEBUG: Tool.{tool_name} called with kwargs={kwargs}")
         operation_name = f"DSPy.Tool.{tool_name}"
 
         tool_desc = getattr(instance, "desc", None) or ""
