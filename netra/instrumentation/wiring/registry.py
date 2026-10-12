@@ -19,7 +19,7 @@ order.  Instrumentations absent from this table are never activated.
 import logging
 from dataclasses import dataclass, field
 from types import MappingProxyType
-from typing import Any, Mapping
+from typing import Any, Mapping, Optional
 
 from netra.instrumentation.instruments import InstrumentSet
 
@@ -50,12 +50,19 @@ class InstrumentorSpec:
         class_name: Name of the instrumentor class within ``module``.
         constructor_kwargs: Keyword arguments for the instrumentor's
             constructor.  ``Any`` because each instrumentor defines its own.
+        instrument_kwargs_factory: ``"module:function"`` path to a callable
+            returning keyword arguments for ``instrument()`` -- e.g. request
+            hooks.  A string so the hook module is only imported on activation.
+            Called once per activation, so it may also prepare the target
+            library (e.g. the urllib factory installs a process-wide redirect
+            guard that is not removed on uninstrument).
     """
 
     required_distributions: tuple[str, ...]
     module: str
     class_name: str
     constructor_kwargs: Mapping[str, Any] = field(default_factory=_no_kwargs)
+    instrument_kwargs_factory: Optional[str] = None
 
 
 def _log_mistral_wrapper_error(exception: Exception) -> None:
@@ -94,10 +101,13 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     ),
     InstrumentSet.HTTPX: (InstrumentorSpec(("httpx",), "netra.instrumentation.libraries.httpx", "HTTPXInstrumentor"),),
     InstrumentSet.AIOHTTP: (
+        # The request hook registers each destination so the gated propagator can
+        # send session baggage to allowlisted hosts.
         InstrumentorSpec(
             ("aiohttp",),
             "opentelemetry.instrumentation.aiohttp_client",
             "AioHttpClientInstrumentor",
+            instrument_kwargs_factory="netra.instrumentation.http.hooks:aiohttp_instrument_kwargs",
         ),
     ),
     InstrumentSet.COHEREAI: (
@@ -276,9 +286,23 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     InstrumentSet.TORTOISEORM: (
         InstrumentorSpec(("tortoise-orm",), "opentelemetry.instrumentation.tortoiseorm", "TortoiseORMInstrumentor"),
     ),
-    InstrumentSet.URLLIB: (InstrumentorSpec((), "opentelemetry.instrumentation.urllib", "URLLibInstrumentor"),),
+    # The request hooks register each destination so the gated propagator can
+    # send session baggage to allowlisted hosts.
+    InstrumentSet.URLLIB: (
+        InstrumentorSpec(
+            (),
+            "opentelemetry.instrumentation.urllib",
+            "URLLibInstrumentor",
+            instrument_kwargs_factory="netra.instrumentation.http.hooks:urllib_instrument_kwargs",
+        ),
+    ),
     InstrumentSet.URLLIB3: (
-        InstrumentorSpec(("urllib3",), "opentelemetry.instrumentation.urllib3", "URLLib3Instrumentor"),
+        InstrumentorSpec(
+            ("urllib3",),
+            "opentelemetry.instrumentation.urllib3",
+            "URLLib3Instrumentor",
+            instrument_kwargs_factory="netra.instrumentation.http.hooks:urllib3_instrument_kwargs",
+        ),
     ),
     # Speech, agent and memory SDKs
     InstrumentSet.CEREBRAS: (
