@@ -18,6 +18,15 @@ from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
+
+def _safe_set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
+    """Record request attributes without letting a telemetry failure reach the caller's request."""
+    try:
+        set_request_attributes(span, kwargs, operation_type)
+    except Exception:
+        logger.debug("Failed to set OpenAI request attributes", exc_info=True)
+
+
 # Span names
 CHAT_SPAN_NAME = "openai.chat"
 EMBEDDING_SPAN_NAME = "openai.embedding"
@@ -40,7 +49,7 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
             span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
             try:
                 context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "chat")
+                _safe_set_request_attributes(span, kwargs, "chat")
                 response = wrapped(*args, **kwargs)
                 return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
@@ -57,7 +66,7 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             ) as span:
                 try:
-                    set_request_attributes(span, kwargs, "chat")
+                    _safe_set_request_attributes(span, kwargs, "chat")
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
@@ -89,7 +98,7 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
             try:
                 context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "chat")
+                _safe_set_request_attributes(span, kwargs, "chat")
                 response = await wrapped(*args, **kwargs)
                 return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
@@ -105,7 +114,7 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
             ) as span:
                 try:
-                    set_request_attributes(span, kwargs, "chat")
+                    _safe_set_request_attributes(span, kwargs, "chat")
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
@@ -134,7 +143,7 @@ def embeddings_wrapper(tracer: Tracer) -> Callable[..., Any]:
             EMBEDDING_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "embedding"}
         ) as span:
             try:
-                set_request_attributes(span, kwargs, "embedding")
+                _safe_set_request_attributes(span, kwargs, "embedding")
                 response = wrapped(*args, **kwargs)
                 end_time = time.time()
                 response_dict = model_as_dict(response)
@@ -165,7 +174,7 @@ def aembeddings_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             EMBEDDING_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "embedding"}
         ) as span:
             try:
-                set_request_attributes(span, kwargs, "embedding")
+                _safe_set_request_attributes(span, kwargs, "embedding")
                 response = await wrapped(*args, **kwargs)
                 end_time = time.time()
                 response_dict = model_as_dict(response)
@@ -197,7 +206,7 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
             )
             try:
                 context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "response")
+                _safe_set_request_attributes(span, kwargs, "response")
                 response = wrapped(*args, **kwargs)
                 return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
@@ -213,7 +222,7 @@ def responses_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
             ) as span:
                 try:
-                    set_request_attributes(span, kwargs, "response")
+                    _safe_set_request_attributes(span, kwargs, "response")
                     response = wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
@@ -245,7 +254,7 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             )
             try:
                 context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "response")
+                _safe_set_request_attributes(span, kwargs, "response")
                 response = await wrapped(*args, **kwargs)
                 return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
             except Exception as e:
@@ -261,7 +270,7 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                 RESPONSE_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "response"}
             ) as span:
                 try:
-                    set_request_attributes(span, kwargs, "response")
+                    _safe_set_request_attributes(span, kwargs, "response")
                     response = await wrapped(*args, **kwargs)
                     end_time = time.time()
                     response_dict = model_as_dict(response)
