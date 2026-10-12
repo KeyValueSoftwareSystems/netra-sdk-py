@@ -12,7 +12,9 @@ provider SDKs installed.
 """
 
 import asyncio
+import gc
 import json
+from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, Optional
 
 import pytest
@@ -22,6 +24,10 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 from opentelemetry.trace import StatusCode
 from pydantic import BaseModel
 
+from netra.instrumentation.capture.stream_utils import _force_finalize_inner_stream
+from netra.instrumentation.libraries.cerebras import wrappers as cerebras_wrappers
+from netra.instrumentation.libraries.google_genai import wrappers as genai_wrappers
+from netra.instrumentation.libraries.groq import wrappers as groq_wrappers
 from netra.instrumentation.libraries.litellm import wrappers as litellm_wrappers
 from netra.instrumentation.libraries.openai import wrappers as openai_wrappers
 from netra.instrumentation.llm_common import is_unset_sentinel, to_jsonable
@@ -117,6 +123,53 @@ def tracer(exporter: InMemorySpanExporter) -> Any:
     return provider.get_tracer("test")
 
 
+def _chat_chunks() -> List[Dict[str, Any]]:
+    return [
+        {"model": "m-1", "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hel"}}]},
+        {"model": "m-1", "choices": [{"index": 0, "delta": {"content": "lo"}}]},
+        {"model": "m-1", "choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}]},
+    ]
+
+
+def _genai_chunks() -> List[Any]:
+    return [SimpleNamespace(text="Hel"), SimpleNamespace(text="lo")]
+
+
+CHAT_KWARGS = {"model": "m-1", "messages": [{"role": "user", "content": "hi"}], "stream": True}
+GENAI_KWARGS = {"model": "gemini-x", "contents": "hi"}
+
+# (name, sync wrapper factory, async wrapper factory, kwargs, chunk factory, span name)
+PROVIDERS = [
+    ("openai", openai_wrappers.chat_wrapper, openai_wrappers.achat_wrapper, CHAT_KWARGS, _chat_chunks, "openai.chat"),
+    (
+        "litellm",
+        litellm_wrappers.completion_wrapper,
+        litellm_wrappers.acompletion_wrapper,
+        CHAT_KWARGS,
+        _chat_chunks,
+        "litellm.completion",
+    ),
+    ("groq", groq_wrappers.chat_wrapper, groq_wrappers.achat_wrapper, CHAT_KWARGS, _chat_chunks, "groq.chat"),
+    (
+        "cerebras",
+        cerebras_wrappers.chat_wrapper,
+        cerebras_wrappers.achat_wrapper,
+        CHAT_KWARGS,
+        _chat_chunks,
+        "cerebras.chat.completions",
+    ),
+    (
+        "google_genai",
+        genai_wrappers.content_stream_wrapper,
+        genai_wrappers.acontent_stream_wrapper,
+        GENAI_KWARGS,
+        _genai_chunks,
+        "genai.generate_content_stream",
+    ),
+]
+PROVIDER_IDS = [p[0] for p in PROVIDERS]
+
+
 def _open_sync(tracer: Any, factory: Callable[..., Any], kwargs: Dict[str, Any], stream: Any) -> Any:
     return factory(tracer)(lambda *a, **k: stream, None, (), dict(kwargs))
 
@@ -132,6 +185,189 @@ def _only_span(exporter: InMemorySpanExporter, name: str) -> Any:
     spans = [s for s in exporter.get_finished_spans() if s.name == name]
     assert len(spans) == 1, [s.name for s in exporter.get_finished_spans()]
     return spans[0]
+
+
+# H-22: sync stream lifecycle
+@pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDER_IDS)
+class TestSyncStreamLifecycle:
+    def test_full_consumption_exports_one_ok_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(chunks()))
+
+        received = list(stream)
+
+        assert len(received) == len(chunks())
+        span = _only_span(exporter, span_name)
+        assert span.status.status_code == StatusCode.OK
+        assert stream._netra_output == "Hello"
+
+    def test_break_then_close_exports_one_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        inner = FakeStream(chunks())
+        stream = _open_sync(tracer, sync_factory, kwargs, inner)
+
+        for _ in stream:
+            break
+        assert exporter.get_finished_spans() == ()
+        stream.close()
+        stream.close()  # idempotent
+
+        _only_span(exporter, span_name)
+        assert inner.closed
+
+    def test_break_then_garbage_collection_exports_one_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(chunks()))
+
+        for _ in stream:
+            break
+        del stream
+        gc.collect()
+
+        _only_span(exporter, span_name)
+
+    def test_mid_stream_error_exports_one_error_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(chunks(), error=ConnectionError("dropped")))
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            for _ in stream:
+                pass
+
+        span = _only_span(exporter, span_name)
+        assert span.status.status_code == StatusCode.ERROR
+        assert any(e.name == "exception" for e in span.events)
+
+    def test_with_block_yields_wrapper_and_exports_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        inner = FakeStream(chunks())
+        stream = _open_sync(tracer, sync_factory, kwargs, inner)
+
+        with stream as entered:
+            assert entered is stream
+            next(iter(entered))
+
+        span = _only_span(exporter, span_name)
+        assert span.status.status_code == StatusCode.OK
+        assert inner.closed
+
+    def test_force_finalize_after_break_ends_span_once(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        """``stream_utils`` finalises an abandoned inner stream; the span must still end only once."""
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(chunks()))
+
+        iterator = iter(stream)
+        next(iterator)
+        assert stream._netra_output is None
+        _force_finalize_inner_stream(iterator, stream)
+        stream._finalize_span()
+
+        _only_span(exporter, span_name)
+        assert stream._netra_output == "Hel"
+
+
+# H-22: async stream lifecycle
+@pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDER_IDS)
+class TestAsyncStreamLifecycle:
+    def test_full_consumption_exports_one_ok_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+
+        async def run() -> List[Any]:
+            stream = await _open_async(tracer, async_factory, kwargs, FakeAsyncStream(chunks()))
+            return [c async for c in stream]
+
+        assert len(asyncio.run(run())) == len(chunks())
+        assert _only_span(exporter, span_name).status.status_code == StatusCode.OK
+
+    def test_break_then_close_exports_one_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+        inner = FakeAsyncStream(chunks())
+
+        async def run() -> None:
+            stream = await _open_async(tracer, async_factory, kwargs, inner)
+            async for _ in stream:
+                break
+            assert exporter.get_finished_spans() == ()
+            await stream.close()
+            await stream.aclose()
+
+        asyncio.run(run())
+        _only_span(exporter, span_name)
+        assert inner.closed
+
+    def test_break_then_garbage_collection_exports_one_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+
+        async def run() -> None:
+            stream = await _open_async(tracer, async_factory, kwargs, FakeAsyncStream(chunks()))
+            async for _ in stream:
+                break
+            del stream
+            gc.collect()
+
+        asyncio.run(run())
+        _only_span(exporter, span_name)
+
+    def test_mid_stream_error_exports_one_error_span(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+
+        async def run() -> None:
+            stream = await _open_async(
+                tracer, async_factory, kwargs, FakeAsyncStream(chunks(), error=ConnectionError("dropped"))
+            )
+            async for _ in stream:
+                pass
+
+        with pytest.raises(ConnectionError, match="dropped"):
+            asyncio.run(run())
+        assert _only_span(exporter, span_name).status.status_code == StatusCode.ERROR
+
+    def test_async_with_block_yields_wrapper(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+        inner = FakeAsyncStream(chunks())
+
+        async def run() -> None:
+            stream = await _open_async(tracer, async_factory, kwargs, inner)
+            async with stream as entered:
+                assert entered is stream
+                await entered.__anext__()
+
+        asyncio.run(run())
+        assert _only_span(exporter, span_name).status.status_code == StatusCode.OK
+        assert inner.closed
+
+
+@pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDER_IDS)
+def test_telemetry_errors_never_reach_the_users_loop(provider: Any, tracer: Any, exporter: Any) -> None:
+    """A malformed chunk (e.g. ``"index": null``, or a chunk that isn't a dict) is skipped, not raised."""
+    name, sync_factory, _, kwargs, chunks, span_name = provider
+    weird = [{"choices": [{"index": None, "delta": {"content": "x"}}]}, {"choices": "nope"}, object()]
+    stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(weird + chunks()))
+
+    assert len(list(stream)) == len(weird) + len(chunks())
+    assert _only_span(exporter, span_name).status.status_code == StatusCode.OK
+
+
+def test_failure_before_stream_starts_propagates_and_ends_span(tracer: Any, exporter: Any) -> None:
+    """Cerebras used to swallow this and return None to the caller."""
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("rate limited")
+
+    with pytest.raises(RuntimeError, match="rate limited"):
+        cerebras_wrappers.chat_wrapper(tracer)(wrapped, None, (), dict(CHAT_KWARGS))
+    assert _only_span(exporter, "cerebras.chat.completions").status.status_code == StatusCode.ERROR
+
+
+def test_groq_non_streaming_error_is_not_replaced(tracer: Any, exporter: Any) -> None:
+    """Groq used to replace the user's exception with UnboundLocalError."""
+
+    def wrapped(*args: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("rate limited")
+
+    with pytest.raises(RuntimeError, match="rate limited"):
+        groq_wrappers.chat_wrapper(tracer)(wrapped, None, (), {"model": "m", "messages": []})
+    assert _only_span(exporter, "groq.chat").status.status_code == StatusCode.ERROR
 
 
 # H-15: request values that must not break the call
@@ -205,6 +441,23 @@ def test_openai_responses_accepts_sentinels_and_models(
         assert json.loads(attributes["llm.request.reasoning_effort"]) == expected
     assert "llm.request.temperature" not in attributes
     assert "llm.request.max_tokens" not in attributes
+
+
+def test_openai_attribute_failure_does_not_fail_the_call(
+    tracer: Any, exporter: Any, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*args: Any, **kwargs: Any) -> None:
+        raise TypeError("telemetry bug")
+
+    monkeypatch.setattr(openai_wrappers, "set_request_attributes", boom)
+    monkeypatch.setattr(openai_wrappers, "set_response_attributes", boom)
+
+    result = openai_wrappers.chat_wrapper(tracer)(
+        lambda *a, **k: {"choices": []}, None, (), {"model": "m", "messages": []}
+    )
+
+    assert result == {"choices": []}
+    assert _only_span(exporter, "openai.chat").status.status_code == StatusCode.OK
 
 
 def test_sentinel_helpers() -> None:

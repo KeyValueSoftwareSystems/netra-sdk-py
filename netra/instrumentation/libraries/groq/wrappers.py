@@ -1,11 +1,10 @@
 import logging
 import time
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
+from typing import Any, Callable, Dict, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
-from wrapt import ObjectProxy
 
 from netra.instrumentation.libraries.groq.utils import (
     model_as_dict,
@@ -13,6 +12,7 @@ from netra.instrumentation.libraries.groq.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.llm_common import AsyncLLMStream, BaseLLMStream, LLMStream
 from netra.instrumentation.span_utils import record_span_timing
 
 logger = logging.getLogger(__name__)
@@ -23,186 +23,63 @@ RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 LLM_RESPONSE_DURATION = "llm.response.duration"
 
 
-class StreamingWrapper(ObjectProxy):  # type: ignore[misc]
+class _GroqStreamMixin(BaseLLMStream):
+    """Chunk handling shared by the sync and async Groq stream wrappers (OpenAI-style chunks)."""
+
+    def _process_chunk(self, chunk: Any) -> None:
+        self._accumulate_chat_chunk(model_as_dict(chunk))
+
+    def _apply_response_attributes(self) -> None:
+        set_response_attributes(self._self_span, self._self_complete_response)
+
+
+class StreamingWrapper(_GroqStreamMixin, LLMStream):
     """Wrapper for streaming responses (OpenAI-style)."""
 
-    _netra_stream_wrapper = True
 
-    def __init__(self, span: Span, response: Iterator[Any], request_kwargs: Dict[str, Any]) -> None:
-        super().__init__(response)
-        self._span = span
-        self._request_kwargs = request_kwargs
-        self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
-        self._first_content_recorded: bool = False
-
-    def _is_chat(self) -> bool:
-        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
-
-    def _ensure_choice(self, index: int) -> None:
-        while len(self._complete_response["choices"]) <= index:
-            if self._is_chat():
-                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
-            else:
-                self._complete_response["choices"].append({"text": ""})
-
-    def _extract_content_text(self) -> str:
-        """Extract the plain text content from the accumulated response."""
-        parts = []
-        for choice in self._complete_response.get("choices", []):
-            msg = choice.get("message", {})
-            if content := msg.get("content"):
-                parts.append(content)
-        return "".join(parts)
-
-    def __iter__(self) -> Iterator[Any]:
-        return self
-
-    def __next__(self) -> Any:
-        try:
-            chunk = self.__wrapped__.__next__()
-            self._process_chunk(chunk)
-            return chunk
-        except StopIteration:
-            self._finalize_span()
-            raise
-
-    def _process_chunk(self, chunk: Any) -> None:
-        chunk_dict = model_as_dict(chunk)
-
-        if "model" in chunk_dict:
-            self._complete_response["model"] = chunk_dict["model"]
-
-        choices = chunk_dict.get("choices")
-        if choices:
-            for choice in choices:
-                index = int(choice.get("index", 0))
-                self._ensure_choice(index)
-
-                delta = choice.get("delta")
-                if delta:
-                    content = delta.get("content")
-                    if content:
-                        if not self._first_content_recorded:
-                            self._first_content_recorded = True
-                            first_token_time = time.time()
-                            record_span_timing(
-                                self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
-                            )
-                            record_span_timing(
-                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
-                            )
-                        message = self._complete_response["choices"][index].setdefault(
-                            "message", {"role": "assistant", "content": ""}
-                        )
-                        message["content"] += str(content)
-
-                finish_reason = choice.get("finish_reason")
-                if finish_reason:
-                    self._complete_response["choices"][index]["finish_reason"] = finish_reason
-
-        usage = chunk_dict.get("usage")
-        if usage and isinstance(usage, dict):
-            self._complete_response["usage"] = usage
-
-        self._span.add_event("llm.content.completion.chunk")
-
-    def _finalize_span(self) -> None:
-        record_span_timing(self._span, LLM_RESPONSE_DURATION)
-        set_response_attributes(self._span, self._complete_response)
-        self._netra_output = self._extract_content_text()
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
-
-
-class AsyncStreamingWrapper(ObjectProxy):  # type: ignore[misc]
+class AsyncStreamingWrapper(_GroqStreamMixin, AsyncLLMStream):
     """Async wrapper for streaming responses (OpenAI-style)."""
 
-    _netra_stream_wrapper = True
 
-    def __init__(self, span: Span, response: AsyncIterator[Any], request_kwargs: Dict[str, Any]) -> None:
-        super().__init__(response)
-        self._span = span
-        self._request_kwargs = request_kwargs
-        self._complete_response: Dict[str, Any] = {"choices": [], "model": ""}
-        self._first_content_recorded: bool = False
+# Only exceptions raised by the wrapped Groq call may reach the caller. Failures while
+# recording telemetry are logged at DEBUG and swallowed.
+def _safe_set_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
+    try:
+        set_request_attributes(span, kwargs, "chat")
+    except Exception:
+        logger.debug("Failed to set Groq request attributes", exc_info=True)
 
-    def _is_chat(self) -> bool:
-        return isinstance(self._request_kwargs, dict) and "messages" in self._request_kwargs
 
-    def _ensure_choice(self, index: int) -> None:
-        while len(self._complete_response["choices"]) <= index:
-            if self._is_chat():
-                self._complete_response["choices"].append({"message": {"role": "assistant", "content": ""}})
-            else:
-                self._complete_response["choices"].append({"text": ""})
+def _record_response(span: Span, response: Any) -> None:
+    end_time = time.time()
+    try:
+        set_response_attributes(span, model_as_dict(response))
+        record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+        record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
+        record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
+    except Exception:
+        logger.debug("Failed to set Groq response attributes", exc_info=True)
 
-    def _extract_content_text(self) -> str:
-        """Extract the plain text content from the accumulated response."""
-        parts = []
-        for choice in self._complete_response.get("choices", []):
-            msg = choice.get("message", {})
-            if content := msg.get("content"):
-                parts.append(content)
-        return "".join(parts)
 
-    def __aiter__(self) -> AsyncIterator[Any]:
-        return self
+def _start_stream_span(tracer: Tracer, kwargs: Dict[str, Any]) -> Span:
+    span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
+    _safe_set_request_attributes(span, kwargs)
+    return span
 
-    async def __anext__(self) -> Any:
-        try:
-            chunk = await self.__wrapped__.__anext__()
-            self._process_chunk(chunk)
-            return chunk
-        except StopAsyncIteration:
-            self._finalize_span()
-            raise
 
-    def _process_chunk(self, chunk: Any) -> None:
-        chunk_dict = model_as_dict(chunk)
+def _fail_stream_span(span: Span, error: Exception) -> None:
+    span.set_status(Status(StatusCode.ERROR, str(error)))
+    span.record_exception(error)
+    span.end()
 
-        if "model" in chunk_dict:
-            self._complete_response["model"] = chunk_dict["model"]
 
-        choices = chunk_dict.get("choices")
-        if choices:
-            for choice in choices:
-                index = int(choice.get("index", 0))
-                self._ensure_choice(index)
-
-                delta = choice.get("delta")
-                if delta:
-                    content = delta.get("content")
-                    if content:
-                        if not self._first_content_recorded:
-                            self._first_content_recorded = True
-                            first_token_time = time.time()
-                            record_span_timing(
-                                self._span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True
-                            )
-                            record_span_timing(
-                                self._span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True
-                            )
-                        message = self._complete_response["choices"][index].setdefault(
-                            "message", {"role": "assistant", "content": ""}
-                        )
-                        message["content"] += str(content)
-
-                finish_reason = choice.get("finish_reason")
-                if finish_reason:
-                    self._complete_response["choices"][index]["finish_reason"] = finish_reason
-
-        usage = chunk_dict.get("usage")
-        if usage and isinstance(usage, dict):
-            self._complete_response["usage"] = usage
-
-        self._span.add_event("llm.content.completion.chunk")
-
-    def _finalize_span(self) -> None:
-        record_span_timing(self._span, LLM_RESPONSE_DURATION)
-        set_response_attributes(self._span, self._complete_response)
-        self._netra_output = self._extract_content_text()
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
+def _wrap_stream(stream_cls: Any, span: Span, response: Any, kwargs: Dict[str, Any]) -> Any:
+    try:
+        return stream_cls(span=span, response=response, request_kwargs=kwargs)
+    except Exception:
+        logger.debug("Failed to wrap Groq stream; returning it uninstrumented", exc_info=True)
+        span.end()
+        return response
 
 
 def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -212,39 +89,30 @@ def chat_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
-        is_stream = bool(kwargs.get("stream"))
-        if is_stream:
-            span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
+        if kwargs.get("stream"):
+            span = _start_stream_span(tracer, kwargs)
+            context = context_api.attach(set_span_in_context(span))
             try:
-                context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "chat")
                 response = wrapped(*args, **kwargs)
-                return StreamingWrapper(span=span, response=response, request_kwargs=kwargs)
-            except Exception as e:  # pylint: disable=broad-except
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                span.end()
+            except Exception as e:
+                _fail_stream_span(span, e)
                 raise
             finally:
                 context_api.detach(context)
+            return _wrap_stream(StreamingWrapper, span, response, kwargs)
 
-        else:
-            with tracer.start_as_current_span(
-                CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
-            ) as span:
-                try:
-                    set_request_attributes(span, kwargs, "chat")
-                    response = wrapped(*args, **kwargs)
-                    end_time = time.time()
-                    response_dict = model_as_dict(response)
-                    set_response_attributes(span, response_dict)
-                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
-                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
-                    span.set_status(Status(StatusCode.OK))
-                except Exception:
-                    logger.warning("Failed to set response attributes for Groq span", exc_info=True)
-                return response
+        with tracer.start_as_current_span(
+            CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
+        ) as span:
+            _safe_set_request_attributes(span, kwargs)
+            try:
+                response = wrapped(*args, **kwargs)
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+            _record_response(span, response)
+            span.set_status(Status(StatusCode.OK))
+            return response
 
     return wrapper
 
@@ -256,38 +124,29 @@ def achat_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return await wrapped(*args, **kwargs)
 
-        is_stream = bool(kwargs.get("stream"))
-        if is_stream:
-            span = tracer.start_span(CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"})
+        if kwargs.get("stream"):
+            span = _start_stream_span(tracer, kwargs)
+            context = context_api.attach(set_span_in_context(span))
             try:
-                context = context_api.attach(set_span_in_context(span))
-                set_request_attributes(span, kwargs, "chat")
                 response = await wrapped(*args, **kwargs)
-                return AsyncStreamingWrapper(span=span, response=response, request_kwargs=kwargs)
-            except Exception as e:  # pylint: disable=broad-except
-                span.set_status(Status(StatusCode.ERROR, str(e)))
-                span.record_exception(e)
-                span.end()
+            except Exception as e:
+                _fail_stream_span(span, e)
                 raise
             finally:
                 context_api.detach(context)
+            return _wrap_stream(AsyncStreamingWrapper, span, response, kwargs)
 
-        else:
-            with tracer.start_as_current_span(
-                CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
-            ) as span:
-                try:
-                    set_request_attributes(span, kwargs, "chat")
-                    response = await wrapped(*args, **kwargs)
-                    end_time = time.time()
-                    response_dict = model_as_dict(response)
-                    set_response_attributes(span, response_dict)
-                    record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
-                    record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
-                    record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
-                    span.set_status(Status(StatusCode.OK))
-                except Exception:
-                    logger.warning("Failed to set response attributes for Groq span", exc_info=True)
-                return response
+        with tracer.start_as_current_span(
+            CHAT_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "chat"}
+        ) as span:
+            _safe_set_request_attributes(span, kwargs)
+            try:
+                response = await wrapped(*args, **kwargs)
+            except Exception as e:
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+            _record_response(span, response)
+            span.set_status(Status(StatusCode.OK))
+            return response
 
     return wrapper
