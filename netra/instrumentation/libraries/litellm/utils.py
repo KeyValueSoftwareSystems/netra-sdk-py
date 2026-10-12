@@ -8,6 +8,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.llm_common import is_unset_sentinel, to_jsonable
+from netra.instrumentation.span_utils import should_capture_content
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +64,8 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     if (reasoning := to_jsonable(kwargs.get("reasoning"))) is not None:
         span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning, default=str))
 
+    if not should_capture_content():
+        return
     if operation_type == "chat":
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
@@ -146,15 +149,20 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
 
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
-    """Helper to set response message attributes."""
-    message_index = 0
+    """Helper to set response message attributes.
 
-    if output_text := response_dict.get("output_text"):
+    Roles, content and tool calls are only recorded when ``should_capture_content()``;
+    finish reasons are always recorded.
+    """
+    message_index = 0
+    capture = should_capture_content()
+
+    if capture and (output_text := response_dict.get("output_text")):
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", output_text)
         message_index += 1
 
-    if output := response_dict.get("output"):
+    if capture and (output := response_dict.get("output")):
         for element in output:
             if not isinstance(element, dict):
                 continue
@@ -174,7 +182,7 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
 
     if choices := response_dict.get("choices"):
         for choice in choices:
-            if message := choice.get("message"):
+            if capture and (message := choice.get("message")):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
                 )
@@ -182,7 +190,7 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
                 )
                 message_index += 1
-            elif delta := choice.get("delta"):
+            elif capture and (delta := choice.get("delta")):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
                 )

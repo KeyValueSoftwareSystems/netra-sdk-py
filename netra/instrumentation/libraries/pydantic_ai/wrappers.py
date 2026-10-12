@@ -15,6 +15,7 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
     _safe_get_attribute,
     _safe_set_attribute,
     _set_assistant_response_content,
+    _set_content_attribute,
     _set_timing_attributes,
     get_node_span_name,
     set_node_attributes,
@@ -132,7 +133,7 @@ class InstrumentedAgentRun:
         output = _safe_get_attribute(data, "output")
         if output is not None:
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -193,7 +194,7 @@ def agent_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
                     if user_prompt:
                         _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                        _safe_set_attribute(
+                        _set_content_attribute(
                             span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
                         )
 
@@ -248,7 +249,7 @@ def agent_run_sync_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
                 if user_prompt:
                     _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                    _safe_set_attribute(
+                    _set_content_attribute(
                         span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
                     )
 
@@ -309,7 +310,7 @@ class InstrumentedAgentRunContext:
 
         if self._user_prompt:
             _safe_set_attribute(self._span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._span, f"{SpanAttributes.LLM_PROMPTS}.0.content", self._user_prompt, MAX_CONTENT_LENGTH
             )
 
@@ -432,13 +433,15 @@ class InstrumentedAgentRunFromStream:
         # Set assistant content on current iter span
         if current_span and current_span.is_recording():
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+            _set_content_attribute(
+                current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+            )
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
         # Set assistant content on parent run_stream span
         if self._parent_span and self._parent_span.is_recording():
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -540,13 +543,15 @@ class InstrumentedStreamedRunResultIterable:
         # Set assistant content on current iter span
         if current_span and current_span.is_recording():
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+            _set_content_attribute(
+                current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+            )
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
         # Set assistant content on parent run_stream span
         if self._parent_span and self._parent_span.is_recording():
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -606,7 +611,7 @@ class InstrumentedStreamedRunResult:
         output = _safe_get_attribute(data, "output")
         if output is not None:
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -660,7 +665,7 @@ def agent_run_stream_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-a
 
             if user_prompt:
                 _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
+                _set_content_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
 
             # Execute the original method to get the async context manager
             start_time = time.time()
@@ -700,9 +705,9 @@ def tool_function_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-arg]
 
                 # Add function arguments (be careful with sensitive data)
                 if args:
-                    _safe_set_attribute(span, "tool.args", str(args), MAX_ARGS_LENGTH)
+                    _set_content_attribute(span, "tool.args", str(args), MAX_ARGS_LENGTH)
                 if kwargs:
-                    _safe_set_attribute(span, "tool.kwargs", str(kwargs), MAX_ARGS_LENGTH)
+                    _set_content_attribute(span, "tool.kwargs", str(kwargs), MAX_ARGS_LENGTH)
 
                 # Execute the original method
                 start_time = time.time()
@@ -710,7 +715,7 @@ def tool_function_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-arg]
                 end_time = time.time()
 
                 # Set result attributes
-                _safe_set_attribute(span, "tool.result", str(result), MAX_ARGS_LENGTH)
+                _set_content_attribute(span, "tool.result", str(result), MAX_ARGS_LENGTH)
                 _set_timing_attributes(span, start_time, end_time)
 
                 # Set comprehensive response attributes if result has pydantic_ai structure

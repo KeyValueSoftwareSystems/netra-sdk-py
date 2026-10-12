@@ -5,6 +5,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.span_utils import set_content_attribute
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,17 +51,17 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if text := kwargs.get("text"):
         character_count = len(text)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(text))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(text))
 
     if voice_id := kwargs.get("voice_id"):
         span.set_attribute("gen_ai.request.voice_id", voice_id)
 
     if previous_text := kwargs.get("previous_text"):
-        span.set_attribute("gen_ai.request.previous_text", previous_text)
+        set_content_attribute(span, "gen_ai.request.previous_text", previous_text)
 
     if next_text := kwargs.get("next_text"):
-        span.set_attribute("gen_ai.request.next_text", next_text)
+        set_content_attribute(span, "gen_ai.request.next_text", next_text)
 
     if cloud_storage_url := kwargs.get("cloud_storage_url"):
         span.set_attribute("gen_ai.request.file_type", cloud_storage_url)
@@ -74,11 +76,11 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
 
     if prompt := kwargs.get("prompt"):
         character_count = len(prompt)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(prompt))
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
     elif composition_plan := kwargs.get("composition_plan"):
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
         character_count = 0
         prompt = ""
         for section in composition_plan:
@@ -86,7 +88,7 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
                 character_count += len(line)
                 prompt += str(section.lines) + "\n"
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(prompt))
 
     if music_length_ms := kwargs.get("music_length_ms"):
         span.set_attribute("gen_ai.music_length_ms", music_length_ms)
@@ -101,8 +103,8 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
             character_count += len(line["text"])
             prompt += str(line["text"]) + "\n"
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(prompt))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
 
 
 def set_response_attributes(span: Span, response: Any) -> None:
@@ -121,8 +123,8 @@ def set_response_attributes(span: Span, response: Any) -> None:
             span.set_attribute("gen_ai.response.type", "object")
 
             if hasattr(response, "text") and response.text:
-                span.set_attribute("gen_ai.prompt.0.content", response.text)
-                span.set_attribute("gen_ai.prompt.0.role", "Output")
+                set_content_attribute(span, "gen_ai.prompt.0.content", response.text)
+                set_content_attribute(span, "gen_ai.prompt.0.role", "Output")
                 span.set_attribute("gen_ai.usage.prompt.character_count", len(response.text))
 
             if hasattr(response, "transcription_id") and response.transcription_id:

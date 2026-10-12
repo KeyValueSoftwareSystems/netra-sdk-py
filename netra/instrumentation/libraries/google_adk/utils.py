@@ -4,6 +4,8 @@ from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
+from netra.instrumentation.span_utils import should_capture_content
+
 logger = logging.getLogger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
@@ -86,6 +88,10 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
                         attributes[f"gen_ai.request.tools.{func_index}.name"] = func.get("name", "")
                         attributes[f"gen_ai.request.tools.{func_index}.description"] = func.get("description", "")
                         func_index += 1
+
+    # Everything below is prompt content: system instruction, messages, tool calls and results.
+    if not should_capture_content():
+        return attributes
 
     message_index = 0
     all_inputs: List[Dict[str, Any]] = []
@@ -220,7 +226,8 @@ def _extract_event_attributes(event: Any) -> Dict[str, Any]:
     if actions := getattr(event, "actions", None):
         if v := getattr(actions, "transfer_to_agent", None):
             attributes["gen_ai.actions.transfer_to_agent"] = v
-        if v := getattr(actions, "state_delta", None):
+        # Session state written by the agent may hold user data, so it is treated as content.
+        if (v := getattr(actions, "state_delta", None)) and should_capture_content():
             attributes["gen_ai.actions.state_delta"] = json.dumps(v)
         if (v := getattr(actions, "escalate", None)) is not None:
             attributes["gen_ai.actions.escalate"] = v
@@ -240,6 +247,7 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
     """
     attributes: Dict[str, Any] = {}
     attributes.update(_extract_event_attributes(last_response))
+    capture = should_capture_content()
 
     content = getattr(last_response, "content", None)
     parts = (content.parts or []) if content else []
@@ -259,11 +267,15 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
                 attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.name"] = call_name
             args = getattr(func_call, "args", {})
             entry["arguments"] = args
-            attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.arguments"] = json.dumps(args)
+            if capture:
+                attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.arguments"] = json.dumps(args)
             tool_calls.append(entry)
             tool_call_index += 1
         elif not accumulated_text and (text := getattr(part, "text", None)) is not None:
             text_parts.append(str(text))
+
+    if not capture:
+        return attributes
 
     attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] = "assistant"
 
@@ -300,7 +312,7 @@ def extract_agent_attributes(instance: Any) -> Dict[str, Any]:
         attributes["gen_ai.agent.description"] = instance.description
     if hasattr(instance, "model") and instance.model:
         attributes["gen_ai.agent.model"] = instance.model
-    if hasattr(instance, "instruction") and instance.instruction:
+    if hasattr(instance, "instruction") and instance.instruction and should_capture_content():
         attributes["gen_ai.agent.instruction"] = instance.instruction
     if hasattr(instance, "tools"):
         for idx, tool in enumerate(instance.tools):

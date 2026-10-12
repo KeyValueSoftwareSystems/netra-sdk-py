@@ -34,6 +34,7 @@ from netra.instrumentation.libraries.agno.utils import (
     serialize_value,
     set_agentos_request_input,
     set_agentos_response_output,
+    set_content_attribute,
     set_llm_completion_attributes,
     set_llm_prompt_attributes,
     set_request_attributes,
@@ -41,7 +42,7 @@ from netra.instrumentation.libraries.agno.utils import (
     should_suppress_instrumentation,
     update_active_span_with_system_prompt,
 )
-from netra.instrumentation.span_utils import record_span_timing
+from netra.instrumentation.span_utils import record_span_timing, should_capture_content
 from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
@@ -282,7 +283,7 @@ class _AgentStreamOutputMixin:
             self._netra_output = output if output else ""
         if self._content_chunks:
             output = "".join(self._content_chunks)
-            self._span.set_attribute("output", output)
+            set_content_attribute(self._span, "output", output)
             self._netra_output = output
 
 
@@ -324,7 +325,7 @@ class _LlmStreamOutputMixin:
             output_str = format_response_as_output(self._last_response)
             self._netra_output = output_str if output_str else ""
         if output_str:
-            self._span.set_attribute("output", output_str)
+            set_content_attribute(self._span, "output", output_str)
             set_llm_completion_attributes(self._span, output_str)
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
 
@@ -924,7 +925,7 @@ def _set_tool_span_attrs(
     try:
         arguments = get_tool_arguments(instance, kwargs)
         if arguments:
-            span.set_attribute("input", arguments)
+            set_content_attribute(span, "input", arguments)
     except Exception as e:
         logger.warning("netra.instrumentation.libraries.agno: failed to set tool arguments for %s: %s", tool_name, e)
 
@@ -959,7 +960,7 @@ def tool_execute_wrapper(tracer: Tracer) -> Callable[..., Any]:
             response = wrapped(*args, **kwargs)
             try:
                 if response is not None:
-                    span.set_attribute("output", serialize_value(response, clean=True))
+                    set_content_attribute(span, "output", serialize_value(response, clean=True))
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning(
@@ -1016,7 +1017,7 @@ def tool_aexecute_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             response = await wrapped(*args, **kwargs)
             try:
                 if response is not None:
-                    span.set_attribute("output", serialize_value(response, clean=True))
+                    set_content_attribute(span, "output", serialize_value(response, clean=True))
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning(
@@ -1126,7 +1127,7 @@ def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kw
     _set_common_span_attributes(span, "vectordb")
     span.set_attributes(extract_vectordb_attributes(instance, "search"))
     if args:
-        span.set_attribute("input", str(args[0]))
+        set_content_attribute(span, "input", str(args[0]))
 
 
 def _vectordb_upsert_attrs(span: Span, instance: Any, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
@@ -1180,7 +1181,7 @@ def _knowledge_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _k
     _set_common_span_attributes(span, "knowledge")
     span.set_attributes(extract_knowledge_attributes(instance))
     if args:
-        span.set_attribute("input", str(args[0]))
+        set_content_attribute(span, "input", str(args[0]))
 
 
 vectordb_search_wrapper = _make_simple_sync_wrapper(
@@ -1270,7 +1271,7 @@ def _setup_llm_span_with_input(
     if messages:
         input_str = format_messages_as_input(messages)
         if input_str:
-            span.set_attribute("input", input_str)
+            set_content_attribute(span, "input", input_str)
         set_llm_prompt_attributes(span, messages)
 
     return span, ctx_token
@@ -1306,7 +1307,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if not output_str and response is not None:
                     output_str = format_response_as_output(response)
                 if output_str:
-                    span.set_attribute("output", output_str)
+                    set_content_attribute(span, "output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
@@ -1405,7 +1406,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if not output_str and response is not None:
                     output_str = format_response_as_output(response)
                 if output_str:
-                    span.set_attribute("output", output_str)
+                    set_content_attribute(span, "output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
@@ -1572,7 +1573,7 @@ class AgentOSTracingMiddleware:
                 if (stream := payload.get("stream")) is not None:
                     is_streaming = bool(stream)
                     span.set_attribute(ATTR_AGENTOS_STREAM, is_streaming)
-                if context := payload.get("context"):
+                if (context := payload.get("context")) and should_capture_content():
                     span.set_attribute(
                         "gen_ai.agno.agentos.context",
                         json.dumps(context) if not isinstance(context, str) else context,

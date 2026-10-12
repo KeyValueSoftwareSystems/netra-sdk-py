@@ -2,7 +2,6 @@
 
 import json
 import logging
-import os
 from importlib import import_module
 from types import SimpleNamespace
 from typing import Any, AsyncGenerator, Callable, Collection, Dict, Generator, List, Optional, Tuple
@@ -26,6 +25,7 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
+from netra.instrumentation.span_utils import should_capture_content as should_send_prompts
 
 logger = logging.getLogger(__name__)
 
@@ -115,12 +115,6 @@ def _select_wrapped_methods() -> List[Dict[str, Any]]:
 # backend queries key off it -- so it is pinned here rather than derived from
 # ``__name__``, which would silently change the moment this file moves.
 _TRACER_NAME = "netra.instrumentation.mistralai"
-
-
-def should_send_prompts() -> bool:
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or context_api.get_value(
-        "override_enable_content_tracing"
-    )
 
 
 def _set_span_attribute(span: Any, name: str, value: Any) -> None:

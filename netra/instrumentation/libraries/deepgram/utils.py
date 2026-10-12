@@ -7,6 +7,7 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.url import redact_url_secrets
+from netra.instrumentation.span_utils import set_content_attribute
 
 logger = logging.getLogger(__name__)
 
@@ -60,16 +61,16 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], source_type: Opti
     if text := kwargs.get("text"):
         character_count = len(text)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(text))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(text))
 
     if request := kwargs.get("request"):
         if isinstance(request, dict):
             text = request.get("text", "")
             character_count = len(text)
             span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-            span.set_attribute("gen_ai.prompt.0.role", "Input")
-            span.set_attribute("gen_ai.prompt.0.content", str(text))
+            set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+            set_content_attribute(span, "gen_ai.prompt.0.content", str(text))
 
     if source_type == "file" and "request" in kwargs:
         request_value = kwargs["request"]
@@ -107,8 +108,8 @@ def _set_websocket_results_event_attributes(span: Span, message: Any) -> None:
             first_alt = alternatives[0] if isinstance(alternatives, list) else next(iter(alternatives), None)
             if first_alt:
                 if transcript := getattr(first_alt, "transcript", None):
-                    span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-                    span.set_attribute("gen_ai.completion.0.content", transcript)
+                    set_content_attribute(span, "gen_ai.completion.0.role", "Transcribed Text")
+                    set_content_attribute(span, "gen_ai.completion.0.content", transcript)
                 if confidence := getattr(first_alt, "confidence", None):
                     span.set_attribute("deepgram.websocket.results.confidence", confidence)
                 if languages := getattr(first_alt, "languages", None):
@@ -220,8 +221,8 @@ def _set_websocket_v2_turn_info_event_attributes(span: Span, message: Any) -> No
     if audio_window_end := getattr(message, "audio_window_end", None):
         span.set_attribute("deepgram.websocket.v2.audio_window_end", audio_window_end)
     if transcript := getattr(message, "transcript", None):
-        span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-        span.set_attribute("gen_ai.completion.0.content", transcript)
+        set_content_attribute(span, "gen_ai.completion.0.role", "Transcribed Text")
+        set_content_attribute(span, "gen_ai.completion.0.content", transcript)
     if end_of_turn_confidence := getattr(message, "end_of_turn_confidence", None):
         span.set_attribute("deepgram.websocket.v2.end_of_turn_confidence", end_of_turn_confidence)
 
@@ -269,9 +270,9 @@ def _set_agent_v1_history_message_attributes(span: Span, message: Any) -> None:
     span.add_event("deepgram.agent.history")
 
     if role := getattr(message, "role", None):
-        span.set_attribute("deepgram.agent.history.role", str(role))
+        set_content_attribute(span, "deepgram.agent.history.role", str(role))
     if content := getattr(message, "content", None):
-        span.set_attribute("deepgram.agent.history.content", str(content))
+        set_content_attribute(span, "deepgram.agent.history.content", str(content))
 
 
 def _set_agent_v1_conversation_text_attributes(span: Span, message: Any) -> None:
@@ -285,9 +286,9 @@ def _set_agent_v1_conversation_text_attributes(span: Span, message: Any) -> None
     span.add_event("deepgram.agent.conversation_text")
 
     if role := getattr(message, "role", None):
-        span.set_attribute("deepgram.agent.conversation.role", str(role))
+        set_content_attribute(span, "deepgram.agent.conversation.role", str(role))
     if content := getattr(message, "content", None):
-        span.set_attribute("deepgram.agent.conversation.content", str(content))
+        set_content_attribute(span, "deepgram.agent.conversation.content", str(content))
 
 
 def _set_agent_v1_agent_thinking_attributes(span: Span, message: Any) -> None:
@@ -301,7 +302,7 @@ def _set_agent_v1_agent_thinking_attributes(span: Span, message: Any) -> None:
     span.add_event("deepgram.agent.thinking")
 
     if content := getattr(message, "content", None):
-        span.set_attribute("deepgram.agent.thinking.content", str(content))
+        set_content_attribute(span, "deepgram.agent.thinking.content", str(content))
 
 
 def _set_agent_v1_agent_started_speaking_attributes(span: Span, message: Any) -> None:
@@ -333,7 +334,7 @@ def _set_agent_v1_injection_refused_attributes(span: Span, message: Any) -> None
     span.add_event("deepgram.agent.injection_refused")
 
     if msg := getattr(message, "message", None):
-        span.set_attribute("deepgram.agent.injection_refused.message", str(msg))
+        set_content_attribute(span, "deepgram.agent.injection_refused.message", str(msg))
 
 
 def _set_agent_v1_error_attributes(span: Span, message: Any) -> None:
@@ -382,26 +383,26 @@ def _set_http_response_attributes(span: Span, response: Any) -> None:
             if alternatives := getattr(first_channel, "alternatives", None):
                 first_alt = next(iter(alternatives))
                 if transcript := getattr(first_alt, "transcript", None):
-                    span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-                    span.set_attribute("gen_ai.completion.0.content", transcript)
+                    set_content_attribute(span, "gen_ai.completion.0.role", "Transcribed Text")
+                    set_content_attribute(span, "gen_ai.completion.0.content", transcript)
 
         if summary := getattr(results, "summary", None):
             if result := getattr(summary, "result", None):
-                span.set_attribute("gen_ai.response.summary.result", result)
+                set_content_attribute(span, "gen_ai.response.summary.result", result)
             if text := getattr(summary, "text", None):
-                span.set_attribute("gen_ai.response.summary.text", text)
+                set_content_attribute(span, "gen_ai.response.summary.text", text)
             if short := getattr(summary, "short", None):
-                span.set_attribute("gen_ai.response.summary.short", short)
+                set_content_attribute(span, "gen_ai.response.summary.short", short)
 
         if topics := getattr(results, "topics", None):
             if segments := getattr(topics, "segments", None):
                 for i, segment in enumerate(segments):
-                    span.set_attribute("gen_ai.response.topics", json.dumps(segment))
+                    set_content_attribute(span, "gen_ai.response.topics", json.dumps(segment))
 
         if intents := getattr(results, "intents", None):
             if segments := getattr(intents, "segments", None):
                 for i, segment in enumerate(segments):
-                    span.set_attribute("gen_ai.response.intents", json.dumps(segment))
+                    set_content_attribute(span, "gen_ai.response.intents", json.dumps(segment))
 
         if sentiments := getattr(results, "sentiments", None):
             if average := getattr(sentiments, "average", None):

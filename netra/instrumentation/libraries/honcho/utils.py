@@ -8,6 +8,7 @@ from opentelemetry.trace import Span
 
 from netra.config import get_attribute_max_len
 from netra.instrumentation.libraries.honcho import constants as attrs
+from netra.instrumentation.span_utils import should_capture_content
 from netra.utils import truncate_string
 
 logger = logging.getLogger(__name__)
@@ -40,6 +41,12 @@ def _safe_set(span: Span, key: str, value: Any) -> None:
         span.set_attribute(key, value)
     except Exception:
         logger.debug("Failed to set span attribute '%s'", key, exc_info=True)
+
+
+def _set_content(span: Span, key: str, value: Any) -> None:
+    """Set a content attribute (e.g. query text) only when content capture is enabled."""
+    if should_capture_content():
+        _safe_set(span, key, value)
 
 
 def _extract_id(obj: Any) -> Optional[str]:
@@ -128,6 +135,8 @@ def _safe_json(data: Any) -> str:
 
 def _set_input(span: Span, data: Dict[str, Any]) -> None:
     """Set the ``input`` span attribute as a JSON string, omitting None values."""
+    if not should_capture_content():
+        return
     filtered = {k: v for k, v in data.items() if v is not None}
     if filtered:
         serialized = _safe_json(filtered)
@@ -136,7 +145,7 @@ def _set_input(span: Span, data: Dict[str, Any]) -> None:
 
 def _set_output(span: Span, data: Any) -> None:
     """Set the ``output`` span attribute as a JSON string."""
-    if data is None:
+    if data is None or not should_capture_content():
         return
     try:
         max_len = get_attribute_max_len()
@@ -243,7 +252,7 @@ def set_chat_request_attrs(span: Span, instance: Any, args: Tuple[Any, ...], kwa
     query = args[0] if args else kwargs.get("query")
     target = _extract_id(kwargs.get("target"))
     session = _extract_id(kwargs.get("session"))
-    _safe_set(span, attrs.MEMORY_QUERY_TEXT, query)
+    _set_content(span, attrs.MEMORY_QUERY_TEXT, query)
     _safe_set(span, attrs.PEER_TARGET, target)
     _safe_set(span, attrs.CONVERSATION_ID, session)
     _safe_set(span, attrs.REQUEST_REASONING_LEVEL, kwargs.get("reasoning_level"))
@@ -346,7 +355,7 @@ def set_peer_context_request_attrs(span: Span, instance: Any, args: Tuple[Any, .
     set_peer_attributes(span, instance)
     target = _extract_id(kwargs.get("target"))
     _safe_set(span, attrs.PEER_TARGET, target)
-    _safe_set(span, attrs.RETRIEVAL_QUERY_TEXT, kwargs.get("search_query"))
+    _set_content(span, attrs.RETRIEVAL_QUERY_TEXT, kwargs.get("search_query"))
     _safe_set(span, attrs.RETRIEVAL_TOP_K, kwargs.get("search_top_k"))
     _set_input(
         span,
@@ -385,7 +394,7 @@ def set_representation_request_attrs(span: Span, instance: Any, args: Tuple[Any,
             input_data["peer_id"] = _extract_id(peer)
     target = _extract_id(kwargs.get("target"))
     _safe_set(span, attrs.PEER_TARGET, target)
-    _safe_set(span, attrs.RETRIEVAL_QUERY_TEXT, kwargs.get("search_query"))
+    _set_content(span, attrs.RETRIEVAL_QUERY_TEXT, kwargs.get("search_query"))
     _safe_set(span, attrs.RETRIEVAL_TOP_K, kwargs.get("search_top_k"))
     input_data["target"] = target
     _set_input(span, input_data)
@@ -402,7 +411,7 @@ def set_search_request_attrs(span: Span, instance: Any, args: Tuple[Any, ...], k
         set_session_attributes(span, instance)
         input_data["session_id"] = getattr(instance, "id", None)
     query = args[0] if args else kwargs.get("query")
-    _safe_set(span, attrs.MEMORY_QUERY_TEXT, query)
+    _set_content(span, attrs.MEMORY_QUERY_TEXT, query)
     _safe_set(span, attrs.RETRIEVAL_TOP_K, kwargs.get("limit"))
     input_data["query"] = query
     input_data["limit"] = kwargs.get("limit")
@@ -515,7 +524,7 @@ def set_conclusions_query_request_attrs(
     set_common_attributes(span, instance, attrs.OP_SEARCH_MEMORY)
     set_conclusion_scope_attributes(span, instance)
     query = args[0] if args else kwargs.get("query")
-    _safe_set(span, attrs.MEMORY_QUERY_TEXT, query)
+    _set_content(span, attrs.MEMORY_QUERY_TEXT, query)
     _safe_set(span, attrs.REQUEST_TOP_K, kwargs.get("top_k"))
     _set_input(
         span,

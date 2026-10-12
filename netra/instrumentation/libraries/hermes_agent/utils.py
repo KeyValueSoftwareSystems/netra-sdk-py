@@ -1,15 +1,14 @@
 import json
 import logging
-import os
 from typing import Any, Optional
 
-from opentelemetry import context as context_api
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
 from netra.instrumentation.span_utils import _safe_set_attribute
+from netra.instrumentation.span_utils import should_capture_content as should_send_prompts
 from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
@@ -50,19 +49,6 @@ NETRA_SPAN_TYPE_ATTR = f"{Config.LIBRARY_NAME}.span.type"
 
 # Content attributes (input/output) are truncated to this length; identifiers are not.
 MAX_CONTENT_LENGTH = 10_000
-
-
-def should_send_prompts() -> bool:
-    """Whether prompt/completion content may be recorded on spans.
-
-    Mirrors the convention used by the other Netra instrumentations:
-    content capture is on unless TRACELOOP_TRACE_CONTENT is "false"
-    (Config sets that env var from its ``trace_content`` setting), and can
-    be force-enabled per-context via ``override_enable_content_tracing``.
-    """
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
-    )
 
 
 def _serialize(value: Any) -> str:

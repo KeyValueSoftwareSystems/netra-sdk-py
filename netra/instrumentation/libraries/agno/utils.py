@@ -10,6 +10,7 @@ from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
 from netra.instrumentation.http.url import redact_query_secrets
+from netra.instrumentation.span_utils import should_capture_content
 from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,12 @@ _ENTITY_EXTRACTOR_MAP: Dict[str, str] = {
     "workflow": "extract_workflow_attributes",
     "tool": "extract_tool_attributes",
 }
+
+
+def set_content_attribute(span: Span, key: str, value: Any) -> None:
+    """Set a prompt/completion/tool content attribute only when content capture is enabled."""
+    if should_capture_content():
+        span.set_attribute(key, value)
 
 
 def should_suppress_instrumentation() -> bool:
@@ -399,7 +406,7 @@ def update_active_span_with_system_prompt(messages: Any) -> None:
         if first_user_content is not None:
             msg_list.append({"role": "user", "content": first_user_content})
 
-        span.set_attribute("input", json.dumps(msg_list))
+        set_content_attribute(span, "input", json.dumps(msg_list))
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to update span with system prompt: %s", e)
 
@@ -434,7 +441,7 @@ def extract_agent_attributes(instance: Any, run_kwargs: Optional[Dict[str, Any]]
         if model_id:
             attributes[ATTR_AGENT_MODEL] = _safe_str(model_id)
 
-    instructions = _safe_getattr(instance, "instructions")
+    instructions = _safe_getattr(instance, "instructions") if should_capture_content() else None
     if instructions:
         if isinstance(instructions, list):
             attributes[ATTR_AGENT_INSTRUCTIONS] = "\n".join(str(i) for i in instructions)
@@ -591,7 +598,7 @@ def extract_memory_attributes(instance: Any, args: Tuple[Any, ...], operation: s
     if user_id:
         attributes[ATTR_MEMORY_USER_ID] = _safe_str(user_id)
 
-    if args:
+    if args and should_capture_content():
         try:
             attributes[ATTR_MEMORY_INPUT] = _safe_str(args[0])
         except Exception as e:
@@ -895,7 +902,7 @@ def set_request_attributes(
         input_content = build_agent_input(input_content)
 
     if input_content is not None:
-        span.set_attribute("input", input_content)
+        set_content_attribute(span, "input", input_content)
 
 
 def set_response_attributes(span: Span, response: Any) -> Optional[str]:
@@ -915,7 +922,7 @@ def set_response_attributes(span: Span, response: Any) -> Optional[str]:
 
     output = extract_output_content(response)
     if output:
-        span.set_attribute("output", output)
+        set_content_attribute(span, "output", output)
 
     response_id = extract_response_id(response)
     if response_id:
@@ -1023,7 +1030,7 @@ def set_agentos_request_input(
             "url": build_scope_url(scope),
             "headers": sanitize_asgi_headers(scope.get("headers", [])),
         }
-        if body:
+        if body and should_capture_content():
             try:
                 input_data["body"] = json.loads(body)
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1057,7 +1064,7 @@ def set_agentos_response_output(
             "status_code": status_code,
             "headers": sanitize_asgi_headers(raw_headers),
         }
-        if body:
+        if body and should_capture_content():
             try:
                 output_data["body"] = json.loads(body)
             except (json.JSONDecodeError, UnicodeDecodeError):
@@ -1077,7 +1084,7 @@ def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
         span: The active OpenTelemetry span.
         messages: Iterable of agno message objects with ``role`` and ``content`` attributes.
     """
-    if not messages or not span.is_recording():
+    if not messages or not span.is_recording() or not should_capture_content():
         return
     try:
         for index, msg in enumerate(messages):
@@ -1114,7 +1121,7 @@ def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None
         span: The active OpenTelemetry span.
         output_str: JSON string of the form ``[{"role": "...", "content": "..."}]``.
     """
-    if not output_str or not span.is_recording():
+    if not output_str or not span.is_recording() or not should_capture_content():
         return
     try:
         completions = json.loads(output_str)

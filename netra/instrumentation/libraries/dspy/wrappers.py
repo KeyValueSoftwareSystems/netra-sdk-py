@@ -29,6 +29,7 @@ from netra.instrumentation.libraries.dspy.utils import (
     safe_json_dumps,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.span_utils import should_capture_content
 
 logger = logging.getLogger(__name__)
 
@@ -84,14 +85,16 @@ def _record(span: Span, description: str, record: Callable[[], None]) -> None:
 
 def _set_input(span: Span, value: Any, mime_type: str = "application/json") -> None:
     """Record ``gen_ai.request.input`` (content) when content capture is enabled."""
-    span.set_attribute("gen_ai.request.input", value)
-    span.set_attribute("gen_ai.request.input.mime_type", mime_type)
+    if should_capture_content():
+        span.set_attribute("gen_ai.request.input", value)
+        span.set_attribute("gen_ai.request.input.mime_type", mime_type)
 
 
 def _set_output(span: Span, value: Any, mark_ok: bool = False) -> None:
     """Record ``gen_ai.response.output`` (content) when content capture is enabled."""
-    span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(value)))
-    span.set_attribute("gen_ai.response.output.mime_type", "application/json")
+    if should_capture_content():
+        span.set_attribute("gen_ai.response.output", safe_json_dumps(convert_to_dict(value)))
+        span.set_attribute("gen_ai.response.output.mime_type", "application/json")
     if mark_ok:
         span.set_status(Status(StatusCode.OK))
 
@@ -122,12 +125,13 @@ def _set_lm_request_attributes(span: Span, instance: Any, kwargs: Mapping[str, A
         if (max_tokens := invocation_params.get("max_tokens")) is not None:
             span.set_attribute(SpanAttributes.LLM_REQUEST_MAX_TOKENS, max_tokens)
 
-    for key, value in extract_llm_input_messages(arguments):
-        span.set_attribute(key, value)
-    span.set_attribute(
-        "gen_ai.request.input",
-        safe_json_dumps(redact_sensitive_arguments(convert_to_dict(arguments))),
-    )
+    if should_capture_content():
+        for key, value in extract_llm_input_messages(arguments):
+            span.set_attribute(key, value)
+        span.set_attribute(
+            "gen_ai.request.input",
+            safe_json_dumps(redact_sensitive_arguments(convert_to_dict(arguments))),
+        )
 
 
 def _set_lm_response_attributes(span: Span, response: Any) -> None:
@@ -138,9 +142,10 @@ def _set_lm_response_attributes(span: Span, response: Any) -> None:
     for key, value in extract_usage_info(response):
         span.set_attribute(key, value)
 
-    for key, value in extract_llm_output_messages(response):
-        span.set_attribute(key, value)
-    span.set_attribute("gen_ai.response.output", safe_json_dumps(response_dict))
+    if should_capture_content():
+        for key, value in extract_llm_output_messages(response):
+            span.set_attribute(key, value)
+        span.set_attribute("gen_ai.response.output", safe_json_dumps(response_dict))
     span.set_status(Status(StatusCode.OK))
 
 
@@ -273,11 +278,12 @@ class PredictForwardWrapper:
             prediction = wrapped(*args, **kwargs)
 
             def _record_output() -> None:
-                output_dict = (
-                    prediction_to_output_dict(prediction, signature) if signature else convert_to_dict(prediction)
-                )
-                span.set_attribute("gen_ai.response.output", safe_json_dumps(output_dict))
-                span.set_attribute("gen_ai.response.output.mime_type", "application/json")
+                if should_capture_content():
+                    output_dict = (
+                        prediction_to_output_dict(prediction, signature) if signature else convert_to_dict(prediction)
+                    )
+                    span.set_attribute("gen_ai.response.output", safe_json_dumps(output_dict))
+                    span.set_attribute("gen_ai.response.output.mime_type", "application/json")
                 span.set_status(Status(StatusCode.OK))
 
             _record(span, "output", _record_output)
@@ -424,10 +430,11 @@ class RetrieverForwardWrapper:
             prediction = wrapped(*args, **kwargs)
 
             def _record_output() -> None:
-                if isinstance(prediction, dict) and (passages := prediction.get("passages")):
-                    for i, passage_text in enumerate(passages):
-                        span.set_attribute(f"retrieval.documents.{i}.content", str(passage_text))
-                _set_output(span, prediction)
+                if should_capture_content():
+                    if isinstance(prediction, dict) and (passages := prediction.get("passages")):
+                        for i, passage_text in enumerate(passages):
+                            span.set_attribute(f"retrieval.documents.{i}.content", str(passage_text))
+                    _set_output(span, prediction)
                 span.set_status(Status(StatusCode.OK))
 
             _record(span, "output", _record_output)
@@ -468,10 +475,11 @@ class EmbedderCallWrapper:
             def _record_input() -> None:
                 if model_name := getattr(instance, "name", None):
                     span.set_attribute("gen_ai.request.model", str(model_name))
-                if isinstance(input_texts, list):
-                    for i, text in enumerate(input_texts):
-                        span.set_attribute(f"gen_ai.embeddings.{i}.text", str(text))
-                _set_input(span, safe_json_dumps(input_texts), mime_type="text/plain")
+                if should_capture_content():
+                    if isinstance(input_texts, list):
+                        for i, text in enumerate(input_texts):
+                            span.set_attribute(f"gen_ai.embeddings.{i}.text", str(text))
+                    _set_input(span, safe_json_dumps(input_texts), mime_type="text/plain")
 
             _record(span, "input", _record_input)
 
@@ -479,11 +487,12 @@ class EmbedderCallWrapper:
 
             def _record_output() -> None:
                 # Embedding vectors are derived from (and can leak) the input text.
-                if isinstance(response, list):
-                    for i, embedding in enumerate(response):
-                        if hasattr(embedding, "tolist"):
-                            span.set_attribute(f"gen_ai.embeddings.{i}.vector", str(embedding.tolist()))
-                _set_output(span, response)
+                if should_capture_content():
+                    if isinstance(response, list):
+                        for i, embedding in enumerate(response):
+                            if hasattr(embedding, "tolist"):
+                                span.set_attribute(f"gen_ai.embeddings.{i}.vector", str(embedding.tolist()))
+                    _set_output(span, response)
                 span.set_status(Status(StatusCode.OK))
 
             _record(span, "output", _record_output)

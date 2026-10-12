@@ -37,6 +37,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     ATTRIBUTE_MAP,
     AUDIO_TYPE_BY_SPAN_NAME,
     CHAT_CTX_ATTRIBUTE,
+    CONTENT_ATTRIBUTES,
     CONVERSATION_MAP,
     EVENT_CHOICE,
     EVENT_ROLE,
@@ -79,6 +80,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
+from netra.instrumentation.span_utils import should_capture_content
 
 logger = logging.getLogger(__name__)
 
@@ -329,7 +331,7 @@ def record_user_transcript(call_id: int, transcript: str, *, is_final: bool) -> 
             the current interim overlay.
         is_final: Whether this is a final (append) or interim (replace overlay).
     """
-    if not transcript:
+    if not transcript or not should_capture_content():
         return
     with _user_turn_lock:
         # Only accumulate while a turn is open for this call — otherwise a late
@@ -486,6 +488,8 @@ class _ConversationRecorder:
         # decrement: ``next()`` on an ``itertools.count`` is atomic, and a span's
         # attributes can be written from more than one thread (a child ending on
         # another thread propagates content up through here).
+        if not should_capture_content():
+            return
         index = next(self._next_index[side])
         if index >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
             self._mark_truncated()
@@ -909,6 +913,11 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
                 key: The attribute name LiveKit is writing.
                 value: The attribute value LiveKit is writing.
             """
+            if key in CONTENT_ATTRIBUTES and not should_capture_content():
+                # Content capture is off: LiveKit's own write is dropped too, not
+                # just the Netra keys derived from it.
+                return
+
             if is_usage_attribute(key):
                 if is_zero_usage(value):
                     return
@@ -996,6 +1005,9 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
                 recorder.append_event(name, attributes)
             except Exception:
                 logger.debug("netra.livekit: event -> attribute mapping failed for %s", name, exc_info=True)
+            if attributes and (name == EVENT_CHOICE or name in EVENT_ROLE) and not should_capture_content():
+                # Conversation events carry the message text in their attributes.
+                attributes = None
             # ALWAYS forward: the user's event must be recorded whatever happens
             # on our side.
             original(name, attributes, timestamp)

@@ -1,13 +1,46 @@
 import logging
+import os
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 logger = logging.getLogger(__name__)
 
+from opentelemetry import context as context_api
 from opentelemetry.trace import Span
 
+from netra.config import get_active_config
 from netra.processors.root_span_processor import RootSpanProcessor
+
+CONTENT_TRACING_OVERRIDE_KEY = "override_enable_content_tracing"
+
+
+def should_capture_content() -> bool:
+    """Whether prompt / completion / transcript content may be recorded on spans.
+
+    Every Netra instrumentor gates content attributes (prompts, completions,
+    tool arguments and results, system prompts, transcripts, TTS text) on this.
+    Metadata such as model, usage, cost, ids and status is never gated.
+
+    Reads ``trace_content`` from the config registered by ``Netra.init()``.
+    Before init, falls back to ``TRACELOOP_TRACE_CONTENT`` (which ``Config``
+    also sets), defaulting to enabled. As with Traceloop's instrumentors, the
+    ``override_enable_content_tracing`` context value force-enables capture.
+    """
+    cfg = get_active_config()
+    if cfg is not None:
+        enabled = bool(cfg.trace_content)
+    else:
+        enabled = (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true"
+    if enabled:
+        return True
+    return bool(context_api.get_value(CONTENT_TRACING_OVERRIDE_KEY))
+
+
+def set_content_attribute(span: Span, key: str, value: Any) -> None:
+    """Set a content attribute (prompt, completion, transcript, ...) only when capture is enabled."""
+    if should_capture_content():
+        span.set_attribute(key, value)
 
 
 def _safe_set_attribute(span: Span, key: str, value: Any, max_length: Optional[int] = None) -> bool:

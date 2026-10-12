@@ -392,6 +392,19 @@ CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     "lk.pii.user_transcript": ConversationTarget(ConversationSide.COMPLETION, "user"),
 }
 
+# Every ``lk.*`` attribute that carries conversation content (instructions, user
+# input, replies, TTS text, transcripts, the chat context, tool arguments and
+# results). With ``trace_content`` off, LiveKit's own writes of these are dropped
+# and nothing is derived from them.
+CONTENT_ATTRIBUTES = frozenset(
+    {
+        *CONVERSATION_MAP,
+        CHAT_CTX_ATTRIBUTE,
+        "lk.function_tool.arguments",
+        "lk.function_tool.output",
+    }
+)
+
 # span name -> ``netra.span.type``.
 NETRA_SPAN_TYPE_BY_NAME: Dict[str, SpanType] = {
     "agent_turn": SpanType.AGENT,

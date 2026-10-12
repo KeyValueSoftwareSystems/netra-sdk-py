@@ -12,6 +12,7 @@ from opentelemetry.trace import Span
 
 from netra.config import Config
 from netra.instrumentation.llm_common import is_unset_sentinel, to_jsonable
+from netra.instrumentation.span_utils import should_capture_content
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,8 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     if (reasoning := to_jsonable(kwargs.get("reasoning"))) is not None:
         span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning, default=str))
 
+    if not should_capture_content():
+        return
     if operation_type == "chat":
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
@@ -299,15 +302,20 @@ def _set_custom_usage_attribute(span: Span, usage: Dict[str, Any], model: str) -
 
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> Any:
-    """Helper to set response message attributes."""
-    message_index = 0
+    """Helper to set response message attributes.
 
-    if output_text := response_dict.get("output_text"):
+    Message roles, content and tool calls are content and are only recorded when
+    ``should_capture_content()``; finish reasons are always recorded.
+    """
+    message_index = 0
+    capture = should_capture_content()
+
+    if capture and (output_text := response_dict.get("output_text")):
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", output_text)
         message_index += 1
 
-    if output := response_dict.get("output"):
+    if capture and (output := response_dict.get("output")):
         for element in output:
             if element.get("type") == "function_call":
                 name = element.get("name", "")
@@ -327,42 +335,34 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
 
     if choices := response_dict.get("choices"):
         for choice in choices:
-            if message := choice.get("message"):
-                if content := message.get("content"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
-                    )
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
-                    message_index += 1
-                for tc in message.get("tool_calls") or []:
-                    func = tc.get("function", {})
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
-                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
-                    )
-                    if tc_id := tc.get("id"):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
-                    message_index += 1
-            elif delta := choice.get("delta"):
-                if content := delta.get("content"):
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
-                    )
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
-                    message_index += 1
-                for tc in delta.get("tool_calls") or []:
-                    func = tc.get("function", {})
-                    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
-                    span.set_attribute(
-                        f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
-                        json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
-                    )
-                    if tc_id := tc.get("id"):
-                        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
-                    message_index += 1
+            if capture:
+                message_index = _set_choice_content_attributes(span, choice, message_index)
 
             if finish_reason := choice.get("finish_reason"):
                 span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.finish_reason", finish_reason)
 
+    return message_index
+
+
+def _set_choice_content_attributes(span: Span, choice: Dict[str, Any], message_index: int) -> int:
+    """Record one choice's message or stream delta (content and tool calls); returns the next index."""
+    message = choice.get("message")
+    delta = choice.get("delta") if not message else None
+    source = message or delta
+    if not source:
+        return message_index
+    if content := source.get("content"):
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", source.get("role", "assistant"))
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", content)
+        message_index += 1
+    for tc in source.get("tool_calls") or []:
+        func = tc.get("function", {})
+        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", "assistant")
+        span.set_attribute(
+            f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content",
+            json.dumps({"name": func.get("name", ""), "arguments": func.get("arguments", "")}),
+        )
+        if tc_id := tc.get("id"):
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.tool_call_id", tc_id)
+        message_index += 1
     return message_index

@@ -5,6 +5,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.span_utils import set_content_attribute
+
 logger = logging.getLogger(__name__)
 
 
@@ -34,8 +36,8 @@ def _set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if transcript := kwargs.get("transcript"):
         character_count = len(transcript)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(transcript))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(transcript))
 
     if voice := kwargs.get("voice"):
         if isinstance(voice, dict):
@@ -68,7 +70,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
     try:
         if isinstance(response, dict):
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))
-            span.set_attribute("gen_ai.prompt.1.role", "Output")
+            set_content_attribute(span, "gen_ai.prompt.1.role", "Output")
             if "duration" in response:
                 span.set_attribute("gen_ai.audio.duration", response["duration"] / 60)
 
@@ -82,9 +84,9 @@ def set_response_attributes(span: Span, response: Any) -> None:
 
             # The 4.x binary responses expose ``text`` as a method, not a transcript.
             if isinstance(getattr(response, "text", None), str) and response.text:
-                span.set_attribute("gen_ai.response.text", response.text)
-                span.set_attribute("gen_ai.prompt.1.content", response.text)
-                span.set_attribute("gen_ai.prompt.1.role", "Output")
+                set_content_attribute(span, "gen_ai.response.text", response.text)
+                set_content_attribute(span, "gen_ai.prompt.1.content", response.text)
+                set_content_attribute(span, "gen_ai.prompt.1.role", "Output")
 
             return
 

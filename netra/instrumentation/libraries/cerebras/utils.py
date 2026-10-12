@@ -7,6 +7,8 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, LLMRequestTypeValues, SpanAttributes
 from opentelemetry.trace import Span
 
+from netra.instrumentation.span_utils import should_capture_content
+
 logger = logging.getLogger(__name__)
 
 GEN_AI_SYSTEM = "gen_ai.system"
@@ -54,6 +56,8 @@ def set_request_attributes(span: Span, llm_request_type: LLMRequestTypeValues, k
     if presence_penalty := kwargs.get("presence_penalty"):
         span.set_attribute(SpanAttributes.LLM_PRESENCE_PENALTY, presence_penalty)
 
+    if not should_capture_content():
+        return
     if llm_request_type == LLMRequestTypeValues.COMPLETION:
         if prompt := kwargs.get("prompt"):
             span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
@@ -107,13 +111,14 @@ def set_response_attributes(span: Span, response: Any) -> None:
 
         if response_dict.get("id"):
             span.set_attribute(GEN_AI_RESPONSE_ID, response_dict.get("id"))
-        if response_dict.get("choices") and response_dict.get("choices"):
+        capture = should_capture_content()
+        if response_dict.get("choices"):
             for index, choice in enumerate(response_dict.get("choices")):
                 prefix = f"{SpanAttributes.LLM_COMPLETIONS}.{index}"
-                if choice.get("message"):
+                if capture and choice.get("message"):
                     span.set_attribute(f"{prefix}.role", choice.get("message", {}).get("role", "assistant"))
                     span.set_attribute(f"{prefix}.content", choice.get("message", {}).get("content", ""))
-                if choice.get("text"):
+                if capture and choice.get("text"):
                     span.set_attribute(f"{prefix}.role", "assistant")
                     span.set_attribute(f"{prefix}.content", choice.get("text"))
                 if choice.get("finish_reason"):
