@@ -1,4 +1,5 @@
 import logging
+import sys
 from typing import Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -24,6 +25,30 @@ _instruments = ("pydantic-ai >= 0.0.1",)
 # backend queries key off it -- so it is pinned here rather than derived from
 # ``__name__``, which would silently change the moment this file moves.
 _TRACER_NAME = "netra.instrumentation.pydantic_ai"
+
+
+# (module, class, method) for every method wrapped in ``_instrument``.
+_WRAPPED_METHODS = (
+    ("pydantic_ai.agent", "Agent", "run"),
+    ("pydantic_ai.agent", "Agent", "run_sync"),
+    ("pydantic_ai.agent", "Agent", "iter"),
+    ("pydantic_ai.agent", "Agent", "run_stream"),
+    ("pydantic_ai.agent", "AgentRun", "run"),
+    ("pydantic_ai.agent", "AgentRun", "run_sync"),
+    ("pydantic_ai.tools", "Tool", "__call__"),
+    ("pydantic_ai.tools", "FunctionTool", "__call__"),
+    ("pydantic_ai.models.base", "Model", "request"),
+    ("pydantic_ai.models.base", "Model", "request_stream"),
+)
+
+
+def _unwrap_method(module_name: str, class_name: str, method_name: str) -> None:
+    # ``unwrap("pkg.mod", "Class.method")`` silently does nothing (it looks up a
+    # module attribute literally named "Class.method"), so resolve the class here.
+    module = sys.modules.get(module_name)
+    owner = getattr(module, class_name, None) if module is not None else None
+    if owner is not None:
+        unwrap(owner, method_name)
 
 
 class NetraPydanticAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
@@ -143,59 +168,8 @@ class NetraPydanticAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
 
     def _uninstrument(self, **kwargs):  # type: ignore[no-untyped-def]
         """Uninstrument Pydantic AI Agent methods and tool functions"""
-        # Uninstrument Agent methods
-        try:
-            unwrap("pydantic_ai.agent", "Agent.run")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.agent", "Agent.run_sync")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.agent", "Agent.iter")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.agent", "Agent.run_stream")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        # Uninstrument AgentRun methods
-        try:
-            unwrap("pydantic_ai.agent", "AgentRun.run")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.agent", "AgentRun.run_sync")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        # Uninstrument tool methods
-        try:
-            unwrap("pydantic_ai.tools", "Tool.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.tools", "FunctionTool.__call__")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        # Uninstrument model methods
-        try:
-            unwrap("pydantic_ai.models.base", "Model.request")
-        except (AttributeError, ModuleNotFoundError):
-            pass
-
-        try:
-            unwrap("pydantic_ai.models.base", "Model.request_stream")
-        except (AttributeError, ModuleNotFoundError):
-            pass
+        for module_name, class_name, method_name in _WRAPPED_METHODS:
+            _unwrap_method(module_name, class_name, method_name)
 
 
 def should_suppress_instrumentation() -> bool:
