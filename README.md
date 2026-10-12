@@ -226,6 +226,32 @@ Netra.set_custom_event(event_name="conversion", attributes={
     "value": 99.99
 })
 ```
+
+### Session context in servers and workers
+
+`set_session_id`, `set_user_id` and `set_tenant_id` are **sticky for the current thread** (or asyncio task): the value stays set until you change or clear it. That suits scripts and single-session processes, but a server or worker that reuses threads (gunicorn/uWSGI sync workers, Celery, queue consumer loops) would carry one request's ids into the next.
+
+For per-request or per-job ids, use `Netra.session_scope()`. The ids apply only inside the block and the previous values are restored on exit, even if the block raises:
+
+```python
+def handle(request):
+    with Netra.session_scope(
+        session_id=request.session_id,
+        user_id=request.user_id,
+        tenant_id=request.tenant_id,
+    ):
+        return process(request)
+```
+
+Fields you leave out are inherited from the enclosing context (for example a tenant set once at startup).
+
+If you use the sticky setters, clear them when the request ends:
+
+```python
+Netra.set_user_id("")   # "" or None clears just that id
+Netra.clear_session()   # clears session_id, user_id and tenant_id
+```
+
 ## 🔄 Custom Span Tracking
 
 Use the custom span tracking utility to track external API calls with detailed observability:

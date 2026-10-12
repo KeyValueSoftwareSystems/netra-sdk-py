@@ -1,7 +1,8 @@
 import atexit
 import logging
 import threading
-from typing import AbstractSet, Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import AbstractSet, Any, Dict, Iterator, List, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry import metrics as otel_metrics
@@ -345,52 +346,106 @@ class Netra:
         return _get_meter(name, version)
 
     @classmethod
-    def set_session_id(cls, session_id: str) -> None:
+    def set_session_id(cls, session_id: Optional[str]) -> None:
         """
         Set session_id context attributes for all spans.
 
+        The value is sticky for the current thread (or asyncio task) until it
+        is changed or cleared. In servers and workers that reuse threads, prefer
+        :meth:`session_scope` so one request's session_id cannot leak into the next.
+
         Args:
-            session_id: Session identifier
+            session_id: Session identifier. ``""`` or ``None`` clears a previously set session_id.
         """
+        if session_id is None or session_id == "":
+            SessionManager.clear_session_context("session_id")
+            return
         if not isinstance(session_id, str):
             logger.error(f"set_session_id: session_id must be a string, got {type(session_id)}")
             return
-        if session_id:
-            SessionManager.set_session_context("session_id", session_id)
-        else:
-            logger.warning("set_session_id: Session ID must be provided for setting session_id.")
+        SessionManager.set_session_context("session_id", session_id)
 
     @classmethod
-    def set_user_id(cls, user_id: str) -> None:
+    def set_user_id(cls, user_id: Optional[str]) -> None:
         """
         Set user_id context attributes for all spans.
 
+        The value is sticky for the current thread (or asyncio task) until it
+        is changed or cleared. In servers and workers that reuse threads, prefer
+        :meth:`session_scope` so one request's user_id cannot leak into the next.
+
         Args:
-            user_id: User identifier
+            user_id: User identifier. ``""`` or ``None`` clears a previously set user_id.
         """
+        if user_id is None or user_id == "":
+            SessionManager.clear_session_context("user_id")
+            return
         if not isinstance(user_id, str):
             logger.error(f"set_user_id: user_id must be a string, got {type(user_id)}")
             return
-        if user_id:
-            SessionManager.set_session_context("user_id", user_id)
-        else:
-            logger.warning("set_user_id: User ID must be provided for setting user_id.")
+        SessionManager.set_session_context("user_id", user_id)
 
     @classmethod
-    def set_tenant_id(cls, tenant_id: str) -> None:
+    def set_tenant_id(cls, tenant_id: Optional[str]) -> None:
         """
         Set tenant_id context attributes for all spans.
 
+        The value is sticky for the current thread (or asyncio task) until it
+        is changed or cleared. In servers and workers that reuse threads, prefer
+        :meth:`session_scope` so one request's tenant_id cannot leak into the next.
+
         Args:
-            tenant_id: Tenant identifier
+            tenant_id: Tenant identifier. ``""`` or ``None`` clears a previously set tenant_id.
         """
+        if tenant_id is None or tenant_id == "":
+            SessionManager.clear_session_context("tenant_id")
+            return
         if not isinstance(tenant_id, str):
             logger.error(f"set_tenant_id: tenant_id must be a string, got {type(tenant_id)}")
             return
-        if tenant_id:
-            SessionManager.set_session_context("tenant_id", tenant_id)
-        else:
-            logger.warning("set_tenant_id: Tenant ID must be provided for setting tenant_id.")
+        SessionManager.set_session_context("tenant_id", tenant_id)
+
+    @classmethod
+    def clear_session(cls) -> None:
+        """
+        Clear the session_id, user_id and tenant_id set via the ``set_*`` methods.
+
+        Call this at the end of each request or job on a reused thread (for example
+        a gunicorn sync worker or a queue consumer loop) if you use the sticky
+        setters, or use :meth:`session_scope` instead.
+        """
+        SessionManager.clear_session_context()
+
+    @classmethod
+    @contextmanager
+    def session_scope(
+        cls,
+        *,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Iterator[None]:
+        """
+        Apply session_id / user_id / tenant_id to spans started inside the block only.
+
+        The previous values are restored on exit, including when the block raises,
+        so ids never bleed into later requests handled by the same thread. Fields
+        left as ``None`` are inherited from the enclosing context.
+
+        Example:
+            with Netra.session_scope(session_id=req.session, user_id=req.user, tenant_id=req.tenant):
+                handle(req)
+
+        Args:
+            session_id: Session identifier for the block, if any.
+            user_id: User identifier for the block, if any.
+            tenant_id: Tenant identifier for the block, if any.
+
+        Yields:
+            None. The session values are active for the duration of the block.
+        """
+        with SessionManager.session_scope(session_id=session_id, user_id=user_id, tenant_id=tenant_id):
+            yield
 
     @classmethod
     def update_span_name(cls, name: str) -> None:
