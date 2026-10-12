@@ -119,18 +119,6 @@ NETRA_CLOSE_REASON = "netra.livekit.close_reason"
 # The gen_ai conventions this package emits into
 # ---------------------------------------------------------------------------
 
-# The conversation-attribute convention SpanIOProcessor already consumes
-# (``_PROMPT_RE`` in netra/processors/span_io_processor.py). Emitting into this
-# shape rather than inventing a third convention is what makes voice turns render
-# like every other LLM span.
-GEN_AI_PROMPT_ROLE = "gen_ai.prompt.{index}.role"
-GEN_AI_PROMPT_CONTENT = "gen_ai.prompt.{index}.content"
-
-# The completion-side counterpart (``_COMPLETION_RE`` in the same processor),
-# which fills ``output``.
-GEN_AI_COMPLETION_ROLE = "gen_ai.completion.{index}.role"
-GEN_AI_COMPLETION_CONTENT = "gen_ai.completion.{index}.content"
-
 # Marks a span as one an LLM-aware instrumentation wrote. Gates the verbatim
 # ``input``/``output`` fallback in ``messages_for_parent``: without it, an
 # ``HTTP POST`` span under ``llm_request_run`` (netra/instrumentation/httpx/utils.py:124
@@ -157,8 +145,8 @@ GEN_AI_USAGE_COMPLETION_TOKENS = "gen_ai.usage.completion_tokens"
 # price, 3600 for a per-hour one) and apply it to a value it reads as seconds.
 GEN_AI_AUDIO_DURATION = "gen_ai.audio.duration"
 
-# The assembled input/output ``SpanIOProcessor`` builds from the indexed pairs. Read
-# off a child span as the fallback when it carries no indexed pairs of its own.
+# The structured conversation attributes. Written by ``_ConversationRecorder`` and
+# read off a child span for parent-ward propagation.
 INPUT_ATTRIBUTE = "input"
 OUTPUT_ATTRIBUTE = "output"
 
@@ -169,24 +157,15 @@ FALLBACK_COMPLETION_ROLE = "assistant"
 
 # The most conversation messages this package writes onto one span, per side.
 #
-# A span's attribute capacity is bounded — ``OTEL_SPAN_ATTRIBUTE_COUNT_LIMIT``,
-# default 128 — and OTel's ``BoundedAttributes`` evicts the *oldest* entry on
-# overflow. So an unbounded conversation does not merely truncate itself: it
-# silently deletes the attributes written earliest, which are exactly the markers
-# ``SpanMappingProcessor.on_start`` and ``SessionSpanProcessor`` stamp
-# (``netra.span.type``, ``netra.instrumentation.name``, ``netra.session_id``).
-#
 # Two LiveKit sources grow with the length of the call, both verified against
 # livekit-agents 1.6.7:
 #   * ``lk.chat_ctx`` on ``llm_node`` — the whole serialised ChatContext
 #     (``voice/generation.py``);
 #   * one conversation event per context item on ``llm_request``
 #     (``llm/llm.py`` -> ``_chat_ctx_to_otel_events``).
-# Each message costs two attributes (role + content), so without a cap a ~30-turn
-# call is enough to evict every marker.
-#
-# 20 per side is 80 attributes at worst, which leaves the markers, LiveKit's own
-# attributes and the latencies inside the default budget. Nothing is lost that is
+# Each side of the conversation is one ``input``/``output`` attribute. The cap
+# bounds the recorder's working list and the JSON rewritten on every append, and
+# keeps the turns a span is about rather than the opening of a long call. Nothing is lost that is
 # not still on the span: the full context remains verbatim in ``lk.chat_ctx``.
 # LiveKit bounds its own ``eou_detection`` context the same way, via
 # ``_EOU_MAX_HISTORY_TURNS``.
@@ -201,9 +180,9 @@ NETRA_CONVERSATION_TRUNCATED = "netra.conversation.truncated"
 # ---------------------------------------------------------------------------
 
 # The attribute holding a serialised ``ChatContext`` (on ``llm_node`` and
-# ``eou_detection``). Expanded into indexed ``gen_ai.prompt.*`` attributes rather
-# than mirrored verbatim into ``input``: the raw JSON also contains non-message
-# items (``agent_config_update``, handoffs) and reads as an opaque blob.
+# ``eou_detection``). Expanded into structured ``input`` messages rather than
+# mirrored verbatim: the raw JSON also contains non-message items
+# (``agent_config_update``, handoffs) and reads as an opaque blob.
 CHAT_CTX_ATTRIBUTE = "lk.chat_ctx"
 
 # LiveKit's serialised ``TTSMetrics`` (``trace_types.ATTR_TTS_METRICS``, written on
@@ -258,7 +237,7 @@ class ConversationSide(Enum):
 
 
 class ConversationTarget(NamedTuple):
-    """The gen_ai slot an ``lk.*`` content attribute is mirrored into.
+    """The conversation side an ``lk.*`` content attribute is recorded into.
 
     Attributes:
         side: Whether the text is a prompt message or a completion message.
@@ -272,7 +251,7 @@ class ConversationTarget(NamedTuple):
 
 
 class ConversationMessage(NamedTuple):
-    """One message to append to a span's indexed gen_ai sequences.
+    """One message to append to a span's ``input``/``output`` sequences.
 
     Attributes:
         side: Which sequence the message belongs in.
@@ -289,12 +268,13 @@ class SpanConversation(NamedTuple):
     """The conversation content read back off a finished span.
 
     Attributes:
-        prompts: The ``(role, content)`` pairs of the indexed prompt sequence, in
-            index order.
+        prompts: The ``(role, content)`` pairs of a legacy indexed prompt
+            sequence, in index order.
         completions: The same for the completion sequence.
-        raw_input: The span's assembled ``input``, but only when it carries no
-            indexed prompt pairs — otherwise it is derived from them and copying
-            both would duplicate the conversation.
+        raw_input: The span's ``input`` (a structured message array or verbatim
+            text), but only when it carries no legacy indexed prompt pairs —
+            otherwise it is derived from them and copying both would duplicate
+            the conversation.
         raw_output: The same for ``output``.
         carries_gen_ai: Whether the span has any ``gen_ai.*`` attribute at all,
             i.e. whether an LLM-aware instrumentation wrote it.
@@ -364,18 +344,16 @@ ATTRIBUTE_MAP: Dict[str, str] = {
     "lk.interrupted": "netra.turn.interrupted",
 }
 
-# lk.* content attribute -> gen_ai slot. One table for every LiveKit span:
+# lk.* content attribute -> conversation side. One table for every LiveKit span:
 # ``lk.response.text`` means the same thing on ``agent_turn`` as it does on
 # ``llm_node``, so nothing here needs gating on the span name.
 #
-# Additive: the original lk.* attribute is always preserved, and these never write
-# ``input``/``output`` directly — indexed ``gen_ai.prompt.*``/``gen_ai.completion.*``
-# attributes are emitted instead, the same convention Netra's own provider
-# instrumentations use, which is what lets ``SpanIOProcessor`` assemble a
-# multi-message ``input``.
+# Additive: the original lk.* attribute is always preserved.
+# ``_ConversationRecorder`` accumulates these into structured ``input``/``output``
+# JSON arrays.
 CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     # agent_turn: the system instructions in force for the turn. LiveKit writes it
-    # before ``lk.user_input``, so it lands at prompt index 0 and the assembled
+    # before ``lk.user_input``, so it is the first prompt message and the
     # ``input`` reads [system, user] like any other LLM span.
     "lk.instructions": ConversationTarget(ConversationSide.PROMPT, "system"),
     # agent_turn: the utterance that opened the turn (LiveKit sets this only when a
@@ -448,10 +426,8 @@ EVENT_ROLE: Dict[str, str] = {
 # Payload field names (private)
 # ---------------------------------------------------------------------------
 
-# Reads an indexed conversation attribute back off a span, for the child-to-parent
-# propagation in ``conversation_from_attributes``. The plural forms match what
-# ``SpanIOProcessor`` accepts, so a child written by any instrumentation in the SDK
-# is readable here.
+# Legacy pattern for reading indexed conversation attributes off older spans.
+# Current spans use structured ``input``/``output`` JSON; this is the fallback.
 _INDEXED_MESSAGE_RE = re.compile(r"^gen_ai\.(prompt|completion)s?\.(\d+)\.(role|content)$")
 
 _PROMPT_GROUP = "prompt"
@@ -568,12 +544,32 @@ def netra_span_type_for(span_name: Optional[str]) -> str:
 # ---------------------------------------------------------------------------
 
 
+def _structured_messages(raw: str) -> List[Tuple[str, str]]:
+    """Parse a structured ``input``/``output`` JSON array into ``(role, content)`` pairs.
+
+    Returns an empty list when *raw* is not a JSON array of message dicts, so the
+    caller can fall back to treating it as one verbatim message.
+    """
+    try:
+        parsed = json.loads(raw)
+    except (json.JSONDecodeError, TypeError):
+        return []
+    if not isinstance(parsed, list):
+        return []
+    return [
+        (str(entry.get("role") or ""), as_attribute_text(entry["content"]))
+        for entry in parsed
+        if isinstance(entry, dict) and not is_absent(entry.get("content"))
+    ]
+
+
 def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> SpanConversation:
     """Read a finished span's conversation content back out of its attributes.
 
-    The inverse of what this package (and every other Netra instrumentation) writes
-    when it emits indexed ``gen_ai.prompt.*``/``gen_ai.completion.*`` pairs, so a
-    child span's conversation can be re-emitted onto its parent.
+    Current spans carry their conversation in ``input``/``output``, returned here
+    verbatim for ``messages_for_parent`` to expand. Spans written before the move to
+    structured ``input``/``output`` may still carry legacy indexed
+    ``gen_ai.prompt.N.*``/``gen_ai.completion.N.*`` pairs, which are read as well.
 
     An entry carrying a role but no text is skipped — a role alone is not a message.
     An entry carrying text but no role keeps the text; the caller supplies a role.
@@ -612,6 +608,7 @@ def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> Spa
 
     prompts = _ordered_messages(prompt_entries)
     completions = _ordered_messages(completion_entries)
+
     return SpanConversation(
         prompts=prompts,
         completions=completions,
@@ -626,10 +623,11 @@ def messages_for_parent(conversation: SpanConversation, *, allow_raw_io: bool) -
 
     Args:
         conversation: What ``conversation_from_attributes`` read off the child.
-        allow_raw_io: Whether the verbatim ``input``/``output`` fallback may be
-            used. False for a child no LLM-aware instrumentation touched, whose
-            ``input`` is something else entirely — an HTTP request envelope, a SQL
-            statement — and would read as a fabricated user message on the parent.
+        allow_raw_io: Whether the child's ``input``/``output`` may be used, as a
+            structured message array or verbatim text. False for a child no
+            LLM-aware instrumentation touched, whose ``input`` is something else
+            entirely — an HTTP request envelope, a SQL statement — and would read
+            as a fabricated user message on the parent.
 
     Returns:
         The messages to append, prompts first. Empty when the child carried no
@@ -646,13 +644,23 @@ def messages_for_parent(conversation: SpanConversation, *, allow_raw_io: bool) -
     if not allow_raw_io:
         return messages
 
-    if conversation.raw_input is not None:
-        messages.append(ConversationMessage(ConversationSide.PROMPT, FALLBACK_PROMPT_ROLE, conversation.raw_input))
-    if conversation.raw_output is not None:
-        messages.append(
-            ConversationMessage(ConversationSide.COMPLETION, FALLBACK_COMPLETION_ROLE, conversation.raw_output)
-        )
+    messages.extend(_raw_io_messages(ConversationSide.PROMPT, conversation.raw_input, FALLBACK_PROMPT_ROLE))
+    messages.extend(_raw_io_messages(ConversationSide.COMPLETION, conversation.raw_output, FALLBACK_COMPLETION_ROLE))
     return messages
+
+
+def _raw_io_messages(side: ConversationSide, raw: Optional[str], fallback_role: str) -> List[ConversationMessage]:
+    """Expand a verbatim ``input``/``output`` value into messages.
+
+    A structured JSON message array yields one message per entry; any other value
+    becomes a single message under *fallback_role*.
+    """
+    if raw is None:
+        return []
+    structured = _structured_messages(raw)
+    if not structured:
+        return [ConversationMessage(side, fallback_role, raw)]
+    return [ConversationMessage(side, role or fallback_role, content) for role, content in structured]
 
 
 def _ordered_messages(entries: Mapping[int, Mapping[str, str]]) -> List[Tuple[str, str]]:

@@ -15,11 +15,10 @@ exactly what the parent-ward content propagation below does.
 
 from __future__ import annotations
 
-import itertools
 import logging
 import threading
 import weakref
-from typing import Any, Callable, Dict, Iterator, Mapping, Optional, Tuple
+from typing import Any, Callable, Dict, Mapping, Optional, Tuple
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
@@ -41,14 +40,11 @@ from netra.instrumentation.libraries.livekit.utils import (
     EVENT_CHOICE,
     EVENT_ROLE,
     GEN_AI_AUDIO_DURATION,
-    GEN_AI_COMPLETION_CONTENT,
-    GEN_AI_COMPLETION_ROLE,
-    GEN_AI_PROMPT_CONTENT,
-    GEN_AI_PROMPT_ROLE,
     GEN_AI_REQUEST_MODEL,
     GEN_AI_USAGE_CHARACTER_COUNT,
     GEN_AI_USAGE_COMPLETION_TOKENS,
     GEN_AI_USAGE_PROMPT_TOKENS,
+    INPUT_ATTRIBUTE,
     IO_FROM_CHILD_SPAN_NAMES,
     LIVEKIT_SCOPE_NAME,
     MAX_CONVERSATION_MESSAGES_PER_SIDE,
@@ -59,6 +55,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     NETRA_ENTITY_TYPE_BY_NAME,
     NETRA_SPAN_TYPE,
     NETRA_USAGE_SOURCE,
+    OUTPUT_ATTRIBUTE,
     SPEAKING_SPAN_NAMES,
     TTS_METRICS_ATTRIBUTE,
     USAGE_SOURCE_FRAMEWORK,
@@ -79,16 +76,11 @@ from netra.instrumentation.libraries.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
+from netra.instrumentation.message_builder import build_messages, cap_message_content
 
 logger = logging.getLogger(__name__)
 
 SetAttributeFunc = Callable[[str, Any], None]
-
-# The indexed key pair to write for each side of the conversation convention.
-_KEYS_BY_SIDE: Dict[ConversationSide, Tuple[str, str]] = {
-    ConversationSide.PROMPT: (GEN_AI_PROMPT_ROLE, GEN_AI_PROMPT_CONTENT),
-    ConversationSide.COMPLETION: (GEN_AI_COMPLETION_ROLE, GEN_AI_COMPLETION_CONTENT),
-}
 
 # Instance attribute holding a span's ``_ConversationRecorder``. Stored on the span
 # itself so the registry in ``SpanMappingProcessor`` can stay a
@@ -238,12 +230,6 @@ def _numeric(value: Any) -> Optional[float]:
     return float(value)
 
 
-# Instance attribute holding the id of the call a ``user_turn`` span belongs to.
-# Stashed on the span at ``on_start`` because ``on_end`` is handed a
-# ``ReadableSpan`` and no context, so the key it must be deregistered under has to
-# travel on the span itself — the same reason ``_RECORDER_FIELD`` does.
-_CALL_ID_FIELD = "_netra_livekit_call_id"
-
 # The ``user_turn`` span currently recording in each call, keyed by call id — the
 # span id of that call's ``livekit-call`` span, as ``call_id_scope`` attaches it.
 # STT usage arrives on the session's ``metrics_collected`` event, which carries no
@@ -285,7 +271,6 @@ def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.C
     call_id = call_id_of(parent_context)
     if call_id is None:
         return
-    setattr(span, _CALL_ID_FIELD, call_id)
     with _user_turn_lock:
         _user_turn_spans[call_id] = span
         # Fresh turn — drop any leftover from a previous one in this call.
@@ -295,25 +280,25 @@ def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.C
 def _deregister_user_turn_span(span: ReadableSpan) -> None:
     """Drop *span* from the user-turn registry, if it is still the registered one.
 
-    Gated on identity because ``on_end`` can run after the next turn has already
-    registered itself — a stale end must not evict the turn that replaced it.
+    Matched by span id: ``on_end`` is handed a fresh ``ReadableSpan`` copy, so
+    nothing stashed on the live span at ``on_start`` is readable here. Matching on
+    the id also means a stale end cannot evict a newer turn that has already
+    registered for the same call.
 
     Args:
         span: The span that has ended.
     """
     if span.name != USER_TURN_SPAN_NAME:
         return
-    call_id = getattr(span, _CALL_ID_FIELD, None)
-    if call_id is None:
-        return
     context = span.get_span_context()
     if context is None:
         return
     with _user_turn_lock:
-        registered = _user_turn_spans.get(call_id)
-        if registered is not None and registered.get_span_context().span_id == context.span_id:
-            del _user_turn_spans[call_id]
-            _user_transcripts.pop(call_id, None)
+        for call_id, registered in list(_user_turn_spans.items()):
+            if registered.get_span_context().span_id == context.span_id:
+                del _user_turn_spans[call_id]
+                _user_transcripts.pop(call_id, None)
+                return
 
 
 def record_user_transcript(call_id: int, transcript: str, *, is_final: bool) -> None:
@@ -397,8 +382,8 @@ def end_orphaned_user_turn_span(call_id: int) -> None:
         logger.debug("netra.livekit: could not mark orphaned user_turn span", exc_info=True)
     if transcript:
         try:
-            # Goes through the set_attribute wrapper so CONVERSATION_MAP fills
-            # gen_ai.completion the same way a normal committed turn does.
+            # Goes through the set_attribute wrapper so CONVERSATION_MAP records it
+            # in ``output`` the same way a normal committed turn does.
             span.set_attribute("lk.user_transcript", transcript)
         except Exception:
             logger.debug("netra.livekit: could not stamp orphaned user_turn transcript", exc_info=True)
@@ -439,67 +424,59 @@ def record_stt_usage(call_id: int, metrics_payload: Any) -> None:
 
 
 class _ConversationRecorder:
-    """Appends messages to one span's indexed gen_ai prompt/completion sequences.
+    """Appends messages to one span's structured ``input``/``output`` attributes.
 
-    The single place an indexed conversation attribute is written, so every source
-    that contributes to a span — mapped ``lk.*`` attributes, an expanded chat
-    context, conversation events, and a child span's content — advances the same
-    counters and cannot overwrite another source's entries. One instance per
-    LiveKit span, created in ``SpanMappingProcessor.on_start``.
+    Keeps a bounded in-memory list per side so each ``append`` can rewrite the JSON
+    attribute without reading back from the span. Each side holds at most
+    ``MAX_CONVERSATION_MESSAGES_PER_SIDE`` messages, each capped at the same
+    conversation content limit the span's JSON uses, so memory stays bounded however
+    large the source content is. A child ending on another thread can append
+    concurrently, so each append-and-write runs under a lock — otherwise a stale
+    snapshot could be written last and drop a message.
+
+    One instance per LiveKit span, created in ``SpanMappingProcessor.on_start``.
     """
 
-    __slots__ = ("_span", "_next_index", "_truncated")
+    __slots__ = ("_span", "_prompts", "_completions", "_truncated", "_lock")
 
     def __init__(self, span: Span) -> None:
-        """Start both index sequences at zero for *span*.
+        """Bind this recorder to *span*.
 
         Args:
             span: The span whose conversation this records.
         """
         self._span = span
-        self._next_index: Dict[ConversationSide, Iterator[int]] = {
-            ConversationSide.PROMPT: itertools.count(),
-            ConversationSide.COMPLETION: itertools.count(),
-        }
+        self._prompts: list[Dict[str, Any]] = []
+        self._completions: list[Dict[str, Any]] = []
         self._truncated = False
+        self._lock = threading.Lock()
 
     def append(self, side: ConversationSide, role: str, content: Any) -> None:
-        """Append one message to the given side of the conversation.
+        """Append one message to ``input`` or ``output`` on the span.
 
-        Writes through ``span.set_attribute`` — the outermost wrapper — so the
-        values reach ``SpanIOProcessor``, which assembles them into
-        ``input``/``output``.
-
-        Silently stops at ``MAX_CONVERSATION_MESSAGES_PER_SIDE`` and marks the
-        span instead — see that constant for why an unbounded sequence is not
-        merely wasteful but destructive. The cap lives here, rather than at each
-        call site, so it covers every source that feeds a recorder: mapped
-        ``lk.*`` attributes, an expanded chat context, conversation events, and a
-        child span's propagated content.
+        Each side is capped independently at ``MAX_CONVERSATION_MESSAGES_PER_SIDE``.
+        Hitting the cap on one side does not block the other — prompts and
+        completions are separate sequences. The ``netra.conversation.truncated``
+        marker is stamped once when *any* side overflows.
 
         Args:
-            side: Which indexed sequence to append to.
-            role: The conversation role to stamp alongside the text.
+            side: PROMPT writes ``input``; COMPLETION writes ``output``.
+            role: The conversation role.
             content: The message text.
         """
-        # The budget is read off the counter itself rather than a separate
-        # decrement: ``next()`` on an ``itertools.count`` is atomic, and a span's
-        # attributes can be written from more than one thread (a child ending on
-        # another thread propagates content up through here).
-        index = next(self._next_index[side])
-        if index >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
-            self._mark_truncated()
-            return
-
-        role_key, content_key = _KEYS_BY_SIDE[side]
-        self._span.set_attribute(role_key.format(index=index), role)
-        self._span.set_attribute(content_key.format(index=index), as_attribute_text(content))
+        messages = self._prompts if side is ConversationSide.PROMPT else self._completions
+        attr_key = INPUT_ATTRIBUTE if side is ConversationSide.PROMPT else OUTPUT_ATTRIBUTE
+        with self._lock:
+            if len(messages) >= MAX_CONVERSATION_MESSAGES_PER_SIDE:
+                self._mark_truncated()
+                return
+            messages.append(cap_message_content({"role": role, "content": as_attribute_text(content)}))
+            self._span.set_attribute(attr_key, build_messages(messages))
 
     def _mark_truncated(self) -> None:
-        """Record on the span that the conversation was cut short by the cap.
+        """Stamp ``netra.conversation.truncated`` on the span (at most once).
 
-        Written at most once. The guard is not synchronised: two threads racing
-        here both write the same value, so the only cost is a duplicate write.
+        Not synchronised: a race only costs a duplicate write of the same value.
         """
         if self._truncated:
             return
@@ -605,10 +582,9 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
     ``is_zero_usage``.
 
     Conversation content — LiveKit's own ``lk.*`` attributes, its serialised chat
-    contexts, and its conversation events — all land in the indexed
-    ``gen_ai.prompt.*``/``gen_ai.completion.*`` pair that ``SpanIOProcessor``
-    assembles into ``input``/``output``. That is the convention every other Netra
-    instrumentation emits, so a voice turn renders like any other span.
+    contexts, and its conversation events — are accumulated by
+    ``_ConversationRecorder`` and written as structured ``input``/``output``
+    JSON arrays, matching the convention every other Netra instrumentation emits.
 
     Two spans carry no conversation content of their own and inherit it from a
     direct child when that child ends — see ``IO_FROM_CHILD_SPAN_NAMES`` and
@@ -842,7 +818,7 @@ class SpanMappingProcessor(SpanProcessor):  # type: ignore[misc]
             self._io_parents[context.span_id] = span
 
     def _propagate_content_to_parent(self, span: ReadableSpan) -> None:
-        """Append *span*'s conversation content to its parent's gen_ai sequences.
+        """Append *span*'s conversation content to its parent's ``input``/``output``.
 
         Args:
             span: The span that has ended.

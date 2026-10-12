@@ -22,6 +22,7 @@ from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 from opentelemetry.trace.status import Status
 
 from netra.config import Config
+from netra.instrumentation.message_builder import build_messages
 from netra.instrumentation.span_utils import record_span_timing
 from netra.span_wrapper import SpanType
 
@@ -81,57 +82,8 @@ def _serialize(value: Any) -> str:
 
 
 def _build_message_array(role: str, content: str) -> str:
-    """
-    Build a JSON-serialized message array for span input/output attributes.
-
-    Args:
-        role (str): The conversation role (e.g. "user", "assistant", "system", "tool").
-        content (str): The message content to include.
-
-    Returns:
-        str: A JSON string of the form ``[{"role": role, "content": content}]``.
-    """
-    return json.dumps([{"role": role, "content": content}])
-
-
-def _set_input_conversation(span: Span, role: str, content: str, prompt_index: int = 0) -> int:
-    """
-    Write a single prompt entry to the span at the given index.
-
-    Args:
-        span (Span): The OpenTelemetry span to write attributes to.
-        role (str): The conversation role (e.g. "user", "assistant", "system").
-        content (str): The message content to record.
-        prompt_index (int): The current index in the prompts attribute list. Defaults to 0.
-
-    Returns:
-        int: The incremented prompt index after writing.
-    """
-    if role and content:
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", content)
-        prompt_index += 1
-    return prompt_index
-
-
-def _set_output_conversation(span: Span, role: str, content: str, completion_index: int = 0) -> int:
-    """
-    Write a single completion entry to the span at the given index.
-
-    Args:
-        span (Span): The OpenTelemetry span to write attributes to.
-        role (str): The conversation role (e.g. "user", "assistant", "system").
-        content (str): The message content to record.
-        completion_index (int): The current index in the completions attribute list. Defaults to 0.
-
-    Returns:
-        int: The incremented completion index after writing.
-    """
-    if role and content:
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{completion_index}.role", role)
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{completion_index}.content", content)
-        completion_index += 1
-    return completion_index
+    """Build a JSON-serialized message array for span input/output attributes."""
+    return build_messages([{"role": role, "content": content}])
 
 
 _NETRA_SPAN_TYPE_ATTR = "netra.span.type"
@@ -301,7 +253,6 @@ def _end_tool_call_span(block: ToolResultBlock) -> None:
         try:
             result_content = _serialize(block.content)
             span.set_attribute("output", _build_message_array("tool", result_content))
-            _set_output_conversation(span, "tool", result_content)
 
             if block.is_error:
                 span.set_status(Status(StatusCode.ERROR))
@@ -318,8 +269,7 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
     """
     Write request metadata (model, system prompt, user prompt) to the root span.
 
-    Populates both the structured ``gen_ai.prompts.*`` attributes and the ``input``
-    attribute as a JSON array of ``{"role", "content"}`` objects.
+    Populates the ``input`` attribute as a JSON array of ``{"role", "content"}`` objects.
 
     Args:
         span (Span): The root OpenTelemetry span to write attributes to.
@@ -330,7 +280,6 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
     Returns:
         None
     """
-    prompt_index = 0
     input_messages: list[dict[str, str]] = []
 
     try:
@@ -339,14 +288,12 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
                 span.set_attribute(SpanAttributes.LLM_REQUEST_MODEL, model)
             if system_prompt := options.system_prompt:
                 if isinstance(system_prompt, str):
-                    prompt_index = _set_input_conversation(span, "system", system_prompt, prompt_index)
                     input_messages.append({"role": "system", "content": system_prompt})
                 elif isinstance(system_prompt, dict):
                     try:
                         serialized = json.dumps(system_prompt)
                     except Exception:
                         serialized = str(system_prompt)
-                    prompt_index = _set_input_conversation(span, "system", serialized, prompt_index)
                     input_messages.append({"role": "system", "content": serialized})
 
             if options.permission_mode:
@@ -364,13 +311,12 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
 
     try:
         if prompt and isinstance(prompt, str):
-            _set_input_conversation(span, "user", prompt, prompt_index)
             input_messages.append({"role": "user", "content": prompt})
     except Exception as e:
         logger.error(f"Cannot extract prompt from request: {e}")
 
     if input_messages:
-        span.set_attribute("input", json.dumps(input_messages))
+        span.set_attribute("input", build_messages(input_messages))
 
 
 def set_system_message_attributes(span: Span, message: SystemMessage) -> None:
@@ -482,7 +428,6 @@ def set_assistant_message_attributes(
                     if message.error:
                         span.set_status(Status(StatusCode.ERROR, str(message.error)))
                         span.set_attribute("gen_ai.error", str(message.error))
-                    _set_output_conversation(span, role, content)
                     span.set_attribute("output", _build_message_array(role, content))
                     record_span_timing(
                         span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time, record_event_timestamp=True
@@ -539,9 +484,6 @@ def set_result_message_attributes(
     Returns:
         None
     """
-    if result := message.result:
-        _set_output_conversation(span, "assistant", result)
-
     # structured_output is the canonical LLM response when present; fall back to result.
     if message.structured_output is not None:
         span.set_attribute("output", _build_message_array("assistant", _serialize(message.structured_output)))

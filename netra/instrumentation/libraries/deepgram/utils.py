@@ -6,6 +6,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.message_builder import build_messages
+
 logger = logging.getLogger(__name__)
 
 
@@ -56,16 +58,14 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], source_type: Opti
     if text := kwargs.get("text"):
         character_count = len(text)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(text))
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(text)}]))
 
     if request := kwargs.get("request"):
         if isinstance(request, dict):
             text = request.get("text", "")
             character_count = len(text)
             span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-            span.set_attribute("gen_ai.prompt.0.role", "Input")
-            span.set_attribute("gen_ai.prompt.0.content", str(text))
+            span.set_attribute("input", build_messages([{"role": "Input", "content": str(text)}]))
 
     if source_type == "file" and "request" in kwargs:
         request_value = kwargs["request"]
@@ -103,8 +103,7 @@ def _set_websocket_results_event_attributes(span: Span, message: Any) -> None:
             first_alt = alternatives[0] if isinstance(alternatives, list) else next(iter(alternatives), None)
             if first_alt:
                 if transcript := getattr(first_alt, "transcript", None):
-                    span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-                    span.set_attribute("gen_ai.completion.0.content", transcript)
+                    span.set_attribute("output", build_messages([{"role": "Transcribed Text", "content": transcript}]))
                 if confidence := getattr(first_alt, "confidence", None):
                     span.set_attribute("deepgram.websocket.results.confidence", confidence)
                 if languages := getattr(first_alt, "languages", None):
@@ -216,8 +215,7 @@ def _set_websocket_v2_turn_info_event_attributes(span: Span, message: Any) -> No
     if audio_window_end := getattr(message, "audio_window_end", None):
         span.set_attribute("deepgram.websocket.v2.audio_window_end", audio_window_end)
     if transcript := getattr(message, "transcript", None):
-        span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-        span.set_attribute("gen_ai.completion.0.content", transcript)
+        span.set_attribute("output", build_messages([{"role": "Transcribed Text", "content": transcript}]))
     if end_of_turn_confidence := getattr(message, "end_of_turn_confidence", None):
         span.set_attribute("deepgram.websocket.v2.end_of_turn_confidence", end_of_turn_confidence)
 
@@ -378,8 +376,7 @@ def _set_http_response_attributes(span: Span, response: Any) -> None:
             if alternatives := getattr(first_channel, "alternatives", None):
                 first_alt = next(iter(alternatives))
                 if transcript := getattr(first_alt, "transcript", None):
-                    span.set_attribute("gen_ai.completion.0.role", "Transcribed Text")
-                    span.set_attribute("gen_ai.completion.0.content", transcript)
+                    span.set_attribute("output", build_messages([{"role": "Transcribed Text", "content": transcript}]))
 
         if summary := getattr(results, "summary", None):
             if result := getattr(summary, "result", None):

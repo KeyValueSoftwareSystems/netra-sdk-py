@@ -9,6 +9,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
+from netra.instrumentation.message_builder import build_messages
 from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
@@ -330,7 +331,7 @@ def build_agent_input(input_content: Any) -> str:
         - JSON-serialized list of user messages
     """
     if not input_content:
-        return json.dumps([{"role": "user", "content": ""}])
+        return build_messages([{"role": "user", "content": ""}])
     if isinstance(input_content, str):
         try:
             input_content = json.loads(input_content)
@@ -349,7 +350,7 @@ def build_agent_input(input_content: Any) -> str:
         messages = [{"role": "user", "content": str(input_content)}]
 
     try:
-        return json.dumps(messages)
+        return build_messages(messages)
     except Exception as e:
         logger.warning("netra.instrumentation.libraries.agno: failed to convert input messages to JSON string: %s", e)
         return str(messages)
@@ -398,7 +399,7 @@ def update_active_span_with_system_prompt(messages: Any) -> None:
         if first_user_content is not None:
             msg_list.append({"role": "user", "content": first_user_content})
 
-        span.set_attribute("input", json.dumps(msg_list))
+        span.set_attribute("input", build_messages(msg_list))
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to update span with system prompt: %s", e)
 
@@ -695,7 +696,7 @@ def extract_output_content(response: Any) -> Optional[str]:
         return None
 
     try:
-        return json.dumps([{"role": "assistant", "content": content}])
+        return build_messages([{"role": "assistant", "content": content}])
     except Exception:
         return content
 
@@ -744,7 +745,7 @@ def format_messages_as_input(messages: Any) -> Optional[str]:
         return None
 
     try:
-        return json.dumps(msg_list)
+        return build_messages(msg_list)
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to format messages as input: %s", e)
         return None
@@ -781,7 +782,7 @@ def format_response_as_output(response: Any) -> Optional[str]:
         tool_calls = _safe_getattr(response, "tool_calls")
         if tool_calls:
             try:
-                return json.dumps([{"role": "assistant", "tool_calls": _normalize(tool_calls, clean=True)}])
+                return build_messages([{"role": "assistant", "tool_calls": _normalize(tool_calls, clean=True)}])
             except Exception as e:
                 logger.debug("netra.instrumentation.libraries.agno: failed to serialize tool_calls as output: %s", e)
 
@@ -789,7 +790,7 @@ def format_response_as_output(response: Any) -> Optional[str]:
         return None
 
     try:
-        return json.dumps([{"role": "assistant", "content": content}])
+        return build_messages([{"role": "assistant", "content": content}])
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to format response as output: %s", e)
         return None
@@ -1066,67 +1067,6 @@ def set_agentos_response_output(
         span.set_attribute("output", json.dumps(output_data))
     except Exception as e:
         logger.debug("netra.instrumentation.libraries.agno: failed to set agentos response output: %s", e)
-
-
-def set_llm_prompt_attributes(span: Span, messages: Any) -> None:
-    """Set ``gen_ai.prompt.N.role`` and ``gen_ai.prompt.N.content`` attributes from agno message objects.
-
-    Args:
-        span: The active OpenTelemetry span.
-        messages: Iterable of agno message objects with ``role`` and ``content`` attributes.
-    """
-    if not messages or not span.is_recording():
-        return
-    try:
-        for index, msg in enumerate(messages):
-            role = getattr(msg, "role", None)
-            if role is None:
-                continue
-            raw = getattr(msg, "content", None)
-            if raw is None:
-                tool_calls = getattr(msg, "tool_calls", None)
-                if tool_calls:
-                    try:
-                        content = json.dumps(_normalize(tool_calls, clean=True))
-                    except Exception:
-                        content = _safe_str(tool_calls)
-                else:
-                    content = ""
-            elif isinstance(raw, str):
-                content = raw
-            else:
-                try:
-                    content = json.dumps(_normalize(raw, clean=False))
-                except Exception:
-                    content = _safe_str(raw)
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.role", str(role))
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{index}.content", content)
-    except Exception as e:
-        logger.debug("netra.instrumentation.libraries.agno: failed to set prompt attributes: %s", e)
-
-
-def set_llm_completion_attributes(span: Span, output_str: Optional[str]) -> None:
-    """Set ``gen_ai.completion.N.role`` and ``gen_ai.completion.N.content`` from a JSON output string.
-
-    Args:
-        span: The active OpenTelemetry span.
-        output_str: JSON string of the form ``[{"role": "...", "content": "..."}]``.
-    """
-    if not output_str or not span.is_recording():
-        return
-    try:
-        completions = json.loads(output_str)
-        for index, msg in enumerate(completions):
-            role = msg.get("role", "assistant")
-            content = msg.get("content") or msg.get("tool_calls", "")
-            if content:
-                span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", str(role))
-                span.set_attribute(
-                    f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content",
-                    content if isinstance(content, str) else json.dumps(content),
-                )
-    except Exception as e:
-        logger.debug("netra.instrumentation.libraries.agno: failed to set completion attributes: %s", e)
 
 
 def extract_agentos_attributes(

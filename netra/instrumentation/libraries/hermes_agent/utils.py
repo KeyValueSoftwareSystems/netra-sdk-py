@@ -9,6 +9,7 @@ from opentelemetry.trace import Span
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
+from netra.instrumentation.message_builder import build_messages
 from netra.instrumentation.span_utils import _safe_set_attribute
 from netra.span_wrapper import SpanType
 
@@ -87,17 +88,8 @@ def _serialize(value: Any) -> str:
 
 
 def _build_message_array(role: str, content: str) -> str:
-    """
-    Build a JSON-serialized message array for span input/output attributes.
-
-    Args:
-        role (str): The conversation role (e.g. "user", "assistant", "tool").
-        content (str): The message content to include.
-
-    Returns:
-        str: A JSON string of the form ``[{"role": role, "content": content}]``.
-    """
-    return json.dumps([{"role": role, "content": content}])
+    """Build a JSON-serialized message array for span input/output attributes."""
+    return build_messages([{"role": role, "content": content}])
 
 
 def set_turn_request_attributes(

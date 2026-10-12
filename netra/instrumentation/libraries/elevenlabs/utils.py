@@ -5,6 +5,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.message_builder import build_messages
+
 logger = logging.getLogger(__name__)
 
 
@@ -49,8 +51,7 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if text := kwargs.get("text"):
         character_count = len(text)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(text))
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(text)}]))
 
     if voice_id := kwargs.get("voice_id"):
         span.set_attribute("gen_ai.request.voice_id", voice_id)
@@ -74,11 +75,9 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
 
     if prompt := kwargs.get("prompt"):
         character_count = len(prompt)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(prompt)}]))
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
     elif composition_plan := kwargs.get("composition_plan"):
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
         character_count = 0
         prompt = ""
         for section in composition_plan:
@@ -86,7 +85,7 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
                 character_count += len(line)
                 prompt += str(section.lines) + "\n"
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(prompt)}]))
 
     if music_length_ms := kwargs.get("music_length_ms"):
         span.set_attribute("gen_ai.music_length_ms", music_length_ms)
@@ -101,8 +100,7 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
             character_count += len(line["text"])
             prompt += str(line["text"]) + "\n"
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.content", str(prompt))
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
+        span.set_attribute("input", build_messages([{"role": "Input", "content": str(prompt)}]))
 
 
 def set_response_attributes(span: Span, response: Any) -> None:
@@ -121,8 +119,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
             span.set_attribute("gen_ai.response.type", "object")
 
             if hasattr(response, "text") and response.text:
-                span.set_attribute("gen_ai.prompt.0.content", response.text)
-                span.set_attribute("gen_ai.prompt.0.role", "Output")
+                span.set_attribute("output", build_messages([{"role": "Output", "content": response.text}]))
                 span.set_attribute("gen_ai.usage.prompt.character_count", len(response.text))
 
             if hasattr(response, "transcription_id") and response.transcription_id:

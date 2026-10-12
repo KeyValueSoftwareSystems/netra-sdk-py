@@ -4,6 +4,8 @@ from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
+from netra.instrumentation.message_builder import build_messages
+
 logger = logging.getLogger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
@@ -87,23 +89,17 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
                         attributes[f"gen_ai.request.tools.{func_index}.description"] = func.get("description", "")
                         func_index += 1
 
-    message_index = 0
     all_inputs: List[Dict[str, Any]] = []
 
     if "config" in llm_request_dict and "system_instruction" in llm_request_dict["config"]:
         system_instruction = llm_request_dict["config"]["system_instruction"]
-        attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role"] = "system"
-        attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content"] = system_instruction
         all_inputs.append({"role": "system", "content": system_instruction})
-        message_index += 1
 
     if "contents" in llm_request_dict:
         for content in llm_request_dict["contents"]:
             raw_role = content.get("role", "user")
             role = "assistant" if raw_role == "model" else raw_role
             parts = content.get("parts", [])
-
-            attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.role"] = role
 
             text_parts: List[str] = []
             func_calls: List[Dict[str, Any]] = []
@@ -114,24 +110,12 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
                     text_parts.append(str(part["text"]))
                 elif "function_call" in part:
                     func_call = part["function_call"]
-                    attributes[f"gen_ai.prompt.{message_index}.function_call.name"] = func_call.get("name", "")
-                    attributes[f"gen_ai.prompt.{message_index}.function_call.args"] = json.dumps(
-                        func_call.get("args", {})
-                    )
-                    if "id" in func_call:
-                        attributes[f"gen_ai.prompt.{message_index}.function_call.id"] = func_call["id"]
                     entry: Dict[str, Any] = {"name": func_call.get("name", ""), "args": func_call.get("args", {})}
                     if "id" in func_call:
                         entry["id"] = func_call["id"]
                     func_calls.append(entry)
                 elif "function_response" in part:
                     func_resp = part["function_response"]
-                    attributes[f"gen_ai.prompt.{message_index}.function_response.name"] = func_resp.get("name", "")
-                    attributes[f"gen_ai.prompt.{message_index}.function_response.result"] = json.dumps(
-                        func_resp.get("response", {})
-                    )
-                    if "id" in func_resp:
-                        attributes[f"gen_ai.prompt.{message_index}.function_response.id"] = func_resp["id"]
                     resp_entry: Dict[str, Any] = {
                         "name": func_resp.get("name", ""),
                         "result": func_resp.get("response", {}),
@@ -142,19 +126,15 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
 
             msg: Dict[str, Any] = {"role": role}
             if text_parts:
-                content_str = "\n".join(text_parts)
-                attributes[f"{SpanAttributes.LLM_PROMPTS}.{message_index}.content"] = content_str
-                msg["content"] = content_str
+                msg["content"] = "\n".join(text_parts)
             if func_calls:
                 msg["function_calls"] = func_calls
             if func_responses:
                 msg["function_responses"] = func_responses
             all_inputs.append(msg)
 
-            message_index += 1
-
     try:
-        attributes["input"] = json.dumps(all_inputs)
+        attributes["input"] = build_messages(all_inputs)
     except Exception:
         logger.exception("Failed to serialize LLM request inputs to JSON")
         attributes["input"] = str(all_inputs)
@@ -253,25 +233,18 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
             entry: Dict[str, Any] = {}
             if call_id := getattr(func_call, "id", None):
                 entry["id"] = call_id
-                attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.id"] = call_id
             if call_name := getattr(func_call, "name", None):
                 entry["name"] = call_name
-                attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.name"] = call_name
             args = getattr(func_call, "args", {})
             entry["arguments"] = args
-            attributes[f"gen_ai.completions.0.tool_calls.{tool_call_index}.arguments"] = json.dumps(args)
             tool_calls.append(entry)
             tool_call_index += 1
         elif not accumulated_text and (text := getattr(part, "text", None)) is not None:
             text_parts.append(str(text))
 
-    attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] = "assistant"
-
     output: Dict[str, Any] = {"role": "assistant"}
     if text_parts:
-        full_text = "\n".join(text_parts)
-        attributes[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] = full_text
-        output["content"] = full_text
+        output["content"] = "\n".join(text_parts)
     if tool_calls:
         output["tool_calls"] = tool_calls
 

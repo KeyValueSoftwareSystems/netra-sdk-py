@@ -4,6 +4,26 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- **LLM conversations are recorded as structured `input`/`output`** - Instrumentations no longer write one `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` attribute per message. Each span now carries the full conversation as two JSON arrays of `{role, content}` messages in `input` and `output`, keeping fields such as `finish_reason` and `tool_call_id`. Long conversations no longer push spans past the OpenTelemetry attribute limit, which used to silently drop attributes such as `netra.session_id`. Anything that reads the old indexed keys should read `input`/`output` instead.
+
+- **Third-party indexed attributes are converted** - Indexed `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` keys written by other instrumentations are folded into `input`/`output` instead of being stored on the span.
+
+- **Large conversations are truncated safely** - `input`/`output` always stay valid JSON within `NETRA_ATTRIBUTE_MAX_LEN`. Oversized messages are shortened, the oldest messages are dropped first, and shortened messages carry the `__truncated__` marker.
+
+- **LiveKit voice traces use the same format** - Conversation content on LiveKit spans, including content copied up from child spans, is written as structured `input`/`output`.
+
+### Fixed
+
+- **Speech responses recorded as output** - Cartesia, ElevenLabs and Deepgram responses and transcripts are now written to `output` instead of being mixed into the prompt.
+
+- **Message content with SDK objects is kept** - Content such as Mistral or Cohere chunk lists is serialised as JSON instead of being dropped or recorded as a Python object string.
+
+- **LiveKit turn registry no longer grows per call** - Ended `user_turn` spans are now removed from the registry, so long-running workers no longer keep one transcript buffer for every call.
+
 ## [1.2.1] - 2026-10-06
 
 ### Added
