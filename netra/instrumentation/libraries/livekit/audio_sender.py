@@ -907,6 +907,9 @@ class AudioChunkSender:
             await self._flush(batch, is_final=bool(batch.span_id))
         await self._finalize_deferred_agent_spans()
         await self._finalize_open_spans()
+        # The endpoint renders the session as soon as the session terminator
+        # lands, so it must not overtake chunks still on the wire.
+        await self._await_inflight_posts()
         await self._post_session_terminator()
 
     async def _finalize_deferred_agent_spans(self) -> None:

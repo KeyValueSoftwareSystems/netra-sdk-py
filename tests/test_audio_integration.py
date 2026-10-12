@@ -108,6 +108,8 @@ class RecordedRequest:
 
     headers: Dict[str, str]
     body: bytes
+    # How many earlier requests had already been answered when this one arrived.
+    answered_before: int = 0
 
     @property
     def span_id(self) -> Optional[str]:
@@ -127,11 +129,17 @@ class IngestRecorder:
     # degraded backend would. Only the teardown-budget tests set it.
     delay_seconds: float = 0.0
     requests: List[RecordedRequest] = field(default_factory=list)
+    answered: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record(self, request: RecordedRequest) -> None:
         with self._lock:
+            request.answered_before = self.answered
             self.requests.append(request)
+
+    def mark_answered(self) -> None:
+        with self._lock:
+            self.answered += 1
 
     def snapshot(self) -> List[RecordedRequest]:
         with self._lock:
@@ -163,6 +171,7 @@ class _IngestHandler(BaseHTTPRequestHandler):
         self.send_response(self.recorder.status_code)
         self.send_header("Content-Length", "0")
         self.end_headers()
+        self.recorder.mark_answered()
 
     def log_message(self, format: str, *args: Any) -> None:
         """Silence the default stderr access log."""
@@ -583,6 +592,22 @@ class TestAudioChunkSenderFailures:
 
         assert asyncio.run(drive()) is False
         assert len(attempts) == 1
+
+    def test_the_session_terminator_waits_for_every_chunk_to_be_answered(self, ingest_server) -> None:
+        url, recorder = ingest_server
+        recorder.delay_seconds = 0.1
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            enqueue_frames(sender, 6, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+
+        run_call(url, scenario, max_batch_frames=1)
+
+        requests = recorder.snapshot()
+        session_end = [r for r in requests if r.headers.get(HEADER_SESSION_LAST) == "true"]
+        assert len(session_end) == 1
+        # The endpoint renders the session on receipt, so every chunk must have
+        # been answered before the terminator arrives.
+        assert session_end[0].answered_before == len(requests) - 1
 
     def test_a_server_error_is_retried_then_given_up_on(self, ingest_server) -> None:
         url, recorder = ingest_server
