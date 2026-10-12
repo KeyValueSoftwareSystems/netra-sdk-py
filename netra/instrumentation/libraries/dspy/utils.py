@@ -135,21 +135,74 @@ def get_llm_model_name(lm: Any) -> Optional[str]:
     return None
 
 
+# Only these invocation parameters are exported. ``lm.kwargs`` also carries
+# provider credentials and endpoints (``api_key``, ``api_base``), so an
+# allowlist is used rather than a denylist of provider-specific key names.
+ALLOWED_INVOCATION_PARAMETERS = frozenset(
+    {
+        "model",
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "n",
+        "stop",
+        "frequency_penalty",
+        "presence_penalty",
+        "seed",
+        "response_format",
+    }
+)
+
+_SENSITIVE_ARGUMENT_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "api_base",
+        "base_url",
+        "token",
+        "access_token",
+        "password",
+        "secret",
+        "client_secret",
+        "authorization",
+        "headers",
+        "extra_headers",
+    }
+)
+_SENSITIVE_ARGUMENT_SUFFIXES = ("_key", "_secret", "_token", "_password")
+
+
+def is_sensitive_argument_name(name: Any) -> bool:
+    """Return True for argument names that may hold credentials or endpoints."""
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _SENSITIVE_ARGUMENT_NAMES or lowered.endswith(_SENSITIVE_ARGUMENT_SUFFIXES)
+
+
+def redact_sensitive_arguments(obj: Any) -> Any:
+    """Recursively drop credential-like keys from dicts before they are exported."""
+    if isinstance(obj, dict):
+        return {k: redact_sensitive_arguments(v) for k, v in obj.items() if not is_sensitive_argument_name(k)}
+    if isinstance(obj, list):
+        return [redact_sensitive_arguments(item) for item in obj]
+    return obj
+
+
 def get_llm_invocation_parameters(lm: Any, call_kwargs: Mapping[str, Any]) -> Dict[str, Any]:
     """
-    Merge LM instance kwargs with call-time kwargs to get full invocation parameters.
+    Merge LM instance kwargs with call-time kwargs to get the exported invocation parameters.
+
+    Only ``ALLOWED_INVOCATION_PARAMETERS`` are kept, so credentials such as
+    ``api_key`` and ``api_base`` never reach span attributes.
     """
     lm_kwargs = getattr(lm, "kwargs", {})
     if not isinstance(lm_kwargs, dict):
         lm_kwargs = {}
 
-    # Filter out internal parameters
-    filtered_call_kwargs = {
-        k: v for k, v in call_kwargs.items() if k not in ["self", "kwargs", "wrapped", "instance", "args"]
-    }
-
     # Merge with call-level kwargs taking precedence
-    return {**lm_kwargs, **filtered_call_kwargs}
+    merged = {**lm_kwargs, **call_kwargs}
+    return {k: v for k, v in merged.items() if k in ALLOWED_INVOCATION_PARAMETERS}
 
 
 def extract_llm_input_messages(arguments: Mapping[str, Any]) -> Iterator[Tuple[str, Any]]:

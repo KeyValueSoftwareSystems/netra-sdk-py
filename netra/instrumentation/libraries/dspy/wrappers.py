@@ -25,6 +25,7 @@ from netra.instrumentation.libraries.dspy.utils import (
     get_llm_model_name,
     get_predict_span_name,
     prediction_to_output_dict,
+    redact_sensitive_arguments,
     safe_json_dumps,
     should_suppress_instrumentation,
 )
@@ -134,7 +135,9 @@ class LMCallWrapper:
                         span.set_attribute(SpanAttributes.LLM_REQUEST_MAX_TOKENS, max_tokens)
 
                 # Set raw input
-                span.set_attribute("gen_ai.request.input", safe_json_dumps(convert_to_dict(arguments)))
+                span.set_attribute(
+                    "gen_ai.request.input", safe_json_dumps(redact_sensitive_arguments(convert_to_dict(arguments)))
+                )
 
                 # Call the wrapped method
                 response = wrapped(*args, **kwargs)
@@ -228,7 +231,9 @@ class LMAsyncCallWrapper:
                         span.set_attribute(SpanAttributes.LLM_REQUEST_MAX_TOKENS, max_tokens)
 
                 # Set raw input
-                span.set_attribute("gen_ai.request.input", safe_json_dumps(convert_to_dict(arguments)))
+                span.set_attribute(
+                    "gen_ai.request.input", safe_json_dumps(redact_sensitive_arguments(convert_to_dict(arguments)))
+                )
 
                 # Call the wrapped method
                 response = await wrapped(*args, **kwargs)
