@@ -154,6 +154,15 @@ class Netra:
             # Initialize tracer (OTLP exporter, span processor, resource)
             Tracer(cfg, root_instrument_names=resolved_root)
 
+            # Gate session baggage by destination host for every injector, before
+            # any instrumentor can call the global propagator.
+            try:
+                from netra.instrumentation.http.propagation import install_gated_propagator
+
+                install_gated_propagator()
+            except Exception as e:
+                logger.warning("Failed to install host-gated baggage propagator: %s", e, exc_info=True)
+
             # Restore parent trace context when running as a subprocess.
             try:
                 from netra.instrumentation.libraries.subprocess.utils import extract_subprocess_context
