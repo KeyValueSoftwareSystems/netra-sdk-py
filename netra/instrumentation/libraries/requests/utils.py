@@ -5,11 +5,12 @@ import requests as requests_lib  # type: ignore[import-untyped]
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
-from opentelemetry.util.http import remove_url_credentials, sanitize_method
+from opentelemetry.util.http import sanitize_method
 
 from netra.instrumentation.capture.bounded_capture import BoundedStreamBuffer
 from netra.instrumentation.http.body import build_response_output, build_streaming_output
 from netra.instrumentation.http.headers import sanitize_header_mapping
+from netra.instrumentation.http.url import redact_url_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -111,7 +112,7 @@ def set_span_input(span: Span, request: requests_lib.PreparedRequest) -> None:
         return
     try:
         input_data: Dict[str, Any] = {
-            "url": remove_url_credentials(request.url or ""),
+            "url": redact_url_secrets(request.url or ""),
             "headers": sanitize_header_mapping(request.headers),
         }
         span.set_attribute("input", build_response_output(input_data, _get_request_body(request)))

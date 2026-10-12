@@ -18,6 +18,7 @@ from starlette.routing import Match
 
 from netra.instrumentation.http.body import build_response_output
 from netra.instrumentation.http.headers import sanitize_asgi_headers
+from netra.instrumentation.http.url import redact_query_secrets
 
 logger = logging.getLogger(__name__)
 
@@ -88,7 +89,7 @@ def build_request_url(scope: Dict[str, Any]) -> str:
             and ``query_string`` keys.
 
     Returns:
-        The reconstructed URL string.
+        The reconstructed URL string, with secret query parameters redacted.
     """
     scheme = scope.get("scheme", "http")
     server = scope.get("server")
@@ -109,7 +110,7 @@ def build_request_url(scope: Dict[str, Any]) -> str:
         url = path
 
     if query_string:
-        url = f"{url}?{query_string.decode('latin-1')}"
+        url = f"{url}?{redact_query_secrets(query_string.decode('latin-1'))}"
 
     return url
 

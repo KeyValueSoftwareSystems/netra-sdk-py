@@ -6,11 +6,11 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import suppress_http_instrumentation
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
-from opentelemetry.util.http import remove_url_credentials
 from wrapt import ObjectProxy
 
 from netra.instrumentation.http.body import new_body_buffer
 from netra.instrumentation.http.propagation import inject_context
+from netra.instrumentation.http.url import redact_url_secrets
 from netra.instrumentation.libraries.httpx.utils import (
     get_default_span_name,
     set_span_input,
@@ -311,7 +311,7 @@ def send_wrapper(tracer: Tracer) -> Callable[..., Any]:
             if request is None:
                 raise ValueError("No request object found in arguments")
             method = request.method
-            url = remove_url_credentials(str(request.url))
+            url = redact_url_secrets(str(request.url))
             span_name = get_default_span_name(method)
         except Exception as e:
             logger.debug("netra.instrumentation.libraries.httpx: failed to extract request metadata: %s", e)
@@ -425,7 +425,7 @@ def async_send_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             if request is None:
                 raise ValueError("No request object found in arguments")
             method = request.method
-            url = remove_url_credentials(str(request.url))
+            url = redact_url_secrets(str(request.url))
             span_name = get_default_span_name(method)
         except Exception as e:
             logger.debug("netra.instrumentation.libraries.httpx: failed to extract request metadata: %s", e)

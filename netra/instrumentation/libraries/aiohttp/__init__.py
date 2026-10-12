@@ -52,12 +52,12 @@ from opentelemetry.util.http import (
     ExcludeList,
     get_excluded_urls,
     parse_excluded_urls,
-    remove_url_credentials,
     sanitize_method,
 )
 from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
 from netra.instrumentation.http.propagation import inject_context
+from netra.instrumentation.http.url import redact_url_secrets
 from netra.instrumentation.libraries.aiohttp.version import __version__
 
 logger = logging.getLogger(__name__)
@@ -124,7 +124,7 @@ def _instrument(
         span_name = get_default_span_name(method)
 
         url_str = str(url)
-        url = remove_url_credentials(url_str)
+        url = redact_url_secrets(url_str)
 
         span_attributes: Dict[str, Any] = {}
         _set_http_method(

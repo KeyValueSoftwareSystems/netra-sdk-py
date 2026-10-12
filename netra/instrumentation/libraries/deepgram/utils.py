@@ -6,6 +6,8 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.http.url import redact_url_secrets
+
 logger = logging.getLogger(__name__)
 
 
@@ -48,10 +50,12 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], source_type: Opti
     for key in GENERIC_ATTRIBUTES:
         value = kwargs.get(key)
         if value is not None:
+            if key == "callback" and isinstance(value, str):
+                value = redact_url_secrets(value)
             span.set_attribute(f"gen_ai.request.{key}", value)
 
     if source_type == "url" and "url" in kwargs:
-        span.set_attribute("gen_ai.request.url", str(kwargs["url"]))
+        span.set_attribute("gen_ai.request.url", redact_url_secrets(str(kwargs["url"])))
 
     if text := kwargs.get("text"):
         character_count = len(text)

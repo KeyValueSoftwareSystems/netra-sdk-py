@@ -9,6 +9,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
+from netra.instrumentation.http.url import redact_query_secrets
 from netra.span_wrapper import SpanType
 
 logger = logging.getLogger(__name__)
@@ -930,7 +931,8 @@ def build_scope_url(scope: Dict[str, Any]) -> str:
         scope: ASGI connection scope dict.
 
     Returns:
-        Full URL string including scheme, host, port, path, and query string.
+        Full URL string including scheme, host, port, path, and query string, with
+        secret query parameters redacted.
     """
     scheme = scope.get("scheme", "http")
     server = scope.get("server")
@@ -947,7 +949,7 @@ def build_scope_url(scope: Dict[str, Any]) -> str:
         url = path
 
     if query_string:
-        url = f"{url}?{query_string.decode('latin-1')}"
+        url = f"{url}?{redact_query_secrets(query_string.decode('latin-1'))}"
     return url
 
 
