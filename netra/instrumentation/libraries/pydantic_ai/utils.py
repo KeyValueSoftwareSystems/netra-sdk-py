@@ -1,9 +1,12 @@
+import logging
 from typing import Any, Dict, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace.status import Status, StatusCode
+
+logger = logging.getLogger(__name__)
 
 # Constants for consistent truncation and limits
 MAX_CONTENT_LENGTH = 1000
@@ -53,9 +56,12 @@ def _set_assistant_response_content(span: Any, result: Any, finish_reason: str =
     _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", finish_reason)
 
     # Get the output content from the result
-    output = _safe_get_attribute(result, "output")
-    if output is not None:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", output, MAX_CONTENT_LENGTH)
+    try:
+        output = _safe_get_attribute(result, "output")
+        if output is not None:
+            _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", output, MAX_CONTENT_LENGTH)
+    except Exception:
+        logger.debug("pydantic_ai: failed to set assistant response content", exc_info=True)
 
 
 def set_pydantic_request_attributes(
@@ -81,24 +87,49 @@ def set_pydantic_request_attributes(
     _safe_set_attribute(span, f"{SpanAttributes.LLM_REQUEST_MAX_TOKENS}", kwargs.get("max_tokens"))
 
 
+def _get_result_usage(result: Any) -> Any:
+    """Return run usage, whether ``usage`` is a method (pydantic-ai < 2) or a property (>= 2)."""
+    usage = _safe_get_attribute(result, "usage")
+    if callable(usage):
+        usage = usage()
+    return usage
+
+
+def _get_usage_tokens(usage: Any, *names: str) -> Any:
+    """Return the first token count present under any of ``names`` (field names differ across versions)."""
+    for name in names:
+        value = _safe_get_attribute(usage, name)
+        if value is not None:
+            return value
+    return None
+
+
 def set_pydantic_response_attributes(span: Any, result: Any) -> None:
-    """Set response attributes on span for pydantic_ai."""
+    """Set response attributes on span for pydantic_ai.
+
+    Never raises: this runs after the user's call has succeeded, so a change in
+    pydantic-ai's result shape must not turn a successful run into an error.
+    """
     if not span.is_recording():
         return
 
-    # Set response model if available
-    model_name = _safe_get_attribute(result, "model_name")
-    _safe_set_attribute(span, f"{SpanAttributes.LLM_RESPONSE_MODEL}", model_name)
+    try:
+        # Set response model if available
+        model_name = _safe_get_attribute(result, "model_name")
+        _safe_set_attribute(span, f"{SpanAttributes.LLM_RESPONSE_MODEL}", model_name)
 
-    # Set usage information
-    if hasattr(result, "usage"):
-        usage = result.usage()
+        # Set usage information
+        usage = _get_result_usage(result)
         if usage:
             _safe_set_attribute(
-                span, f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}", _safe_get_attribute(usage, "request_tokens")
+                span,
+                f"{SpanAttributes.LLM_USAGE_PROMPT_TOKENS}",
+                _get_usage_tokens(usage, "input_tokens", "request_tokens"),
             )
             _safe_set_attribute(
-                span, f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}", _safe_get_attribute(usage, "response_tokens")
+                span,
+                f"{SpanAttributes.LLM_USAGE_COMPLETION_TOKENS}",
+                _get_usage_tokens(usage, "output_tokens", "response_tokens"),
             )
             _safe_set_attribute(
                 span, f"{SpanAttributes.LLM_USAGE_TOTAL_TOKENS}", _safe_get_attribute(usage, "total_tokens")
@@ -106,16 +137,18 @@ def set_pydantic_response_attributes(span: Any, result: Any) -> None:
 
             # Set any additional details from usage
             details = _safe_get_attribute(usage, "details")
-            if details:
+            if isinstance(details, dict):
                 for key, value in details.items():
                     if value:
                         _safe_set_attribute(span, f"gen_ai.usage.details.{key}", value)
 
-    # Set output content if available
-    output = _safe_get_attribute(result, "output")
-    if output is not None:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+        # Set output content if available
+        output = _safe_get_attribute(result, "output")
+        if output is not None:
+            _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+            _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+    except Exception:
+        logger.debug("pydantic_ai: failed to set response attributes", exc_info=True)
 
 
 def should_suppress_instrumentation() -> bool:
