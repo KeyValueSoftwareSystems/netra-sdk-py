@@ -37,6 +37,8 @@ from netra.instrumentation.libraries.livekit.provider_binding import _ShieldedTr
 from netra.instrumentation.libraries.livekit.trace_processor import (
     _RECORDER_FIELD,
     SpanMappingProcessor,
+    _user_transcripts,
+    _user_turn_spans,
     record_stt_usage,
 )
 from netra.instrumentation.libraries.livekit.utils import (
@@ -228,7 +230,7 @@ class TestAttributeMirroring:
         span.set_attributes({})
         span.end()
 
-        assert "gen_ai.prompt.0.content" not in harness.attributes("agent_turn")
+        assert _messages(harness.attributes("agent_turn"), "prompt") == []
 
 
 class TestUsageAttributes:
@@ -500,7 +502,7 @@ class TestConversationEvents:
         span.end()
 
         attributes = harness.attributes("llm_request")
-        assert "gen_ai.prompt.0.content" not in attributes
+        assert _messages(attributes, "prompt") == []
         assert [event.name for event in harness.finished("llm_request").events] == ["some.other.event"]
 
     def test_event_without_content_contributes_no_message(self, harness: _Harness) -> None:
@@ -508,7 +510,7 @@ class TestConversationEvents:
         span.add_event("gen_ai.user.message", {"role": "user"})
         span.end()
 
-        assert "gen_ai.prompt.0.content" not in harness.attributes("llm_request")
+        assert _messages(harness.attributes("llm_request"), "prompt") == []
 
 
 class TestTtsPricing:
@@ -1344,6 +1346,39 @@ def _run_call(
         with trace.use_span(parent, end_on_exit=False):
             asyncio.run(call())
     return session
+
+
+class TestUserTurnRegistry:
+    """Each call's registry entry follows its open ``user_turn`` span."""
+
+    @staticmethod
+    def _start_turn(harness: _Harness, call: Any) -> Any:
+        with call_id_scope(call):
+            return harness.livekit_tracer.start_span(USER_TURN_SPAN_NAME)
+
+    def test_an_ended_turn_is_deregistered(self, harness: _Harness) -> None:
+        call = harness.livekit_tracer.start_span(CALL_SPAN_NAME)
+        call_id = call.get_span_context().span_id
+        turn = self._start_turn(harness, call)
+        assert _user_turn_spans.get(call_id) is turn
+
+        turn.end()
+
+        assert call_id not in _user_turn_spans
+        assert call_id not in _user_transcripts
+        call.end()
+
+    def test_a_stale_end_keeps_the_newer_turn_registered(self, harness: _Harness) -> None:
+        call = harness.livekit_tracer.start_span(CALL_SPAN_NAME)
+        call_id = call.get_span_context().span_id
+        first = self._start_turn(harness, call)
+        second = self._start_turn(harness, call)
+
+        first.end()
+
+        assert _user_turn_spans.get(call_id) is second
+        second.end()
+        call.end()
 
 
 class TestSttUsageWiring:

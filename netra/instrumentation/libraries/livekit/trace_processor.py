@@ -230,12 +230,6 @@ def _numeric(value: Any) -> Optional[float]:
     return float(value)
 
 
-# Instance attribute holding the id of the call a ``user_turn`` span belongs to.
-# Stashed on the span at ``on_start`` because ``on_end`` is handed a
-# ``ReadableSpan`` and no context, so the key it must be deregistered under has to
-# travel on the span itself — the same reason ``_RECORDER_FIELD`` does.
-_CALL_ID_FIELD = "_netra_livekit_call_id"
-
 # The ``user_turn`` span currently recording in each call, keyed by call id — the
 # span id of that call's ``livekit-call`` span, as ``call_id_scope`` attaches it.
 # STT usage arrives on the session's ``metrics_collected`` event, which carries no
@@ -277,7 +271,6 @@ def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.C
     call_id = call_id_of(parent_context)
     if call_id is None:
         return
-    setattr(span, _CALL_ID_FIELD, call_id)
     with _user_turn_lock:
         _user_turn_spans[call_id] = span
         # Fresh turn — drop any leftover from a previous one in this call.
@@ -287,25 +280,25 @@ def _register_user_turn_span(span: Span, parent_context: Optional[otel_context.C
 def _deregister_user_turn_span(span: ReadableSpan) -> None:
     """Drop *span* from the user-turn registry, if it is still the registered one.
 
-    Gated on identity because ``on_end`` can run after the next turn has already
-    registered itself — a stale end must not evict the turn that replaced it.
+    Matched by span id: ``on_end`` is handed a fresh ``ReadableSpan`` copy, so
+    nothing stashed on the live span at ``on_start`` is readable here. Matching on
+    the id also means a stale end cannot evict a newer turn that has already
+    registered for the same call.
 
     Args:
         span: The span that has ended.
     """
     if span.name != USER_TURN_SPAN_NAME:
         return
-    call_id = getattr(span, _CALL_ID_FIELD, None)
-    if call_id is None:
-        return
     context = span.get_span_context()
     if context is None:
         return
     with _user_turn_lock:
-        registered = _user_turn_spans.get(call_id)
-        if registered is not None and registered.get_span_context().span_id == context.span_id:
-            del _user_turn_spans[call_id]
-            _user_transcripts.pop(call_id, None)
+        for call_id, registered in list(_user_turn_spans.items()):
+            if registered.get_span_context().span_id == context.span_id:
+                del _user_turn_spans[call_id]
+                _user_transcripts.pop(call_id, None)
+                return
 
 
 def record_user_transcript(call_id: int, transcript: str, *, is_final: bool) -> None:
@@ -389,8 +382,8 @@ def end_orphaned_user_turn_span(call_id: int) -> None:
         logger.debug("netra.livekit: could not mark orphaned user_turn span", exc_info=True)
     if transcript:
         try:
-            # Goes through the set_attribute wrapper so CONVERSATION_MAP fills
-            # gen_ai.completion the same way a normal committed turn does.
+            # Goes through the set_attribute wrapper so CONVERSATION_MAP records it
+            # in ``output`` the same way a normal committed turn does.
             span.set_attribute("lk.user_transcript", transcript)
         except Exception:
             logger.debug("netra.livekit: could not stamp orphaned user_turn transcript", exc_info=True)

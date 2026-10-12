@@ -26,7 +26,7 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
-from netra.instrumentation.message_builder import build_messages, model_as_dict
+from netra.instrumentation.message_builder import build_messages, to_json
 
 logger = logging.getLogger(__name__)
 
@@ -97,9 +97,7 @@ def _set_span_attribute(span: Any, name: str, value: Any) -> None:
 
 def _content_text(content: Any) -> str:
     """Return message content as text, JSON-encoding structured content such as chunk lists."""
-    if isinstance(content, str):
-        return content
-    return json.dumps(content, default=lambda obj: model_as_dict(obj) or str(obj))
+    return content if isinstance(content, str) else to_json(content)
 
 
 @dont_throw

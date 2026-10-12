@@ -33,6 +33,11 @@ def model_as_dict(obj: Any) -> Dict[str, Any]:
     return {}
 
 
+def to_json(value: Any) -> str:
+    """Serialise *value* to JSON, encoding SDK model objects as dicts and anything else as text."""
+    return json.dumps(value, default=lambda obj: model_as_dict(obj) or str(obj))
+
+
 def build_messages(entries: Sequence[Any]) -> str:
     """Serialise message entries to a JSON array that fits the attribute length limit.
 
@@ -43,7 +48,7 @@ def build_messages(entries: Sequence[Any]) -> str:
     never cuts it mid-structure.
     """
     capped = [cap_message_content(entry) for entry in entries]
-    serialised = json.dumps(capped)
+    serialised = to_json(capped)
     max_len = get_attribute_max_len()
     if len(serialised) <= max_len:
         return serialised
@@ -79,7 +84,7 @@ def _fit_newest(entries: List[Any], max_len: int) -> str:
     budget = max_len - len("[]")
     for entry in reversed(entries):
         room = budget - (_ITEM_SEPARATOR_LEN if kept else 0)
-        size = len(json.dumps(entry))
+        size = len(to_json(entry))
         if size <= room:
             kept.append(entry)
             budget = room - size
@@ -91,7 +96,7 @@ def _fit_newest(entries: List[Any], max_len: int) -> str:
 
     if len(kept) < len(entries):
         logger.debug("Dropped %d oldest message(s) to fit the attribute length limit", len(entries) - len(kept))
-    return json.dumps(kept[::-1])
+    return to_json(kept[::-1])
 
 
 def _shrink_to_fit(entry: Any, room: int) -> Optional[Dict[str, Any]]:
@@ -104,11 +109,11 @@ def _shrink_to_fit(entry: Any, room: int) -> Optional[Dict[str, Any]]:
     content = _string_content(entry)
     if not content:
         return None
-    overhead = len(json.dumps(_with_truncated_content(entry, "")))
+    overhead = len(to_json(_with_truncated_content(entry, "")))
     keep = len(content)
     for _ in range(_MAX_FIT_ROUNDS):
         candidate = _with_truncated_content(entry, content[:keep])
-        size = len(json.dumps(candidate))
+        size = len(to_json(candidate))
         if size <= room:
             return candidate
         chars_per_kept = (size - overhead) / keep
@@ -135,7 +140,7 @@ def _extract_tool_call(tc: Any) -> Dict[str, Any]:
 
     entry: Dict[str, Any] = {
         "role": "assistant",
-        "content": json.dumps({"name": name, "arguments": arguments}),
+        "content": to_json({"name": name, "arguments": arguments}),
     }
     if tc_id:
         entry["tool_call_id"] = tc_id
@@ -202,7 +207,7 @@ def build_response_api_input(kwargs: Dict[str, Any]) -> Optional[str]:
                     entries.append(
                         {
                             "role": "assistant",
-                            "content": json.dumps({"name": name, "arguments": arguments}),
+                            "content": to_json({"name": name, "arguments": arguments}),
                         }
                     )
             elif msg_type == "function_call_output":
@@ -246,7 +251,7 @@ def build_completion_output(response_dict: Any) -> Optional[str]:
                 entries.append(
                     {
                         "role": "assistant",
-                        "content": json.dumps({"name": name, "arguments": arguments}),
+                        "content": to_json({"name": name, "arguments": arguments}),
                     }
                 )
             elif content := element.get("content"):

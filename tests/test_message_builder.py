@@ -83,6 +83,21 @@ class TestBuildMessages:
         assert isinstance(json.loads(serialised), list)
 
 
+class TestToJson:
+    def test_sdk_models_and_unknown_objects_are_encoded_instead_of_raising(self) -> None:
+        class Chunk:
+            def model_dump(self) -> dict:
+                return {"type": "text", "text": "hi"}
+
+        class Opaque:
+            def __str__(self) -> str:
+                return "opaque"
+
+        entries = json.loads(build_messages([{"role": "user", "content": [Chunk(), Opaque()]}]))
+
+        assert entries == [{"role": "user", "content": [{"type": "text", "text": "hi"}, "opaque"]}]
+
+
 class TestBuilders:
     def test_empty_inputs_return_none(self) -> None:
         assert build_chat_input([]) is None

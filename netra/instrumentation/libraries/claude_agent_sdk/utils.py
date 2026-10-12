@@ -269,8 +269,7 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
     """
     Write request metadata (model, system prompt, user prompt) to the root span.
 
-    Populates both the structured ``gen_ai.prompts.*`` attributes and the ``input``
-    attribute as a JSON array of ``{"role", "content"}`` objects.
+    Populates the ``input`` attribute as a JSON array of ``{"role", "content"}`` objects.
 
     Args:
         span (Span): The root OpenTelemetry span to write attributes to.
