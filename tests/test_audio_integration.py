@@ -335,8 +335,10 @@ class TestAudioChunkSenderWireContract:
 
         for span_id, expected_chunks in ((USER_SPAN_ID, 3), (AGENT_SPAN_ID, 2)):
             sequences = [int(r.headers[HEADER_SEQUENCE]) for r in recorder.chunks_for(span_id)]
-            # Each span sends its data chunks plus one terminator.
-            assert sequences == list(range(expected_chunks + 1)), span_id
+            # Each span sends its data chunks plus one terminator. Uploads run in
+            # parallel, so arrival order is not guaranteed; the endpoint stores
+            # chunks by sequence number and only needs 0..N with no gaps.
+            assert sorted(sequences) == list(range(expected_chunks + 1)), span_id
 
     def test_a_span_is_terminated_exactly_once(self, ingest_server) -> None:
         url, recorder = ingest_server
