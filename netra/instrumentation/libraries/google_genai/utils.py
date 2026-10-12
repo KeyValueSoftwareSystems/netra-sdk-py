@@ -50,7 +50,7 @@ def set_request_attributes(span: Any, args: Tuple[Any, ...], kwargs: Dict[str, A
         entries = []
 
         for content in content_list:
-            role = getattr(content, "role", "user")
+            role = getattr(content, "role", None) or "user"
             text = None
 
             if hasattr(content, "parts"):
