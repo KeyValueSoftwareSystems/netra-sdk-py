@@ -1,6 +1,6 @@
 import logging
 import time
-from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
+from typing import Any, AsyncIterator, Callable, Dict, Iterator, Optional, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
@@ -79,24 +79,23 @@ def stream_dialogue_wrapper(tracer: Tracer, span_name: str, request_type: str) -
             },
         )
 
-        context = context_api.attach(set_span_in_context(span))
-
+        # The span is current only while the request is issued; each chunk is
+        # pulled under it again by the stream wrapper. Keeping it attached
+        # until the stream ends would leak it into the caller's code.
+        token = context_api.attach(set_span_in_context(span))
         try:
             set_request_attributes(span, kwargs)
             response = wrapped(*args, **kwargs)  # generator
-            return ElevenLabsStreamingWrapper(
-                span=span,
-                response=response,
-                context=context,
-            )
-
         except Exception as e:
             logger.error("netra.instrumentation.libraries.elevenlabs: %s", e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)
             span.end()
-            context_api.detach(context)
             raise
+        finally:
+            context_api.detach(token)
+
+        return ElevenLabsStreamingWrapper(span=span, response=response)
 
     return wrapper
 
@@ -271,27 +270,20 @@ def async_generator_wrapper(tracer: Tracer, span_name: str, request_type: str) -
             attributes={"gen_ai.system": "ElevenLabs", "gen_ai.request.type": request_type},
         )
 
-        context = context_api.attach(set_span_in_context(span))
-
+        token = context_api.attach(set_span_in_context(span))
         try:
             set_request_attributes(span, kwargs)
             response = wrapped(*args, **kwargs)  # Returns async generator - NO await!
-            return ElevenLabsAsyncStreamingWrapper(
-                span=span,
-                response=response,
-                context=context,
-            )
         except Exception as e:
             logger.error("netra.instrumentation.libraries.elevenlabs: %s", e)
             span.set_status(Status(StatusCode.ERROR, str(e)))
             span.record_exception(e)
             span.end()
-            if context is not None:
-                try:
-                    context_api.detach(context)
-                except ValueError:
-                    pass
             raise
+        finally:
+            context_api.detach(token)
+
+        return ElevenLabsAsyncStreamingWrapper(span=span, response=response)
 
     return wrapper
 
@@ -356,84 +348,99 @@ def create_sound_effect_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
     return async_generator_wrapper(tracer, CREATE_SOUND_EFFECT_SPAN_NAME, "sound_effect")
 
 
-class ElevenLabsStreamingWrapper:
-    def __init__(
-        self,
-        span: Span,
-        response: Iterator[Any],
-        context: Any,
-    ) -> None:
-        self._span = span
-        self._response = response
-        self._context = context
+class _StreamSpanState:
+    """Span bookkeeping shared by the sync and async stream wrappers.
 
-        self._buffer: Dict[str, Any] = {
-            "chunks": [],
-            "duration": 0.0,
-            "alignment": [],
-            "voice_segments": [],
-        }
+    The span is made current only while a chunk is being pulled (so spans the
+    SDK creates during the request are its children) and is ended exactly once:
+    on exhaustion, on error, on ``close()``/``aclose()``, or on garbage collection.
+    """
+
+    def __init__(self, span: Span) -> None:
+        self._span = span
+        self._finalized = False
+        self._buffer: Dict[str, Any] = {"duration": 0.0, "alignment": [], "voice_segments": []}
+
+    def _process_chunk(self, chunk: Any) -> None:
+        try:
+            if hasattr(chunk, "alignment") and chunk.alignment:
+                self._span.add_event("elevenlabs.stream.alignment")
+                self._buffer["alignment"].append(chunk.alignment)
+
+            if hasattr(chunk, "voice_segments") and chunk.voice_segments:
+                self._span.add_event("elevenlabs.stream.voice_segments")
+                self._buffer["voice_segments"].extend(chunk.voice_segments)
+
+            if hasattr(chunk, "alignment") and getattr(chunk.alignment, "character_end_times_seconds", None):
+                self._buffer["duration"] = (chunk.alignment.character_end_times_seconds[-1]) / 60
+        except Exception:
+            logger.debug("netra.instrumentation.libraries.elevenlabs: failed to process chunk", exc_info=True)
+
+    def _finalize(self, error: Optional[BaseException] = None, completed: bool = True) -> None:
+        if self._finalized:
+            return
+        self._finalized = True
+        try:
+            record_span_timing(self._span, "gen_ai.response.duration")
+            if error is not None:
+                self._span.set_status(Status(StatusCode.ERROR, str(error)))
+                self._span.record_exception(error)
+            else:
+                if self._buffer["duration"]:
+                    self._span.set_attribute("gen_ai.audio.duration", self._buffer["duration"])
+                set_response_attributes(self._span, self._buffer)
+                if completed:
+                    self._span.set_status(Status(StatusCode.OK))
+        finally:
+            self._span.end()
+
+    def __del__(self) -> None:
+        try:
+            self._finalize(completed=False)
+        except Exception:
+            pass
+
+
+class ElevenLabsStreamingWrapper(_StreamSpanState):
+    def __init__(self, span: Span, response: Iterator[Any]) -> None:
+        super().__init__(span)
+        self._response = response
 
     def __iter__(self) -> "ElevenLabsStreamingWrapper":
         return self
 
     def __next__(self) -> Any:
+        token = context_api.attach(set_span_in_context(self._span))
         try:
             chunk = next(self._response)
-            self._process_chunk(chunk)
-            return chunk
         except StopIteration:
-            self._finalize_span()
-            context_api.detach(self._context)
+            self._finalize()
             raise
-
         except Exception as e:
-            self._span.set_status(Status(StatusCode.ERROR, str(e)))
-            self._span.record_exception(e)
-            self._span.end()
-            context_api.detach(self._context)
+            logger.error("netra.instrumentation.libraries.elevenlabs: %s", e)
+            self._finalize(error=e)
             raise
+        finally:
+            context_api.detach(token)
+        self._process_chunk(chunk)
+        return chunk
 
-    def _process_chunk(self, chunk: Any) -> None:
-        if hasattr(chunk, "alignment") and chunk.alignment:
-            self._span.add_event("elevenlabs.stream.alignment")
-            self._buffer["alignment"].append(chunk.alignment)
-
-        if hasattr(chunk, "voice_segments") and chunk.voice_segments:
-            self._span.add_event("elevenlabs.stream.voice_segments")
-            self._buffer["voice_segments"].extend(chunk.voice_segments)
-
-        if hasattr(chunk, "alignment") and getattr(chunk.alignment, "character_end_times_seconds", None):
-            self._buffer["duration"] = (chunk.alignment.character_end_times_seconds[-1]) / 60
-
-        self._buffer["chunks"].append(chunk)
-
-    def _finalize_span(self) -> None:
-        record_span_timing(self._span, "gen_ai.response.duration")
-
-        if self._buffer["duration"]:
-            self._span.set_attribute("gen_ai.audio.duration", self._buffer["duration"])
-
-        set_response_attributes(self._span, self._buffer)
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
+    def close(self) -> None:
+        """Close the underlying stream and end the span (for consumers that stop early)."""
+        try:
+            close = getattr(self._response, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._finalize(completed=False)
 
 
-class ElevenLabsAsyncStreamingWrapper:
+class ElevenLabsAsyncStreamingWrapper(_StreamSpanState):
     """Async wrapper for streaming responses (async generators)."""
 
-    def __init__(self, span: Span, response: AsyncIterator[Any], context: Any) -> None:
-        """Initialize async streaming wrapper.
-
-        Args:
-            span: OpenTelemetry span for this operation
-            response: Async generator/iterator from the wrapped method
-            context: OpenTelemetry context token from context_api.attach()
-        """
-        self._span: Span = span
+    def __init__(self, span: Span, response: AsyncIterator[Any]) -> None:
+        super().__init__(span)
         self._response: AsyncIterator[Any] = response
-        self._context: Any = context
-        self._buffer: Dict[str, Any] = {"chunks": [], "duration": 0.0, "alignment": [], "voice_segments": []}
 
     def __aiter__(self) -> "ElevenLabsAsyncStreamingWrapper":
         """Support async iteration protocol."""
@@ -441,52 +448,26 @@ class ElevenLabsAsyncStreamingWrapper:
 
     async def __anext__(self) -> Any:
         """Iterate over async response chunks."""
+        token = context_api.attach(set_span_in_context(self._span))
         try:
             chunk = await self._response.__anext__()
-            self._process_chunk(chunk)
-            return chunk
         except StopAsyncIteration:
-            self._finalize_span()
-            if self._context is not None:
-                try:
-                    context_api.detach(self._context)
-                except ValueError:
-                    pass
+            self._finalize()
             raise
         except Exception as e:
             logger.error("netra.instrumentation.libraries.elevenlabs: %s", e)
-            self._span.set_status(Status(StatusCode.ERROR, str(e)))
-            self._span.record_exception(e)
-            self._span.end()
-            if self._context is not None:
-                try:
-                    context_api.detach(self._context)
-                except ValueError:
-                    pass
+            self._finalize(error=e)
             raise
+        finally:
+            context_api.detach(token)
+        self._process_chunk(chunk)
+        return chunk
 
-    def _process_chunk(self, chunk: Any) -> None:
-        """Process a chunk from the stream."""
-        if hasattr(chunk, "alignment") and chunk.alignment:
-            self._span.add_event("elevenlabs.stream.alignment")
-            self._buffer["alignment"].append(chunk.alignment)
-
-        if hasattr(chunk, "voice_segments") and chunk.voice_segments:
-            self._span.add_event("elevenlabs.stream.voice_segments")
-            self._buffer["voice_segments"].extend(chunk.voice_segments)
-
-        if hasattr(chunk, "alignment") and getattr(chunk.alignment, "character_end_times_seconds", None):
-            self._buffer["duration"] = (chunk.alignment.character_end_times_seconds[-1]) / 60
-
-        self._buffer["chunks"].append(chunk)
-
-    def _finalize_span(self) -> None:
-        """Finalize span after streaming completes."""
-        record_span_timing(self._span, "gen_ai.response.duration")
-
-        if self._buffer["duration"]:
-            self._span.set_attribute("gen_ai.audio.duration", self._buffer["duration"])
-
-        set_response_attributes(self._span, self._buffer)
-        self._span.set_status(Status(StatusCode.OK))
-        self._span.end()
+    async def aclose(self) -> None:
+        """Close the underlying stream and end the span (for consumers that stop early)."""
+        try:
+            aclose = getattr(self._response, "aclose", None)
+            if callable(aclose):
+                await aclose()
+        finally:
+            self._finalize(completed=False)

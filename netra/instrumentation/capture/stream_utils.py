@@ -56,11 +56,11 @@ def _generic_extractor(wrapper: Union["RootOutputSyncStreamWrapper", "RootOutput
 def _finalize_via_method(stream: Any) -> None:
     """Try to finalize a Netra wrapper by calling ``_finalize`` or ``_finalize_span``.
 
-    ``_finalize`` is tried first because wrappers that use it (e.g. Agno)
-    have an idempotency guard (``_finalized`` flag), making them safe to
-    call unconditionally.  ``_finalize_span`` is the fallback for LLM
-    wrappers (openai, groq, cerebras, litellm, google_genai) that lack
-    such a guard.
+    ``_finalize`` is tried first; ``_finalize_span`` is the fallback. Every
+    Netra stream wrapper's finalizer is idempotent — the LLM wrappers
+    (openai, groq, cerebras, litellm, google_genai) share the guarded
+    finalizer in ``netra.instrumentation.llm_common``, and Agno and
+    ElevenLabs track a ``_finalized`` flag — so an extra call is harmless.
     """
     if stream is None or not getattr(stream, "_netra_stream_wrapper", False):
         return
@@ -115,10 +115,8 @@ def _force_finalize_inner_stream(iterator: Any, stream: Any) -> None:
     # If the inner wrapper already set _netra_output (either because
     # path 1 triggered finalization, or because __next__'s StopIteration
     # handler already called _finalize/_finalize_span on full exhaustion),
-    # there is nothing left to do.  Skipping path 2 here is essential
-    # because several instrumentation wrappers (openai, groq, cerebras,
-    # litellm, google_genai, elevenlabs) have no idempotency guard in
-    # _finalize_span — calling it twice would double-end the span.
+    # there is nothing left to do.  The finalizers are idempotent, so
+    # path 2 would be harmless, but skipping it avoids a redundant call.
     if getattr(stream, "_netra_output", None) is not None:
         return
 
