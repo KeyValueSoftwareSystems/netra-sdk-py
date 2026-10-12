@@ -17,6 +17,12 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from netra import config as config_module
 from netra.config import Config
+from netra.instrumentation.http.headers import (
+    REDACTED,
+    is_sensitive_header,
+    sanitize_asgi_headers,
+    sanitize_header_mapping,
+)
 from netra.processors.instrumentation_span_processor import InstrumentationSpanProcessor
 
 pytestmark = pytest.mark.unit
@@ -111,3 +117,61 @@ class TestApiKeyWhitespace:
             config = Config(headers={"x-tenant": "acme\tcorp"})
 
         assert config.headers["x-tenant"] == "acme\tcorp"
+
+
+class TestCredentialHeaders:
+    """H-5: explicit credential headers and whole-segment matches are redacted."""
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "x-goog-api-key",
+            "x-amz-security-token",
+            "ocp-apim-subscription-key",
+            "x-csrf-token",
+            "x-xsrf-token",
+            "x-session-token",
+            "x-client-secret",
+            "x-webhook-signature",
+            "x-db-password",
+            "x-service-credential",
+            "X-Custom-Api-Key",
+        ],
+    )
+    def test_credential_headers_are_redacted_on_both_shapes(self, header):
+        assert sanitize_header_mapping({header: "secret"})[header] == REDACTED
+        assert sanitize_asgi_headers([(header.encode(), b"secret")])[header.lower()] == REDACTED
+
+    @pytest.mark.parametrize(
+        "header",
+        [
+            "x-ratelimit-remaining-tokens",
+            "x-ratelimit-limit-tokens",
+            "anthropic-ratelimit-tokens-remaining",
+            "anthropic-ratelimit-input-tokens-limit",
+            "idempotency-key",
+            "sec-websocket-key",
+            "keep-alive",
+            "access-control-allow-credentials",
+            "x-request-id",
+            "content-type",
+        ],
+    )
+    def test_debugging_headers_pass_through(self, header):
+        assert sanitize_header_mapping({header: "value"})[header] == "value"
+        assert not is_sensitive_header(header)
+
+    def test_configured_extra_headers_are_still_redacted(self, monkeypatch):
+        monkeypatch.setenv("NETRA_REDACT_HEADERS", "x-tenant-id")
+        config_module.set_active_config(Config())
+
+        assert sanitize_header_mapping({"x-tenant-id": "acme"}) == {"x-tenant-id": REDACTED}
+
+    def test_upstream_header_attributes_are_redacted_by_segment(self, exporter):
+        with exporter.tracer.start_as_current_span("GET") as span:
+            span.set_attribute("http.request.header.x_goog_api_key", ("AIzaFAKE",))
+            span.set_attribute("http.response.header.x_ratelimit_remaining_tokens", ("9000",))
+
+        attributes = exporter.get_finished_spans()[0].attributes
+        assert attributes["http.request.header.x_goog_api_key"] == (REDACTED,)
+        assert attributes["http.response.header.x_ratelimit_remaining_tokens"] == ("9000",)

@@ -2,13 +2,13 @@
 
 import logging
 import os
-from typing import Any, Callable, FrozenSet, Mapping, Optional, Set, Union
+from typing import Any, Callable, Mapping, Optional, Set, Union
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 from netra.config import Config, get_attribute_max_len
-from netra.instrumentation.http.headers import REDACTED, get_sensitive_headers
+from netra.instrumentation.http.headers import REDACTED, get_sensitive_headers, is_sensitive_header
 from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES, InstrumentSet
 
 logger = logging.getLogger(__name__)
@@ -29,21 +29,16 @@ _DEFAULT_BLOCKED_URL_PATTERNS = frozenset({"getnetra", "githubusercontent"})
 _HEADER_ATTRIBUTE_PREFIXES = ("http.request.header.", "http.response.header.")
 
 
-def _normalised_sensitive_headers() -> FrozenSet[str]:
-    """Return the sensitive header names in attribute-key form.
+def _header_name(key: str) -> Optional[str]:
+    """Return the header name of a header attribute key, or ``None`` for any other key.
 
     The upstream instrumentations lower-case header names and replace ``-``
     with ``_`` when building the attribute key, so ``x-api-key`` is recorded
-    as ``http.request.header.x_api_key``.
+    as ``http.request.header.x_api_key``; the dashes are restored here.
     """
-    return frozenset(name.replace("-", "_") for name in get_sensitive_headers())
-
-
-def _header_name(key: str) -> Optional[str]:
-    """Return the header part of a header attribute key, or ``None`` for any other key."""
     for prefix in _HEADER_ATTRIBUTE_PREFIXES:
         if key.startswith(prefix):
-            return key.removeprefix(prefix)
+            return key.removeprefix(prefix).replace("_", "-")
     return None
 
 
@@ -96,7 +91,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     def __init__(self) -> None:
         """Snapshot the sensitive header set once; the active config is fixed by the time processors are built."""
-        self._sensitive_headers = _normalised_sensitive_headers()
+        self._sensitive_headers = get_sensitive_headers()
 
     def on_start(
         self,
@@ -139,8 +134,10 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             if not attributes:
                 return
 
-            for key in [key for key in attributes if _header_name(key) in self._sensitive_headers]:
-                attributes[key] = (REDACTED,)
+            for key in list(attributes):
+                header = _header_name(key)
+                if header is not None and is_sensitive_header(header, self._sensitive_headers):
+                    attributes[key] = (REDACTED,)
         except Exception:
             logger.exception("Error redacting header attributes on span")
 

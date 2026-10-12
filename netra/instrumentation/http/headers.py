@@ -9,9 +9,14 @@ transport and exports it on the other three.
 
 The set lives here so there is exactly one place to add to. The two sanitizers
 differ only in the shape they read from, not in policy.
+
+A header is sensitive when its name is in the explicit set, or when one of its
+dash-separated segments is a credential word (``x-goog-api-key``,
+``x-session-token``). Whole segments, not substrings, so rate-limit headers
+such as ``x-ratelimit-remaining-tokens`` stay readable.
 """
 
-from typing import Dict, FrozenSet, Iterable, Mapping, Tuple
+from typing import Dict, FrozenSet, Iterable, Mapping, Optional, Tuple
 
 from netra.config import get_active_config
 
@@ -26,8 +31,19 @@ SENSITIVE_HEADERS: FrozenSet[str] = frozenset(
         "api-key",
         "x-auth-token",
         "proxy-authorization",
+        "x-goog-api-key",
+        "x-amz-security-token",
+        "ocp-apim-subscription-key",
+        "x-csrf-token",
+        "x-xsrf-token",
     }
 )
+
+# Any header containing one of these as a whole ``-``-separated segment is redacted.
+SENSITIVE_HEADER_SEGMENTS: FrozenSet[str] = frozenset({"key", "token", "secret", "password", "signature", "credential"})
+
+# Segment matches that carry no credential and are useful for debugging.
+NON_SENSITIVE_HEADERS: FrozenSet[str] = frozenset({"idempotency-key", "sec-websocket-key"})
 
 
 def get_sensitive_headers() -> FrozenSet[str]:
@@ -45,6 +61,27 @@ def get_sensitive_headers() -> FrozenSet[str]:
     return SENSITIVE_HEADERS | extras
 
 
+def is_sensitive_header(name: str, sensitive: Optional[FrozenSet[str]] = None) -> bool:
+    """Return whether a header's value must be redacted.
+
+    Args:
+        name: The header name, in any case.
+        sensitive: The explicit name set to check, from :func:`get_sensitive_headers`.
+            Looked up when omitted.
+
+    Returns:
+        True when the name is in the explicit set, or when a whole
+        dash-separated segment is in :data:`SENSITIVE_HEADER_SEGMENTS` and the
+        name is not in :data:`NON_SENSITIVE_HEADERS`.
+    """
+    lowered = name.lower()
+    if lowered in (get_sensitive_headers() if sensitive is None else sensitive):
+        return True
+    if lowered in NON_SENSITIVE_HEADERS:
+        return False
+    return any(segment in SENSITIVE_HEADER_SEGMENTS for segment in lowered.split("-"))
+
+
 def sanitize_header_mapping(headers: Mapping[str, str]) -> Dict[str, str]:
     """Redact sensitive values in a string-keyed header mapping.
 
@@ -57,7 +94,7 @@ def sanitize_header_mapping(headers: Mapping[str, str]) -> Dict[str, str]:
         names are returned as the mapping yielded them.
     """
     sensitive = get_sensitive_headers()
-    return {name: REDACTED if name.lower() in sensitive else value for name, value in headers.items()}
+    return {name: REDACTED if is_sensitive_header(name, sensitive) else value for name, value in headers.items()}
 
 
 def sanitize_asgi_headers(raw_headers: Iterable[Tuple[bytes, bytes]]) -> Dict[str, str]:
@@ -76,5 +113,5 @@ def sanitize_asgi_headers(raw_headers: Iterable[Tuple[bytes, bytes]]) -> Dict[st
     sanitized: Dict[str, str] = {}
     for name_bytes, value_bytes in raw_headers:
         name = name_bytes.decode("latin-1").lower()
-        sanitized[name] = REDACTED if name in sensitive else value_bytes.decode("latin-1")
+        sanitized[name] = REDACTED if is_sensitive_header(name, sensitive) else value_bytes.decode("latin-1")
     return sanitized
