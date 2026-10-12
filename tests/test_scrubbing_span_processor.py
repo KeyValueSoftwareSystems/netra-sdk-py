@@ -3,7 +3,10 @@ Unit tests for ScrubbingSpanProcessor class.
 Tests scrubbing functionality for sensitive data patterns and edge cases.
 """
 
+import time
 from unittest.mock import Mock, patch
+
+import pytest
 
 from netra.processors.scrubbing_span_processor import ScrubbingSpanProcessor
 
@@ -362,3 +365,43 @@ class TestScrubbingSpanProcessor:
         assert result["normal_field"] == "This should not be scrubbed"
         assert result["request_data"]["user"]["profile"]["preferences"] == ["email_notifications", "sms_alerts"]
         assert result["response_list"][0]["role"] == "admin"
+
+
+class TestEmailPatternIsLinearTime:
+    """Regression tests for audit finding H-9 (email regex ReDoS)."""
+
+    # The default attribute length limit; the old pattern took ~20 s per attribute this long.
+    LENGTH = 50_000
+
+    @pytest.mark.parametrize(
+        "adversarial",
+        [
+            "a." * (LENGTH // 2),
+            "a." * (LENGTH // 2) + "@",
+            "a@" + "a." * (LENGTH // 2),
+        ],
+        ids=["dotted-run", "dotted-run-then-at", "at-then-dotted-run"],
+    )
+    def test_adversarial_input_is_scrubbed_quickly(self, adversarial):
+        processor = ScrubbingSpanProcessor()
+
+        start = time.perf_counter()
+        processor._scrub_string_value(adversarial)
+        elapsed = time.perf_counter() - start
+
+        assert elapsed < 0.5, f"scrubbing took {elapsed:.2f}s"
+
+    @pytest.mark.parametrize(
+        "email",
+        ["john.doe@example.com", "a+tag@sub.domain.co.uk", "UPPER@EXAMPLE.ORG", "x_y%z@host-name.io"],
+    )
+    def test_still_scrubs_ordinary_emails(self, email):
+        processor = ScrubbingSpanProcessor()
+
+        assert processor._scrub_string_value(f"contact {email} today") == "contact [SCRUBBED] today"
+
+    def test_pipe_is_not_part_of_the_top_level_domain(self):
+        """The old ``[A-Z|a-z]`` class matched a literal ``|`` in the TLD."""
+        processor = ScrubbingSpanProcessor()
+
+        assert processor._scrub_string_value("user@example.c|m") == "user@example.c|m"
