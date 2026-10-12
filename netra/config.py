@@ -1,6 +1,7 @@
 import json
 import logging
 import os
+import warnings
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from opentelemetry.util.re import parse_env_headers
@@ -34,6 +35,11 @@ _DEFAULT_AUDIO_MAX_REQUEST_BYTES = 262144
 _MIN_AUDIO_BATCH_BYTES = 1024
 _MIN_AUDIO_BATCH_INTERVAL_MS = 100
 _MAX_AUDIO_BATCH_INTERVAL_MS = 30000
+
+
+def _has_control_characters(value: str) -> bool:
+    """Return whether ``value`` contains a control character other than tab (invalid in an HTTP header value)."""
+    return any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value)
 
 
 class Config:
@@ -84,7 +90,7 @@ class Config:
         """
         self.app_name = self._get_app_name(app_name)
         self.otlp_endpoint = self._get_otlp_endpoint()
-        self.api_key = os.getenv("NETRA_API_KEY")
+        self.api_key = self._get_api_key()
         self.headers = self._parse_headers(headers)
 
         self._validate_api_key()
@@ -273,14 +279,52 @@ class Config:
         """Get OTLP endpoint from environment variables."""
         return os.getenv("NETRA_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
+    def _get_api_key(self) -> Optional[str]:
+        """Get the API key from ``NETRA_API_KEY``, stripped of surrounding whitespace.
+
+        Secrets mounted from Kubernetes or ``.env`` files often end in a newline,
+        which HTTP clients reject as a header value; the upstream exporter then
+        logs the full key on every failed batch. A key that still contains a
+        control character after stripping is dropped with a warning.
+        """
+        api_key = (os.getenv("NETRA_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        if _has_control_characters(api_key):
+            warnings.warn(
+                "NETRA_API_KEY contains control characters and was ignored; telemetry will not be authenticated.",
+                stacklevel=3,
+            )
+            return None
+        return api_key
+
     def _parse_headers(self, headers: Optional[str] | Dict[str, str]) -> Dict[str, str] | Any:
-        """Parse headers from parameter or environment variable."""
+        """Parse headers from parameter or environment variable.
+
+        String values are stripped, and a header whose value still contains a
+        control character is dropped with a warning that names the header but
+        never its value.
+        """
         headers = headers or os.getenv("NETRA_HEADERS")
         if isinstance(headers, str):
-            return parse_env_headers(headers)
+            parsed = parse_env_headers(headers)
         elif isinstance(headers, dict):
-            return headers
-        return {}
+            parsed = headers
+        else:
+            return {}
+
+        cleaned: Dict[str, Any] = {}
+        for name, value in parsed.items():
+            if isinstance(value, str):
+                value = value.strip()
+                if _has_control_characters(value):
+                    warnings.warn(
+                        f"Netra header {name!r} contains control characters and was ignored.",
+                        stacklevel=4,
+                    )
+                    continue
+            cleaned[name] = value
+        return cleaned
 
     def _validate_api_key(self) -> None:
         """Validate that API key exists for Netra endpoints."""
