@@ -343,8 +343,14 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             except Exception as e:
                 if not span_ended:
                     scope.record_error(e)
-                    scope.end()
                 raise
+            finally:
+                # Also covers GeneratorExit (aclose / early break) and
+                # CancelledError, which ``except Exception`` does not catch:
+                # without this the span is never ended and its context stays
+                # attached.
+                if not span_ended:
+                    scope.end()
 
         return new_function()
 
