@@ -1,3 +1,4 @@
+import asyncio
 import functools
 import inspect
 import json
@@ -24,6 +25,7 @@ except Exception:  # pragma: no cover - starlette may not be installed in some e
     StreamingResponse = None
 
 from opentelemetry import trace
+from opentelemetry.trace import Status, StatusCode
 
 from .config import Config
 from .session_manager import SessionManager
@@ -203,6 +205,54 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         span.set_attribute("output_error", str(e))
 
 
+def _record_failure(span: trace.Span, exc: BaseException) -> None:
+    """
+    Record an exception that escaped the decorated callable, before the span ends.
+
+    ``asyncio.CancelledError`` and ``GeneratorExit`` are normal control flow
+    (a client disconnect, a timeout, a consumer stopping early), so they mark
+    the span as cancelled instead of failing it. ``SystemExit`` with a success
+    code is not an error either. Everything else, including ``KeyboardInterrupt``
+    and a non-zero ``SystemExit``, sets ERROR status.
+
+    Args:
+        span: The span to annotate. Must not have ended yet.
+        exc: The exception propagating out of the decorated callable.
+    """
+    try:
+        if isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.cancelled", True)
+            return
+        if isinstance(exc, SystemExit) and exc.code in (0, None):
+            return
+        span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(exc))
+        span.record_exception(exc)
+        span.set_status(Status(StatusCode.ERROR, f"{type(exc).__name__}: {exc}"))
+    except Exception:
+        logger.debug("Failed to record exception on span", exc_info=True)
+
+
+def _finalize_span(span: trace.Span, span_name: str, entity_type: str, entity_token: Optional[object]) -> None:
+    """
+    End the span and release the SessionManager state bound to it.
+
+    Must run after ``trace.use_span`` has exited: its context detach on exit
+    would otherwise revert the ``pop_entity`` frame removal.
+
+    Args:
+        span: The span to end.
+        span_name: The name the span was registered under.
+        entity_type: The entity type pushed for this span.
+        entity_token: Detach token from the matching ``push_entity`` call.
+    """
+    span.end()
+    try:
+        SessionManager.unregister_span(span_name, span)
+    except Exception:
+        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
+    SessionManager.pop_entity(entity_type, entity_token)
+
+
 def _is_streaming_response(obj: Any) -> bool:
     """
     Return True if obj is a Starlette StreamingResponse instance.
@@ -276,9 +326,8 @@ def _wrap_async_generator_with_span(
                 try:
                     async for item in agen:
                         yield item
-                except Exception as e:
-                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
+                except BaseException as e:
+                    _record_failure(span, e)
                     raise
                 finally:
                     span.end()
@@ -323,9 +372,8 @@ def _wrap_sync_generator_with_span(
                 try:
                     for item in gen:
                         yield item
-                except Exception as e:
-                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
+                except BaseException as e:
+                    _record_failure(span, e)
                     raise
                 finally:
                     span.end()
@@ -376,9 +424,8 @@ def _wrap_streaming_response_with_span(
                         try:
                             async for chunk in body_iter:
                                 yield chunk
-                        except Exception as e:
-                            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                            span.record_exception(e)
+                        except BaseException as e:
+                            _record_failure(span, e)
                             raise
                         finally:
                             span.end()
@@ -403,9 +450,8 @@ def _wrap_streaming_response_with_span(
                         try:
                             for chunk in body_iter:
                                 yield chunk
-                        except Exception as e:
-                            span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                            span.record_exception(e)
+                        except BaseException as e:
+                            _record_failure(span, e)
                             raise
                         finally:
                             span.end()
@@ -475,20 +521,18 @@ def _create_function_wrapper(
             except Exception:
                 logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
-            with trace.use_span(span, end_on_exit=False):
-                _add_span_attributes(span, func, args, kwargs, entity_type)
-                try:
+            # BaseException, not Exception: cancellation, Ctrl-C and sys.exit must
+            # still end the span, or the whole trace is never exported. The
+            # handler runs after ``use_span`` has exited, so ``pop_entity`` is not
+            # reverted by its context detach.
+            try:
+                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                    _add_span_attributes(span, func, args, kwargs, entity_type)
                     result = await cast(Awaitable[Any], func(*args, **kwargs))
-                except Exception as e:
-                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
-                    span.end()
-                    try:
-                        SessionManager.unregister_span(span_name, span)
-                    except Exception:
-                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
-                    SessionManager.pop_entity(entity_type, entity_token)
-                    raise
+            except BaseException as e:
+                _record_failure(span, e)
+                _finalize_span(span, span_name, entity_type, entity_token)
+                raise
 
             # If result is streaming, defer span end to when stream completes
             if _is_streaming_response(result):
@@ -500,12 +544,7 @@ def _create_function_wrapper(
 
             # Non-streaming: finalize now
             _add_output_attributes(span, result)
-            span.end()
-            try:
-                SessionManager.unregister_span(span_name, span)
-            except Exception:
-                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
-            SessionManager.pop_entity(entity_type, entity_token)
+            _finalize_span(span, span_name, entity_type, entity_token)
             return result
 
         return cast(Callable[P, R], async_wrapper)
@@ -541,20 +580,15 @@ def _create_function_wrapper(
             except Exception:
                 logger.exception("Failed to register span '%s' with SessionManager", span_name)
 
-            with trace.use_span(span, end_on_exit=False):
-                _add_span_attributes(span, func, args, kwargs, entity_type)
-                try:
+            # See the async wrapper: BaseException, and handled after ``use_span`` exits.
+            try:
+                with trace.use_span(span, end_on_exit=False, record_exception=False, set_status_on_exception=False):
+                    _add_span_attributes(span, func, args, kwargs, entity_type)
                     result = func(*args, **kwargs)
-                except Exception as e:
-                    span.set_attribute(f"{Config.LIBRARY_NAME}.entity.error", str(e))
-                    span.record_exception(e)
-                    span.end()
-                    try:
-                        SessionManager.unregister_span(span_name, span)
-                    except Exception:
-                        logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
-                    SessionManager.pop_entity(entity_type, entity_token)
-                    raise
+            except BaseException as e:
+                _record_failure(span, e)
+                _finalize_span(span, span_name, entity_type, entity_token)
+                raise
 
             # If result is streaming, defer span end to when stream completes
             if _is_streaming_response(result):
@@ -570,12 +604,7 @@ def _create_function_wrapper(
 
             # Non-streaming: finalize now
             _add_output_attributes(span, result)
-            span.end()
-            try:
-                SessionManager.unregister_span(span_name, span)
-            except Exception:
-                logger.exception("Failed to unregister span '%s' from SessionManager", span_name)
-            SessionManager.pop_entity(entity_type, entity_token)
+            _finalize_span(span, span_name, entity_type, entity_token)
             return result
 
         return cast(Callable[P, R], sync_wrapper)
