@@ -17,9 +17,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from netra.config import Config
+from netra.instrumentation.libraries.livekit import audio_sender as audio_sender_module
 from netra.instrumentation.libraries.livekit.audio_capture import (
     AudioCoordinatorRegistry,
     SessionAudioCoordinator,
@@ -552,11 +554,35 @@ class TestAudioChunkSenderFailures:
         assert sender.stats.circuit_tripped is True
         assert sender.stats.chunks_sent == 0
         assert sender.stats.delivery_complete is False
-        # Up to ``_MAX_INFLIGHT_POSTS`` may already be on the wire when the first
-        # 401 trips the circuit; nothing further is accepted after that.
-        assert 1 <= len(recorder.snapshot()) <= 4
+        # Uploads stay serial until one is accepted, so the rejected credential
+        # costs exactly one request.
+        assert len(recorder.snapshot()) == 1
         assert "circuit_tripped" in sender.stats.incomplete_reasons()
         assert "session_last_missing" in sender.stats.incomplete_reasons()
+
+    def test_a_retry_does_not_go_out_once_another_post_tripped_the_circuit(self, monkeypatch) -> None:
+        attempts: List[httpx.Request] = []
+
+        async def drive() -> bool:
+            sender = build_sender("http://ingest.invalid/telemetry/v1/audio/chunk")
+            real_sleep = asyncio.sleep
+
+            async def sleep_then_trip(delay: float) -> None:
+                # A concurrent POST is rejected while this one waits to retry.
+                sender._trip_circuit("HTTP 401")
+                await real_sleep(0)
+
+            monkeypatch.setattr(audio_sender_module.asyncio, "sleep", sleep_then_trip)
+            sender._client = httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda request: attempts.append(request) or httpx.Response(500))
+            )
+            try:
+                return await sender._post(b"pcm", {})
+            finally:
+                await sender._client.aclose()
+
+        assert asyncio.run(drive()) is False
+        assert len(attempts) == 1
 
     def test_a_server_error_is_retried_then_given_up_on(self, ingest_server) -> None:
         url, recorder = ingest_server

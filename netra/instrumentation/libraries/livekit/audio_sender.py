@@ -350,6 +350,9 @@ class AudioChunkSender:
     ``_MAX_INFLIGHT_POSTS`` HTTP POSTs may be in flight at once — so a slow
     endpoint does not stall further batching. Queue mutation is still confined
     to the sender's event loop.
+
+    Uploads stay serial until the endpoint accepts one: a rejected credential
+    then costs exactly one request, rather than one per inflight slot.
     """
 
     def __init__(
@@ -400,6 +403,8 @@ class AudioChunkSender:
 
         self._consecutive_failures = 0
         self._circuit_tripped = False
+        # Set by the first 2xx. Until then only one POST is in flight at a time.
+        self._is_credential_proven = False
         self._has_warned_about_drops = False
 
         self.stats = AudioSenderStats()
@@ -1145,6 +1150,11 @@ class AudioChunkSender:
             logger.debug("netra.audio: post scheduled before start(); dropping chunk")
             return
 
+        if not self._is_credential_proven:
+            # Nothing has been accepted yet, so the credential may be bad: wait
+            # for the one request already on the wire before sending another.
+            await self._await_inflight_posts()
+
         await semaphore.acquire()
         if self._circuit_tripped:
             # A concurrent POST may have tripped the circuit while we waited for
@@ -1309,6 +1319,10 @@ class AudioChunkSender:
             return False
 
         for attempt in range(_POST_ATTEMPTS):
+            if self._circuit_tripped:
+                # Another POST tripped the circuit while this one was waiting
+                # to retry.
+                return False
             accepted, is_fatal = await self._post_once(client, pcm, headers, attempt)
             if accepted or is_fatal:
                 return accepted
@@ -1351,6 +1365,7 @@ class AudioChunkSender:
 
         if response.status_code < _HTTP_STATUS_BAD_REQUEST:
             self._consecutive_failures = 0
+            self._is_credential_proven = True
             return True, False
 
         self.stats.errors += 1
