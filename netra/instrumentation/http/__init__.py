@@ -8,6 +8,10 @@
   is why the set now lives in exactly one place.
 * ``body``    — request and response bodies onto a span within the attribute
   budget. Used by ``httpx``, ``requests`` and ``fastapi``.
+* ``url``     — strips credentials and redacts secret query parameters
+  (``?key=``, presigned signatures, OAuth codes) from recorded URLs. Used by
+  every HTTP instrumentation, Deepgram, and the instrumentation span processor
+  for upstream ``http.url`` / ``url.full``.
 
 Two HTTP instrumentations deliberately do not appear above. ``aiohttp`` records
 no headers or bodies at all -- it builds a header dict only to inject trace
