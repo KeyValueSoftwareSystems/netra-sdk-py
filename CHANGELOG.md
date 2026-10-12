@@ -8,25 +8,21 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ### Changed
 
-- **Replace indexed message attributes with structured `input`/`output` JSON** - LLM instrumentation libraries no longer emit per-message `gen_ai.prompt.N.role` / `gen_ai.prompt.N.content` and `gen_ai.completion.N.*` span attributes. Conversations are now serialised as a single `input` and `output` attribute, each holding a JSON array of message objects. This avoids hitting the OpenTelemetry 128-attribute limit on long conversations and prevents silent eviction of critical span attributes.
+- **LLM conversations are recorded as structured `input`/`output`** - Instrumentations no longer write one `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` attribute per message. Each span now carries the full conversation as two JSON arrays of `{role, content}` messages in `input` and `output`, keeping fields such as `finish_reason` and `tool_call_id`. Long conversations no longer push spans past the OpenTelemetry attribute limit, which used to silently drop attributes such as `netra.session_id`. Anything that reads the old indexed keys should read `input`/`output` instead.
 
-- **Centralise message serialisation into `message_builder`** - All instrumentation libraries now use shared builder functions (`build_messages`, `build_chat_input`, `build_completion_output`) from `netra.instrumentation.message_builder` instead of per-library `json.dumps` calls or local helper duplicates.
+- **Third-party indexed attributes are converted** - Indexed `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` keys written by other instrumentations are folded into `input`/`output` instead of being stored on the span.
 
-- **Move `model_as_dict` to `message_builder`** - The `model_as_dict` utility, previously duplicated across OpenAI, LiteLLM, Groq, and Cerebras utils, now lives in `message_builder` and is imported from there.
+- **Large conversations are truncated safely** - `input`/`output` always stay valid JSON within `NETRA_ATTRIBUTE_MAX_LEN`. Oversized messages are shortened, the oldest messages are dropped first, and shortened messages carry the `__truncated__` marker.
+
+- **LiveKit voice traces use the same format** - Conversation content on LiveKit spans, including content copied up from child spans, is written as structured `input`/`output`.
 
 ### Fixed
 
-- **Preserve `finish_reason` in structured output** - `finish_reason` is included in output message entries for all libraries that previously captured it as an indexed attribute (OpenAI, LiteLLM, Groq, Cerebras, MistralAI, DSPy, Pydantic AI).
+- **Speech responses recorded as output** - Cartesia, ElevenLabs and Deepgram responses and transcripts are now written to `output` instead of being mixed into the prompt.
 
-- **Preserve `tool_call_id` in structured input and output** - Tool-call entries and tool-role input messages now include `tool_call_id` where it was previously captured as a separate indexed attribute.
+- **Message content with SDK objects is kept** - Content such as Mistral or Cohere chunk lists is serialised as JSON instead of being dropped or recorded as a Python object string.
 
-- **Restore Cohere per-generation IDs** - `gen_ai.response.{index}.id` attributes are emitted again in `_set_span_generations_response`.
-
-- **Restore `_safe_set_attribute` guards in Pydantic AI** - All `input`/`output` attribute writes in `pydantic_ai` use `_safe_set_attribute` again, restoring null checks, recording-state checks, and consistent string conversion that were lost when calls were changed to raw `span.set_attribute`.
-
-- **Fix mypy errors in Cerebras instrumentation** - Added `isinstance(usage, dict)` type guard to resolve `union-attr` errors on usage attribute access.
-
-- **Fix broken `model_as_dict` imports in wrappers** - OpenAI, LiteLLM, Groq, and Cerebras wrappers now import `model_as_dict` from `message_builder` after it was removed from their respective utils modules.
+- **LiveKit turn registry no longer grows per call** - Ended `user_turn` spans are now removed from the registry, so long-running workers no longer keep one transcript buffer for every call.
 
 ## [1.2.1] - 2026-10-06
 
