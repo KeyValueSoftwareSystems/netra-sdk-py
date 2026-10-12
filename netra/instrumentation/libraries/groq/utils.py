@@ -6,6 +6,8 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, SpanAttributes
 from opentelemetry.trace import Span
 
+from netra.instrumentation.llm_common import is_unset_sentinel
+
 logger = logging.getLogger(__name__)
 
 
@@ -50,7 +52,8 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     }
 
     for key, attribute in ATTRIBUTE_MAPPINGS.items():
-        if (value := kwargs.get(key)) is not None:
+        value = kwargs.get(key)
+        if value is not None and not is_unset_sentinel(value):
             span.set_attribute(attribute, value)
 
     _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))

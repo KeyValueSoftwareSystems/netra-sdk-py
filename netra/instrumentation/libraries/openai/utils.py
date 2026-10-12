@@ -11,6 +11,7 @@ from opentelemetry.semconv_ai import (
 from opentelemetry.trace import Span
 
 from netra.config import Config
+from netra.instrumentation.llm_common import is_unset_sentinel, to_jsonable
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
 logger = logging.getLogger(__name__)
@@ -64,11 +65,14 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     }
 
     for key, attribute in ATTRIBUTE_MAPPINGS.items():
-        if (value := kwargs.get(key)) is not None:
+        value = kwargs.get(key)
+        if value is not None and not is_unset_sentinel(value):
             span.set_attribute(attribute, value)
 
-    if (reasoning := kwargs.get("reasoning")) is not None:
-        span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning))
+    # ``reasoning`` may be a dict, a pydantic model (``Reasoning``) or an unset sentinel
+    # (``NOT_GIVEN`` / ``omit``, which openai-agents passes on every call).
+    if (reasoning := to_jsonable(kwargs.get("reasoning"))) is not None:
+        span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning, default=str))
 
     if operation_type == "chat":
         _set_chat_completion_input(span, kwargs.get("messages"))
