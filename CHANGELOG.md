@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.2] - 2026-10-14
+
+### Fixed
+
+- **Session baggage is now host-gated for every outbound injector, not just Netra's own HTTP wrappers** - Netra stores the session identity (`session_id`, `user_id`, `tenant_id` and custom session keys) as W3C baggage. Previously only Netra's httpx, requests and aiohttp wrappers stripped the `baggage` header for hosts outside `NETRA_PROPAGATE_BAGGAGE_HOSTS`; the upstream OpenTelemetry `urllib`, `urllib3` and `aiohttp_client` instrumentors, and any user code calling `inject()`, still sent it everywhere. `Netra.init()` now wraps the global propagator in a `HostGatedPropagator`, so every `inject` removes baggage unless the destination is known and allowlisted. Trace context (`traceparent`/`tracestate`) is always propagated. The upstream instrumentors get request hooks that register the destination URL just before they inject. When `urllib` or `aiohttp` follows a redirect to a host that is not allowlisted, the `baggage` header is stripped from the next hop. Subprocess environments always receive baggage. The allowlist stays fail-closed: with no hosts configured, or no known destination (gRPC, message brokers, botocore), baggage goes to nobody.
+
 ## [1.2.1] - 2026-10-06
 
 ### Added
@@ -546,4 +552,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.2.1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.2]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
