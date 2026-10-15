@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.3b1] - 2026-10-15
+
+### Added
+
+- **OpenAI Codex instrumentation** - `InstrumentSet.CODEX` traces agents built with the `openai-codex` Python SDK (`>= 0.162.0`), sync and async. Each turn gets a `codex.turn` span with the turn's input, final answer and model settings. Under it are generation spans for each model request, with token usage, and tool spans for shell commands, file changes, MCP and dynamic tool calls, web searches and sub-agents. Codex's own internal spans appear under the same trace. Enabled by default. Turn it off with `Netra.init(block_instruments={InstrumentSet.CODEX})`.
+
 ## [1.2.2] - 2026-10-14
 
 ### Fixed
