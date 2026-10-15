@@ -37,6 +37,7 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     # Namespace package: the SDK lives at cerebras.cloud.sdk, not cerebras.
     InstrumentSet.CEREBRAS: ("cerebras.cloud.sdk",),
     InstrumentSet.CLAUDE_AGENT_SDK: ("claude_agent_sdk",),
+    InstrumentSet.CODEX: ("openai_codex",),
     InstrumentSet.COHEREAI: ("cohere",),
     InstrumentSet.CREW: ("crewai",),
     InstrumentSet.DEEPGRAM: ("deepgram",),
