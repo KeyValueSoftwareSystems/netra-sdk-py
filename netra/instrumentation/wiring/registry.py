@@ -323,6 +323,9 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
             "NetraClaudeAgentSDKInstrumentor",
         ),
     ),
+    InstrumentSet.CODEX: (
+        InstrumentorSpec(("openai-codex",), "netra.instrumentation.libraries.codex", "NetraCodexInstrumentor"),
+    ),
     InstrumentSet.HERMES_AGENT: (
         InstrumentorSpec(
             ("hermes-agent",), "netra.instrumentation.libraries.hermes_agent", "NetraHermesAgentInstrumentor"

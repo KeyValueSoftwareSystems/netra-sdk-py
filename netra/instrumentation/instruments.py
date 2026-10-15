@@ -86,6 +86,7 @@ class CustomInstruments(Enum):
     CARTESIA = "cartesia"
     ELEVENLABS = "elevenlabs"
     CLAUDE_AGENT_SDK = "claude_agent_sdk"
+    CODEX = "codex"
     HERMES_AGENT = "hermes_agent"
     HONCHO = "honcho"
     LIVEKIT = "livekit"
@@ -150,6 +151,7 @@ class InstrumentSet(Enum):
     CELERY = ("celery", _Origin.CUSTOM)
     CHROMA = ("chroma", _Origin.TRACELOOP)
     CLAUDE_AGENT_SDK = ("claude_agent_sdk", _Origin.CUSTOM)
+    CODEX = ("codex", _Origin.CUSTOM)
     CLICK = ("click", _Origin.CUSTOM)
     COHEREAI = ("cohere_ai", _Origin.CUSTOM)
     CONFLUENT_KAFKA = ("confluent_kafka", _Origin.CUSTOM)
@@ -290,6 +292,7 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.WATSONX,
         InstrumentSet.MCP,
         InstrumentSet.CLAUDE_AGENT_SDK,
+        InstrumentSet.CODEX,
         InstrumentSet.HERMES_AGENT,
         # Web frameworks
         InstrumentSet.FASTAPI,
@@ -353,6 +356,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.FASTAPI,
         InstrumentSet.MCP,
         InstrumentSet.CLAUDE_AGENT_SDK,
+        InstrumentSet.CODEX,
         InstrumentSet.HERMES_AGENT,
     }
 )
