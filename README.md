@@ -190,6 +190,7 @@ async def async_span(data):
 - **Pydantic AI** - AI model communication standard
 - **MCP (Model Context Protocol)** - AI model communication standard
 - **LiteLLM** - LLM provider agnostic client
+- **OpenAI Codex** - Codex agent turns, model requests and tool calls via the `openai-codex` SDK
 
 
 ## 📊 Context and Event Logging
