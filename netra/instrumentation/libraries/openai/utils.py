@@ -87,10 +87,30 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     elif operation_type == "response":
         _set_chat_response_input(span, kwargs)
 
-    _set_tool_definitions(span, kwargs.get("tools"))
+    _set_tool_attributes(span, kwargs)
 
+
+def _set_tool_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
+    """Record ``tools`` and ``tool_choice`` without ever failing the request.
+
+    Runs before the OpenAI call and walks caller-supplied schemas (which may be
+    circular or hold objects whose ``model_dump`` raises), so any failure here is
+    logged and the attributes are left unset instead of aborting the user's call.
+    """
+    try:
+        _set_tool_definitions(span, kwargs.get("tools"))
+    except Exception:  # noqa: BLE001 - tool capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record tool definitions", exc_info=True)
+
+    try:
+        _set_tool_choice(span, kwargs.get("tool_choice"))
+    except Exception:  # noqa: BLE001 - tool capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record tool_choice", exc_info=True)
+
+
+def _set_tool_choice(span: Span, tool_choice: Any) -> None:
+    """Record ``tool_choice`` as given (string) or as JSON (dict)."""
     # Anything other than str/dict (e.g. the SDK's NOT_GIVEN sentinel) means no choice was made.
-    tool_choice = kwargs.get("tool_choice")
     if isinstance(tool_choice, str):
         span.set_attribute(LLM_REQUEST_TOOL_CHOICE, tool_choice)
     elif isinstance(tool_choice, dict):
@@ -295,11 +315,12 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
         if cache_write_tokens is not None:
             span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS, cache_write_tokens)
 
-        cache_write_details = input_tokens_details.get("cache_write_tokens_details")
-        if isinstance(cache_write_details, dict):
-            for field, attribute in _CACHE_WRITE_TTL_FIELDS.items():
-                if (tokens := cache_write_details.get(field)) is not None:
-                    span.set_attribute(attribute, tokens)
+        try:
+            _set_cache_write_ttl_attributes(span, input_tokens_details.get("cache_write_tokens_details"))
+        except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
+            logger.warning(
+                "netra.instrumentation.libraries.openai: failed to record cache-write TTL tiers", exc_info=True
+            )
 
     output_tokens_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
     if output_tokens_details:
@@ -310,6 +331,15 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
     total_tokens = usage.get("total_tokens")
     if total_tokens is not None:
         span.set_attribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
+
+
+def _set_cache_write_ttl_attributes(span: Span, cache_write_details: Any) -> None:
+    """Record the per-TTL cache-write token split; a non-dict breakdown is ignored."""
+    if not isinstance(cache_write_details, dict):
+        return
+    for field, attribute in _CACHE_WRITE_TTL_FIELDS.items():
+        if (tokens := cache_write_details.get(field)) is not None:
+            span.set_attribute(attribute, tokens)
 
 
 def _is_valid_cost(value: object) -> TypeGuard[float]:

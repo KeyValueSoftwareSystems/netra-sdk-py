@@ -840,3 +840,99 @@ class TestRequestToolDefinitions:
 
         assert "llm.request.tool_choice" not in attrs
         assert self.TOOLS_ATTRIBUTE not in attrs
+
+
+class TestToolAndCacheTierCaptureNeverFailsTheCall:
+    """A failure while capturing tools or cache-write tiers must not abort or fail the user's OpenAI call."""
+
+    @staticmethod
+    def _circular_schema():
+        schema: dict = {"type": "object"}
+        schema["properties"] = {"self": schema}
+        return schema
+
+    @staticmethod
+    def _run_wrapper(wrapper_factory, kwargs, response, span=None):
+        """Invoke a non-streaming wrapper against a recording span; return (result, wrapped, captured attrs)."""
+        span = span or Mock()
+        span.is_recording.return_value = True
+        captured: dict = {}
+        if span.set_attribute.side_effect is None:
+            span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        tracer = Mock()
+        span_context = MagicMock()
+        span_context.__enter__.return_value = span
+        tracer.start_as_current_span.return_value = span_context
+        wrapped = Mock(return_value=response)
+
+        with patch("netra.instrumentation.libraries.openai.wrappers.record_span_timing"):
+            result = wrapper_factory(tracer)(wrapped, Mock(), (), kwargs)
+
+        wrapped.assert_called_once_with(**kwargs)
+        return result, captured
+
+    def test_chat_call_succeeds_when_tool_schema_cannot_be_serialised(self):
+        from netra.instrumentation.libraries.openai.wrappers import chat_wrapper
+
+        response = {"model": "gpt-4o-mini", "choices": [{"message": {"role": "assistant", "content": "ok"}}]}
+        kwargs = {
+            "model": "gpt-4o-mini",
+            "messages": [{"role": "user", "content": "hi"}],
+            "tools": [{"type": "function", "function": {"name": "f", "parameters": self._circular_schema()}}],
+            "tool_choice": "auto",
+        }
+
+        result, attrs = self._run_wrapper(chat_wrapper, kwargs, response)
+
+        assert result is response
+        assert "gen_ai.request.tools" not in attrs
+        assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-4o-mini"
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+    def test_response_call_succeeds_when_tool_choice_cannot_be_serialised(self):
+        from netra.instrumentation.libraries.openai.wrappers import responses_wrapper
+
+        tool_choice: dict = {"type": "function", "name": "f"}
+        tool_choice["self"] = tool_choice
+        response = {"model": "gpt-4o-mini", "output_text": "ok"}
+        kwargs = {"model": "gpt-4o-mini", "input": "hi", "tool_choice": tool_choice}
+
+        result, attrs = self._run_wrapper(responses_wrapper, kwargs, response)
+
+        assert result is response
+        assert "llm.request.tool_choice" not in attrs
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+    def test_response_call_succeeds_when_tool_model_dump_raises(self):
+        from netra.instrumentation.libraries.openai.wrappers import responses_wrapper
+
+        tool = Mock()
+        tool.model_dump.side_effect = ValueError("cannot dump")
+        response = {"model": "gpt-4o-mini", "output_text": "ok"}
+        kwargs = {"model": "gpt-4o-mini", "input": "hi", "tools": [tool]}
+
+        result, attrs = self._run_wrapper(responses_wrapper, kwargs, response)
+
+        assert result is response
+        assert "gen_ai.request.tools" not in attrs
+
+    def test_response_is_returned_when_cache_tier_capture_fails(self):
+        from netra.instrumentation.libraries.openai.wrappers import responses_wrapper
+
+        captured: dict = {}
+
+        def set_attribute(key, value):
+            if key == TTL_30M_ATTRIBUTE:
+                raise RuntimeError("exporter rejected attribute")
+            captured[key] = value
+
+        span = Mock()
+        span.set_attribute.side_effect = set_attribute
+        response = {"model": "gpt-5.6-terra", "output_text": "ok", "usage": RESPONSES_USAGE_WITH_TTL_SPLIT}
+
+        result, _ = self._run_wrapper(responses_wrapper, {"model": "gpt-5.6-terra", "input": "hi"}, response, span)
+
+        assert result is response
+        assert captured[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
+        assert captured[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 12500
+        assert captured[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
