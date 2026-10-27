@@ -7,6 +7,7 @@ import json
 from typing import Collection
 from unittest.mock import MagicMock, Mock, patch
 
+import pytest
 from opentelemetry.semconv_ai import SpanAttributes
 
 from netra.instrumentation.libraries.openai import NetraOpenAIInstrumentor
@@ -241,6 +242,148 @@ class TestUsageAttributes:
 
         assert SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS not in attrs
         assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 4
+
+
+TTL_30M_ATTRIBUTE = "gen_ai.usage.cache_creation_input_tokens_30m"
+TTL_12H_ATTRIBUTE = "gen_ai.usage.cache_creation_input_tokens_12h"
+RESPONSES_USAGE_WITH_TTL_SPLIT = {
+    "input_tokens": 12000,
+    "output_tokens": 500,
+    "total_tokens": 12500,
+    "input_tokens_details": {
+        "cached_tokens": 4000,
+        "cache_write_tokens": 7000,
+        "cache_write_tokens_details": {"ttl_30m_tokens": 3000, "ttl_12h_tokens": 4000},
+    },
+}
+
+
+class TestCacheWriteTtlAttributes:
+    """Test capture of OpenAI's per-TTL cache-write split (GPT-5.6+)."""
+
+    @staticmethod
+    def _capture(usage):
+        return TestUsageAttributes._capture(usage)
+
+    def test_responses_api_cache_write_ttl_split_sets_tier_attributes(self):
+        attrs = self._capture(RESPONSES_USAGE_WITH_TTL_SPLIT)
+
+        assert attrs[TTL_30M_ATTRIBUTE] == 3000
+        assert attrs[TTL_12H_ATTRIBUTE] == 4000
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
+
+    def test_chat_completions_cache_write_ttl_split_sets_tier_attributes(self):
+        attrs = self._capture(
+            {
+                "prompt_tokens": 12000,
+                "completion_tokens": 500,
+                "prompt_tokens_details": {
+                    "cached_tokens": 4000,
+                    "cache_write_tokens": 7000,
+                    "cache_write_tokens_details": {"ttl_30m_tokens": 7000, "ttl_12h_tokens": 0},
+                },
+            }
+        )
+
+        assert attrs[TTL_30M_ATTRIBUTE] == 7000
+        assert attrs[TTL_12H_ATTRIBUTE] == 0
+
+    def test_zero_valued_ttl_tiers_are_recorded(self):
+        attrs = self._capture(
+            {
+                "input_tokens": 10,
+                "input_tokens_details": {
+                    "cached_tokens": 0,
+                    "cache_write_tokens": 0,
+                    "cache_write_tokens_details": {"ttl_30m_tokens": 0, "ttl_12h_tokens": 0},
+                },
+            }
+        )
+
+        assert attrs[TTL_30M_ATTRIBUTE] == 0
+        assert attrs[TTL_12H_ATTRIBUTE] == 0
+
+    def test_missing_ttl_breakdown_sets_no_tier_attributes(self):
+        attrs = self._capture(
+            {"input_tokens": 10, "input_tokens_details": {"cached_tokens": 0, "cache_write_tokens": 6}}
+        )
+
+        assert TTL_30M_ATTRIBUTE not in attrs
+        assert TTL_12H_ATTRIBUTE not in attrs
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 6
+
+    @pytest.mark.parametrize("breakdown", [None, "3000", [3000, 4000]])
+    def test_non_dict_ttl_breakdown_is_ignored(self, breakdown):
+        attrs = self._capture(
+            {
+                "input_tokens": 10,
+                "input_tokens_details": {"cache_write_tokens": 6, "cache_write_tokens_details": breakdown},
+            }
+        )
+
+        assert TTL_30M_ATTRIBUTE not in attrs
+        assert TTL_12H_ATTRIBUTE not in attrs
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 6
+
+    def test_openai_sdk_model_dump_preserves_ttl_breakdown(self):
+        """The openai package does not type cache_write_tokens_details; model_dump must still keep it."""
+        responses_types = pytest.importorskip("openai.types.responses")
+        from netra.instrumentation.libraries.openai.utils import model_as_dict, set_response_attributes
+
+        usage = responses_types.ResponseUsage.model_validate(
+            {
+                **RESPONSES_USAGE_WITH_TTL_SPLIT,
+                "output_tokens_details": {"reasoning_tokens": 0},
+            }
+        )
+        span = Mock()
+        span.is_recording.return_value = True
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+
+        set_response_attributes(span, {"model": "gpt-5.6-terra", "usage": model_as_dict(usage)})
+
+        assert captured[TTL_30M_ATTRIBUTE] == 3000
+        assert captured[TTL_12H_ATTRIBUTE] == 4000
+
+    def test_streaming_response_completed_carries_ttl_split(self):
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        from netra.instrumentation.libraries.openai.wrappers import StreamingWrapper
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        span = provider.get_tracer(__name__).start_span("openai.response")
+        completed_event = {
+            "type": "response.completed",
+            "response": {
+                "status": "completed",
+                "model": "gpt-5.6-terra",
+                "output": [],
+                "usage": RESPONSES_USAGE_WITH_TTL_SPLIT,
+            },
+        }
+
+        class FakeStream:
+            """Stands in for openai.Stream, which (unlike a list iterator) accepts the proxy's attributes."""
+
+            def __init__(self, events):
+                self._events = iter(events)
+
+            def __iter__(self):
+                return self
+
+            def __next__(self):
+                return next(self._events)
+
+        list(StreamingWrapper(span, FakeStream([completed_event]), {"model": "gpt-5.6-terra", "input": "hi"}))
+
+        (finished,) = exporter.get_finished_spans()
+        assert finished.attributes[TTL_30M_ATTRIBUTE] == 3000
+        assert finished.attributes[TTL_12H_ATTRIBUTE] == 4000
 
 
 class TestResponseMessageAttributesToolCalls:
@@ -560,3 +703,140 @@ class TestChatCompletionInputToolCalls:
         assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.tool_call_id"] == "call_1"
         assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.role"] == "tool"
         assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.tool_call_id"] == "call_1"
+
+
+class TestRequestToolDefinitions:
+    """Test set_request_attributes capture of the ``tools`` and ``tool_choice`` request args."""
+
+    TOOLS_ATTRIBUTE = "gen_ai.request.tools"
+    WEATHER_SCHEMA = {"type": "object", "properties": {"city": {"type": "string"}}, "required": ["city"]}
+
+    @staticmethod
+    def _capture(kwargs, operation_type="chat"):
+        from netra.instrumentation.libraries.openai.utils import set_request_attributes
+
+        span = Mock()
+        span.is_recording.return_value = True
+        captured: dict = {}
+        span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+        set_request_attributes(span, kwargs, operation_type)
+        return captured
+
+    def test_chat_completions_nested_function_tool_is_captured(self):
+        tools = [
+            {
+                "type": "function",
+                "function": {"name": "get_weather", "description": "Get weather", "parameters": self.WEATHER_SCHEMA},
+            }
+        ]
+
+        attrs = self._capture({"model": "gpt-4o-mini", "messages": [], "tools": tools})
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [
+            {"type": "function", "name": "get_weather", "description": "Get weather", "parameters": self.WEATHER_SCHEMA}
+        ]
+
+    def test_tools_are_recorded_as_single_attribute_not_indexed_keys(self):
+        tools = [
+            {"type": "function", "function": {"name": "get_weather", "parameters": self.WEATHER_SCHEMA}},
+            {"type": "function", "function": {"name": "get_time"}},
+        ]
+
+        attrs = self._capture({"messages": [], "tools": tools})
+
+        assert [key for key in attrs if "tools" in key or "functions" in key] == [self.TOOLS_ATTRIBUTE]
+
+    def test_responses_flat_function_tool_and_builtin_tool_are_captured(self):
+        tools = [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": self.WEATHER_SCHEMA,
+            },
+            {"type": "web_search_preview"},
+        ]
+
+        attrs = self._capture({"model": "gpt-4o-mini", "input": "hi", "tools": tools}, operation_type="response")
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [
+            {
+                "type": "function",
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": self.WEATHER_SCHEMA,
+            },
+            {"type": "web_search_preview"},
+        ]
+
+    def test_chat_completions_custom_tool_records_name_and_description(self):
+        tools = [{"type": "custom", "custom": {"name": "run_sql", "description": "Run a query"}}]
+
+        attrs = self._capture({"messages": [], "tools": tools})
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [
+            {"type": "custom", "name": "run_sql", "description": "Run a query"}
+        ]
+
+    def test_model_object_tool_is_converted_via_model_dump(self):
+        tool = Mock()
+        tool.model_dump.return_value = {"type": "function", "name": "get_weather", "parameters": self.WEATHER_SCHEMA}
+
+        attrs = self._capture({"input": "hi", "tools": [tool]}, operation_type="response")
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [
+            {"type": "function", "name": "get_weather", "parameters": self.WEATHER_SCHEMA}
+        ]
+
+    def test_tool_without_type_is_skipped(self):
+        tools = [{"name": "untyped"}, {"type": "file_search"}]
+
+        attrs = self._capture({"input": "hi", "tools": tools}, operation_type="response")
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [{"type": "file_search"}]
+
+    def test_only_untyped_tools_records_no_tools_attribute(self):
+        attrs = self._capture({"input": "hi", "tools": [{"name": "untyped"}]}, operation_type="response")
+
+        assert self.TOOLS_ATTRIBUTE not in attrs
+
+    def test_unserialisable_parameters_do_not_raise(self):
+        tools = [{"type": "function", "function": {"name": "f", "parameters": {"enum": {"a"}}}}]
+
+        attrs = self._capture({"messages": [], "tools": tools})
+
+        assert json.loads(attrs[self.TOOLS_ATTRIBUTE]) == [
+            {"type": "function", "name": "f", "parameters": {"enum": "{'a'}"}}
+        ]
+
+    def test_no_tools_records_no_tool_attributes(self):
+        attrs = self._capture({"model": "gpt-4o-mini", "messages": [{"role": "user", "content": "hi"}]})
+
+        assert self.TOOLS_ATTRIBUTE not in attrs
+        assert "llm.request.tool_choice" not in attrs
+
+    @pytest.mark.parametrize(
+        ("tool_choice", "expected"),
+        [
+            ("auto", "auto"),
+            ("required", "required"),
+            (
+                {"type": "function", "function": {"name": "get_weather"}},
+                '{"type": "function", "function": {"name": "get_weather"}}',
+            ),
+            ({"type": "function", "name": "get_weather"}, '{"type": "function", "name": "get_weather"}'),
+        ],
+    )
+    def test_tool_choice_is_captured(self, tool_choice, expected):
+        attrs = self._capture({"messages": [], "tool_choice": tool_choice})
+
+        assert attrs["llm.request.tool_choice"] == expected
+
+    def test_tool_choice_sentinel_is_not_recorded(self):
+        # Stands in for openai's NOT_GIVEN, which callers forward explicitly when unset.
+        not_given = object()
+
+        attrs = self._capture({"messages": [], "tools": not_given, "tool_choice": not_given})
+
+        assert "llm.request.tool_choice" not in attrs
+        assert self.TOOLS_ATTRIBUTE not in attrs

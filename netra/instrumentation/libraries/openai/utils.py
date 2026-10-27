@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from typing import Any, Dict, Optional, TypeGuard
+from typing import Any, Dict, List, Optional, TypeGuard
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 # A provider-reported cost covers the whole call (prompt, completion, cache read and write).
 PROVIDER_REPORTED_USAGE_TYPE = "total"
 CUSTOM_USAGE_ATTRIBUTE = f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}"
+LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_30M = "gen_ai.usage.cache_creation_input_tokens_30m"
+LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_12H = "gen_ai.usage.cache_creation_input_tokens_12h"
+# OpenAI splits GPT-5.6+ cache writes by TTL; each tier is billed at a different rate.
+_CACHE_WRITE_TTL_FIELDS: Dict[str, str] = {
+    "ttl_30m_tokens": LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_30M,
+    "ttl_12h_tokens": LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_12H,
+}
+GEN_AI_REQUEST_TOOLS = "gen_ai.request.tools"
+LLM_REQUEST_TOOL_CHOICE = "llm.request.tool_choice"
+# Tool types whose name/description/schema live under a key named after the type in
+# Chat Completions (``{"type": "function", "function": {...}}``) but flat in the Responses API.
+_NAMED_TOOL_TYPES = ("function", "custom")
 
 
 def should_suppress_instrumentation() -> bool:
@@ -74,6 +86,56 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
         _set_chat_response_input(span, kwargs)
+
+    _set_tool_definitions(span, kwargs.get("tools"))
+
+    # Anything other than str/dict (e.g. the SDK's NOT_GIVEN sentinel) means no choice was made.
+    tool_choice = kwargs.get("tool_choice")
+    if isinstance(tool_choice, str):
+        span.set_attribute(LLM_REQUEST_TOOL_CHOICE, tool_choice)
+    elif isinstance(tool_choice, dict):
+        span.set_attribute(LLM_REQUEST_TOOL_CHOICE, json.dumps(tool_choice, default=str))
+
+
+def _set_tool_definitions(span: Span, tools: Any) -> None:
+    """Record declared tools as one JSON array under ``gen_ai.request.tools``.
+
+    Each entry is ``{"type", "name", "description", "parameters"}``, with
+    ``description``/``parameters`` omitted when absent. Handles both the Chat
+    Completions shape (fields nested under ``function`` / ``custom``) and the
+    flat Responses API shape. Built-in tools (``web_search_preview``,
+    ``file_search``, ``mcp``, ...) have no schema, so their entry is just
+    ``{"type"}``. Tools without a ``type`` are skipped; if none remain, the
+    attribute is not set.
+    """
+    if not isinstance(tools, (list, tuple)):
+        return
+
+    tool_definitions: List[Dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            tool = model_as_dict(tool)
+        if (tool_type := tool.get("type")) is None:
+            continue
+
+        if tool_type not in _NAMED_TOOL_TYPES:
+            tool_definitions.append({"type": tool_type})
+            continue
+
+        definition = tool.get(tool_type) or tool
+        if not isinstance(definition, dict):
+            definition = model_as_dict(definition)
+        tool_definition = {"type": tool_type, "name": definition.get("name", "")}
+        for field in ("description", "parameters"):
+            if (value := definition.get(field)) is not None:
+                tool_definition[field] = value
+        tool_definitions.append(tool_definition)
+
+    if not tool_definitions:
+        return
+    # Request attributes are set before the OpenAI call, so a schema value json can't
+    # encode must degrade to str rather than raise and abort the user's request.
+    span.set_attribute(GEN_AI_REQUEST_TOOLS, json.dumps(tool_definitions, default=str))
 
 
 def _set_chat_completion_input(span: Span, messages: Any) -> None:
@@ -232,6 +294,12 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
         cache_write_tokens = input_tokens_details.get("cache_write_tokens")
         if cache_write_tokens is not None:
             span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS, cache_write_tokens)
+
+        cache_write_details = input_tokens_details.get("cache_write_tokens_details")
+        if isinstance(cache_write_details, dict):
+            for field, attribute in _CACHE_WRITE_TTL_FIELDS.items():
+                if (tokens := cache_write_details.get(field)) is not None:
+                    span.set_attribute(attribute, tokens)
 
     output_tokens_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
     if output_tokens_details:
