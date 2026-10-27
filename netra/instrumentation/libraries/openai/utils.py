@@ -1,7 +1,7 @@
 import json
 import logging
 import math
-from typing import Any, Dict, Optional, TypeGuard
+from typing import Any, Dict, List, Optional, TypeGuard
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
@@ -18,6 +18,18 @@ logger = logging.getLogger(__name__)
 # A provider-reported cost covers the whole call (prompt, completion, cache read and write).
 PROVIDER_REPORTED_USAGE_TYPE = "total"
 CUSTOM_USAGE_ATTRIBUTE = f"{Config.LIBRARY_NAME}.{ATTRIBUTE.USAGE}"
+LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_30M = "gen_ai.usage.cache_creation_input_tokens_30m"
+LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_12H = "gen_ai.usage.cache_creation_input_tokens_12h"
+# OpenAI splits GPT-5.6+ cache writes by TTL; each tier is billed at a different rate.
+_CACHE_WRITE_TTL_FIELDS: Dict[str, str] = {
+    "ttl_30m_tokens": LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_30M,
+    "ttl_12h_tokens": LLM_USAGE_CACHE_CREATION_INPUT_TOKENS_12H,
+}
+GEN_AI_REQUEST_TOOLS = "gen_ai.request.tools"
+LLM_REQUEST_TOOL_CHOICE = "llm.request.tool_choice"
+# Tool types whose name/description/schema live under a key named after the type in
+# Chat Completions (``{"type": "function", "function": {...}}``) but flat in the Responses API.
+_NAMED_TOOL_TYPES = ("function", "custom")
 
 
 def should_suppress_instrumentation() -> bool:
@@ -74,6 +86,76 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
         _set_chat_response_input(span, kwargs)
+
+    _set_tool_attributes(span, kwargs)
+
+
+def _set_tool_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
+    """Record ``tools`` and ``tool_choice`` without ever failing the request.
+
+    Runs before the OpenAI call and walks caller-supplied schemas (which may be
+    circular or hold objects whose ``model_dump`` raises), so any failure here is
+    logged and the attributes are left unset instead of aborting the user's call.
+    """
+    try:
+        _set_tool_definitions(span, kwargs.get("tools"))
+    except Exception:  # noqa: BLE001 - tool capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record tool definitions", exc_info=True)
+
+    try:
+        _set_tool_choice(span, kwargs.get("tool_choice"))
+    except Exception:  # noqa: BLE001 - tool capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record tool_choice", exc_info=True)
+
+
+def _set_tool_choice(span: Span, tool_choice: Any) -> None:
+    """Record ``tool_choice`` as given (string) or as JSON (dict)."""
+    # Anything other than str/dict (e.g. the SDK's NOT_GIVEN sentinel) means no choice was made.
+    if isinstance(tool_choice, str):
+        span.set_attribute(LLM_REQUEST_TOOL_CHOICE, tool_choice)
+    elif isinstance(tool_choice, dict):
+        span.set_attribute(LLM_REQUEST_TOOL_CHOICE, json.dumps(tool_choice, default=str))
+
+
+def _set_tool_definitions(span: Span, tools: Any) -> None:
+    """Record declared tools as one JSON array under ``gen_ai.request.tools``.
+
+    Each entry is ``{"type", "name", "description", "parameters"}``, with
+    ``description``/``parameters`` omitted when absent. Handles both the Chat
+    Completions shape (fields nested under ``function`` / ``custom``) and the
+    flat Responses API shape. Built-in tools (``web_search_preview``,
+    ``file_search``, ``mcp``, ...) have no schema, so their entry is just
+    ``{"type"}``. Tools without a ``type`` are skipped; if none remain, the
+    attribute is not set.
+    """
+    if not isinstance(tools, (list, tuple)):
+        return
+
+    tool_definitions: List[Dict[str, Any]] = []
+    for tool in tools:
+        if not isinstance(tool, dict):
+            tool = model_as_dict(tool)
+        if (tool_type := tool.get("type")) is None:
+            continue
+
+        if tool_type not in _NAMED_TOOL_TYPES:
+            tool_definitions.append({"type": tool_type})
+            continue
+
+        definition = tool.get(tool_type) or tool
+        if not isinstance(definition, dict):
+            definition = model_as_dict(definition)
+        tool_definition = {"type": tool_type, "name": definition.get("name", "")}
+        for field in ("description", "parameters"):
+            if (value := definition.get(field)) is not None:
+                tool_definition[field] = value
+        tool_definitions.append(tool_definition)
+
+    if not tool_definitions:
+        return
+    # Request attributes are set before the OpenAI call, so a schema value json can't
+    # encode must degrade to str rather than raise and abort the user's request.
+    span.set_attribute(GEN_AI_REQUEST_TOOLS, json.dumps(tool_definitions, default=str))
 
 
 def _set_chat_completion_input(span: Span, messages: Any) -> None:
@@ -233,6 +315,13 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
         if cache_write_tokens is not None:
             span.set_attribute(SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS, cache_write_tokens)
 
+        try:
+            _set_cache_write_ttl_attributes(span, input_tokens_details.get("cache_write_tokens_details"))
+        except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
+            logger.warning(
+                "netra.instrumentation.libraries.openai: failed to record cache-write TTL tiers", exc_info=True
+            )
+
     output_tokens_details = usage.get("completion_tokens_details") or usage.get("output_tokens_details")
     if output_tokens_details:
         reasoning_tokens = output_tokens_details.get("reasoning_tokens")
@@ -242,6 +331,15 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
     total_tokens = usage.get("total_tokens")
     if total_tokens is not None:
         span.set_attribute(SpanAttributes.LLM_USAGE_TOTAL_TOKENS, total_tokens)
+
+
+def _set_cache_write_ttl_attributes(span: Span, cache_write_details: Any) -> None:
+    """Record the per-TTL cache-write token split; a non-dict breakdown is ignored."""
+    if not isinstance(cache_write_details, dict):
+        return
+    for field, attribute in _CACHE_WRITE_TTL_FIELDS.items():
+        if (tokens := cache_write_details.get(field)) is not None:
+            span.set_attribute(attribute, tokens)
 
 
 def _is_valid_cost(value: object) -> TypeGuard[float]:
