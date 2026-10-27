@@ -4,11 +4,17 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [1.2.3b1] - 2026-10-15
+## [1.2.3] - 2026-10-27
+
+First stable release of the 1.2.3 line. It contains the OpenAI Codex instrumentation that shipped in `1.2.3b1`, plus two additions to the OpenAI instrumentation that landed after it.
 
 ### Added
 
 - **OpenAI Codex instrumentation** - `InstrumentSet.CODEX` traces agents built with the `openai-codex` Python SDK (`>= 0.162.0`), sync and async. Each turn gets a `codex.turn` span with the turn's input, final answer and model settings. Under it are generation spans for each model request, with token usage, and tool spans for shell commands, file changes, MCP and dynamic tool calls, web searches and sub-agents. Codex's own internal spans appear under the same trace. Enabled by default. Turn it off with `Netra.init(block_instruments={InstrumentSet.CODEX})`.
+
+- **OpenAI instrumentation records cache-write tokens split by TTL** - For GPT-5.6 and later, OpenAI splits cache writes by how long the cache entry lives, and bills each tier at a different rate. When the usage details (`prompt_tokens_details` for Chat Completions, `input_tokens_details` for the Responses API) include a `cache_write_tokens_details` breakdown, its `ttl_30m_tokens` and `ttl_12h_tokens` are recorded on the LLM span as `gen_ai.usage.cache_creation_input_tokens_30m` and `gen_ai.usage.cache_creation_input_tokens_12h`. This applies to every call path that records response usage, both streaming and non-streaming. The total is still recorded as `gen_ai.usage.cache_creation_input_tokens`. A tier with a count of `0` is recorded. A missing tier is left unset, and a breakdown that is not a dict is ignored. If recording the split fails, a warning is logged and the response is returned as normal.
+
+- **OpenAI instrumentation records tool definitions and `tool_choice`** - The tools declared on a Chat Completions or Responses API request are recorded on the LLM span as one JSON array under `gen_ai.request.tools`. Each entry is `{"type", "name", "description", "parameters"}`, and `description` and `parameters` are left out when the tool does not have them. Both the Chat Completions shape (fields nested under `function` or `custom`) and the flat Responses API shape are handled, and tools passed as SDK model objects are converted to dicts. Built-in tools such as `web_search_preview`, `file_search` and `mcp` have no schema, so their entry is just `{"type"}`. Tools without a `type` are skipped, and if none remain the attribute is not set. `tool_choice` is recorded as `llm.request.tool_choice`: a string as given, a dict as JSON. **Recording tools never fails the request.** A schema value that cannot be encoded as JSON is written as its `str()`, and any other error logs a warning and leaves the attribute unset. A request with no `tools` or `tool_choice` produces the same span as before.
 
 ## [1.2.2] - 2026-10-14
 
@@ -558,4 +564,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.2.3b1]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.3]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
