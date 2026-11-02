@@ -61,15 +61,23 @@ def _format_export_failure(response: Any, span_count: int) -> str:
 class ResponseInterceptor:
     """Wraps requests.Session to intercept and monitor HTTP responses."""
 
-    def __init__(self, session: Any, callback: Callable[[Any], None]) -> None:
+    def __init__(
+        self,
+        session: Any,
+        callback: Callable[[Any], None],
+        on_request_error: Callable[[], None],
+    ) -> None:
         """Initialize the interceptor.
 
         Args:
             session: The requests.Session to wrap
             callback: Callable invoked with each response
+            on_request_error: Callable invoked when a request raises instead of returning a response
+                (connection error, timeout), before the exception propagates
         """
         self._session = session
         self._callback = callback
+        self._on_request_error = on_request_error
         self._original_request = session.request
 
         # Replace the request method with our wrapped version
@@ -79,13 +87,14 @@ class ResponseInterceptor:
         """Wrapper around session.request that intercepts responses."""
         try:
             response = self._original_request(*args, **kwargs)
-            try:
-                self._callback(response)
-            except Exception as e:
-                logger.debug("Error in response callback: %s", e)
-            return response
         except Exception:
+            self._on_request_error()
             raise
+        try:
+            self._callback(response)
+        except Exception as e:
+            logger.debug("Error in response callback: %s", e)
+        return response
 
 
 class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
@@ -113,7 +122,7 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
             # Access the internal requests.Session from OTLPSpanExporter
             if hasattr(self._exporter, "_session") and self._exporter._session is not None:
                 session = self._exporter._session
-                self._interceptor = ResponseInterceptor(session, self._on_http_response)
+                self._interceptor = ResponseInterceptor(session, self._on_http_response, self._on_http_request_error)
                 logger.debug("Successfully setup HTTP response interception")
             else:
                 logger.debug("Could not find _session on OTLPSpanExporter")
@@ -132,6 +141,13 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
         except Exception as e:
             logger.debug("Error processing response in callback: %s", e)
 
+    def _on_http_request_error(self) -> None:
+        """Forget the previous attempt's response when a retry gets no response at all.
+
+        Otherwise a 503 followed by a timeout would be reported as the 503.
+        """
+        self._export_state.last_response = None
+
     def export(self, spans: Sequence[ReadableSpan]) -> SpanExportResult:
         """Export spans and monitor response for trial status.
 
@@ -143,13 +159,18 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
         """
         self._export_state.last_response = None
         try:
-            result = self._exporter.export(spans)
-        except Exception as e:
-            logger.debug("Error during OTLP export: %s", e, exc_info=True)
-            return SpanExportResult.FAILURE
-        if result == SpanExportResult.FAILURE:
-            self._log_rejected_batch(len(spans))
-        return result
+            try:
+                result = self._exporter.export(spans)
+            except Exception as e:
+                logger.debug("Error during OTLP export: %s", e, exc_info=True)
+                return SpanExportResult.FAILURE
+            if result == SpanExportResult.FAILURE:
+                self._log_rejected_batch(len(spans))
+            return result
+        finally:
+            # The response references the serialized batch (response.request.body); don't keep it
+            # alive on this thread until its next export.
+            self._export_state.last_response = None
 
     def _log_rejected_batch(self, span_count: int) -> None:
         """Report the backend's final answer for a batch OTLPSpanExporter gave up on.
