@@ -1,4 +1,5 @@
 import logging
+import threading
 from typing import Any, Callable, Optional, Sequence
 
 from opentelemetry.sdk.trace import ReadableSpan
@@ -10,6 +11,51 @@ from opentelemetry.sdk.trace.export import (
 from netra.exporters.utils import set_trial_blocked
 
 logger = logging.getLogger(__name__)
+
+HTTP_STATUS_PAYLOAD_TOO_LARGE = 413
+# Longest excerpt of a non-JSON error body quoted in the export-failure debug message.
+RESPONSE_EXCERPT_MAX_CHARS = 200
+PAYLOAD_TOO_LARGE_HINT = (
+    "Lower OTEL_BSP_MAX_EXPORT_BATCH_SIZE or reduce large span attributes such as prompts and completions."
+)
+
+
+def _describe_server_message(response: Any) -> str:
+    """Return what the backend said, quoted.
+
+    Uses ``error.message`` from the backend's error envelope (joined when it is a list of validation
+    messages), else an excerpt of the raw body.
+    """
+    try:
+        body = response.json()
+    except ValueError:  # requests' JSONDecodeError subclasses ValueError
+        body = None
+    if isinstance(body, dict):
+        error = body.get("error")
+        message = error.get("message") if isinstance(error, dict) else None
+        if isinstance(message, str):
+            return f'"{message}"'
+        if isinstance(message, list) and all(isinstance(item, str) for item in message):
+            return '"' + "; ".join(message) + '"'
+    excerpt = (getattr(response, "text", "") or "").strip()[:RESPONSE_EXCERPT_MAX_CHARS]
+    return f'"{excerpt}"' if excerpt else "(empty response body)"
+
+
+def _format_export_failure(response: Any, span_count: int) -> str:
+    """Debug message for a batch the backend rejected.
+
+    netra-sdk-js's TrialAwareOTLPExporter uses the same format, so both SDKs report export failures
+    identically.
+    """
+    status_code = getattr(response, "status_code", None)
+    status = " ".join(str(part) for part in (status_code or "unknown", getattr(response, "reason", None)) if part)
+    request_body = getattr(getattr(response, "request", None), "body", None)
+    request_bytes = len(request_body) if isinstance(request_body, (bytes, str)) else "unknown"
+    hint = f" {PAYLOAD_TOO_LARGE_HINT}" if status_code == HTTP_STATUS_PAYLOAD_TOO_LARGE else ""
+    return (
+        f"Span export failed with HTTP {status}: {_describe_server_message(response)}. "
+        f"Dropped a batch of {span_count} spans ({request_bytes} bytes).{hint}"
+    )
 
 
 class ResponseInterceptor:
@@ -53,6 +99,9 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
         """
         self._exporter = wrapped_exporter
         self._interceptor: Optional[ResponseInterceptor] = None
+        # OTLPSpanExporter sends synchronously inside export(), on the calling thread, so a
+        # thread-local carries the last HTTP response back to export() without racing other exports.
+        self._export_state = threading.local()
         self._setup_response_interception()
 
     def _setup_response_interception(self) -> None:
@@ -78,6 +127,7 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
             response: The requests.Response object
         """
         try:
+            self._export_state.last_response = response
             self._check_response_for_trial_blocking(response)
         except Exception as e:
             logger.debug("Error processing response in callback: %s", e)
@@ -91,12 +141,29 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
         Returns:
             SpanExportResult from the wrapped exporter
         """
+        self._export_state.last_response = None
         try:
             result = self._exporter.export(spans)
-            return result
         except Exception as e:
             logger.debug("Error during OTLP export: %s", e, exc_info=True)
             return SpanExportResult.FAILURE
+        if result == SpanExportResult.FAILURE:
+            self._log_rejected_batch(len(spans))
+        return result
+
+    def _log_rejected_batch(self, span_count: int) -> None:
+        """Report the backend's final answer for a batch OTLPSpanExporter gave up on.
+
+        Visible only in debug mode: outside it the ``netra`` logger is silenced. Logged once per batch,
+        after OTLPSpanExporter's own retries (408 and 5xx), so only the last response is shown.
+        """
+        response = getattr(self._export_state, "last_response", None)
+        status_code = getattr(response, "status_code", None)
+        if not isinstance(status_code, int) or 200 <= status_code < 300:
+            return  # no backend answer (connection error, timeout): OTLPSpanExporter logs those itself
+        if not logger.isEnabledFor(logging.WARNING):
+            return
+        logger.warning("%s", _format_export_failure(response, span_count))
 
     def _check_response_for_trial_blocking(self, response: Any) -> None:
         """Check HTTP response for trial blocking indicators.
