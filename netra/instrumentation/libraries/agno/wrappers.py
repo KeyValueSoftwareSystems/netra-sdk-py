@@ -782,52 +782,10 @@ workflow_run_wrapper = _make_run_wrapper(WORKFLOW_RUN_SPAN, "workflow")
 workflow_arun_wrapper = _make_run_wrapper(WORKFLOW_RUN_SPAN, "workflow", is_async=True)
 
 
-def agent_continue_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Return a sync wrapper for ``Agent.continue_run``.
-
-    Args:
-        tracer: OTel tracer instance.
-
-    Returns:
-        A ``wrapt``-compatible wrapper function.
-    """
-
-    def wrapper(
-        wrapped: Callable[..., Any],
-        instance: Any,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ) -> Any:
-        if should_suppress_instrumentation():
-            return wrapped(*args, **kwargs)
-        span_name = _get_span_name(instance, AGENT_CONTINUE_RUN_SPAN)
-        return _sync_non_stream(tracer, wrapped, instance, args, kwargs, span_name, "agent")
-
-    return wrapper
-
-
-def agent_acontinue_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
-    """Return an async wrapper for ``Agent.acontinue_run``.
-
-    Args:
-        tracer: OTel tracer instance.
-
-    Returns:
-        A ``wrapt``-compatible wrapper function.
-    """
-
-    def wrapper(
-        wrapped: Callable[..., Any],
-        instance: Any,
-        args: Tuple[Any, ...],
-        kwargs: Dict[str, Any],
-    ) -> Any:
-        if should_suppress_instrumentation():
-            return wrapped(*args, **kwargs)
-        span_name = _get_span_name(instance, AGENT_CONTINUE_RUN_SPAN)
-        return _async_non_stream(tracer, wrapped, instance, args, kwargs, span_name, "agent")
-
-    return wrapper
+# continue_run streams exactly like run (stream=True returns an iterator of events), so it is wrapped the
+# same way; wrapping it as non-streaming broke `async for` over a traced acontinue_run(stream=True).
+agent_continue_run_wrapper = _make_run_wrapper(AGENT_CONTINUE_RUN_SPAN, "agent")
+agent_acontinue_run_wrapper = _make_run_wrapper(AGENT_CONTINUE_RUN_SPAN, "agent", is_async=True)
 
 
 def _set_tool_span_attrs(
