@@ -4,6 +4,14 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.4] - 2026-11-02
+
+### Fixed
+
+- **Agno `continue_run` / `acontinue_run` with `stream=True` work when traced** - The Agno instrumentation wrapped `Agent.continue_run` and `Agent.acontinue_run` as non-streaming calls. That was wrong, because `continue_run` streams the same way `run` does: with `stream=True` it returns an iterator of events. So `async for` over a traced `acontinue_run(stream=True)` failed. Both methods are now wrapped exactly like `run` / `arun`, so streaming and non-streaming calls are handled the same way they are for `run`. The span name is still `AGENT_CONTINUE_RUN_SPAN`.
+
+- **Rejected span batches now log what the backend said** - When the Netra backend rejected an OTLP export, the batch was dropped and nothing was logged. `TrialAwareOTLPExporter` now logs one warning per rejected batch. It is written after `OTLPSpanExporter` has finished its own retries (408 and 5xx), so it shows only the final response. The warning gives the HTTP status and reason, the backend's `error.message` (a list of validation messages is joined with `; `), and the number of spans and bytes dropped. If the body is not JSON, the first 200 characters are shown instead. For a `413 Payload Too Large`, the warning adds a hint to lower `OTEL_BSP_MAX_EXPORT_BATCH_SIZE` or shrink large attributes such as prompts and completions. The format is the same as in `netra-sdk-js`. **You only see this warning in debug mode**, because outside it the `netra` logger is set to `CRITICAL`. Some failures have no HTTP response, such as a connection error or a timeout. These are not logged here, because `OTLPSpanExporter` already logs them. If a retry gets no response, the earlier attempt's response is discarded, so a 503 followed by a timeout is not reported as the 503. The last response is kept per thread and cleared when `export()` returns, so the serialized batch it references is not kept in memory after the export.
+
 ## [1.2.3] - 2026-10-27
 
 First stable release of the 1.2.3 line. It contains the OpenAI Codex instrumentation that shipped in `1.2.3b1`, plus two additions to the OpenAI instrumentation that landed after it.
@@ -564,4 +572,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.2.3]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.4]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
