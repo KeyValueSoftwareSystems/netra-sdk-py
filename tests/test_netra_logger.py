@@ -4,15 +4,20 @@ import logging
 import os
 import subprocess
 import sys
-from typing import Any, Generator, Optional
+from typing import Any, Callable, Generator, Optional, cast
 from unittest.mock import MagicMock
 
 import pytest
+import requests
+from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+from opentelemetry.sdk.trace import ReadableSpan, TracerProvider
 from opentelemetry.sdk.trace.export import SpanExportResult
 
 from netra import Netra
 from netra.config import Config
+from netra.evaluation.api import Evaluation
 from netra.evaluation.client import EvaluationHttpClient
+from netra.evaluation.models import GetDatasetItemsResponse
 from netra.exporters.trial_aware_otlp_exporter import TrialAwareOTLPExporter
 from netra.logging_utils import configure_package_logging
 from netra.netra_logger import NOTICE_LOGGER_NAME, NoticeLevel, get_logger
@@ -22,6 +27,7 @@ MISSING_ENDPOINT_TEXT = "NETRA_OTLP_ENDPOINT is not set"
 # Port 9 (discard) is closed locally; nothing in these scripts exports, so it is never dialled.
 UNUSED_LOCAL_ENDPOINT = "http://127.0.0.1:9/telemetry"
 MODULE_LOGGER_NAME = "netra.tests.module"
+OTEL_TRACE_EXPORTER_LOGGER_NAME = "opentelemetry.exporter.otlp.proto.http.trace_exporter"
 
 
 @pytest.fixture(autouse=True)
@@ -248,6 +254,77 @@ class TestRejectedSpanExportNotice:
         ]
 
 
+def _otlp_exporter_over(fake_request: Callable[..., requests.Response]) -> TrialAwareOTLPExporter:
+    """A real OTLPSpanExporter whose HTTP session is replaced by ``fake_request`` (no network)."""
+    otlp_exporter = OTLPSpanExporter(endpoint=UNUSED_LOCAL_ENDPOINT)
+    # Swapped before TrialAwareOTLPExporter wraps session.request, so its interceptor sees the fake.
+    otlp_exporter._session.request = fake_request
+    return TrialAwareOTLPExporter(otlp_exporter)
+
+
+def _finished_span() -> ReadableSpan:
+    span = TracerProvider().get_tracer("notice-test").start_span("notice-test-span")
+    span.end()
+    return cast(ReadableSpan, span)
+
+
+def _visible_records(caplog: pytest.LogCaptureFixture) -> list[tuple[str, str]]:
+    return [(r.name, r.getMessage()) for r in caplog.records if r.levelno >= logging.WARNING]
+
+
+class TestSpanExportFailureReportedOnce:
+    """Each failed batch yields exactly one visible line: Netra's notice, not also OpenTelemetry's error."""
+
+    def test_rejected_batch_is_reported_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        configure_package_logging(debug_mode=False)
+
+        def reject_with_401(method: str, url: str, **kwargs: Any) -> requests.Response:
+            response = requests.Response()
+            response.status_code = 401
+            response.reason = "Unauthorized"
+            response._content = b'{"error": {"message": "Invalid API key"}}'
+            response.request = requests.Request(method, url, data=kwargs.get("data")).prepare()
+            return response
+
+        exporter = _otlp_exporter_over(reject_with_401)
+
+        with caplog.at_level(logging.DEBUG):
+            result = exporter.export([_finished_span()])
+
+        assert result == SpanExportResult.FAILURE
+        assert len(_visible_records(caplog)) == 1
+        assert _visible_records(caplog)[0][0] == NOTICE_LOGGER_NAME
+        assert _visible_records(caplog)[0][1].startswith(
+            'netra: Span export failed with HTTP 401 Unauthorized: "Invalid API key". Dropped a batch of 1 spans'
+        )
+
+    def test_batch_without_a_response_is_reported_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        """OpenTelemetry raises a request error on some versions and logs it on others; one notice either way."""
+        configure_package_logging(debug_mode=False)
+
+        def time_out(method: str, url: str, **kwargs: Any) -> requests.Response:
+            raise requests.exceptions.ReadTimeout("read timed out")
+
+        exporter = _otlp_exporter_over(time_out)
+
+        with caplog.at_level(logging.DEBUG):
+            result = exporter.export([_finished_span()])
+
+        assert result == SpanExportResult.FAILURE
+        assert _visible_records(caplog) == [
+            (NOTICE_LOGGER_NAME, "netra: Span export failed: read timed out. Dropped a batch of 1 spans.")
+        ]
+
+    def test_opentelemetry_errors_outside_netra_exports_are_kept(self, caplog: pytest.LogCaptureFixture) -> None:
+        configure_package_logging(debug_mode=False)
+        _otlp_exporter_over(MagicMock())  # installs Netra's filter on the OpenTelemetry exporter logger
+
+        with caplog.at_level(logging.DEBUG):
+            logging.getLogger(OTEL_TRACE_EXPORTER_LOGGER_NAME).error("app-owned exporter failed")
+
+        assert _visible_records(caplog) == [(OTEL_TRACE_EXPORTER_LOGGER_NAME, "app-owned exporter failed")]
+
+
 class TestPublicApiMisuseNotice:
     @pytest.mark.parametrize(
         ("call", "expected_level", "expected_text"),
@@ -275,6 +352,54 @@ class TestPublicApiMisuseNotice:
             call()
 
         assert [(r.levelno, expected_text in r.getMessage()) for r in _notices(caplog)] == [(expected_level, True)]
+
+
+class TestSkippedDatasetItemNotice:
+    """get_dataset() drops items it cannot use; each drop is a notice, naming the item but not its payload."""
+
+    def _get_dataset_with_items(
+        self, items: list[dict[str, Any]], monkeypatch: pytest.MonkeyPatch
+    ) -> GetDatasetItemsResponse:
+        monkeypatch.setattr(EvaluationHttpClient, "get_dataset", lambda _self, _dataset_id: items)
+        return cast(GetDatasetItemsResponse, Evaluation(Config(app_name="notice-test")).get_dataset("dataset-1"))
+
+    def test_item_missing_required_fields_is_visible_when_debug_mode_off(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        configure_package_logging(debug_mode=False)
+        items = [
+            {"id": "item-1", "datasetId": "dataset-1", "input": "kept"},
+            {"id": "item-2", "datasetId": "dataset-1"},
+            {"input": "secret prompt text"},
+        ]
+
+        with caplog.at_level(logging.DEBUG):
+            result = self._get_dataset_with_items(items, monkeypatch)
+
+        assert [record.id for record in result.items] == ["item-1"]
+        assert [(r.levelno, r.getMessage()) for r in _notices(caplog)] == [
+            (logging.WARNING, "netra.evaluation: Skipping dataset item item-2: missing required field(s): input"),
+            (
+                logging.WARNING,
+                "netra.evaluation: Skipping dataset item (no id): missing required field(s): id, datasetId",
+            ),
+        ]
+
+    def test_item_failing_validation_is_visible_when_debug_mode_off(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        configure_package_logging(debug_mode=False)
+        items = [{"id": 42, "datasetId": "dataset-1", "input": "secret prompt text"}]
+
+        with caplog.at_level(logging.DEBUG):
+            result = self._get_dataset_with_items(items, monkeypatch)
+
+        assert result.items == []
+        assert [
+            (r.levelno, r.getMessage().startswith("netra.evaluation: Skipping dataset item 42:"))
+            for r in _notices(caplog)
+        ] == [(logging.ERROR, True)]
+        assert "secret prompt text" not in _notices(caplog)[0].getMessage()
 
 
 class TestApiClientFailureNotice:

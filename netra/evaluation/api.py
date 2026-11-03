@@ -191,8 +191,19 @@ class Evaluation:
             item_input = item.get("input")
             item_dataset_id = item.get("datasetId")
             item_expected_output = item.get("expectedOutput", "")
-            if item_id is None or item_dataset_id is None or item_input is None:
-                logger.warning("netra.evaluation: Skipping dataset item with missing required fields: %s", item)
+            # Notices name the item, never its payload: input often holds prompts or user data.
+            item_label = item_id if item_id is not None else "(no id)"
+            missing_fields = [
+                field_name
+                for field_name, value in (("id", item_id), ("datasetId", item_dataset_id), ("input", item_input))
+                if value is None
+            ]
+            if missing_fields:
+                logger.notice(
+                    "netra.evaluation: Skipping dataset item %s: missing required field(s): %s",
+                    item_label,
+                    ", ".join(missing_fields),
+                )
                 continue
             try:
                 dataset_items.append(
@@ -204,7 +215,12 @@ class Evaluation:
                     )
                 )
             except Exception as exc:
-                logger.error("netra.evaluation: Failed to parse dataset item: %s", exc)
+                logger.notice(
+                    "netra.evaluation: Skipping dataset item %s: failed to parse: %s",
+                    item_label,
+                    exc,
+                    level=NoticeLevel.ERROR,
+                )
         return GetDatasetItemsResponse(items=dataset_items)
 
     def create_run(
