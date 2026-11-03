@@ -183,6 +183,45 @@ class TestMissingApiKeyNotice:
         api_key_notices = [r for r in _notices(caplog) if "NETRA_API_KEY is not set" in r.getMessage()]
         assert [r.levelno for r in api_key_notices] == [logging.ERROR]
 
+    @pytest.mark.parametrize("header_name", ["x-api-key", "X-Api-Key"])
+    def test_not_logged_when_key_is_passed_in_headers_argument(
+        self, header_name: str, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NETRA_OTLP_ENDPOINT", "https://api.getnetra.ai/telemetry")
+        monkeypatch.delenv("NETRA_API_KEY", raising=False)
+        monkeypatch.delenv("NETRA_HEADERS", raising=False)
+
+        with caplog.at_level(logging.DEBUG):
+            Config(app_name="notice-test", headers={header_name: "test-key"})
+
+        assert [r for r in _notices(caplog) if "NETRA_API_KEY is not set" in r.getMessage()] == []
+
+    def test_not_logged_when_key_is_passed_in_netra_headers_env(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        monkeypatch.setenv("NETRA_OTLP_ENDPOINT", "https://api.getnetra.ai/telemetry")
+        monkeypatch.delenv("NETRA_API_KEY", raising=False)
+        monkeypatch.setenv("NETRA_HEADERS", "x-api-key=test-key")
+
+        with caplog.at_level(logging.DEBUG):
+            Config(app_name="notice-test")
+
+        assert [r for r in _notices(caplog) if "NETRA_API_KEY is not set" in r.getMessage()] == []
+
+    def test_logged_when_headers_carry_only_an_authorization_header(
+        self, caplog: pytest.LogCaptureFixture, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        # The Netra backend authenticates with x-api-key only; a bearer token is not a Netra credential.
+        monkeypatch.setenv("NETRA_OTLP_ENDPOINT", "https://api.getnetra.ai/telemetry")
+        monkeypatch.delenv("NETRA_API_KEY", raising=False)
+        monkeypatch.delenv("NETRA_HEADERS", raising=False)
+
+        with caplog.at_level(logging.DEBUG):
+            Config(app_name="notice-test", headers={"Authorization": "Bearer test-key"})
+
+        api_key_notices = [r for r in _notices(caplog) if "NETRA_API_KEY is not set" in r.getMessage()]
+        assert [r.levelno for r in api_key_notices] == [logging.ERROR]
+
 
 def _fake_response(status_code: int, reason: str, message: str) -> MagicMock:
     response = MagicMock()

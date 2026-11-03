@@ -26,6 +26,9 @@ _AUDIO_CHUNK_PATH = "/v1/audio/chunk"
 # POST is never attempted.
 _AUDIO_AUTH_HEADERS = ("x-api-key", "Authorization")
 
+# The only header the Netra backend's API-key guard reads. Lowercase, for case-insensitive matching.
+_NETRA_API_KEY_HEADER = "x-api-key"
+
 _DEFAULT_AUDIO_BATCH_BYTES = 32768
 _DEFAULT_AUDIO_BATCH_INTERVAL_MS = 1000
 _DEFAULT_AUDIO_BUFFER_BYTES = 2097152
@@ -283,13 +286,20 @@ class Config:
         return {}
 
     def _validate_api_key(self) -> None:
-        """Validate that API key exists for Netra endpoints."""
-        if self.otlp_endpoint and "getnetra" in self.otlp_endpoint.lower() and not self.api_key:
-            logger.notice(
-                "netra: NETRA_API_KEY is not set, so Netra will reject the traces this app sends. "
-                "Fix: create an API key in the Netra dashboard and set NETRA_API_KEY to it.",
-                level=NoticeLevel.ERROR,
-            )
+        """Validate that an API key exists for Netra endpoints.
+
+        The key counts as present when it is set via NETRA_API_KEY or already passed as an
+        ``x-api-key`` header (through ``headers`` or NETRA_HEADERS); header names match case-insensitively.
+        """
+        if not self.otlp_endpoint or "getnetra" not in self.otlp_endpoint.lower() or self.api_key:
+            return
+        if any(name.lower() == _NETRA_API_KEY_HEADER for name in self.headers):
+            return
+        logger.notice(
+            "netra: NETRA_API_KEY is not set, so Netra will reject the traces this app sends. "
+            "Fix: create an API key in the Netra dashboard and set NETRA_API_KEY to it.",
+            level=NoticeLevel.ERROR,
+        )
 
     def _setup_authentication(self) -> None:
         """Setup authentication headers based on endpoint and API key."""
