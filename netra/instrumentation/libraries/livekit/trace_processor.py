@@ -35,7 +35,7 @@ from netra.instrumentation.libraries.livekit.utils import (
     AGENT_TURN_SPAN_NAME,
     ATTRIBUTE_MAP,
     AUDIO_TYPE_BY_SPAN_NAME,
-    CHAT_CTX_ATTRIBUTE,
+    CHAT_CTX_ATTRIBUTES,
     CONVERSATION_MAP,
     EVENT_CHOICE,
     EVENT_ROLE,
@@ -518,7 +518,7 @@ class _ConversationRecorder:
             it carried a value — so the caller knows not to fall through to
             ``ATTRIBUTE_MAP``.
         """
-        if key == CHAT_CTX_ATTRIBUTE:
+        if key in CHAT_CTX_ATTRIBUTES:
             messages = messages_from_chat_ctx(value)
             # Keep the newest turns. ``append`` caps the sequence either way, but it
             # can only drop what arrives last, so feeding it the whole context
