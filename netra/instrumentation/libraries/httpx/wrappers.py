@@ -1,4 +1,3 @@
-import logging
 from collections.abc import AsyncIterator, Awaitable, Iterator
 from typing import Any, Callable, Dict, Tuple
 
@@ -18,8 +17,9 @@ from netra.instrumentation.libraries.httpx.utils import (
     set_streaming_span_output,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class _BaseStreamingWrapper(ObjectProxy):  # type: ignore[misc]

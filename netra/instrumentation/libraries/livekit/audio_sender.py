@@ -23,7 +23,6 @@ span headers, so it can be laid out on the call timeline but belongs to no turn.
 from __future__ import annotations
 
 import asyncio
-import logging
 import random
 import time
 from dataclasses import dataclass, field
@@ -59,11 +58,12 @@ from netra.instrumentation.libraries.livekit.audio_types import (
     SpeakerRole,
     pcm_byte_offset_at,
 )
+from netra.netra_logger import get_logger
 
 if TYPE_CHECKING:
     from livekit.rtc import AudioFrame
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Defaults for the knobs ``Config`` does not resolve. Every other limit reaches
 # the sender from ``Config`` — see ``audio_capture.start_audio_capture``.

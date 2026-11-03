@@ -1,5 +1,4 @@
 import json
-import logging
 import re
 import time
 from collections.abc import Awaitable
@@ -42,9 +41,10 @@ from netra.instrumentation.libraries.agno.utils import (
     update_active_span_with_system_prompt,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 AGENT_RUN_SPAN = "agno.agent.run"
 AGENT_CONTINUE_RUN_SPAN = "agno.agent.continue_run"

@@ -1,13 +1,13 @@
-import logging
 import os
 from typing import Any, Dict, Optional
 
 import httpx
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class UsageHttpClient:
@@ -35,7 +35,7 @@ class UsageHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("netra.usage: Failed to initialize usage HTTP client: %s", exc)
+            logger.notice("netra.usage: Failed to initialize usage HTTP client: %s", exc, level=NoticeLevel.ERROR)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -58,7 +58,7 @@ class UsageHttpClient:
         try:
             return float(timeout_env)
         except ValueError:
-            logger.warning(
+            logger.notice(
                 "netra.usage: Invalid NETRA_USAGE_TIMEOUT value '%s', using default 10.0",
                 timeout_env,
             )
@@ -75,9 +75,10 @@ class UsageHttpClient:
             Any: Session usage data
         """
         if not self._client:
-            logger.error(
+            logger.notice(
                 "netra.usage: Usage client is not initialized; cannot fetch session usage '%s'",
                 session_id,
+                level=NoticeLevel.ERROR,
             )
             return {}
 
@@ -96,10 +97,11 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.usage: Failed to fetch session usage '%s': %s",
                 session_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {}
 
@@ -114,9 +116,10 @@ class UsageHttpClient:
             Any: Tenant usage data
         """
         if not self._client:
-            logger.error(
+            logger.notice(
                 "netra.usage: Usage client is not initialized; cannot fetch tenant usage '%s'",
                 tenant_id,
+                level=NoticeLevel.ERROR,
             )
             return {}
 
@@ -135,10 +138,11 @@ class UsageHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.usage: Failed to fetch tenant usage '%s': %s",
                 tenant_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {}
 
@@ -176,7 +180,7 @@ class UsageHttpClient:
             Any: Traces data
         """
         if not self._client:
-            logger.error("netra.usage: Usage client is not initialized; cannot list traces")
+            logger.notice("netra.usage: Usage client is not initialized; cannot list traces", level=NoticeLevel.ERROR)
             return {}
 
         response: Optional[httpx.Response] = None
@@ -222,7 +226,9 @@ class UsageHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error("netra.usage: Failed to list traces: %s", extract_error_message(response, exc))
+            logger.notice(
+                "netra.usage: Failed to list traces: %s", extract_error_message(response, exc), level=NoticeLevel.ERROR
+            )
             return {}
 
     def list_spans_by_trace_id(
@@ -247,7 +253,11 @@ class UsageHttpClient:
             Any: Spans data
         """
         if not self._client:
-            logger.error("netra.usage: Usage client is not initialized; cannot list spans for trace '%s'", trace_id)
+            logger.notice(
+                "netra.usage: Usage client is not initialized; cannot list spans for trace '%s'",
+                trace_id,
+                level=NoticeLevel.ERROR,
+            )
             return {}
 
         response: Optional[httpx.Response] = None
@@ -268,9 +278,10 @@ class UsageHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.usage: Failed to list spans for trace '%s': %s",
                 trace_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {}

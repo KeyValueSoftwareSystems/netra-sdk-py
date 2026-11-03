@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, Callable, Dict, Iterator, Literal, Tuple
 
@@ -11,8 +10,9 @@ from netra.instrumentation.libraries.cartesia.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TTS_SPAN_NAME = "cartesia.tts"
 STT_SPAN_NAME = "cartesia.stt"

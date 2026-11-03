@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -15,8 +14,9 @@ from netra.instrumentation.libraries.openai.wrappers import (
     embeddings_wrapper,
     responses_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("openai >= 1.0.0",)
 

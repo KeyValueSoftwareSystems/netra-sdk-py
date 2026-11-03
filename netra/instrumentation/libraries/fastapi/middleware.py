@@ -5,7 +5,6 @@ creates one SERVER span per request and captures structured ``input`` / ``output
 attributes matching the conventions used by the httpx instrumentation.
 """
 
-import logging
 from typing import Any, Dict, Iterable, List, Optional, Sequence, Tuple, Union
 
 from fastapi import HTTPException
@@ -23,8 +22,9 @@ from netra.instrumentation.libraries.fastapi.utils import (
     set_span_output,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 DEFAULT_ERROR_STATUS_CODE_RANGE = range(400, 600)
 

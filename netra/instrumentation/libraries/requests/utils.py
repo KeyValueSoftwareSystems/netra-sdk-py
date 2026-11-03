@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Dict, Union
 
 import requests as requests_lib  # type: ignore[import-untyped]
@@ -10,8 +9,9 @@ from opentelemetry.util.http import remove_url_credentials, sanitize_method
 from netra.instrumentation.capture.bounded_capture import BoundedStreamBuffer
 from netra.instrumentation.http.body import build_response_output, build_streaming_output
 from netra.instrumentation.http.headers import sanitize_header_mapping
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # A ``PreparedRequest`` body may be a generator or file object, and a streaming
 # response's body has not arrived yet. Both are recorded as a description

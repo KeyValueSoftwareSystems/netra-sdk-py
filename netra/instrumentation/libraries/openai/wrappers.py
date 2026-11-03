@@ -1,4 +1,3 @@
-import logging
 import time
 from collections.abc import Awaitable
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
@@ -15,8 +14,9 @@ from netra.instrumentation.libraries.openai.utils import (
     should_suppress_instrumentation,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Span names
 CHAT_SPAN_NAME = "openai.chat"

@@ -1,4 +1,3 @@
-import logging
 from contextvars import ContextVar
 from copy import copy, deepcopy
 from typing import Any, Callable, Mapping, Set, Tuple
@@ -28,8 +27,9 @@ from netra.instrumentation.libraries.dspy.utils import (
     safe_json_dumps,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class CopyableBoundFunctionWrapper(BoundFunctionWrapper):  # type: ignore

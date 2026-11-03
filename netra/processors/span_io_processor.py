@@ -1,12 +1,13 @@
 import json
-import logging
 import re
 from typing import Any, Callable, Dict, Mapping, Optional
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 # Patterns for gen_ai indexed attributes
 _PROMPT_RE = re.compile(r"^gen_ai\.prompts?\.(\d+)\.(role|content)$")

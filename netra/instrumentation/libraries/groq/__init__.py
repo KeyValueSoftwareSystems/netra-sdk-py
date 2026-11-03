@@ -14,9 +14,10 @@ from netra.instrumentation.libraries.groq.wrappers import (
     achat_wrapper,
     chat_wrapper,
 )
+from netra.netra_logger import get_logger
 
 logging.getLogger("opentelemetry.context").setLevel(logging.CRITICAL)
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 _instruments: Tuple[str, ...] = ("groq >= 0.9.0",)

@@ -1,7 +1,6 @@
 import functools
 import inspect
 import json
-import logging
 from typing import (
     Any,
     AsyncGenerator,
@@ -25,11 +24,13 @@ except Exception:  # pragma: no cover - starlette may not be installed in some e
 
 from opentelemetry import trace
 
+from netra.netra_logger import NoticeLevel, get_logger
+
 from .config import Config
 from .session_manager import SessionManager
 from .span_wrapper import SpanType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 P = ParamSpec("P")
 R = TypeVar("R")
@@ -455,7 +456,7 @@ def _create_function_wrapper(
             # time (same result on every call), so failing here avoids pushing an
             # entity or starting a span we would only have to unwind.
             if not isinstance(as_type, SpanType):
-                logger.error("Invalid span type: %s", as_type)
+                logger.notice("netra: Invalid span type: %s", as_type, level=NoticeLevel.ERROR)
                 return
 
             # Push entity before span starts so processors can capture it
@@ -519,7 +520,7 @@ def _create_function_wrapper(
             # entity or starting a span we would only have to unwind. ``None`` is
             # allowed (the span simply carries no type attribute).
             if as_type is not None and not isinstance(as_type, SpanType):
-                logger.error("Invalid span type: %s", as_type)
+                logger.notice("netra: Invalid span type: %s", as_type, level=NoticeLevel.ERROR)
                 return
 
             # Push entity before span starts so processors can capture it

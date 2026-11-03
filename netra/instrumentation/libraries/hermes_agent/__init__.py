@@ -1,4 +1,3 @@
-import logging
 from pathlib import Path
 from typing import Any
 
@@ -21,8 +20,9 @@ from netra.instrumentation.libraries.hermes_agent.wrappers import (
     title_generation_wrapper,
     tool_execution_middleware_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("hermes-agent >= 0.17.0",)
 
