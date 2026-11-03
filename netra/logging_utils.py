@@ -48,10 +48,11 @@ def configure_package_logging(debug_mode: bool) -> None:
         otel_instr_logger.propagate = True
         otel_instr_instrumentor_logger.propagate = True
     else:
-        # Netra: completely silent unless user opts in
+        # Netra: silent unless user opts in, except the "netra.notice" child logger, which sets its own
+        # WARNING level (see netra/notice.py). No NullHandler and propagation on, so those notices
+        # reach the application's root handlers, or Python's last-resort stderr handler if it has none.
         pkg_logger.setLevel(logging.CRITICAL)
-        pkg_logger.addHandler(logging.NullHandler())
-        pkg_logger.propagate = False
+        pkg_logger.propagate = True
 
         # HTTP clients: keep their own warnings local, do not bubble via Netra
         httpx_logger.setLevel(logging.WARNING)

@@ -5,7 +5,6 @@ This module centralizes common helpers that can be reused across the codebase.
 
 from __future__ import annotations
 
-import logging
 from typing import AbstractSet, Any, Optional, Set
 
 import httpx
@@ -17,8 +16,9 @@ from netra.instrumentation.instruments import (
     InstrumentSet,
     NetraInstruments,
 )
+from netra.netra_logger import NoticeLevel, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def extract_error_message(response: Optional[httpx.Response], exc: Exception) -> str:
@@ -166,9 +166,10 @@ def resolve_root_instruments(
 
     if block_has_all:
         if root_has_all:
-            logger.error(
-                "root_instruments=ALL is contradicted by "
-                "block_instruments=ALL; all root instrumentation is disabled."
+            logger.notice(
+                "netra: root_instruments=ALL is contradicted by "
+                "block_instruments=ALL; all root instrumentation is disabled.",
+                level=NoticeLevel.ERROR,
             )
         else:
             logger.warning("block_instruments contains ALL; all instrumentation will be disabled.")

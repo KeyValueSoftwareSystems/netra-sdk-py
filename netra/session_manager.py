@@ -1,5 +1,4 @@
 import contextvars
-import logging
 import threading
 import weakref
 from contextlib import contextmanager
@@ -12,9 +11,10 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 
 from netra.config import Config, get_conversation_max_len
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import process_content_for_max_len, serialize_value
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 NETRA_USER_INPUT = "netra.user.input"
@@ -644,26 +644,27 @@ class SessionManager:
 
         # Hard runtime validation of input types and values
         if not isinstance(conversation_type, ConversationType):
-            logger.error(
-                "add_conversation: conversation_type must be a ConversationType enum value (input, output, system)"
+            logger.notice(
+                "netra: add_conversation: conversation_type must be a ConversationType enum value (input, output, system)",
+                level=NoticeLevel.ERROR,
             )
             return
         normalized_type = conversation_type.value
 
         if not isinstance(role, str):
-            logger.error("add_conversation: role must be a string")
+            logger.notice("netra: add_conversation: role must be a string", level=NoticeLevel.ERROR)
             return
 
         if not isinstance(content, (str, dict)):
-            logger.error("add_conversation: content must be a string or dict")
+            logger.notice("netra: add_conversation: content must be a string or dict", level=NoticeLevel.ERROR)
             return
 
         if not role:
-            logger.error("add_conversation: role must be a non-empty string")
+            logger.notice("netra: add_conversation: role must be a non-empty string", level=NoticeLevel.ERROR)
             return
 
         if not content:
-            logger.error("add_conversation: content must not be empty")
+            logger.notice("netra: add_conversation: content must not be empty", level=NoticeLevel.ERROR)
             return
 
         try:

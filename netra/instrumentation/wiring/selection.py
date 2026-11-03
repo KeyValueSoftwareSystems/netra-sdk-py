@@ -9,7 +9,6 @@ deferring activation does not change *which* instrumentations end up enabled,
 with one deliberate exception documented on :func:`_select_traceloop_names`.
 """
 
-import logging
 from dataclasses import dataclass
 from typing import AbstractSet, Optional
 
@@ -20,8 +19,9 @@ from netra.instrumentation.instruments import (
     NetraInstruments,
     _Origin,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # An instrumentation Netra implements itself must never also be delegated to
 # traceloop, or the same call sites are patched twice.  That is enforced by

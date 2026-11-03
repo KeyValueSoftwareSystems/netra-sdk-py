@@ -1,8 +1,8 @@
-import logging
 import traceback
 from typing import Any, Callable
 
 from netra.instrumentation.libraries.mistralai.config import Config
+from netra.netra_logger import get_logger
 
 
 def dont_throw(func: Callable[..., Any]) -> Callable[..., Any]:
@@ -13,7 +13,7 @@ def dont_throw(func: Callable[..., Any]) -> Callable[..., Any]:
     @return: The wrapper function
     """
     # Obtain a logger specific to the function's module
-    logger = logging.getLogger(func.__module__)
+    logger = get_logger(func.__module__)
 
     def wrapper(*args: Any, **kwargs: Any) -> Any:
         try:

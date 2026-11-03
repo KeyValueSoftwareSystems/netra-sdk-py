@@ -1,5 +1,4 @@
 import json
-import logging
 import time
 from datetime import datetime
 from enum import Enum
@@ -12,9 +11,10 @@ from opentelemetry.trace import SpanKind, Status, StatusCode
 from pydantic import BaseModel
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.session_manager import SessionManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Baggage key for local-only blocked spans patterns
 _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"
@@ -118,7 +118,7 @@ class SpanWrapper:
             self.attributes["netra.span.type"] = as_type.value
             self._entity_type: Optional[str] = SPAN_TYPE_TO_ENTITY_TYPE.get(as_type)
         else:
-            logger.error("Invalid span type: %s", as_type)
+            logger.notice("netra: Invalid span type: %s", as_type, level=NoticeLevel.ERROR)
             self._entity_type = None
             return
 
@@ -289,7 +289,7 @@ class SpanWrapper:
             The span wrapper (for chaining).
         """
         if not isinstance(new_name, str) or not new_name:
-            logger.warning("update_span_name: new_name must be a non-empty string; ignoring")
+            logger.notice("netra: update_span_name: new_name must be a non-empty string; ignoring")
             return self
 
         if self.span:

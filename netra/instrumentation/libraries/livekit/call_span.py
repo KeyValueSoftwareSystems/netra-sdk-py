@@ -58,7 +58,6 @@ ends. Assume the root covers the *call*, not every last thing the job does.
 
 from __future__ import annotations
 
-import logging
 import threading
 from collections import OrderedDict
 from contextlib import contextmanager
@@ -81,9 +80,10 @@ from netra.instrumentation.libraries.livekit.utils import (
     NETRA_SPAN_TYPE,
 )
 from netra.instrumentation.libraries.livekit.version import __version__
+from netra.netra_logger import get_logger
 from netra.processors.root_span_processor import RootSpanProcessor
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # The tracer scope for ``livekit-call``. Spelled out rather than derived from
 # ``__name__``: the instrument name is the *last* dotted component of the scope

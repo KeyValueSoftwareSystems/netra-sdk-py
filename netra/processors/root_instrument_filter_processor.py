@@ -1,4 +1,3 @@
-import logging
 import threading
 import time
 from collections import OrderedDict
@@ -9,8 +8,9 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
 from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
 

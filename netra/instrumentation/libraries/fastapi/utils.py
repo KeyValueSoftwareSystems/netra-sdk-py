@@ -7,7 +7,6 @@ other HTTP instrumentations -- see :mod:`netra.instrumentation.http.headers`
 and :mod:`netra.instrumentation.http.body`.
 """
 
-import logging
 from typing import Any, Dict, List, Optional, Tuple, Union
 
 from opentelemetry import context as context_api
@@ -18,8 +17,9 @@ from starlette.routing import Match
 
 from netra.instrumentation.http.body import build_response_output
 from netra.instrumentation.http.headers import sanitize_asgi_headers
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def should_suppress_instrumentation() -> bool:

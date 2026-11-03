@@ -1,4 +1,3 @@
-import logging
 from typing import Any, AsyncIterator, Callable, Iterator, Tuple
 
 from opentelemetry import trace
@@ -17,8 +16,9 @@ from netra.instrumentation.libraries.codex.utils import (
     release_turn,
     start_turn,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Only W3C trace context goes to the app-server's JSON-RPC `trace` field; baggage stays in-process.
 _trace_context_propagator = TraceContextTextMapPropagator()

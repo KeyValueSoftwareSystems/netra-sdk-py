@@ -1,4 +1,3 @@
-import logging
 import threading
 from typing import Any, Callable, Optional, Sequence
 
@@ -9,8 +8,9 @@ from opentelemetry.sdk.trace.export import (
 )
 
 from netra.exporters.utils import set_trial_blocked
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 HTTP_STATUS_PAYLOAD_TOO_LARGE = 413
 # Longest excerpt of a non-JSON error body quoted in the export-failure debug message.
@@ -162,6 +162,9 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
             try:
                 result = self._exporter.export(spans)
             except Exception as e:
+                # No backend answer (connection refused, DNS, TLS): OTLPSpanExporter raises instead of
+                # logging, so without this notice an unreachable endpoint drops spans silently.
+                logger.notice("netra: Span export failed: %s. Dropped a batch of %d spans.", e, len(spans))
                 logger.debug("Error during OTLP export: %s", e, exc_info=True)
                 return SpanExportResult.FAILURE
             if result == SpanExportResult.FAILURE:
@@ -175,16 +178,14 @@ class TrialAwareOTLPExporter(SpanExporter):  # type: ignore[misc]
     def _log_rejected_batch(self, span_count: int) -> None:
         """Report the backend's final answer for a batch OTLPSpanExporter gave up on.
 
-        Visible only in debug mode: outside it the ``netra`` logger is silenced. Logged once per batch,
-        after OTLPSpanExporter's own retries (408 and 5xx), so only the last response is shown.
+        Logged once per batch, after OTLPSpanExporter's own retries (408 and 5xx), so only the last
+        response is shown. Always visible, whether or not debug_mode is on.
         """
         response = getattr(self._export_state, "last_response", None)
         status_code = getattr(response, "status_code", None)
         if not isinstance(status_code, int) or 200 <= status_code < 300:
             return  # no backend answer (connection error, timeout): OTLPSpanExporter logs those itself
-        if not logger.isEnabledFor(logging.WARNING):
-            return
-        logger.warning("%s", _format_export_failure(response, span_count))
+        logger.notice("netra: %s", _format_export_failure(response, span_count))
 
     def _check_response_for_trial_blocking(self, response: Any) -> None:
         """Check HTTP response for trial blocking indicators.

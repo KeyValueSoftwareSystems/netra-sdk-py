@@ -1,13 +1,13 @@
-import logging
 import time
 from datetime import datetime, timezone
 from typing import Any, Optional
 
-logger = logging.getLogger(__name__)
-
 from opentelemetry.trace import Span
 
+from netra.netra_logger import get_logger
 from netra.processors.root_span_processor import RootSpanProcessor
+
+logger = get_logger(__name__)
 
 
 def _safe_set_attribute(span: Span, key: str, value: Any, max_length: Optional[int] = None) -> bool:

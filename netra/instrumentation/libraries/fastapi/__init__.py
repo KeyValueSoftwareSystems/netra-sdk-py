@@ -8,7 +8,6 @@ attributes and automatic HTTP error status-code monitoring.
 from __future__ import annotations
 
 import functools
-import logging
 import types
 import weakref
 from typing import Any, Collection, Dict, Iterable, Optional, Union
@@ -26,8 +25,9 @@ from netra.instrumentation.libraries.fastapi.utils import (
     get_route_details,
 )
 from netra.instrumentation.libraries.fastapi.version import __version__
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("fastapi >= 0.58.0",)
 _excluded_urls_from_env = get_excluded_urls("FASTAPI")

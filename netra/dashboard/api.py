@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Iterator, List, Optional
 
 from netra.config import Config
@@ -16,8 +15,9 @@ from netra.dashboard.models import (
     SortField,
     SortOrder,
 )
+from netra.netra_logger import NoticeLevel, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Dashboard:
@@ -101,7 +101,9 @@ class Dashboard:
             SessionStatsResult containing session data and pagination info.
         """
         if not start_time or not end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to fetch session stats")
+            logger.notice(
+                "netra.dashboard: start_time and end_time are required to fetch session stats", level=NoticeLevel.ERROR
+            )
             return None
 
         result = self._client.get_session_stats(
@@ -161,7 +163,10 @@ class Dashboard:
             SessionStatsData items from all pages.
         """
         if not start_time or not end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to iterate session stats")
+            logger.notice(
+                "netra.dashboard: start_time and end_time are required to iterate session stats",
+                level=NoticeLevel.ERROR,
+            )
             return None
 
         cursor: Optional[str] = None
@@ -195,10 +200,13 @@ class Dashboard:
             Dict containing aggregated session metrics.
         """
         if not isinstance(filter, SessionFilterConfig):
-            logger.error("netra.dashboard: filter must be a SessionFilterConfig")
+            logger.notice("netra.dashboard: filter must be a SessionFilterConfig", level=NoticeLevel.ERROR)
             return None
         if not filter.start_time or not filter.end_time:
-            logger.error("netra.dashboard: start_time and end_time are required to fetch session summary")
+            logger.notice(
+                "netra.dashboard: start_time and end_time are required to fetch session summary",
+                level=NoticeLevel.ERROR,
+            )
             return None
 
         result = self._client.get_session_summary(
@@ -231,7 +239,7 @@ class Dashboard:
             straddles a bound is reported from its in-window spans only.
         """
         if not session_id:
-            logger.error("netra.dashboard: session_id is required to fetch session detail")
+            logger.notice("netra.dashboard: session_id is required to fetch session detail", level=NoticeLevel.ERROR)
             return None
 
         result = self._client.get_session_details(

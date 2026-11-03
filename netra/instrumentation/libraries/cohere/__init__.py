@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Any, Collection, Dict, Generator, Iterator, List, Optional, Union
 
@@ -21,7 +20,9 @@ from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer, set_span_in_
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 _instruments = ("cohere >=4.2.7, <6",)
 

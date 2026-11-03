@@ -53,15 +53,15 @@ Accepted limitations:
    already outlive shutdown before this change; only the patching is new.
 """
 
-import logging
 import threading
 from collections import defaultdict
 from typing import Callable, Sequence
 
 from netra.instrumentation.wiring.activation import Activation, run_activation
 from netra.instrumentation.wiring.triggers import INSTRUMENT_TRIGGERS
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Trigger lookup is by member *name* rather than by ``InstrumentSet`` member,
 # because a traceloop instrumentation is carried through activation as the name

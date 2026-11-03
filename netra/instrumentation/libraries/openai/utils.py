@@ -1,5 +1,4 @@
 import json
-import logging
 import math
 from typing import Any, Dict, List, Optional, TypeGuard
 
@@ -11,9 +10,10 @@ from opentelemetry.semconv_ai import (
 from opentelemetry.trace import Span
 
 from netra.config import Config
+from netra.netra_logger import get_logger
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # A provider-reported cost covers the whole call (prompt, completion, cache read and write).
 PROVIDER_REPORTED_USAGE_TYPE = "total"

@@ -1,4 +1,3 @@
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Callable, Collection
 
@@ -56,8 +55,9 @@ from netra.instrumentation.libraries.honcho.wrappers import (
     make_chat_stream_sync_wrapper,
     make_sync_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("honcho-ai >= 2.0.0",)
 

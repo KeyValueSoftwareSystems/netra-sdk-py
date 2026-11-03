@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Any, Dict, Mapping, Optional
 
@@ -6,8 +5,9 @@ from opentelemetry import context as context_api
 from opentelemetry import propagate, trace
 
 from netra.instrumentation.http.propagation import inject_local
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _log_traceparent(traceparent: Optional[str]) -> None:

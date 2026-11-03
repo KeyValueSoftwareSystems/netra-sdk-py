@@ -1,5 +1,4 @@
 import json
-import logging
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from opentelemetry import context as context_api
@@ -8,9 +7,10 @@ from opentelemetry.trace import Span
 
 from netra.config import get_attribute_max_len
 from netra.instrumentation.libraries.honcho import constants as attrs
+from netra.netra_logger import get_logger
 from netra.utils import truncate_string
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Type aliases for attribute-setter callbacks used by wrappers and PatchSpec.
 RequestAttrFn = Callable[[Span, Any, Tuple[Any, ...], Dict[str, Any]], None]

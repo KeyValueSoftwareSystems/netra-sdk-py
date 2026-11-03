@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, Callable, Dict, Tuple, cast
 
@@ -12,8 +11,9 @@ from netra.instrumentation.libraries.deepgram.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TRANSCRIBE_URL_SPAN_NAME = "deepgram.transcribe_url"
 TRANSCRIBE_FILE_SPAN_NAME = "deepgram.transcribe_file"

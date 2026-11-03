@@ -1,12 +1,13 @@
 import json
-import logging
 from typing import Any, Dict, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 def should_suppress_instrumentation() -> bool:

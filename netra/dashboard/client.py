@@ -1,4 +1,3 @@
-import logging
 import os
 from typing import Any, Dict, List, Optional
 
@@ -16,9 +15,10 @@ from netra.dashboard.models import (
     SortField,
     SortOrder,
 )
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class DashboardHttpClient:
@@ -55,7 +55,9 @@ class DashboardHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("netra.dashboard: Failed to initialize dashboard HTTP client: %s", exc)
+            logger.notice(
+                "netra.dashboard: Failed to initialize dashboard HTTP client: %s", exc, level=NoticeLevel.ERROR
+            )
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -103,7 +105,7 @@ class DashboardHttpClient:
         try:
             return float(timeout_env)
         except ValueError:
-            logger.warning(
+            logger.notice(
                 "netra.dashboard: Invalid NETRA_DASHBOARD_TIMEOUT value '%s', using default 30.0",
                 timeout_env,
             )
@@ -131,7 +133,9 @@ class DashboardHttpClient:
             The query response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+            logger.notice(
+                "netra.dashboard: Dashboard client is not initialized; cannot execute query", level=NoticeLevel.ERROR
+            )
             return None
 
         response: Optional[httpx.Response] = None
@@ -179,9 +183,10 @@ class DashboardHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.dashboard: Failed to execute dashboard query: %s",
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -211,7 +216,10 @@ class DashboardHttpClient:
             The session stats response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session stats")
+            logger.notice(
+                "netra.dashboard: Dashboard client is not initialized; cannot fetch session stats",
+                level=NoticeLevel.ERROR,
+            )
             return None
 
         response: Optional[httpx.Response] = None
@@ -249,9 +257,10 @@ class DashboardHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.dashboard: Failed to fetch session stats: %s",
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -268,7 +277,9 @@ class DashboardHttpClient:
             The session summary response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot execute query")
+            logger.notice(
+                "netra.dashboard: Dashboard client is not initialized; cannot execute query", level=NoticeLevel.ERROR
+            )
             return None
 
         response: Optional[httpx.Response] = None
@@ -297,9 +308,10 @@ class DashboardHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.dashboard: Failed to fetch session summary: %s",
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -321,7 +333,10 @@ class DashboardHttpClient:
             The session detail response data or None on error.
         """
         if not self._client:
-            logger.error("netra.dashboard: Dashboard client is not initialized; cannot fetch session detail")
+            logger.notice(
+                "netra.dashboard: Dashboard client is not initialized; cannot fetch session detail",
+                level=NoticeLevel.ERROR,
+            )
             return None
 
         response: Optional[httpx.Response] = None
@@ -339,9 +354,10 @@ class DashboardHttpClient:
             data = response.json()
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.dashboard: Failed to fetch session detail '%s': %s",
                 session_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None

@@ -1,13 +1,13 @@
-import logging
 import os
 from typing import Any, Dict, Optional
 
 import httpx
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class ModelsHttpClient:
@@ -44,7 +44,7 @@ class ModelsHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("netra.models: Failed to initialize models HTTP client: %s", exc)
+            logger.notice("netra.models: Failed to initialize models HTTP client: %s", exc, level=NoticeLevel.ERROR)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -91,7 +91,7 @@ class ModelsHttpClient:
         try:
             return float(timeout_env)
         except ValueError:
-            logger.warning(
+            logger.notice(
                 "netra.models: Invalid NETRA_MODELS_TIMEOUT value '%s', using default 10.0",
                 timeout_env,
             )
@@ -108,7 +108,7 @@ class ModelsHttpClient:
             Raw JSON response dict, or empty dict on failure
         """
         if not self._client:
-            logger.error("netra.models: Models client is not initialized.")
+            logger.notice("netra.models: Models client is not initialized.", level=NoticeLevel.ERROR)
             return {}
 
         response: Optional[httpx.Response] = None
@@ -120,5 +120,9 @@ class ModelsHttpClient:
             response.raise_for_status()
             return response.json()
         except Exception as exc:
-            logger.error("netra.models: Failed to fetch models: %s", extract_error_message(response, exc))
+            logger.notice(
+                "netra.models: Failed to fetch models: %s",
+                extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
+            )
             return {}
