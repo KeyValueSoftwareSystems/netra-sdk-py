@@ -22,7 +22,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -48,6 +47,7 @@ from netra.instrumentation.libraries.livekit.audio_types import (
     NETRA_AUDIO_SESSION_LAST_SENT,
     SpeakerRole,
 )
+from netra.netra_logger import get_logger
 
 if TYPE_CHECKING:
     from livekit.agents import AgentSession
@@ -57,7 +57,7 @@ if TYPE_CHECKING:
 
     from netra.config import Config
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Nominal PCM bytes in one captured frame: 20ms of 24kHz mono 16-bit audio, what
 # livekit-agents delivers by default. Used only to turn the byte budget

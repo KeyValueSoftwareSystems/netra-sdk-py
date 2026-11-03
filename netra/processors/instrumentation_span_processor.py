@@ -1,6 +1,5 @@
 """Span processor for instrumentation name recording, attribute truncation, and header redaction."""
 
-import logging
 import os
 from typing import Any, Callable, FrozenSet, Mapping, Optional, Set, Union
 
@@ -10,8 +9,9 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from netra.config import Config, get_attribute_max_len
 from netra.instrumentation.http.headers import REDACTED, get_sensitive_headers
 from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES, InstrumentSet
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Type aliases
 TruncatableValue = Union[str, bytes, bytearray]

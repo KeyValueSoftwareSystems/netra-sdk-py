@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict
 
@@ -21,8 +20,9 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
     set_pydantic_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class InstrumentedAgentRun:

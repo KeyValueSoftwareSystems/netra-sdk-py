@@ -1,11 +1,11 @@
-import logging
 from typing import Any, List, Optional
 
 from netra.cache import TTLCache
 from netra.config import Config
 from netra.models.client import ModelsHttpClient
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 MODEL_PRICING_CACHE_TTL_SECONDS = 300
 

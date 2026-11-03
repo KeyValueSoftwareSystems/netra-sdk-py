@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import os
 import time
 from typing import Any, Dict, List, Optional
@@ -8,9 +7,10 @@ import httpx
 
 from netra.config import Config
 from netra.evaluation.models import DatasetItem, DatasetType, TurnType
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class EvaluationHttpClient:
@@ -49,7 +49,9 @@ class EvaluationHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("netra.evaluation: Failed to initialize evaluation HTTP client: %s", exc)
+            logger.notice(
+                "netra.evaluation: Failed to initialize evaluation HTTP client: %s", exc, level=NoticeLevel.ERROR
+            )
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -96,7 +98,7 @@ class EvaluationHttpClient:
         try:
             return float(timeout_env)
         except ValueError:
-            logger.warning(
+            logger.notice(
                 "netra.evaluation: Invalid NETRA_EVALUATION_TIMEOUT value '%s', using default 10.0",
                 timeout_env,
             )
@@ -122,7 +124,9 @@ class EvaluationHttpClient:
             or None if creation fails.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create dataset")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot create dataset", level=NoticeLevel.ERROR
+            )
             return None
         response: Optional[httpx.Response] = None
         try:
@@ -140,7 +144,11 @@ class EvaluationHttpClient:
                 logger.info("netra.evaluation: Dataset created successfully")
                 return data.get("data", {})
         except Exception as exc:
-            logger.error("netra.evaluation: Failed to create dataset: %s", extract_error_message(response, exc))
+            logger.notice(
+                "netra.evaluation: Failed to create dataset: %s",
+                extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
+            )
             return None
 
     def add_dataset_item(self, dataset_id: str, item: DatasetItem) -> Any:
@@ -155,7 +163,10 @@ class EvaluationHttpClient:
             A backend JSON response on success or {"success": False} on error.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot add item to dataset")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot add item to dataset",
+                level=NoticeLevel.ERROR,
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -173,10 +184,11 @@ class EvaluationHttpClient:
                 logger.info("netra.evaluation: Dataset item added successfully")
                 return data.get("data", {})
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to add item to dataset '%s': %s",
                 dataset_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -191,7 +203,9 @@ class EvaluationHttpClient:
             A list of dataset objects on success, or None on failure.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch datasets")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot fetch datasets", level=NoticeLevel.ERROR
+            )
             return None
         response: Optional[httpx.Response] = None
         try:
@@ -206,9 +220,10 @@ class EvaluationHttpClient:
                 logger.info("netra.evaluation: Datasets fetched successfully")
                 return data.get("data", [])
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to fetch datasets: %s",
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -223,7 +238,9 @@ class EvaluationHttpClient:
             A list of dataset items.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch dataset")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot fetch dataset", level=NoticeLevel.ERROR
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -235,10 +252,11 @@ class EvaluationHttpClient:
                 logger.info("netra.evaluation: Dataset fetched successfully")
                 return data.get("data", [])
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to fetch dataset '%s': %s",
                 dataset_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -260,7 +278,9 @@ class EvaluationHttpClient:
             A backend JSON response containing run_id
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot create run")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot create run", level=NoticeLevel.ERROR
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -276,7 +296,12 @@ class EvaluationHttpClient:
             if isinstance(data, dict) and "data" in data:
                 return data.get("data", {})
         except Exception as exc:
-            logger.error("netra.evaluation: Failed to create run '%s': %s", name, extract_error_message(response, exc))
+            logger.notice(
+                "netra.evaluation: Failed to create run '%s': %s",
+                name,
+                extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
+            )
             return {"success": False}
 
     def post_run_item(self, run_id: str, payload: Dict[str, Any]) -> Any:
@@ -291,7 +316,9 @@ class EvaluationHttpClient:
             A backend JSON response on success or {"success": False} on error.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot post run item")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot post run item", level=NoticeLevel.ERROR
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -305,10 +332,11 @@ class EvaluationHttpClient:
                 return run_item_id
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to post run item for run '%s': %s",
                 run_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {"success": False}
 
@@ -327,7 +355,10 @@ class EvaluationHttpClient:
             A backend JSON response containing confirmation of the submission.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot submit local evaluations")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot submit local evaluations",
+                level=NoticeLevel.ERROR,
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -340,11 +371,12 @@ class EvaluationHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to submit local evaluations for run '%s', item '%s': %s",
                 run_id,
                 test_run_item_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {"success": False}
 
@@ -360,7 +392,10 @@ class EvaluationHttpClient:
              A backend JSON response containing confirmation of the submission.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot post run status")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot post run status",
+                level=NoticeLevel.ERROR,
+            )
             return {"success": False}
         response: Optional[httpx.Response] = None
         try:
@@ -374,10 +409,11 @@ class EvaluationHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to post run status for run '%s': %s",
                 run_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {"success": False}
 
@@ -392,7 +428,9 @@ class EvaluationHttpClient:
             A JSON response containing run results.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot fetch run")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot fetch run", level=NoticeLevel.ERROR
+            )
             return None
         response: Optional[httpx.Response] = None
         try:
@@ -405,10 +443,11 @@ class EvaluationHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.evaluation: Failed to fetch run results for run '%s': %s",
                 run_id,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -423,7 +462,9 @@ class EvaluationHttpClient:
             The span data if found, None otherwise.
         """
         if not self._client:
-            logger.error("netra.evaluation: Evaluation client is not initialized; cannot get span")
+            logger.notice(
+                "netra.evaluation: Evaluation client is not initialized; cannot get span", level=NoticeLevel.ERROR
+            )
             return None
         response: Optional[httpx.Response] = None
         try:

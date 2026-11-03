@@ -1,6 +1,5 @@
 import inspect
 import json
-import logging
 from typing import Any, Dict, List, Optional, Tuple
 
 from opentelemetry import context as context_api
@@ -9,9 +8,10 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
 LLM_SYSTEM_AGNO = "agno"

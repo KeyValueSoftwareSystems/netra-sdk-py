@@ -1,4 +1,3 @@
-import logging
 import threading
 from typing import Optional, Set
 
@@ -6,9 +5,10 @@ from opentelemetry import context as context_api
 from opentelemetry.sdk.trace import ReadableSpan, SpanProcessor
 from opentelemetry.trace import Span, SpanContext
 
+from netra.netra_logger import get_logger
 from netra.processors.root_span_processor import RootSpanProcessor
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class LlmTraceIdentifierSpanProcessor(SpanProcessor):  # type: ignore[misc]

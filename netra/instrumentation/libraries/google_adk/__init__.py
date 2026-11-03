@@ -1,4 +1,3 @@
-import logging
 import sys
 from typing import Any, Collection
 
@@ -14,8 +13,9 @@ from netra.instrumentation.libraries.google_adk.wrappers import (
     call_tool_async_wrapper,
     run_and_handle_error_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("google-adk >= 0.1.0",)
 

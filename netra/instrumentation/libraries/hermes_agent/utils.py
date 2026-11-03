@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 from typing import Any, Optional
 
@@ -10,9 +9,10 @@ from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
 from netra.instrumentation.span_utils import _safe_set_attribute
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TURN_SPAN_NAME = "hermes-agent.turn"
 SUBAGENT_TURN_SPAN_NAME = "hermes-agent.subagent.turn"

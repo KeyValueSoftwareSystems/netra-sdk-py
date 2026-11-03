@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -8,8 +7,9 @@ from wrapt import wrap_function_wrapper
 
 from netra.instrumentation.libraries.requests.version import __version__
 from netra.instrumentation.libraries.requests.wrappers import send_wrapper
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("requests >= 2.0.0",)
 

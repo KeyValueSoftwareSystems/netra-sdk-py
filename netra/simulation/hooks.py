@@ -32,11 +32,12 @@ Failure semantics:
 """
 
 import asyncio
-import logging
 from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable, Optional
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 # Hook function type aliases
 BeforeAllFn = Callable[[], Any | Awaitable[Any]]
@@ -224,7 +225,7 @@ async def run_before_all(hooks: Optional[SimulationHooks]) -> Optional[dict[str,
     logger.info("netra.simulation: running before_all hook")
     result = await _call_hook(hooks.before_all)
     if result is not None and not isinstance(result, dict):
-        logger.warning(
+        logger.notice(
             "netra.simulation: before_all returned %s (expected dict or None); ignoring value",
             type(result).__name__,
         )
@@ -263,7 +264,7 @@ async def run_before(
         if result is not None and isinstance(result, dict):
             base.update(result)
         elif result is not None:
-            logger.warning(
+            logger.notice(
                 "netra.simulation: before hook returned %s (expected dict or None); ignoring value",
                 type(result).__name__,
             )
@@ -305,7 +306,7 @@ async def run_before_each(
     if result is not None and isinstance(result, dict):
         base.update(result)
     elif result is not None:
-        logger.warning(
+        logger.notice(
             "netra.simulation: before_each hook returned %s (expected dict or None); ignoring value",
             type(result).__name__,
         )

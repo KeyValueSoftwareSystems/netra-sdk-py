@@ -1,4 +1,3 @@
-import logging
 from typing import Any
 
 import wrapt
@@ -12,8 +11,9 @@ from netra.instrumentation.libraries.claude_agent_sdk.wrappers import (
     client_response_wrapper,
     query_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("claude_agent_sdk >= 0.1.0",)
 

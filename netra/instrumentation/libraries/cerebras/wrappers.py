@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
@@ -15,8 +14,9 @@ from netra.instrumentation.libraries.cerebras.utils import (
     should_suppress_instrumentation,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CHAT_SPAN_NAME = "cerebras.chat.completions"
 COMPLETION_SPAN_NAME = "cerebras.completions"

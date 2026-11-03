@@ -1,4 +1,3 @@
-import logging
 from contextvars import ContextVar, Token
 from typing import Any, Callable, Optional, Tuple
 
@@ -23,8 +22,9 @@ from netra.instrumentation.libraries.hermes_agent.utils import (
     set_turn_request_attributes,
     set_turn_response_attributes,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Tool call ids currently being traced on this execution context. Hermes's
 # handle_function_call re-enters itself when the tool_search bridge unwraps a

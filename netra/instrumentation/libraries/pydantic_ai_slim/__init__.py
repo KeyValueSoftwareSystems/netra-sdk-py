@@ -1,4 +1,3 @@
-import logging
 from typing import Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -14,8 +13,9 @@ from netra.instrumentation.libraries.pydantic_ai.wrappers import (
     agent_run_wrapper,
     tool_function_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("pydantic-ai-slim >= 0.5.1",)
 

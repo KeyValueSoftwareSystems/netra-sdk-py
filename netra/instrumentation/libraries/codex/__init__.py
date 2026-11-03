@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Callable
 
 import wrapt
@@ -15,8 +14,9 @@ from netra.instrumentation.libraries.codex.wrappers import (
     thread_response_wrapper,
     write_message_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("openai-codex >= 0.162.0",)
 

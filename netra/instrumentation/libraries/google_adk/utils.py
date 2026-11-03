@@ -1,10 +1,11 @@
 import json
-import logging
 from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 NETRA_SPAN_TYPE = "netra.span.type"
 
