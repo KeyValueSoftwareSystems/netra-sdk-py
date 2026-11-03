@@ -1,4 +1,3 @@
-import logging
 import threading
 from typing import Any, Dict, Optional, Set
 
@@ -15,10 +14,17 @@ from opentelemetry.sdk.trace.export import (
 
 from netra.config import Config
 from netra.exporters import FilteringSpanExporter, TrialAwareOTLPExporter
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _provider_install_lock = threading.Lock()
+
+MISSING_ENDPOINT_NOTICE = (
+    "netra: NETRA_OTLP_ENDPOINT is not set, so traces will NOT be sent to Netra (spans are printed to "
+    "the console instead) and Netra API calls are disabled. Fix: set NETRA_OTLP_ENDPOINT to "
+    "https://api.getnetra.ai/telemetry (or https://api.eu.getnetra.ai/telemetry for EU projects)."
+)
 
 
 class Tracer:
@@ -73,7 +79,7 @@ class Tracer:
                 return
 
             if not self.cfg.otlp_endpoint:
-                logger.warning("OTLP endpoint not provided, falling back to console exporter")
+                logger.notice(MISSING_ENDPOINT_NOTICE)
                 exporter = ConsoleSpanExporter()
             else:
                 otlp_exporter = OTLPSpanExporter(

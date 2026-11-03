@@ -1,5 +1,4 @@
 import json
-import logging
 from contextlib import contextmanager
 from typing import List, Optional, Sequence
 
@@ -8,7 +7,9 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 # Baggage key to carry local blocked span patterns in the active context
 _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY = "netra.local_blocked_spans"

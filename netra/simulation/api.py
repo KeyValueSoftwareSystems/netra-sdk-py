@@ -1,10 +1,10 @@
 import asyncio
 import concurrent.futures
-import logging
 import time
 from typing import Any, Optional
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.simulation.client import SimulationHttpClient
 from netra.simulation.constants import DEFAULT_MAX_TURNS, LOG_PREFIX, SPAN_NAME
 from netra.simulation.hooks import (
@@ -26,7 +26,7 @@ from netra.simulation.utils import (
 )
 from netra.span_wrapper import SpanWrapper
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Simulation:
@@ -118,7 +118,7 @@ class Simulation:
         items: list[dict[str, str]] = init_result["items"]
 
         if not items:
-            logger.error("%s: No items returned from initialize_run", LOG_PREFIX)
+            logger.notice("%s: No items returned from initialize_run", LOG_PREFIX, level=NoticeLevel.ERROR)
             return None
 
         # --- Phase 2: Run before_all hook (no LLM cost yet) ---
@@ -127,11 +127,12 @@ class Simulation:
             try:
                 shared_context = run_async_safely(run_before_all(hooks))
             except Exception as exc:
-                logger.error(
+                logger.notice(
                     "%s: before_all hook failed: %s — aborting run (no LLM spent)",
                     LOG_PREFIX,
                     exc,
                     exc_info=True,
+                    level=NoticeLevel.ERROR,
                 )
                 self._report_failures(
                     run_id,
@@ -187,12 +188,13 @@ class Simulation:
                     setup_contexts[run_item_id] = setup_context
                 except Exception as exc:
                     error_msg = f"before hook failed: {exc}"
-                    logger.error(
+                    logger.notice(
                         "%s: %s for run_item_id=%s",
                         LOG_PREFIX,
                         error_msg,
                         run_item_id,
                         exc_info=True,
+                        level=NoticeLevel.ERROR,
                     )
                     self._client.report_failure(
                         run_id=run_id,
@@ -216,7 +218,7 @@ class Simulation:
                 run_item_id=run_item_id,
             )
             if sim_item is None:
-                logger.warning(
+                logger.notice(
                     "%s: Failed to generate first turn for item %s, marking failed",
                     LOG_PREFIX,
                     run_item_id,
@@ -248,7 +250,7 @@ class Simulation:
         simulation_items = [item for item in setup_results if item is not None]
 
         if not simulation_items:
-            logger.error("%s: All items failed during setup/generation", LOG_PREFIX)
+            logger.notice("%s: All items failed during setup/generation", LOG_PREFIX, level=NoticeLevel.ERROR)
             results: dict[str, Any] = {
                 "success": False,
                 "completed": [],
@@ -260,7 +262,7 @@ class Simulation:
             except Exception as exc:
                 # All items already failed during setup — do not overwrite status.
                 error_msg = f"after_all hook failed: {exc}"
-                logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
+                logger.notice("%s: %s", LOG_PREFIX, error_msg, exc_info=True, level=NoticeLevel.ERROR)
             self._client.post_run_status(run_id, "completed")
             return results
 
@@ -286,7 +288,7 @@ class Simulation:
             self._client.post_run_status(run_id, "completed")
             return result
         except Exception:
-            logger.error("%s: Run simulation failed", LOG_PREFIX, exc_info=True)
+            logger.notice("%s: Run simulation failed", LOG_PREFIX, exc_info=True, level=NoticeLevel.ERROR)
             self._client.post_run_status(run_id, "failed")
             return None
 
@@ -391,7 +393,7 @@ class Simulation:
             await run_after_all(hooks, results, shared_context)
         except Exception as exc:
             error_msg = f"after_all hook failed: {exc}"
-            logger.error("%s: %s", LOG_PREFIX, error_msg, exc_info=True)
+            logger.notice("%s: %s", LOG_PREFIX, error_msg, exc_info=True, level=NoticeLevel.ERROR)
             # Only mark successfully completed items — do not overwrite real failures.
             completed = results.get("completed", [])
             successful_ids = [item["run_item_id"] for item in completed if "run_item_id" in item]
@@ -464,12 +466,13 @@ class Simulation:
             await run_after(hooks, dataset_item_id, item_result, setup_context)
         except Exception as exc:
             error_msg = f"after hook failed: {exc}"
-            logger.error(
+            logger.notice(
                 "%s: %s for run_item_id=%s",
                 LOG_PREFIX,
                 error_msg,
                 run_item_id,
                 exc_info=True,
+                level=NoticeLevel.ERROR,
             )
             errors.append(error_msg)
 
@@ -477,12 +480,13 @@ class Simulation:
             await run_after_each(hooks, dataset_item_id, item_result, setup_context)
         except Exception as exc:
             error_msg = f"after_each hook failed: {exc}"
-            logger.error(
+            logger.notice(
                 "%s: %s for run_item_id=%s",
                 LOG_PREFIX,
                 error_msg,
                 run_item_id,
                 exc_info=True,
+                level=NoticeLevel.ERROR,
             )
             errors.append(error_msg)
 
@@ -595,12 +599,13 @@ class Simulation:
 
             except Exception as exc:
                 error_msg = str(exc)
-                logger.error(
+                logger.notice(
                     "%s: Task failed run_item_id=%s, turn_id=%s: %s",
                     LOG_PREFIX,
                     run_item_id,
                     turn_id,
                     error_msg,
+                    level=NoticeLevel.ERROR,
                 )
                 self._client.report_failure(run_id=run_id, run_item_id=run_item_id, error=error_msg)
                 item_result = {
@@ -613,7 +618,7 @@ class Simulation:
                 return item_result
 
         error_msg = f"Exceeded maximum turns ({max_turns}) for run_item_id={run_item_id}"
-        logger.error("%s: %s", LOG_PREFIX, error_msg)
+        logger.notice("%s: %s", LOG_PREFIX, error_msg, level=NoticeLevel.ERROR)
         self._client.report_failure(run_id=run_id, run_item_id=run_item_id, error=error_msg)
         item_result = {
             "run_item_id": run_item_id,

@@ -1,13 +1,13 @@
 import json
-import logging
 import os
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from opentelemetry.util.re import parse_env_headers
 
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.version import __version__
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Fallback limits used when no Config has been activated yet (e.g. code paths that
 # run before ``Netra.init()``, or tests that never call it). Once ``init()`` runs,
@@ -25,6 +25,9 @@ _AUDIO_CHUNK_PATH = "/v1/audio/chunk"
 # Header names that count as an audio-ingest credential. An unauthenticated PCM
 # POST is never attempted.
 _AUDIO_AUTH_HEADERS = ("x-api-key", "Authorization")
+
+# The only header the Netra backend's API-key guard reads. Lowercase, for case-insensitive matching.
+_NETRA_API_KEY_HEADER = "x-api-key"
 
 _DEFAULT_AUDIO_BATCH_BYTES = 32768
 _DEFAULT_AUDIO_BATCH_INTERVAL_MS = 1000
@@ -157,7 +160,7 @@ class Config:
         # batch size survived. Doing it the other way round lets a tiny
         # max_request_bytes silently shrink the batch below its floor.
         if self.audio_max_request_bytes < _MIN_AUDIO_BATCH_BYTES:
-            logger.warning(
+            logger.notice(
                 "netra.audio: NETRA_AUDIO_MAX_REQUEST_BYTES=%d is below the minimum batch size; using %d",
                 self.audio_max_request_bytes,
                 _MIN_AUDIO_BATCH_BYTES,
@@ -166,7 +169,7 @@ class Config:
 
         clamped_batch = min(max(self.audio_batch_bytes, _MIN_AUDIO_BATCH_BYTES), self.audio_max_request_bytes)
         if clamped_batch != self.audio_batch_bytes:
-            logger.warning(
+            logger.notice(
                 "netra.audio: NETRA_AUDIO_BATCH_BYTES=%d out of range [%d, %d]; using %d",
                 self.audio_batch_bytes,
                 _MIN_AUDIO_BATCH_BYTES,
@@ -180,7 +183,7 @@ class Config:
             _MAX_AUDIO_BATCH_INTERVAL_MS,
         )
         if clamped_interval != self.audio_batch_interval_ms:
-            logger.warning(
+            logger.notice(
                 "netra.audio: NETRA_AUDIO_BATCH_INTERVAL_MS=%d out of range [%d, %d]; using %d",
                 self.audio_batch_interval_ms,
                 _MIN_AUDIO_BATCH_INTERVAL_MS,
@@ -190,7 +193,7 @@ class Config:
             self.audio_batch_interval_ms = clamped_interval
 
         if self.audio_buffer_bytes < self.audio_batch_bytes:
-            logger.warning(
+            logger.notice(
                 "netra.audio: NETRA_AUDIO_BUFFER_BYTES=%d is below the batch size; using %d",
                 self.audio_buffer_bytes,
                 self.audio_batch_bytes,
@@ -198,7 +201,7 @@ class Config:
             self.audio_buffer_bytes = self.audio_batch_bytes
 
         if self.audio_max_request_bytes < self.audio_batch_bytes:
-            logger.warning(
+            logger.notice(
                 "netra.audio: NETRA_AUDIO_MAX_REQUEST_BYTES=%d is below the batch size; using %d",
                 self.audio_max_request_bytes,
                 self.audio_batch_bytes,
@@ -242,7 +245,7 @@ class Config:
             return None
 
         if not any(header in self.headers for header in _AUDIO_AUTH_HEADERS):
-            logger.warning(
+            logger.notice(
                 "netra.audio: an audio endpoint resolved but no credential is configured; "
                 "audio capture is disabled. Set NETRA_API_KEY or pass an auth header."
             )
@@ -283,10 +286,20 @@ class Config:
         return {}
 
     def _validate_api_key(self) -> None:
-        """Validate that API key exists for Netra endpoints."""
-        if self.otlp_endpoint and "getnetra" in self.otlp_endpoint.lower() and not self.api_key:
-            print("Error: Missing Netra API key, go to netra dashboard to create one")
-            print("Set the NETRA_API_KEY environment variable to the key")
+        """Validate that an API key exists for Netra endpoints.
+
+        The key counts as present when it is set via NETRA_API_KEY or already passed as an
+        ``x-api-key`` header (through ``headers`` or NETRA_HEADERS); header names match case-insensitively.
+        """
+        if not self.otlp_endpoint or "getnetra" not in self.otlp_endpoint.lower() or self.api_key:
+            return
+        if any(name.lower() == _NETRA_API_KEY_HEADER for name in self.headers):
+            return
+        logger.notice(
+            "netra: NETRA_API_KEY is not set, so Netra will reject the traces this app sends. "
+            "Fix: create an API key in the Netra dashboard and set NETRA_API_KEY to it.",
+            level=NoticeLevel.ERROR,
+        )
 
     def _setup_authentication(self) -> None:
         """Setup authentication headers based on endpoint and API key."""
@@ -325,10 +338,7 @@ class Config:
         try:
             return json.loads(env_ra)
         except (json.JSONDecodeError, ValueError) as e:
-            import logging
-
-            logger = logging.getLogger(__name__)
-            logger.warning(f"Failed to parse NETRA_RESOURCE_ATTRS: {e}")
+            logger.notice(f"netra: Failed to parse NETRA_RESOURCE_ATTRS: {e}")
             return {}
 
     def _get_redact_headers(self) -> FrozenSet[str]:

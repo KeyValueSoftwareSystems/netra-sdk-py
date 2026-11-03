@@ -1,5 +1,4 @@
 import atexit
-import logging
 import threading
 from typing import AbstractSet, Any, Dict, List, Optional
 
@@ -20,6 +19,7 @@ from netra.logging_utils import configure_package_logging
 from netra.meter import MetricsSetup
 from netra.meter import get_meter as _get_meter
 from netra.models import Models
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.prompts import Prompts
 from netra.session_manager import ConversationType, SessionManager
 from netra.simulation import Simulation
@@ -28,7 +28,7 @@ from netra.tracer import Tracer
 from netra.usage import Usage
 from netra.utils import resolve_root_instruments
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Netra:
@@ -117,7 +117,7 @@ class Netra:
         """
         with cls._init_lock:
             if cls._initialized:
-                logger.warning("Netra.init() called more than once; ignoring subsequent calls.")
+                logger.notice("Netra.init() called more than once; ignoring subsequent calls.")
                 return
 
             # Build Config
@@ -350,7 +350,7 @@ class Netra:
             queue_depth.add(5)
         """
         if not cls._initialized:
-            logger.warning("Netra.get_meter() called before Netra.init(); returning no-op meter.")
+            logger.notice("Netra.get_meter() called before Netra.init(); returning no-op meter.")
         return _get_meter(name, version)
 
     @classmethod
@@ -362,12 +362,14 @@ class Netra:
             session_id: Session identifier
         """
         if not isinstance(session_id, str):
-            logger.error(f"set_session_id: session_id must be a string, got {type(session_id)}")
+            logger.notice(
+                f"netra: set_session_id: session_id must be a string, got {type(session_id)}", level=NoticeLevel.ERROR
+            )
             return
         if session_id:
             SessionManager.set_session_context("session_id", session_id)
         else:
-            logger.warning("set_session_id: Session ID must be provided for setting session_id.")
+            logger.notice("netra: set_session_id: Session ID must be provided for setting session_id.")
 
     @classmethod
     def set_user_id(cls, user_id: str) -> None:
@@ -378,12 +380,12 @@ class Netra:
             user_id: User identifier
         """
         if not isinstance(user_id, str):
-            logger.error(f"set_user_id: user_id must be a string, got {type(user_id)}")
+            logger.notice(f"netra: set_user_id: user_id must be a string, got {type(user_id)}", level=NoticeLevel.ERROR)
             return
         if user_id:
             SessionManager.set_session_context("user_id", user_id)
         else:
-            logger.warning("set_user_id: User ID must be provided for setting user_id.")
+            logger.notice("netra: set_user_id: User ID must be provided for setting user_id.")
 
     @classmethod
     def set_tenant_id(cls, tenant_id: str) -> None:
@@ -394,12 +396,14 @@ class Netra:
             tenant_id: Tenant identifier
         """
         if not isinstance(tenant_id, str):
-            logger.error(f"set_tenant_id: tenant_id must be a string, got {type(tenant_id)}")
+            logger.notice(
+                f"netra: set_tenant_id: tenant_id must be a string, got {type(tenant_id)}", level=NoticeLevel.ERROR
+            )
             return
         if tenant_id:
             SessionManager.set_session_context("tenant_id", tenant_id)
         else:
-            logger.warning("set_tenant_id: Tenant ID must be provided for setting tenant_id.")
+            logger.notice("netra: set_tenant_id: Tenant ID must be provided for setting tenant_id.")
 
     @classmethod
     def update_span_name(cls, name: str) -> None:
@@ -417,7 +421,7 @@ class Netra:
             name: The new span name
         """
         if not isinstance(name, str) or not name:
-            logger.warning("update_span_name: name must be a non-empty string; ignoring")
+            logger.notice("netra: update_span_name: name must be a non-empty string; ignoring")
             return
         span = trace.get_current_span()
         if not span.get_span_context().is_valid:
@@ -437,7 +441,7 @@ class Netra:
         if key and value:
             SessionManager.set_attribute_on_active_span(f"{Config.LIBRARY_NAME}.custom.{key}", value)
         else:
-            logger.warning("Both key and value must be provided for custom attributes.")
+            logger.notice("netra: Both key and value must be provided for custom attributes.")
             return
 
     @classmethod
@@ -452,7 +456,7 @@ class Netra:
         if event_name and attributes:
             SessionManager.set_custom_event(event_name, attributes)
         else:
-            logger.warning("Both event_name and attributes must be provided for custom events.")
+            logger.notice("netra: Both event_name and attributes must be provided for custom events.")
 
     @classmethod
     def record_exception(
@@ -489,9 +493,10 @@ class Netra:
                 return result
         """
         if not isinstance(exception, BaseException):
-            logger.error(
-                "record_exception: exception must be a BaseException instance, got %s",
+            logger.notice(
+                "netra: record_exception: exception must be a BaseException instance, got %s",
                 type(exception),
+                level=NoticeLevel.ERROR,
             )
             return
         SessionManager.record_exception(exception, attributes=attributes, escaped=escaped)

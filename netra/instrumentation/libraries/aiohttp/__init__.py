@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import asyncio
 import functools
-import logging
 import types
 from timeit import default_timer
 from typing import Any, Awaitable, Callable, Collection, Dict, Optional, Union
@@ -59,8 +58,9 @@ from opentelemetry.util.http.httplib import set_ip_on_next_http_connection
 
 from netra.instrumentation.http.propagation import inject_context
 from netra.instrumentation.libraries.aiohttp.version import __version__
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Package info for aiohttp instrumentation
 _instruments = ("aiohttp >= 3.0.0",)
@@ -165,7 +165,7 @@ def _instrument(
                     _set_http_peer_port_client(span_attributes, parsed_url.port, sem_conv_opt_in_mode)
                     span_attributes[NETWORK_PEER_PORT] = parsed_url.port
         except ValueError as error:
-            logger.error(error)
+            logger.error("%s", error)
 
         with (
             tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT, attributes=span_attributes) as span,

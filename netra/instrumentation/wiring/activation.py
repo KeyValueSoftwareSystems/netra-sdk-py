@@ -10,7 +10,6 @@ applied — importing an instrumentor imports the library it patches, and
 deferring that import is the point of the whole arrangement.
 """
 
-import logging
 import re
 import sys
 import threading
@@ -24,12 +23,13 @@ from typing import TYPE_CHECKING, AbstractSet, Any, Callable, Iterator, NamedTup
 from netra.instrumentation.instruments import InstrumentSet
 from netra.instrumentation.wiring.registry import CUSTOM_INSTRUMENTORS, SUBPROCESS_INSTRUMENTOR, InstrumentorSpec
 from netra.instrumentation.wiring.selection import InstrumentationSelection
+from netra.netra_logger import get_logger
 
 if TYPE_CHECKING:
     # Type-only: importing traceloop.sdk at runtime costs ~620 ms.
     from traceloop.sdk.instruments import Instruments
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Guards the depth counter below — never held across an activation, only across
 # the counter update.  Holding a lock while an instrumentor imports its library

@@ -1,11 +1,11 @@
-import logging
 from typing import Any, Optional
 
 from netra.cache import TTLCache
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.prompts.client import PromptsHttpClient
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 PROMPT_CACHE_TTL_SECONDS = 60
 
@@ -50,7 +50,7 @@ class Prompts:
             Prompt version data or None/empty dict if not found
         """
         if not name:
-            logger.error("netra.prompts: name is required to fetch a prompt")
+            logger.notice("netra.prompts: name is required to fetch a prompt", level=NoticeLevel.ERROR)
             return None
 
         cache_key = f"prompt:{name}:{label}"

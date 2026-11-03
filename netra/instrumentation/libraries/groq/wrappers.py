@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
@@ -14,8 +13,9 @@ from netra.instrumentation.libraries.groq.utils import (
     should_suppress_instrumentation,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CHAT_SPAN_NAME = "groq.chat"
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"

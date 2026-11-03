@@ -4,13 +4,13 @@ import asyncio
 import base64
 import concurrent.futures
 import inspect
-import logging
 import os
 import threading
 from typing import Any, Awaitable, Optional, TypeVar
 
 import httpx
 
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.simulation.constants import (
     DEFAULT_FILE_DOWNLOAD_TIMEOUT,
     ENV_FILE_DOWNLOAD_TIMEOUT,
@@ -20,7 +20,7 @@ from netra.simulation.constants import (
 from netra.simulation.models import FileData, ProcessedFile, TaskResult
 from netra.simulation.task import BaseTask
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _T = TypeVar("_T")
 
@@ -41,7 +41,7 @@ def parse_env_float(env_var: str, default: float) -> float:
     try:
         return float(raw)
     except ValueError:
-        logger.warning(
+        logger.notice(
             "%s: Invalid value '%s' for %s, using default %.1f",
             LOG_PREFIX,
             raw,
@@ -77,10 +77,10 @@ def validate_simulation_inputs(
         True if inputs are valid, False otherwise.
     """
     if not dataset_id:
-        logger.error("netra.simulation: dataset_id is required")
+        logger.notice("netra.simulation: dataset_id is required", level=NoticeLevel.ERROR)
         return False
     if not isinstance(task, BaseTask):
-        logger.error("netra.simulation: task must be a BaseTask instance")
+        logger.notice("netra.simulation: task must be a BaseTask instance", level=NoticeLevel.ERROR)
         return False
     return True
 

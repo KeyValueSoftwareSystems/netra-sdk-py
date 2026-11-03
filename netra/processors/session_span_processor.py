@@ -1,4 +1,3 @@
-import logging
 from typing import Optional
 
 from opentelemetry import baggage
@@ -7,9 +6,10 @@ from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
 from netra.config import Config
+from netra.netra_logger import get_logger
 from netra.session_manager import ATTR_SESSION_ID, ATTR_TENANT_ID, ATTR_USER_ID, SessionManager
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _resolve_baggage(

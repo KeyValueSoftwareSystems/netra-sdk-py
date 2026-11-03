@@ -27,7 +27,6 @@ would land on every ``import netra``, including in processes that never call
 needs it, so the cost is paid on first *activation* instead.
 """
 
-import logging
 import os
 from typing import AbstractSet, Optional
 
@@ -48,6 +47,7 @@ from netra.instrumentation.wiring.activation import (
 )
 from netra.instrumentation.wiring.deferral import register_lazy_instrumentations
 from netra.instrumentation.wiring.selection import select_instrumentations
+from netra.netra_logger import get_logger
 
 __all__ = [
     "CustomInstruments",
@@ -57,7 +57,7 @@ __all__ = [
     "init_instrumentations",
 ]
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def init_instrumentations(

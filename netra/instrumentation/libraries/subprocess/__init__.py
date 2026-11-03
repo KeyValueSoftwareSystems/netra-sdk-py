@@ -1,5 +1,4 @@
 import inspect
-import logging
 import subprocess
 from typing import Any, Callable, Collection, Dict, Tuple
 
@@ -8,8 +7,9 @@ from opentelemetry.instrumentation.utils import unwrap
 from wrapt import wrap_function_wrapper
 
 from netra.instrumentation.libraries.subprocess.utils import inject_subprocess_context
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments: tuple[()] = ()
 
