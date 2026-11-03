@@ -173,6 +173,8 @@ class TestAttributeMirroring:
             ("lk.function_tool.name", "netra.tool.name"),
             ("lk.function_tool.arguments", "input"),
             ("lk.function_tool.output", "output"),
+            ("lk.pii.function_tool.arguments", "input"),
+            ("lk.pii.function_tool.output", "output"),
             ("lk.response.ttft", "netra.latency.ttft"),
             ("lk.response.ttfb", "netra.latency.ttfb"),
             ("lk.e2e_latency", "netra.latency.e2e"),
@@ -293,6 +295,33 @@ class TestConversationMapping:
 
         assert _messages(attributes, "prompt") == [("system", "Be brief."), ("user", "hi")]
         assert _messages(attributes, "completion") == [("assistant", "hello")]
+
+    @pytest.mark.parametrize(
+        "span_name,lk_key,side,expected",
+        [
+            ("agent_turn", "lk.pii.instructions", "prompt", ("system", "Be brief.")),
+            ("agent_turn", "lk.pii.user_input", "prompt", ("user", "hi")),
+            ("agent_turn", "lk.pii.response.text", "completion", ("assistant", "hello")),
+            ("llm_node", "lk.pii.response.text", "completion", ("assistant", "hello")),
+            ("tts_request", "lk.pii.input_text", "prompt", ("assistant", "hello")),
+            ("user_turn", "lk.pii.user_transcript", "completion", ("user", "hi")),
+        ],
+    )
+    def test_pii_renamed_content_keys_map_like_the_originals(
+        self, harness: _Harness, span_name: str, lk_key: str, side: str, expected: Tuple[str, str]
+    ) -> None:
+        # livekit-agents >= 1.7.0 emits conversation content under lk.pii.*.
+        attributes = _record(harness, span_name, {lk_key: expected[1]})
+
+        assert _messages(attributes, side) == [expected]
+        assert attributes[lk_key] == expected[1], "the original lk.pii.* attribute must be preserved"
+
+    def test_pii_chat_ctx_is_expanded_into_indexed_prompts(self, harness: _Harness) -> None:
+        chat_ctx = json.dumps({"items": [{"type": "message", "role": "user", "content": ["hi"]}]})
+        attributes = _record(harness, "llm_node", {"lk.pii.chat_ctx": chat_ctx})
+
+        assert _messages(attributes, "prompt") == [("user", "hi")]
+        assert attributes["lk.pii.chat_ctx"] == chat_ctx
 
     def test_conversation_content_does_not_write_input_directly(self, harness: _Harness) -> None:
         attributes = _record(harness, "agent_turn", {"lk.user_input": "hi"})

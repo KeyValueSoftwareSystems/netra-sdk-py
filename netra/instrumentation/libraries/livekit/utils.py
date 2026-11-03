@@ -204,7 +204,8 @@ NETRA_CONVERSATION_TRUNCATED = "netra.conversation.truncated"
 # ``eou_detection``). Expanded into indexed ``gen_ai.prompt.*`` attributes rather
 # than mirrored verbatim into ``input``: the raw JSON also contains non-message
 # items (``agent_config_update``, handoffs) and reads as an opaque blob.
-CHAT_CTX_ATTRIBUTE = "lk.chat_ctx"
+# livekit-agents >= 1.7.0 writes it as ``lk.pii.chat_ctx``; both names are accepted.
+CHAT_CTX_ATTRIBUTES = frozenset({"lk.chat_ctx", "lk.pii.chat_ctx"})
 
 # LiveKit's serialised ``TTSMetrics`` (``trace_types.ATTR_TTS_METRICS``, written on
 # ``tts_request``). It is the only place on that span carrying the values pricing
@@ -350,10 +351,13 @@ class AudioPricingAttributes(NamedTuple):
 # ``CONVERSATION_MAP``, which routes it through the indexed ``gen_ai.*``
 # convention instead of writing ``input``/``output`` directly.
 ATTRIBUTE_MAP: Dict[str, str] = {
-    # Function tools
+    # Function tools. livekit-agents >= 1.7.0 emits the arguments and output under
+    # ``lk.pii.*``; both names are accepted so older and newer versions agree.
     "lk.function_tool.name": NETRA_TOOL_NAME,
     "lk.function_tool.arguments": INPUT_ATTRIBUTE,
+    "lk.pii.function_tool.arguments": INPUT_ATTRIBUTE,
     "lk.function_tool.output": OUTPUT_ATTRIBUTE,
+    "lk.pii.function_tool.output": OUTPUT_ATTRIBUTE,
     # Latencies, all in seconds
     "lk.response.ttft": "netra.latency.ttft",
     "lk.response.ttfb": "netra.latency.ttfb",
@@ -368,6 +372,11 @@ ATTRIBUTE_MAP: Dict[str, str] = {
 # ``lk.response.text`` means the same thing on ``agent_turn`` as it does on
 # ``llm_node``, so nothing here needs gating on the span name.
 #
+# livekit-agents >= 1.7.0 renamed every content attribute to ``lk.pii.*``
+# (``lk.response.text`` -> ``lk.pii.response.text``). A given version emits only
+# one of the two names, so each is listed under both and a span is never written
+# twice.
+#
 # Additive: the original lk.* attribute is always preserved, and these never write
 # ``input``/``output`` directly — indexed ``gen_ai.prompt.*``/``gen_ai.completion.*``
 # attributes are emitted instead, the same convention Netra's own provider
@@ -378,16 +387,19 @@ CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     # before ``lk.user_input``, so it lands at prompt index 0 and the assembled
     # ``input`` reads [system, user] like any other LLM span.
     "lk.instructions": ConversationTarget(ConversationSide.PROMPT, "system"),
+    "lk.pii.instructions": ConversationTarget(ConversationSide.PROMPT, "system"),
     # agent_turn: the utterance that opened the turn (LiveKit sets this only when a
     # new message did).
     "lk.user_input": ConversationTarget(ConversationSide.PROMPT, "user"),
+    "lk.pii.user_input": ConversationTarget(ConversationSide.PROMPT, "user"),
     # agent_turn and llm_node: the generated reply.
     "lk.response.text": ConversationTarget(ConversationSide.COMPLETION, "assistant"),
+    "lk.pii.response.text": ConversationTarget(ConversationSide.COMPLETION, "assistant"),
     # tts_request: the text handed to the TTS provider. The words are the agent's.
     "lk.input_text": ConversationTarget(ConversationSide.PROMPT, "assistant"),
+    "lk.pii.input_text": ConversationTarget(ConversationSide.PROMPT, "assistant"),
     # user_turn: the STT transcript — the output of the transcription. The words are
-    # the caller's. ``lk.pii.user_transcript`` is the same key after LiveKit's PII
-    # rename; both are accepted so older and newer livekit-agents agree.
+    # the caller's.
     "lk.user_transcript": ConversationTarget(ConversationSide.COMPLETION, "user"),
     "lk.pii.user_transcript": ConversationTarget(ConversationSide.COMPLETION, "user"),
 }
