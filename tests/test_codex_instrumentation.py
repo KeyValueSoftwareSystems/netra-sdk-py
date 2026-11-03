@@ -15,7 +15,6 @@ from types import SimpleNamespace as NS
 from typing import Any, Dict, Iterator, List, Optional
 
 import pytest
-from opentelemetry import trace
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
