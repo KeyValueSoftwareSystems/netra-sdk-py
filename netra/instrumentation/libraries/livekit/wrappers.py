@@ -23,7 +23,6 @@ raised by the user's code propagate untouched.
 
 from __future__ import annotations
 
-import logging
 from contextlib import ExitStack
 from typing import TYPE_CHECKING, Any, Awaitable, Callable, Dict, Mapping, Optional, Tuple
 
@@ -48,13 +47,14 @@ from netra.instrumentation.libraries.livekit.trace_processor import (
     record_user_transcript,
 )
 from netra.instrumentation.libraries.livekit.utils import NETRA_CLOSE_REASON, STT_METRICS_TYPE
+from netra.netra_logger import get_logger
 from netra.session_manager import SessionManager
 
 if TYPE_CHECKING:
     from livekit.agents import AgentSession
     from opentelemetry.trace import Span
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # The wrapt quadruple is (wrapped, instance, args, kwargs). ``instance`` is a
 # livekit AgentSession, which cannot be imported at module scope — the SDK must

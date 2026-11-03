@@ -12,7 +12,9 @@ from opentelemetry.instrumentation.weaviate.wrapper import _wrap
 from opentelemetry.trace import get_tracer
 from wrapt import wrap_function_wrapper
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 _instruments = ("weaviate-client >= 3.26.0, <5",)
 

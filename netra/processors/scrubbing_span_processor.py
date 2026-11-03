@@ -1,4 +1,3 @@
-import logging
 import re
 from typing import Any, Dict, Optional, Union
 
@@ -6,7 +5,9 @@ from opentelemetry import context as otel_context
 from opentelemetry import trace
 from opentelemetry.sdk.trace import SpanProcessor
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]

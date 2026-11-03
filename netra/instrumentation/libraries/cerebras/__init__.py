@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Collection
 
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -13,8 +12,9 @@ from netra.instrumentation.libraries.cerebras.wrappers import (
     chat_wrapper,
     completions_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("cerebras-cloud-sdk >= 1.0.0",)
 

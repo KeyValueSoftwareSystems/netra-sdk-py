@@ -17,7 +17,6 @@ Kept import-light: ``netra.instrumentation.wiring.registry`` names the kwargs
 factories below by string and they are only imported on activation.
 """
 
-import logging
 import threading
 from typing import Any, Callable, Optional
 
@@ -29,8 +28,9 @@ from netra.instrumentation.http.propagation import (
     guard_redirect_baggage,
     register_hook_destination,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _urllib_redirect_guard_lock = threading.Lock()
 _urllib_redirect_guarded = False

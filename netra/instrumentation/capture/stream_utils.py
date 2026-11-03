@@ -28,10 +28,11 @@ Supported flows:
         warning log.
 """
 
-import logging
 from typing import Any, AsyncIterator, Callable, Generator, Iterator, List, Union
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 
 # Extractors — injected at construction time, kept stateless

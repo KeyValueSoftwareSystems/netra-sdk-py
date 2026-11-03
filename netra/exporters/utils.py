@@ -1,4 +1,3 @@
-import logging
 import threading
 import time
 from typing import Any, Dict, List, Optional, Sequence, Set, Tuple, Union, cast
@@ -7,13 +6,14 @@ from opentelemetry.sdk.trace import ReadableSpan
 from opentelemetry.trace import INVALID_SPAN_ID, Span, SpanContext
 
 from netra.config import get_trial_block_duration_seconds
+from netra.netra_logger import get_logger
 from netra.processors.root_instrument_filter_processor import (
     ROOT_BLOCK_CANDIDATE_FIELD,
     get_root_block_candidates,
     root_block_candidates_contains,
 )
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Span attributes set by LocalFilteringSpanProcessor and read back here to
 # decide per-span local blocking (kept in sync with that processor's keys).
@@ -41,8 +41,8 @@ def set_trial_blocked(blocked: bool) -> None:
             if _trial_blocked_at is None:
                 # Start a new 15-minute blocking period
                 _trial_blocked_at = time.time()
-                logger.warning(
-                    "Trial/quota exhausted: blocking span export for %d seconds (15 minutes)",
+                logger.notice(
+                    "netra: Trial/quota exhausted: blocking span export for %d seconds (15 minutes)",
                     get_trial_block_duration_seconds(),
                 )
             else:

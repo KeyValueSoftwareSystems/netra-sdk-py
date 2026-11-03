@@ -1,9 +1,9 @@
-import logging
 from typing import Any, Optional
 
 import httpx
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.simulation.constants import (
     DEFAULT_TIMEOUT,
     ENV_TIMEOUT,
@@ -19,7 +19,7 @@ from netra.simulation.models import ConversationResponse, ConversationStatus, Fi
 from netra.simulation.utils import parse_env_float
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class SimulationHttpClient:
@@ -56,7 +56,7 @@ class SimulationHttpClient:
             The httpx client, or None if not available.
         """
         if not self._client:
-            logger.error("%s: Client not initialized", LOG_PREFIX)
+            logger.notice("%s: Client not initialized", LOG_PREFIX, level=NoticeLevel.ERROR)
         return self._client
 
     def _create_client(self, config: Config) -> Optional[httpx.Client]:
@@ -80,7 +80,7 @@ class SimulationHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("%s: Failed to create HTTP client: %s", LOG_PREFIX, exc)
+            logger.notice("%s: Failed to create HTTP client: %s", LOG_PREFIX, exc, level=NoticeLevel.ERROR)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -161,7 +161,7 @@ class SimulationHttpClient:
             }
         except Exception as exc:
             error_msg = extract_error_message(response, exc)
-            logger.error("%s: Failed to initialize run: %s", LOG_PREFIX, error_msg)
+            logger.notice("%s: Failed to initialize run: %s", LOG_PREFIX, error_msg, level=NoticeLevel.ERROR)
             return None
 
     def generate_first_turn(
@@ -193,11 +193,12 @@ class SimulationHttpClient:
             )
         except Exception as exc:
             error_msg = extract_error_message(response, exc)
-            logger.error(
+            logger.notice(
                 "%s: Failed to generate first turn for item %s: %s",
                 LOG_PREFIX,
                 run_item_id,
                 error_msg,
+                level=NoticeLevel.ERROR,
             )
             return None
 
@@ -261,7 +262,7 @@ class SimulationHttpClient:
 
         except Exception as exc:
             error_msg = extract_error_message(response, exc)
-            logger.error("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg)
+            logger.notice("%s: Failed to trigger conversation: %s", LOG_PREFIX, error_msg, level=NoticeLevel.ERROR)
             raise
 
     def report_failure(
@@ -297,7 +298,7 @@ class SimulationHttpClient:
             logger.info("%s: Reported failure - %s", LOG_PREFIX, error)
         except Exception as exc:
             error_msg = extract_error_message(response, exc)
-            logger.error("%s: Failed to report failure: %s", LOG_PREFIX, error_msg)
+            logger.notice("%s: Failed to report failure: %s", LOG_PREFIX, error_msg, level=NoticeLevel.ERROR)
 
     def post_run_status(self, run_id: str, status: str) -> Any:
         """Submit the run status.
@@ -325,7 +326,9 @@ class SimulationHttpClient:
             return data
         except Exception as exc:
             error_msg = extract_error_message(response, exc)
-            logger.error("%s: Failed to post run status for run '%s': %s", LOG_PREFIX, run_id, error_msg)
+            logger.notice(
+                "%s: Failed to post run status for run '%s': %s", LOG_PREFIX, run_id, error_msg, level=NoticeLevel.ERROR
+            )
             return {"success": False}
 
     @staticmethod

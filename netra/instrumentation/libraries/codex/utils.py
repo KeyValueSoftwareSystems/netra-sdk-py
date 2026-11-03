@@ -1,5 +1,4 @@
 import json
-import logging
 import os
 import threading
 import time
@@ -16,10 +15,11 @@ from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 from netra.utils import truncate_string
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TURN_SPAN_NAME = "codex.turn"
 JOIN_SPAN_NAME = "codex.turn.join"

@@ -1,11 +1,11 @@
-import logging
 from typing import Any, Iterator, Literal, Optional
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.usage.client import UsageHttpClient
 from netra.usage.models import SessionUsageData, SpansPage, TenantUsageData, TracesPage, TraceSpan, TraceSummary
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Usage:
@@ -39,10 +39,12 @@ class Usage:
             SessionUsageData: Session usage data
         """
         if not session_id:
-            logger.error("netra.usage: session_id is required to fetch session usage")
+            logger.notice("netra.usage: session_id is required to fetch session usage", level=NoticeLevel.ERROR)
             return None
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to fetch session usage")
+            logger.notice(
+                "netra.usage: start_time and end_time are required to fetch session usage", level=NoticeLevel.ERROR
+            )
             return None
         result = self._client.get_session_usage(session_id, start_time=start_time, end_time=end_time)
         session_id = result.get("session_id", "")
@@ -77,10 +79,12 @@ class Usage:
             TenantUsageData: Tenant usage data
         """
         if not tenant_id:
-            logger.error("netra.usage: tenant_id is required to fetch tenant usage")
+            logger.notice("netra.usage: tenant_id is required to fetch tenant usage", level=NoticeLevel.ERROR)
             return None
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to fetch tenant usage")
+            logger.notice(
+                "netra.usage: start_time and end_time are required to fetch tenant usage", level=NoticeLevel.ERROR
+            )
             return None
         result = self._client.get_tenant_usage(tenant_id, start_time=start_time, end_time=end_time)
         tenant_id = result.get("tenant_id", "")
@@ -134,7 +138,7 @@ class Usage:
             TracesPage: Traces page
         """
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to list traces")
+            logger.notice("netra.usage: start_time and end_time are required to list traces", level=NoticeLevel.ERROR)
             return None
 
         result = self._client.list_traces(
@@ -189,7 +193,7 @@ class Usage:
             SpansPage: Spans page
         """
         if not trace_id:
-            logger.error("netra.usage: trace_id is required to list spans")
+            logger.notice("netra.usage: trace_id is required to list spans", level=NoticeLevel.ERROR)
             return None
 
         result = self._client.list_spans_by_trace_id(
@@ -253,7 +257,9 @@ class Usage:
             Iterator[TraceSummary]: Iterator over TraceSummary items
         """
         if not start_time or not end_time:
-            logger.error("netra.usage: start_time and end_time are required to iterate traces")
+            logger.notice(
+                "netra.usage: start_time and end_time are required to iterate traces", level=NoticeLevel.ERROR
+            )
             return
 
         current_cursor = cursor
@@ -311,7 +317,7 @@ class Usage:
         """
 
         if not trace_id:
-            logger.error("netra.usage: trace_id is required to iterate spans")
+            logger.notice("netra.usage: trace_id is required to iterate spans", level=NoticeLevel.ERROR)
             return
 
         current_cursor = cursor

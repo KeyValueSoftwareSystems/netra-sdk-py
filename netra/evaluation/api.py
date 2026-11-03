@@ -1,6 +1,5 @@
 import asyncio
 import concurrent.futures
-import logging
 from typing import Any, Callable, Dict, List, Optional
 
 from netra.config import Config
@@ -31,9 +30,10 @@ from netra.evaluation.utils import (
     run_single_evaluator,
     validate_run_inputs,
 )
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.span_wrapper import SpanWrapper
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class Evaluation:
@@ -68,7 +68,9 @@ class Evaluation:
             A backend JSON response containing dataset info (id, name, tags, etc.) on success,
         """
         if not name:
-            logger.error("netra.evaluation: Failed to create dataset: dataset name is required")
+            logger.notice(
+                "netra.evaluation: Failed to create dataset: dataset name is required", level=NoticeLevel.ERROR
+            )
             return None
         response = self._client.create_dataset(name=name, dataset_type=dataset_type, turn_type=turn_type, tags=tags)
 
@@ -107,7 +109,7 @@ class Evaluation:
         """
 
         if not item.input:
-            logger.error("netra.evaluation: Skipping dataset item without required 'input'")
+            logger.notice("netra.evaluation: Skipping dataset item without required 'input'", level=NoticeLevel.ERROR)
             return None
         response = self._client.add_dataset_item(dataset_id=dataset_id, item=item)
 
@@ -178,7 +180,7 @@ class Evaluation:
             A backend JSON response containing dataset info (id, input, expected_output etc.) on success,
         """
         if not dataset_id:
-            logger.error("netra.evaluation: Failed to get dataset: dataset id is required")
+            logger.notice("netra.evaluation: Failed to get dataset: dataset id is required", level=NoticeLevel.ERROR)
             return None
         response = self._client.get_dataset(dataset_id)
         if not response:
@@ -189,8 +191,19 @@ class Evaluation:
             item_input = item.get("input")
             item_dataset_id = item.get("datasetId")
             item_expected_output = item.get("expectedOutput", "")
-            if item_id is None or item_dataset_id is None or item_input is None:
-                logger.warning("netra.evaluation: Skipping dataset item with missing required fields: %s", item)
+            # Notices name the item, never its payload: input often holds prompts or user data.
+            item_label = item_id if item_id is not None else "(no id)"
+            missing_fields = [
+                field_name
+                for field_name, value in (("id", item_id), ("datasetId", item_dataset_id), ("input", item_input))
+                if value is None
+            ]
+            if missing_fields:
+                logger.notice(
+                    "netra.evaluation: Skipping dataset item %s: missing required field(s): %s",
+                    item_label,
+                    ", ".join(missing_fields),
+                )
                 continue
             try:
                 dataset_items.append(
@@ -202,7 +215,12 @@ class Evaluation:
                     )
                 )
             except Exception as exc:
-                logger.error("netra.evaluation: Failed to parse dataset item: %s", exc)
+                logger.notice(
+                    "netra.evaluation: Skipping dataset item %s: failed to parse: %s",
+                    item_label,
+                    exc,
+                    level=NoticeLevel.ERROR,
+                )
         return GetDatasetItemsResponse(items=dataset_items)
 
     def create_run(
@@ -224,7 +242,7 @@ class Evaluation:
         """
 
         if not name:
-            logger.error("netra.evaluation: Failed to create run: run name is required")
+            logger.notice("netra.evaluation: Failed to create run: run name is required", level=NoticeLevel.ERROR)
             return None
 
         evaluators_config_dicts: Optional[List[Dict[str, Any]]] = None
@@ -245,7 +263,7 @@ class Evaluation:
             The JSON response containing run results.
         """
         if not run_id:
-            logger.error("netra.evaluation: Failed to get run: run_id is required")
+            logger.notice("netra.evaluation: Failed to get run: run_id is required", level=NoticeLevel.ERROR)
             return None
         response = self._client.get_run_results(run_id)
         return response
@@ -283,7 +301,7 @@ class Evaluation:
             evaluators_config=evaluators_config,
         )
         if not run_id:
-            logger.error("netra.evaluation: Failed to create run")
+            logger.notice("netra.evaluation: Failed to create run", level=NoticeLevel.ERROR)
             return None
         logger.info("netra.evaluation: Initiated test run")
 

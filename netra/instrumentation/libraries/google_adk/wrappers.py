@@ -1,5 +1,4 @@
 import json
-import logging
 import time
 from contextlib import contextmanager
 from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Tuple, cast
@@ -18,12 +17,13 @@ from netra.instrumentation.libraries.google_adk.utils import (
     extract_llm_response_attributes,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class NoOpSpan:

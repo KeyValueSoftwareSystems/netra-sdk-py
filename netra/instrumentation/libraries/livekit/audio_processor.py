@@ -19,7 +19,6 @@ lookup by the span's trace id in
 
 from __future__ import annotations
 
-import logging
 from typing import NamedTuple, Optional, Union
 
 from opentelemetry import context as otel_context
@@ -28,8 +27,9 @@ from opentelemetry.trace import SpanContext
 
 from netra.instrumentation.libraries.livekit.audio_capture import SessionAudioCoordinator, audio_coordinators
 from netra.instrumentation.libraries.livekit.audio_types import SPEAKING_SPAN_ROLES, TTS_NODE_SPAN_NAME, SpeakerRole
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _TRACE_ID_HEX_DIGITS = "032x"
 _SPAN_ID_HEX_DIGITS = "016x"

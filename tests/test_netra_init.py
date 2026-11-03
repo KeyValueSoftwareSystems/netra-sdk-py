@@ -132,7 +132,7 @@ class TestNetraInitialization:
     def test_init_called_multiple_times_logs_warning(
         self, mock_logger: MagicMock, mock_tracer: MagicMock, mock_init_instrumentations: MagicMock
     ) -> None:
-        """Test that calling init multiple times logs a warning and doesn't reinitialize."""
+        """Test that calling init multiple times logs an always-visible warning and doesn't reinitialize."""
         # First initialization
         Netra.init()
 
@@ -143,7 +143,7 @@ class TestNetraInitialization:
         # Second initialization should log warning and not reinitialize
         Netra.init()
 
-        mock_logger.warning.assert_called_once_with("Netra.init() called more than once; ignoring subsequent calls.")
+        mock_logger.notice.assert_called_once_with("Netra.init() called more than once; ignoring subsequent calls.")
 
         # Tracer and instrumentations should not be called again
         mock_tracer.assert_not_called()

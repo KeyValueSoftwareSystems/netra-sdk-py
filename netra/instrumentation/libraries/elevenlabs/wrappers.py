@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, AsyncIterator, Callable, Dict, Iterator, Tuple
 
@@ -12,8 +11,9 @@ from netra.instrumentation.libraries.elevenlabs.utils import (
     should_suppress_instrumentation,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 CREATE_SPEECH_SPAN_NAME = "elevenlabs.create_speech"
 CREATE_SPEECH_WITH_TIMESTAMPS_SPAN_NAME = "elevenlabs.create_speech_with_timestamp"

@@ -16,14 +16,14 @@ their own set, so activation stays deterministic regardless of set iteration
 order.  Instrumentations absent from this table are never activated.
 """
 
-import logging
 from dataclasses import dataclass, field
 from types import MappingProxyType
 from typing import Any, Mapping, Optional
 
 from netra.instrumentation.instruments import InstrumentSet
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _NO_KWARGS: Mapping[str, Any] = MappingProxyType({})
 

@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Callable, Dict, Optional, Tuple
 
 from opentelemetry.trace import Span, SpanKind, Tracer
@@ -10,8 +9,9 @@ from netra.instrumentation.libraries.honcho.utils import (
     ResponseAttrFn,
     should_suppress_instrumentation,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 def _safe_set_request_attrs(

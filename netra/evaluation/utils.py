@@ -1,5 +1,4 @@
 import asyncio
-import logging
 import threading
 from typing import Any, Awaitable, Callable, Dict, List, Optional, TypeVar
 
@@ -7,8 +6,9 @@ from opentelemetry import baggage
 from opentelemetry import context as otel_context
 
 from netra.evaluation.models import DatasetRecord, EvaluatorConfig, EvaluatorContext, ItemContext
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 T = TypeVar("T")
 

@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Dict, List, Sequence, Set
 
 from opentelemetry.sdk.trace import ReadableSpan
@@ -17,9 +16,10 @@ from netra.exporters.utils import (
     read_local_block_patterns,
     reparent_spans,
 )
+from netra.netra_logger import get_logger
 from netra.processors.local_filtering_span_processor import BLOCKED_LOCAL_PARENT_MAP
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class FilteringSpanExporter(SpanExporter):  # type: ignore[misc]

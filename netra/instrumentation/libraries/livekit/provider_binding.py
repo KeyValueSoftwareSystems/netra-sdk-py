@@ -12,7 +12,6 @@ both of which are wrong for us:
 ``_ShieldedTracerProvider`` delegates the reads LiveKit needs and absorbs both.
 """
 
-import logging
 from typing import Any
 
 from opentelemetry import trace as trace_api
@@ -20,7 +19,9 @@ from opentelemetry.sdk import trace as trace_sdk
 from opentelemetry.sdk.resources import Resource
 from opentelemetry.sdk.trace import SpanProcessor
 
-logger = logging.getLogger(__name__)
+from netra.netra_logger import get_logger
+
+logger = get_logger(__name__)
 
 # Set on the *delegate* once bound, mirroring ``_netra_processors_installed``
 # in netra/tracer.py, so repeat instrument() calls are idempotent.

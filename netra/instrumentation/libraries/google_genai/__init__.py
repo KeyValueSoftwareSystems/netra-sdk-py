@@ -1,6 +1,5 @@
 """OpenTelemetry Google GenAI API instrumentation"""
 
-import logging
 import os
 from typing import Any, Collection
 
@@ -20,8 +19,9 @@ from netra.instrumentation.libraries.google_genai.wrappers import (
     images_wrapper,
     videos_wrapper,
 )
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("google-genai >= 0.1.0",)
 

@@ -1,6 +1,5 @@
 """LiveKit voice-agent instrumentation for Netra."""
 
-import logging
 import threading
 from typing import Any, Collection, Optional
 
@@ -15,8 +14,9 @@ from netra.instrumentation.libraries.livekit.audio_processor import AudioSpanPro
 from netra.instrumentation.libraries.livekit.provider_binding import bind_livekit_tracer
 from netra.instrumentation.libraries.livekit.trace_processor import SpanMappingProcessor
 from netra.instrumentation.libraries.livekit.wrappers import wrap_aclose, wrap_start
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _instruments = ("livekit-agents >= 1.6.0, < 2.0.0",)
 

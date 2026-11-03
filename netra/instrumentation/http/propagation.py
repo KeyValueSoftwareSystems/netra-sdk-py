@@ -49,8 +49,9 @@ from opentelemetry.propagators.textmap import (
 )
 
 from netra.config import get_active_config
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # OpenTelemetry's W3CBaggagePropagator always writes this (lowercase) header.
 # We match case-insensitively when stripping, to be safe against carriers that

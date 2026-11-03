@@ -1,5 +1,4 @@
 import json
-import logging
 import threading
 from typing import Any, List, Optional
 
@@ -25,8 +24,9 @@ from opentelemetry.sdk.metrics.view import DropAggregation, View
 from opentelemetry.sdk.resources import Resource
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 _provider_install_lock = threading.Lock()
 
@@ -104,10 +104,11 @@ class _JsonOTLPMetricExporter(OTLPMetricExporter):  # type: ignore[misc]
         if resp.ok:
             return MetricExportResult.SUCCESS
 
-        logger.error(
-            "Failed to export metrics batch code: %s, reason: %s",
+        logger.notice(
+            "netra: Failed to export metrics batch code: %s, reason: %s",
             resp.status_code,
             resp.text,
+            level=NoticeLevel.ERROR,
         )
         return MetricExportResult.FAILURE
 

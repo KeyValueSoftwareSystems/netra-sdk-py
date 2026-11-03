@@ -1,4 +1,3 @@
-import logging
 import time
 from typing import Any, AsyncIterator, Callable, Tuple
 
@@ -16,8 +15,9 @@ from netra.instrumentation.libraries.claude_agent_sdk.utils import (
     set_user_message_attributes,
 )
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 QUERY_SPAN_NAME = "claude-agent.query"
 AGENT_CONVERSATION_SPAN_NAME = "claude-agent.conversation"

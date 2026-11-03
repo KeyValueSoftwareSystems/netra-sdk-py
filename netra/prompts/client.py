@@ -1,13 +1,13 @@
-import logging
 import os
 from typing import Any, Dict, Optional
 
 import httpx
 
 from netra.config import Config
+from netra.netra_logger import NoticeLevel, get_logger
 from netra.utils import extract_error_message
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 
 class PromptsHttpClient:
@@ -46,7 +46,7 @@ class PromptsHttpClient:
         try:
             return httpx.Client(base_url=base_url, headers=headers, timeout=timeout)
         except Exception as exc:
-            logger.error("netra.prompts: Failed to initialize prompts HTTP client: %s", exc)
+            logger.notice("netra.prompts: Failed to initialize prompts HTTP client: %s", exc, level=NoticeLevel.ERROR)
             return None
 
     def _resolve_base_url(self, endpoint: str) -> str:
@@ -93,7 +93,7 @@ class PromptsHttpClient:
         try:
             return float(timeout_env)
         except ValueError:
-            logger.warning(
+            logger.notice(
                 "netra.prompts: Invalid NETRA_PROMPTS_TIMEOUT value '%s', using default 10.0",
                 timeout_env,
             )
@@ -111,9 +111,10 @@ class PromptsHttpClient:
             Prompt version data or empty dict if not found
         """
         if not self._client:
-            logger.error(
+            logger.notice(
                 "netra.prompts: Prompts client is not initialized; cannot fetch prompt version for '%s'",
                 prompt_name,
+                level=NoticeLevel.ERROR,
             )
             return {}
 
@@ -128,10 +129,11 @@ class PromptsHttpClient:
                 return data.get("data", {})
             return data
         except Exception as exc:
-            logger.error(
+            logger.notice(
                 "netra.prompts: Failed to fetch prompt version for '%s' (label=%s): %s",
                 prompt_name,
                 label,
                 extract_error_message(response, exc),
+                level=NoticeLevel.ERROR,
             )
             return {}
