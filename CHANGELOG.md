@@ -4,6 +4,18 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.2.5] - 2026-11-04
+
+### Changed
+
+- **Problems you have to fix are now logged outside debug mode** - Outside `debug_mode` the `netra` logger is set to `CRITICAL`, so until now every SDK message was hidden, including the ones that say the app is misconfigured. Those messages now go to a separate `netra.notice` logger at `WARNING` or `ERROR` and are logged whether or not `debug_mode` is on. They cover: `NETRA_OTLP_ENDPOINT` not set (spans fall back to the console exporter and Netra API calls are disabled), `NETRA_API_KEY` missing for a Netra endpoint, span batches that were dropped, out-of-range `NETRA_AUDIO_*` settings, `root_instruments=ALL` contradicted by `block_instruments=ALL`, `Netra.init()` called twice, `Netra.get_meter()` called before `init()`, invalid arguments to public methods (`set_session_id`, `set_user_id`, `set_tenant_id`, `update_span_name`, `set_custom_attributes`, `set_custom_event`, `record_exception`, and the dashboard, evaluation, simulation, usage, prompts and models clients), and failed calls to the Netra APIs. Notices propagate to the root logger, so they go through the application's own logging setup. If the application has configured no logging, Python prints them to stderr. To silence them, use `logging.getLogger("netra.notice").setLevel(logging.CRITICAL)`. Everything else the SDK logs is still shown only in debug mode.
+
+### Fixed
+
+- **Missing API key error is logged, and no longer shown when the key is sent as a header** - The missing `NETRA_API_KEY` error was written to stdout with `print()`, so it could not be routed or silenced. It is now an `ERROR` notice. It was also shown when the key was already passed as an `x-api-key` header through `headers` or `NETRA_HEADERS`. Such a header now counts as a key; the header name is matched case-insensitively.
+
+- **Each dropped span batch is reported once, including batches that got no response** - A batch that got no HTTP response (connection refused, DNS, TLS, timeout) was left to `OTLPSpanExporter` to log. Depending on the `opentelemetry-exporter-otlp-proto-http` version, it logged its own error or let the exception propagate. In debug mode, a rejected batch was also reported twice: once by OpenTelemetry and once by Netra. `TrialAwareOTLPExporter` now logs one notice per dropped batch, after `OTLPSpanExporter` has finished retrying. The notice gives the backend's final response or the request error (`Span export failed: <error>. Dropped a batch of N spans.`). While Netra is exporting, `OTLPSpanExporter`'s own `ERROR` record for that batch is filtered out. Its retry warnings are kept, and errors from exporters the application runs itself are still logged.
+
 ## [1.2.4] - 2026-11-02
 
 ### Fixed
@@ -572,4 +584,4 @@ Users can be now overwrite the input and ouput attributes of spans created by in
 
 - Added utility to set input and output data for any active span in a trace
 
-[1.2.4]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
+[1.2.5]: https://github.com/KeyValueSoftwareSystems/netra-sdk-py/tree/main
