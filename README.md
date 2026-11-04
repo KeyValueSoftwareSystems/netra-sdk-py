@@ -31,20 +31,34 @@ poetry add netra-sdk
 
 ## 🚀 Quick Start
 
+### Set the Endpoint and API Key
+
+Set these before you call `Netra.init()`, wherever your app runs (your shell, Docker containers, CI jobs). Without `NETRA_OTLP_ENDPOINT`, the SDK prints spans to the console instead of sending them to Netra, and your dashboard stays empty.
+
+```bash
+# US region
+export NETRA_OTLP_ENDPOINT="https://api.getnetra.ai/telemetry"
+# EU region: export NETRA_OTLP_ENDPOINT="https://api.eu.getnetra.ai/telemetry"
+export NETRA_API_KEY="your-api-key-here"
+```
+
+If the endpoint is not set, the SDK logs a warning at startup that names `NETRA_OTLP_ENDPOINT`. See [Logging](#-logging).
+
 ### Basic Setup
 
 Initialize the Netra SDK at the start of your application:
 
 ```python
+import os
+
 from netra import Netra
 from netra.instrumentation.instruments import InstrumentSet
 
-# Initialize with default settings
+# Initialize with default settings (reads NETRA_OTLP_ENDPOINT and NETRA_API_KEY from the environment)
 Netra.init(app_name="Your application name", instruments={InstrumentSet.OPENAI, InstrumentSet.ANTHROPIC})
 
 # Or with custom configuration
-api_key = "Your API key"
-headers = f"x-api-key={api_key}"
+headers = f"x-api-key={os.environ['NETRA_API_KEY']}"
 Netra.init(
     app_name="Your application name",
     headers=headers,
@@ -405,8 +419,9 @@ Netra SDK can be configured using the following environment variables:
 | Variable Name | Description | Default |
 |---------------|-------------|---------|
 | `NETRA_APP_NAME` | Logical name for your service | Falls back to `OTEL_SERVICE_NAME` or `llm_tracing_service` |
-| `NETRA_OTLP_ENDPOINT` | URL for OTLP collector | Falls back to `OTEL_EXPORTER_OTLP_ENDPOINT` |
+| `NETRA_OTLP_ENDPOINT` | URL for OTLP collector. Required to send traces to Netra: `https://api.getnetra.ai/telemetry` (US) or `https://api.eu.getnetra.ai/telemetry` (EU) | Falls back to `OTEL_EXPORTER_OTLP_ENDPOINT`; if neither is set, spans are printed to the console |
 | `NETRA_API_KEY` | API key for authentication | `None` |
+| `NETRA_DEBUG` | Enable debug logging (`true`/`false`) | `false` |
 | `NETRA_HEADERS` | Additional headers in W3C Correlation-Context format | `None` |
 | `NETRA_DISABLE_BATCH` | Disable batch span processor (`true`/`false`) | `false` |
 | `NETRA_TRACE_CONTENT` | Whether to capture prompt/completion content (`true`/`false`) | `true` |
@@ -437,6 +452,20 @@ This allows you to:
 - **🔧 Flexible Integration**: Works with existing observability infrastructure
 - **🚀 Future Proof**: Built on industry-standard protocols
 - **📈 Rich Ecosystem**: Leverage the entire OpenTelemetry ecosystem
+
+## 📝 Logging
+
+Outside debug mode the SDK keeps its internal logs quiet. Problems you have to fix are still logged, at `WARNING` or `ERROR`, through the `netra.notice` logger. They include a missing `NETRA_OTLP_ENDPOINT` or `NETRA_API_KEY`, span batches the backend rejected or that got no response, invalid arguments to public methods, and failed Netra API calls.
+
+Notices propagate to the root logger, so they go through your application's logging setup. If your application configures no logging, Python prints them to stderr. To silence them:
+
+```python
+import logging
+
+logging.getLogger("netra.notice").setLevel(logging.CRITICAL)
+```
+
+To see the SDK's full internal logs, pass `debug_mode=True` to `Netra.init()` or set `NETRA_DEBUG=true`.
 
 
 ## 🧪 Tests
