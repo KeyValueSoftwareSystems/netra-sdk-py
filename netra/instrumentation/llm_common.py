@@ -20,7 +20,6 @@ Two concerns live here:
    the underlying stream propagate.
 """
 
-import logging
 import time
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
@@ -29,8 +28,9 @@ from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
 
 from netra.instrumentation.span_utils import record_span_timing
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
