@@ -5,6 +5,8 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, SpanAttributes
 from opentelemetry.trace import Span
 
+from netra.instrumentation.llm_common import is_unset_sentinel
+from netra.instrumentation.span_utils import should_capture_content
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -51,10 +53,12 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     }
 
     for key, attribute in ATTRIBUTE_MAPPINGS.items():
-        if (value := kwargs.get(key)) is not None:
+        value = kwargs.get(key)
+        if value is not None and not is_unset_sentinel(value):
             span.set_attribute(attribute, value)
 
-    _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))
+    if should_capture_content():
+        _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))
 
 
 def _set_chat_input(span: Span, messages: Any, prompt: Any) -> None:
@@ -111,11 +115,12 @@ def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
 
 def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     message_index = 0
+    capture = should_capture_content()
 
     # Completion API-like
     if choices := response_dict.get("choices"):
         for choice in choices:
-            if message := choice.get("message"):
+            if capture and (message := choice.get("message")):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", message.get("role", "assistant")
                 )
@@ -123,7 +128,7 @@ def _set_response_message_attributes(span: Span, response_dict: Dict[str, Any]) 
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.content", message.get("content", "")
                 )
                 message_index += 1
-            elif delta := choice.get("delta"):
+            elif capture and (delta := choice.get("delta")):
                 span.set_attribute(
                     f"{SpanAttributes.LLM_COMPLETIONS}.{message_index}.role", delta.get("role", "assistant")
                 )

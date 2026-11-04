@@ -33,6 +33,7 @@ from netra.instrumentation.libraries.agno.utils import (
     serialize_value,
     set_agentos_request_input,
     set_agentos_response_output,
+    set_content_attribute,
     set_llm_completion_attributes,
     set_llm_prompt_attributes,
     set_request_attributes,
@@ -40,7 +41,7 @@ from netra.instrumentation.libraries.agno.utils import (
     should_suppress_instrumentation,
     update_active_span_with_system_prompt,
 )
-from netra.instrumentation.span_utils import record_span_timing
+from netra.instrumentation.span_utils import record_span_timing, should_capture_content
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
@@ -128,6 +129,16 @@ def _close_span(span: Span, ctx_token: Any, error: Optional[Exception] = None) -
         logger.error("netra.instrumentation.libraries.agno: failed to end span: %s", e)
 
 
+def _detach_quietly(ctx_token: Any) -> None:
+    """Detach a context token, logging instead of raising on failure."""
+    if ctx_token is None:
+        return
+    try:
+        context_api.detach(ctx_token)
+    except Exception as e:
+        logger.debug("netra.instrumentation.libraries.agno: failed to detach context: %s", e)
+
+
 def _get_span_name(instance: Any, prefix: str, default: Optional[str] = None) -> str:
     """Build a dotted span name from the entity's ``name`` attribute.
 
@@ -166,7 +177,8 @@ class _BaseStreamWrapper:
         Args:
             span: The active OpenTelemetry span to close when streaming ends.
             response: The underlying iterable or async-iterable from the wrapped call.
-            ctx_token: Context token from ``context_api.attach``; detached on finalization.
+            ctx_token: Deprecated; stream factories detach their context before
+                returning, so this is normally ``None``.
         """
         self._span = span
         self._response = response
@@ -179,6 +191,28 @@ class _BaseStreamWrapper:
 
     def _set_output_on_success(self) -> None:
         """Override to write output attributes before the span closes."""
+
+    def _attach_span(self) -> Any:
+        """Make the stream span current while the next item is pulled.
+
+        The span is current only for the duration of one pull, so spans the
+        provider SDK creates while producing a chunk are its children, but the
+        caller's own code between chunks (or after an early ``break``) is not.
+        """
+        try:
+            return context_api.attach(set_span_in_context(self._span))
+        except Exception as e:
+            logger.debug("netra.instrumentation.libraries.agno: failed to attach stream span: %s", e)
+            return None
+
+    @staticmethod
+    def _detach_span(token: Any) -> None:
+        if token is None:
+            return
+        try:
+            context_api.detach(token)
+        except Exception as e:
+            logger.debug("netra.instrumentation.libraries.agno: failed to detach stream span: %s", e)
 
     def _finalize(self, error: Optional[Exception] = None) -> None:
         """Close the span once, writing output attributes on success.
@@ -195,6 +229,24 @@ class _BaseStreamWrapper:
             except Exception as e:
                 logger.warning("netra.instrumentation.libraries.agno: failed to set output attrs on stream end: %s", e)
         _close_span(self._span, self._ctx_token, error)
+
+    def close(self) -> None:
+        """Close the underlying stream and end the span (for consumers that stop early)."""
+        try:
+            close = getattr(self._response, "close", None)
+            if callable(close):
+                close()
+        finally:
+            self._finalize()
+
+    async def aclose(self) -> None:
+        """Async counterpart of :meth:`close`."""
+        try:
+            aclose = getattr(self._response, "aclose", None)
+            if callable(aclose):
+                await aclose()
+        finally:
+            self._finalize()
 
     def __getattr__(self, name: str) -> Any:
         """Proxy attribute access to the underlying response object.
@@ -231,7 +283,7 @@ class _AgentStreamOutputMixin:
             self._netra_output = output if output else ""
         if self._content_chunks:
             output = "".join(self._content_chunks)
-            self._span.set_attribute("output", output)
+            set_content_attribute(self._span, "output", output)
             self._netra_output = output
 
 
@@ -273,7 +325,7 @@ class _LlmStreamOutputMixin:
             output_str = format_response_as_output(self._last_response)
             self._netra_output = output_str if output_str else ""
         if output_str:
-            self._span.set_attribute("output", output_str)
+            set_content_attribute(self._span, "output", output_str)
             set_llm_completion_attributes(self._span, output_str)
         record_span_timing(self._span, LLM_RESPONSE_DURATION)
 
@@ -326,6 +378,7 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         Raises:
             StopIteration: When the stream is exhausted.
         """
+        token = self._attach_span()
         try:
             event = next(self._response)
             self._last_response = event
@@ -343,6 +396,8 @@ class SpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         except Exception as e:
             self._finalize(error=e)
             raise
+        finally:
+            self._detach_span(token)
 
 
 class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
@@ -393,6 +448,7 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         Raises:
             StopAsyncIteration: When the stream is exhausted.
         """
+        token = self._attach_span()
         try:
             event = await self._response.__anext__()
             self._last_response = event
@@ -410,6 +466,8 @@ class AsyncSpanStreamingWrapper(_AgentStreamOutputMixin, _BaseStreamWrapper):
         except Exception as e:
             self._finalize(error=e)
             raise
+        finally:
+            self._detach_span(token)
 
 
 class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
@@ -432,6 +490,7 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         Raises:
             StopIteration: When the stream is exhausted.
         """
+        token = self._attach_span()
         try:
             chunk = next(self._response)
             self._last_response = chunk
@@ -462,6 +521,8 @@ class LlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         except Exception as e:
             self._finalize(error=e)
             raise
+        finally:
+            self._detach_span(token)
 
 
 class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
@@ -484,6 +545,7 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         Raises:
             StopAsyncIteration: When the stream is exhausted.
         """
+        token = self._attach_span()
         try:
             chunk = await self._response.__anext__()
             self._last_response = chunk
@@ -516,6 +578,8 @@ class AsyncLlmSpanStreamingWrapper(_LlmStreamOutputMixin, _BaseStreamWrapper):
         except Exception as e:
             self._finalize(error=e)
             raise
+        finally:
+            self._detach_span(token)
 
 
 def _sync_non_stream(
@@ -626,7 +690,10 @@ def _sync_stream_start(
             )
         raise
 
-    return SpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
+    # Do not leave the span attached while the caller holds the stream; the
+    # wrapper re-attaches it around each pull.
+    _detach_quietly(ctx_token)
+    return SpanStreamingWrapper(span=span, response=response)
 
 
 async def _async_non_stream(
@@ -737,7 +804,10 @@ def _async_stream_start(
             )
         raise
 
-    return AsyncSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
+    # Do not leave the span attached while the caller holds the stream; the
+    # wrapper re-attaches it around each pull.
+    _detach_quietly(ctx_token)
+    return AsyncSpanStreamingWrapper(span=span, response=response)
 
 
 def _make_run_wrapper(span_prefix: str, entity_type: str, is_async: bool = False) -> Callable[..., Any]:
@@ -813,7 +883,7 @@ def _set_tool_span_attrs(
     try:
         arguments = get_tool_arguments(instance, kwargs)
         if arguments:
-            span.set_attribute("input", arguments)
+            set_content_attribute(span, "input", arguments)
     except Exception as e:
         logger.warning("netra.instrumentation.libraries.agno: failed to set tool arguments for %s: %s", tool_name, e)
 
@@ -848,7 +918,7 @@ def tool_execute_wrapper(tracer: Tracer) -> Callable[..., Any]:
             response = wrapped(*args, **kwargs)
             try:
                 if response is not None:
-                    span.set_attribute("output", serialize_value(response, clean=True))
+                    set_content_attribute(span, "output", serialize_value(response, clean=True))
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning(
@@ -905,7 +975,7 @@ def tool_aexecute_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
             response = await wrapped(*args, **kwargs)
             try:
                 if response is not None:
-                    span.set_attribute("output", serialize_value(response, clean=True))
+                    set_content_attribute(span, "output", serialize_value(response, clean=True))
                 span.set_status(Status(StatusCode.OK))
             except Exception as e:
                 logger.warning(
@@ -1015,7 +1085,7 @@ def _vectordb_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _kw
     _set_common_span_attributes(span, "vectordb")
     span.set_attributes(extract_vectordb_attributes(instance, "search"))
     if args:
-        span.set_attribute("input", str(args[0]))
+        set_content_attribute(span, "input", str(args[0]))
 
 
 def _vectordb_upsert_attrs(span: Span, instance: Any, _args: Tuple[Any, ...], _kwargs: Dict[str, Any]) -> None:
@@ -1069,7 +1139,7 @@ def _knowledge_search_attrs(span: Span, instance: Any, args: Tuple[Any, ...], _k
     _set_common_span_attributes(span, "knowledge")
     span.set_attributes(extract_knowledge_attributes(instance))
     if args:
-        span.set_attribute("input", str(args[0]))
+        set_content_attribute(span, "input", str(args[0]))
 
 
 vectordb_search_wrapper = _make_simple_sync_wrapper(
@@ -1159,7 +1229,7 @@ def _setup_llm_span_with_input(
     if messages:
         input_str = format_messages_as_input(messages)
         if input_str:
-            span.set_attribute("input", input_str)
+            set_content_attribute(span, "input", input_str)
         set_llm_prompt_attributes(span, messages)
 
     return span, ctx_token
@@ -1195,7 +1265,7 @@ def model_response_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if not output_str and response is not None:
                     output_str = format_response_as_output(response)
                 if output_str:
-                    span.set_attribute("output", output_str)
+                    set_content_attribute(span, "output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
@@ -1258,7 +1328,8 @@ def model_response_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 )
             raise
 
-        return LlmSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
+        _detach_quietly(ctx_token)
+        return LlmSpanStreamingWrapper(span=span, response=response)
 
     return wrapper
 
@@ -1293,7 +1364,7 @@ def model_aresponse_capture_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if not output_str and response is not None:
                     output_str = format_response_as_output(response)
                 if output_str:
-                    span.set_attribute("output", output_str)
+                    set_content_attribute(span, "output", output_str)
                     set_llm_completion_attributes(span, output_str)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
@@ -1362,7 +1433,8 @@ def model_aresponse_stream_capture_wrapper(tracer: Tracer) -> Callable[..., Any]
                 )
             raise
 
-        return AsyncLlmSpanStreamingWrapper(span=span, response=response, ctx_token=ctx_token)
+        _detach_quietly(ctx_token)
+        return AsyncLlmSpanStreamingWrapper(span=span, response=response)
 
     return wrapper
 
@@ -1459,7 +1531,7 @@ class AgentOSTracingMiddleware:
                 if (stream := payload.get("stream")) is not None:
                     is_streaming = bool(stream)
                     span.set_attribute(ATTR_AGENTOS_STREAM, is_streaming)
-                if context := payload.get("context"):
+                if (context := payload.get("context")) and should_capture_content():
                     span.set_attribute(
                         "gen_ai.agno.agentos.context",
                         json.dumps(context) if not isinstance(context, str) else context,

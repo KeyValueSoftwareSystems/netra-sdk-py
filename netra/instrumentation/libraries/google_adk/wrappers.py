@@ -16,7 +16,7 @@ from netra.instrumentation.libraries.google_adk.utils import (
     extract_llm_request_attributes,
     extract_llm_response_attributes,
 )
-from netra.instrumentation.span_utils import record_span_timing
+from netra.instrumentation.span_utils import record_span_timing, should_capture_content
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
@@ -192,7 +192,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                         user_texts = [
                             str(getattr(p, "text", "")) for p in parts if getattr(p, "text", None) is not None
                         ]
-                        if user_texts:
+                        if user_texts and should_capture_content():
                             span.set_attribute("input", "\n".join(user_texts))
             except Exception as e:
                 logger.warning("Failed to set agent span attributes: %s", e)
@@ -212,7 +212,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 scope.record_error(e)
                 raise
             finally:
-                if last_text_output:
+                if last_text_output and should_capture_content():
                     try:
                         span.set_attribute("output", "\n".join(last_text_output))
                     except Exception as e:
@@ -343,8 +343,14 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             except Exception as e:
                 if not span_ended:
                     scope.record_error(e)
-                    scope.end()
                 raise
+            finally:
+                # Also covers GeneratorExit (aclose / early break) and
+                # CancelledError, which ``except Exception`` does not catch:
+                # without this the span is never ended and its context stays
+                # attached.
+                if not span_ended:
+                    scope.end()
 
         return new_function()
 
@@ -399,7 +405,7 @@ def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 if tool is not None and hasattr(tool, "is_long_running"):
                     span.set_attribute("gen_ai.tool.is_long_running", tool.is_long_running)
 
-                if tool_args is not None:
+                if tool_args is not None and should_capture_content():
                     try:
                         span.set_attribute(
                             "input", json.dumps(tool_args) if isinstance(tool_args, dict) else str(tool_args)
@@ -418,7 +424,7 @@ def call_tool_async_wrapper(tracer: Tracer) -> Callable[..., Any]:
             try:
                 result = await wrapped(*args, **kwargs)
 
-                if result is not None:
+                if result is not None and should_capture_content():
                     try:
                         span.set_attribute("output", json.dumps(result) if isinstance(result, dict) else str(result))
                     except Exception:

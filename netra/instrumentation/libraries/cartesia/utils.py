@@ -4,6 +4,7 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
+from netra.instrumentation.span_utils import set_content_attribute
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -15,8 +16,17 @@ def should_suppress_instrumentation() -> bool:
 
 
 def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
-    """Set request attributes (model, parameters, prompts) for Elevenlabs."""
+    """Set request attributes (model, parameters, prompts) for Cartesia.
 
+    Runs before the client's own call, so it must never raise into it.
+    """
+    try:
+        _set_request_attributes(span, kwargs)
+    except Exception as e:
+        logger.debug("Failed to set Cartesia request attributes: %s", e)
+
+
+def _set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if not span.is_recording():
         return
 
@@ -26,8 +36,8 @@ def set_request_attributes(span: Any, kwargs: Dict[str, Any]) -> None:
     if transcript := kwargs.get("transcript"):
         character_count = len(transcript)
         span.set_attribute("gen_ai.usage.prompt.character_count", character_count)
-        span.set_attribute("gen_ai.prompt.0.role", "Input")
-        span.set_attribute("gen_ai.prompt.0.content", str(transcript))
+        set_content_attribute(span, "gen_ai.prompt.0.role", "Input")
+        set_content_attribute(span, "gen_ai.prompt.0.content", str(transcript))
 
     if voice := kwargs.get("voice"):
         if isinstance(voice, dict):
@@ -60,7 +70,7 @@ def set_response_attributes(span: Span, response: Any) -> None:
     try:
         if isinstance(response, dict):
             span.set_attribute("gen_ai.response.type", response.get("type", "unknown"))
-            span.set_attribute("gen_ai.prompt.1.role", "Output")
+            set_content_attribute(span, "gen_ai.prompt.1.role", "Output")
             if "duration" in response:
                 span.set_attribute("gen_ai.audio.duration", response["duration"] / 60)
 
@@ -72,10 +82,11 @@ def set_response_attributes(span: Span, response: Any) -> None:
             if hasattr(response, "duration") and response.duration:
                 span.set_attribute("gen_ai.audio.duration", (response.duration) / 60)
 
-            if hasattr(response, "text") and response.text:
-                span.set_attribute("gen_ai.response.text", response.text)
-                span.set_attribute("gen_ai.prompt.1.content", response.text)
-                span.set_attribute("gen_ai.prompt.1.role", "Output")
+            # The 4.x binary responses expose ``text`` as a method, not a transcript.
+            if isinstance(getattr(response, "text", None), str) and response.text:
+                set_content_attribute(span, "gen_ai.response.text", response.text)
+                set_content_attribute(span, "gen_ai.prompt.1.content", response.text)
+                set_content_attribute(span, "gen_ai.prompt.1.role", "Output")
 
             return
 

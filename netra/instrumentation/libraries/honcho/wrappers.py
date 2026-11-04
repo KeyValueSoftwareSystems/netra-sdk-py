@@ -9,6 +9,7 @@ from netra.instrumentation.libraries.honcho.utils import (
     ResponseAttrFn,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.span_utils import should_capture_content
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -68,7 +69,8 @@ class _BaseStreamingWrapper:
                 content = final.get("content", "")
                 if content:
                     self._span.set_attribute(attrs.RESPONSE_LENGTH, len(content))
-                    self._span.set_attribute(attrs.OUTPUT, content)
+                    if should_capture_content():
+                        self._span.set_attribute(attrs.OUTPUT, content)
                 self._span.set_status(Status(StatusCode.OK))
         except Exception:
             logger.debug("%s: failed to finalize streaming span", attrs.LOG_PREFIX, exc_info=True)

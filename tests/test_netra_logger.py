@@ -374,11 +374,15 @@ class TestPublicApiMisuseNotice:
                 "set_session_id: session_id must be a string",
             ),
             (
-                lambda: Netra.set_user_id(None),  # type: ignore[arg-type]
+                lambda: Netra.set_user_id(123),  # type: ignore[arg-type]
                 logging.ERROR,
                 "set_user_id: user_id must be a string",
             ),
-            (lambda: Netra.set_tenant_id(""), logging.WARNING, "set_tenant_id: Tenant ID must be provided"),
+            (
+                lambda: Netra.set_tenant_id(123),  # type: ignore[arg-type]
+                logging.ERROR,
+                "set_tenant_id: tenant_id must be a string",
+            ),
             (lambda: Netra.set_custom_attributes("", None), logging.WARNING, "Both key and value must be provided"),
         ],
     )

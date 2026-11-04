@@ -7,6 +7,8 @@ from opentelemetry.semconv_ai import (
     SpanAttributes,
 )
 
+from netra.instrumentation.span_utils import should_capture_content
+
 
 def should_suppress_instrumentation() -> bool:
     """Check if instrumentation should be suppressed for GenAI."""
@@ -39,7 +41,7 @@ def set_request_attributes(span: Any, args: Tuple[Any, ...], kwargs: Dict[str, A
             if (value := getattr(config, attr_name, None)) is not None:
                 span.set_attribute(span_attr, value)
 
-    if contents := kwargs.get("contents"):
+    if should_capture_content() and (contents := kwargs.get("contents")):
         if isinstance(contents, str):
             span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", contents)
             span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
@@ -74,9 +76,11 @@ def set_response_attributes(span: Any, response: Any) -> None:
     if not span.is_recording():
         return
 
+    capture = should_capture_content()
     if isinstance(response, str):
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response)
-        span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+        if capture:
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response)
+            span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
         return
 
     usage = _extract_usage_metadata(response)
@@ -97,6 +101,9 @@ def set_response_attributes(span: Any, response: Any) -> None:
 
         if (prompt := getattr(usage, "prompt_token_count", None)) is not None:
             span.set_attribute(SpanAttributes.LLM_USAGE_PROMPT_TOKENS, prompt)
+
+        if not capture:
+            return
 
         if isinstance(response, dict):
             if isinstance(text := response.get("content"), str) and text:

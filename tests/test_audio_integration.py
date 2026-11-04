@@ -17,9 +17,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from typing import Any, Awaitable, Callable, Dict, List, Optional
 from unittest.mock import MagicMock
 
+import httpx
 import pytest
 
 from netra.config import Config
+from netra.instrumentation.libraries.livekit import audio_sender as audio_sender_module
 from netra.instrumentation.libraries.livekit.audio_capture import (
     AudioCoordinatorRegistry,
     SessionAudioCoordinator,
@@ -106,6 +108,8 @@ class RecordedRequest:
 
     headers: Dict[str, str]
     body: bytes
+    # How many earlier requests had already been answered when this one arrived.
+    answered_before: int = 0
 
     @property
     def span_id(self) -> Optional[str]:
@@ -125,11 +129,17 @@ class IngestRecorder:
     # degraded backend would. Only the teardown-budget tests set it.
     delay_seconds: float = 0.0
     requests: List[RecordedRequest] = field(default_factory=list)
+    answered: int = 0
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     def record(self, request: RecordedRequest) -> None:
         with self._lock:
+            request.answered_before = self.answered
             self.requests.append(request)
+
+    def mark_answered(self) -> None:
+        with self._lock:
+            self.answered += 1
 
     def snapshot(self) -> List[RecordedRequest]:
         with self._lock:
@@ -161,6 +171,7 @@ class _IngestHandler(BaseHTTPRequestHandler):
         self.send_response(self.recorder.status_code)
         self.send_header("Content-Length", "0")
         self.end_headers()
+        self.recorder.mark_answered()
 
     def log_message(self, format: str, *args: Any) -> None:
         """Silence the default stderr access log."""
@@ -324,8 +335,10 @@ class TestAudioChunkSenderWireContract:
 
         for span_id, expected_chunks in ((USER_SPAN_ID, 3), (AGENT_SPAN_ID, 2)):
             sequences = [int(r.headers[HEADER_SEQUENCE]) for r in recorder.chunks_for(span_id)]
-            # Each span sends its data chunks plus one terminator.
-            assert sequences == list(range(expected_chunks + 1)), span_id
+            # Each span sends its data chunks plus one terminator. Uploads run in
+            # parallel, so arrival order is not guaranteed; the endpoint stores
+            # chunks by sequence number and only needs 0..N with no gaps.
+            assert sorted(sequences) == list(range(expected_chunks + 1)), span_id
 
     def test_a_span_is_terminated_exactly_once(self, ingest_server) -> None:
         url, recorder = ingest_server
@@ -552,11 +565,51 @@ class TestAudioChunkSenderFailures:
         assert sender.stats.circuit_tripped is True
         assert sender.stats.chunks_sent == 0
         assert sender.stats.delivery_complete is False
-        # Up to ``_MAX_INFLIGHT_POSTS`` may already be on the wire when the first
-        # 401 trips the circuit; nothing further is accepted after that.
-        assert 1 <= len(recorder.snapshot()) <= 4
+        # Uploads stay serial until one is accepted, so the rejected credential
+        # costs exactly one request.
+        assert len(recorder.snapshot()) == 1
         assert "circuit_tripped" in sender.stats.incomplete_reasons()
         assert "session_last_missing" in sender.stats.incomplete_reasons()
+
+    def test_a_retry_does_not_go_out_once_another_post_tripped_the_circuit(self, monkeypatch) -> None:
+        attempts: List[httpx.Request] = []
+
+        async def drive() -> bool:
+            sender = build_sender("http://ingest.invalid/telemetry/v1/audio/chunk")
+            real_sleep = asyncio.sleep
+
+            async def sleep_then_trip(delay: float) -> None:
+                # A concurrent POST is rejected while this one waits to retry.
+                sender._trip_circuit("HTTP 401")
+                await real_sleep(0)
+
+            monkeypatch.setattr(audio_sender_module.asyncio, "sleep", sleep_then_trip)
+            sender._client = httpx.AsyncClient(
+                transport=httpx.MockTransport(lambda request: attempts.append(request) or httpx.Response(500))
+            )
+            try:
+                return await sender._post(b"pcm", {})
+            finally:
+                await sender._client.aclose()
+
+        assert asyncio.run(drive()) is False
+        assert len(attempts) == 1
+
+    def test_the_session_terminator_waits_for_every_chunk_to_be_answered(self, ingest_server) -> None:
+        url, recorder = ingest_server
+        recorder.delay_seconds = 0.1
+
+        async def scenario(sender: AudioChunkSender) -> None:
+            enqueue_frames(sender, 6, role=SpeakerRole.USER, span_id=USER_SPAN_ID)
+
+        run_call(url, scenario, max_batch_frames=1)
+
+        requests = recorder.snapshot()
+        session_end = [r for r in requests if r.headers.get(HEADER_SESSION_LAST) == "true"]
+        assert len(session_end) == 1
+        # The endpoint renders the session on receipt, so every chunk must have
+        # been answered before the terminator arrives.
+        assert session_end[0].answered_before == len(requests) - 1
 
     def test_a_server_error_is_retried_then_given_up_on(self, ingest_server) -> None:
         url, recorder = ingest_server

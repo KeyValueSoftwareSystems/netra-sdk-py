@@ -1,5 +1,6 @@
 import time
-from typing import Any, Callable, Dict, Iterator, Literal, Tuple
+from collections.abc import Iterator as IteratorABC
+from typing import Any, Awaitable, Callable, Dict, Iterator, Literal, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.trace import SpanKind, Tracer, set_span_in_context
@@ -10,6 +11,7 @@ from netra.instrumentation.libraries.cartesia.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
+from netra.instrumentation.span_utils import set_content_attribute
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -49,6 +51,70 @@ def _wrap_tts(
                 raise
 
     return wrapper
+
+
+def _wrap_tts_async(
+    tracer: Tracer,
+    span_name: str,
+) -> Callable[..., Awaitable[Any]]:
+    """
+    Wrap an async method of the 4.x resources with OpenTelemetry instrumentation.
+
+    Args:
+        tracer: The OpenTelemetry tracer to use for instrumentation.
+        span_name: The name of the span to create.
+    """
+
+    async def wrapper(
+        wrapped: Callable[..., Awaitable[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> Any:
+        if should_suppress_instrumentation():
+            return await wrapped(*args, **kwargs)
+
+        with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
+            try:
+                set_request_attributes(span, kwargs)
+                start_time = time.time()
+                response = await wrapped(*args, **kwargs)
+                end_time = time.time()
+                set_response_attributes(span, response)
+                span.set_attribute("cartesia.response.duration", end_time - start_time)
+                return response
+            except Exception as e:
+                logger.error("netra.instrumentation.libraries.cartesia: %s", e)
+                raise
+
+    return wrapper
+
+
+def async_tts_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """
+    Wrap the async tts methods with OpenTelemetry instrumentation.
+
+    Args:
+        tracer: The OpenTelemetry tracer to use for instrumentation.
+    """
+    return _wrap_tts_async(tracer, TTS_SPAN_NAME)
+
+
+def async_stt_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """
+    Wrap the async stt methods with OpenTelemetry instrumentation.
+
+    Args:
+        tracer: The OpenTelemetry tracer to use for instrumentation.
+    """
+    return _wrap_tts_async(tracer, STT_SPAN_NAME)
+
+
+def async_voice_changer_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """
+    Wrap the async voice changer methods with OpenTelemetry instrumentation.
+
+    Args:
+        tracer: The OpenTelemetry tracer to use for instrumentation.
+    """
+    return _wrap_tts_async(tracer, VOICE_CHANGER_SPAN_NAME)
 
 
 def tts_bytes_wrapper(tracer: Tracer) -> Callable[..., Any]:
@@ -110,17 +176,38 @@ class TtsWebSocketProxy:
 
         self._span.end()
 
-    def send(self, *args: Any, **kwargs: Any) -> Iterator[Any]:
-        try:
-            set_request_attributes(self._span, kwargs)
-            for chunk in self._ws.send(*args, **kwargs):
-                yield chunk
+    def send(self, *args: Any, **kwargs: Any) -> Any:
+        """Send a request, ending the span once its output has been consumed.
 
+        ``send(stream=False)`` returns one aggregated output rather than an
+        iterator, so the result is passed through as-is in that case.
+        """
+        set_request_attributes(self._span, kwargs)
+        try:
+            result = self._ws.send(*args, **kwargs)
+        except Exception as e:
+            self._end_span(e)
+            raise
+
+        if isinstance(result, IteratorABC):
+            return self._iterate(result)
+        self._end_span()
+        return result
+
+    def _iterate(self, chunks: Iterator[Any]) -> Iterator[Any]:
+        try:
+            for chunk in chunks:
+                yield chunk
         except Exception as e:
             self._end_span(e)
             raise
 
         self._end_span()
+
+    def __getattr__(self, name: str) -> Any:
+        # Everything not instrumented (``connect``, ``context``, ...) is the
+        # underlying connection's.
+        return getattr(self._ws, name)
 
     def close(self) -> None:
         try:
@@ -167,7 +254,7 @@ class SttWebsocketProxy(ObjectProxy):  # type: ignore[misc]
                         transcripts.append(text)
                     elif result.get("type") == "done":
                         full_text = "".join(transcripts)
-                        self._span.set_attribute("gen_ai.prompt.1.content", full_text)
+                        set_content_attribute(self._span, "gen_ai.prompt.1.content", full_text)
                 except Exception as e:
                     logger.debug("Failed to set Cartesia STT response attributes from result: %s", e)
                 yield result

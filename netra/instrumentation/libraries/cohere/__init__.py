@@ -20,11 +20,12 @@ from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer, set_span_in_
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
+from netra.instrumentation.span_utils import should_capture_content as should_send_prompts
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
-_instruments = ("cohere >=4.2.7, <6",)
+_instruments = ("cohere >=4.2.7, <8",)
 
 WRAPPED_METHODS = [
     {
@@ -59,12 +60,6 @@ WRAPPED_METHODS = [
 # backend queries key off it -- so it is pinned here rather than derived from
 # ``__name__``, which would silently change the moment this file moves.
 _TRACER_NAME = "netra.instrumentation.cohere"
-
-
-def should_send_prompts() -> bool:
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or context_api.get_value(
-        "override_enable_content_tracing"
-    )
 
 
 def _set_span_attribute(span: Span, name: str, value: Any) -> None:

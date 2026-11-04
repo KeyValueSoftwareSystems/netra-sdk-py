@@ -1,3 +1,4 @@
+import inspect
 import time
 from typing import Any, AsyncIterator, Callable, Dict
 
@@ -13,6 +14,7 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
     _safe_get_attribute,
     _safe_set_attribute,
     _set_assistant_response_content,
+    _set_content_attribute,
     _set_timing_attributes,
     get_node_span_name,
     set_node_attributes,
@@ -23,6 +25,54 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
+
+
+def _infer_agent_name(agent: Any, wrapped: Callable[..., Any], kwargs: Dict[str, Any]) -> Dict[str, Any]:
+    """Infer ``agent.name`` from the caller's variables, as pydantic-ai itself does.
+
+    pydantic-ai inspects the frame that called ``run``/``run_sync``. Behind this
+    wrapper that frame is ours, so pydantic-ai would miss the name or take it
+    from our own ``instance`` variable. We infer it from the real call site and
+    then pass ``infer_name=False`` so pydantic-ai does not retry from our frame.
+    Must be called directly from a wrapper function, whose caller is the user's
+    call site. Returns the kwargs to call ``wrapped`` with.
+    """
+    # The run wrapper is also applied to Model.request; only agents have names.
+    if not hasattr(agent, "_infer_name") or not kwargs.get("infer_name", True) or agent.name is not None:
+        return kwargs
+    _set_name_from_call_site(agent)
+    try:
+        if "infer_name" in inspect.signature(wrapped).parameters:
+            return {**kwargs, "infer_name": False}
+    except (TypeError, ValueError):
+        pass
+    return kwargs
+
+
+def _set_name_from_call_site(agent: Any) -> None:
+    # Three frames up: this helper -> _infer_agent_name -> wrapper -> caller.
+    frame = inspect.currentframe()
+    try:
+        caller = frame
+        for _ in range(3):
+            caller = caller.f_back if caller is not None else None
+        while caller is not None and "wrapt" in caller.f_code.co_filename:
+            caller = caller.f_back
+        if caller is None:
+            return
+        for name, item in caller.f_locals.items():
+            if item is agent:
+                agent.name = name
+                return
+        if caller.f_locals is not caller.f_globals:
+            for name, item in caller.f_globals.items():
+                if item is agent:
+                    agent.name = name
+                    return
+    except Exception:
+        logger.debug("pydantic_ai: failed to infer agent name", exc_info=True)
+    finally:
+        del frame
 
 
 class InstrumentedAgentRun:
@@ -83,7 +133,7 @@ class InstrumentedAgentRun:
         output = _safe_get_attribute(data, "output")
         if output is not None:
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -124,6 +174,9 @@ def agent_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
     """Wrapper for Agent.run method."""
 
     def wrapper(wrapped: Callable, instance: Any, args: tuple, kwargs: dict) -> Any:  # type: ignore[type-arg]
+        if not should_suppress_instrumentation():
+            kwargs = _infer_agent_name(instance, wrapped, kwargs)
+
         async def async_wrapper() -> Any:
             if should_suppress_instrumentation():
                 return await wrapped(*args, **kwargs)
@@ -141,7 +194,7 @@ def agent_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
                     if user_prompt:
                         _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                        _safe_set_attribute(
+                        _set_content_attribute(
                             span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
                         )
 
@@ -159,8 +212,10 @@ def agent_run_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
                     span.set_status(Status(StatusCode.OK))
 
-                    # Return instrumented AgentRun that will capture child nodes
-                    return InstrumentedAgentRun(result, tracer, "pydantic_ai.agent.run", span)
+                    # Node spans come from the Agent.iter wrapper, which run() calls
+                    # internally; return the real result so callers get the type
+                    # pydantic-ai documents.
+                    return result
 
                 except Exception as e:
                     _handle_span_error(span, e)
@@ -178,6 +233,8 @@ def agent_run_sync_wrapper(tracer: Tracer) -> Callable[..., Any]:
         if should_suppress_instrumentation():
             return wrapped(*args, **kwargs)
 
+        kwargs = _infer_agent_name(instance, wrapped, kwargs)
+
         # Extract key parameters
         user_prompt = args[0] if args else kwargs.get("user_prompt", "")
 
@@ -192,30 +249,17 @@ def agent_run_sync_wrapper(tracer: Tracer) -> Callable[..., Any]:
 
                 if user_prompt:
                     _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                    _safe_set_attribute(
+                    _set_content_attribute(
                         span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH
                     )
 
                 start_time = time.time()
 
-                # Use iter method to capture all nodes, then get final result
-                import asyncio
-
-                async def _run_with_instrumentation() -> Any:
-                    # Use the iter method directly without suppressing instrumentation
-                    # This will create the proper span hierarchy: run_sync -> iter -> nodes
-                    async with instance.iter(*args, **kwargs) as agent_run:
-                        async for node in agent_run:
-                            pass  # Just iterate through to capture all nodes
-                        return agent_run.result
-
-                # Run the async instrumentation in sync context
-                loop = asyncio.new_event_loop()
-                asyncio.set_event_loop(loop)
-                try:
-                    result = loop.run_until_complete(_run_with_instrumentation())
-                finally:
-                    loop.close()
+                # Delegate to the real run_sync. It owns event-loop handling,
+                # nested-run detection and agent-name inference; it calls
+                # Agent.run (and so Agent.iter), whose wrappers emit the child
+                # run and node spans under this one.
+                result = wrapped(*args, **kwargs)
 
                 end_time = time.time()
 
@@ -266,7 +310,7 @@ class InstrumentedAgentRunContext:
 
         if self._user_prompt:
             _safe_set_attribute(self._span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._span, f"{SpanAttributes.LLM_PROMPTS}.0.content", self._user_prompt, MAX_CONTENT_LENGTH
             )
 
@@ -389,13 +433,15 @@ class InstrumentedAgentRunFromStream:
         # Set assistant content on current iter span
         if current_span and current_span.is_recording():
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+            _set_content_attribute(
+                current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+            )
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
         # Set assistant content on parent run_stream span
         if self._parent_span and self._parent_span.is_recording():
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -497,13 +543,15 @@ class InstrumentedStreamedRunResultIterable:
         # Set assistant content on current iter span
         if current_span and current_span.is_recording():
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+            _set_content_attribute(
+                current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
+            )
             _safe_set_attribute(current_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
 
         # Set assistant content on parent run_stream span
         if self._parent_span and self._parent_span.is_recording():
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -563,7 +611,7 @@ class InstrumentedStreamedRunResult:
         output = _safe_get_attribute(data, "output")
         if output is not None:
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _safe_set_attribute(
+            _set_content_attribute(
                 self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH
             )
             _safe_set_attribute(self._parent_span, f"{SpanAttributes.LLM_COMPLETIONS}.0.finish_reason", "completed")
@@ -617,7 +665,7 @@ def agent_run_stream_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-a
 
             if user_prompt:
                 _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
+                _set_content_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
 
             # Execute the original method to get the async context manager
             start_time = time.time()
@@ -657,9 +705,9 @@ def tool_function_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-arg]
 
                 # Add function arguments (be careful with sensitive data)
                 if args:
-                    _safe_set_attribute(span, "tool.args", str(args), MAX_ARGS_LENGTH)
+                    _set_content_attribute(span, "tool.args", str(args), MAX_ARGS_LENGTH)
                 if kwargs:
-                    _safe_set_attribute(span, "tool.kwargs", str(kwargs), MAX_ARGS_LENGTH)
+                    _set_content_attribute(span, "tool.kwargs", str(kwargs), MAX_ARGS_LENGTH)
 
                 # Execute the original method
                 start_time = time.time()
@@ -667,7 +715,7 @@ def tool_function_wrapper(tracer: Tracer) -> Callable:  # type: ignore[type-arg]
                 end_time = time.time()
 
                 # Set result attributes
-                _safe_set_attribute(span, "tool.result", str(result), MAX_ARGS_LENGTH)
+                _set_content_attribute(span, "tool.result", str(result), MAX_ARGS_LENGTH)
                 _set_timing_attributes(span, start_time, end_time)
 
                 # Set comprehensive response attributes if result has pydantic_ai structure
