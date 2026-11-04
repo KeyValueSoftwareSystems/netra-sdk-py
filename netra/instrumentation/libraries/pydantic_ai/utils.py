@@ -1,4 +1,3 @@
-import logging
 from typing import Any, Dict, Optional
 
 from opentelemetry import context as context_api
@@ -7,8 +6,9 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.instrumentation.span_utils import should_capture_content
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # Constants for consistent truncation and limits
 MAX_CONTENT_LENGTH = 1000
