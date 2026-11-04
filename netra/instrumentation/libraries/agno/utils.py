@@ -8,8 +8,8 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
 logger = get_logger(__name__)

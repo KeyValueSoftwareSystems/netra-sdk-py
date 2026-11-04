@@ -16,7 +16,9 @@ from netra.instrumentation.message_builder import (
     build_chat_input,
     build_completion_output,
     build_response_api_input,
+    model_as_dict,
 )
+from netra.netra_logger import get_logger
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
 logger = get_logger(__name__)

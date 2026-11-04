@@ -22,7 +22,6 @@ from netra.instrumentation.libraries.pydantic_ai.utils import (
     should_suppress_instrumentation,
 )
 from netra.netra_logger import get_logger
-from netra.instrumentation.message_builder import build_messages
 
 logger = get_logger(__name__)
 

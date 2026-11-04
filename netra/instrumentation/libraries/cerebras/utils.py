@@ -6,16 +6,15 @@ from opentelemetry.semconv._incubating.attributes.gen_ai_attributes import GEN_A
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, LLMRequestTypeValues, SpanAttributes
 from opentelemetry.trace import Span
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import (
     build_chat_input,
     build_completion_output,
     build_messages,
     model_as_dict,
 )
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
-logger = logging.getLogger(__name__)
 
 GEN_AI_SYSTEM = "gen_ai.system"
 GEN_AI_SYSTEM_CEREBRAS = "cerebras"

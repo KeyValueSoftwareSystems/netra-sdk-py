@@ -6,12 +6,12 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import (
     build_chat_input,
     build_completion_output,
     build_response_api_input,
 )
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
