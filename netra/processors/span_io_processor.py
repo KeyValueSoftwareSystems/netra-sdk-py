@@ -5,8 +5,8 @@ from typing import Any, Callable, Dict, Mapping, Optional
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 

@@ -180,9 +180,9 @@ NETRA_CONVERSATION_TRUNCATED = "netra.conversation.truncated"
 # ---------------------------------------------------------------------------
 
 # The attribute holding a serialised ``ChatContext`` (on ``llm_node`` and
-# ``eou_detection``). Expanded into indexed ``gen_ai.prompt.*`` attributes rather
-# than mirrored verbatim into ``input``: the raw JSON also contains non-message
-# items (``agent_config_update``, handoffs) and reads as an opaque blob.
+# ``eou_detection``). Expanded into structured ``input`` messages rather than
+# mirrored verbatim: the raw JSON also contains non-message items
+# (``agent_config_update``, handoffs) and reads as an opaque blob.
 # livekit-agents >= 1.7.0 writes it as ``lk.pii.chat_ctx``; both names are accepted.
 CHAT_CTX_ATTRIBUTES = frozenset({"lk.chat_ctx", "lk.pii.chat_ctx"})
 
@@ -357,11 +357,9 @@ ATTRIBUTE_MAP: Dict[str, str] = {
 # one of the two names, so each is listed under both and a span is never written
 # twice.
 #
-# Additive: the original lk.* attribute is always preserved, and these never write
-# ``input``/``output`` directly — indexed ``gen_ai.prompt.*``/``gen_ai.completion.*``
-# attributes are emitted instead, the same convention Netra's own provider
-# instrumentations use, which is what lets ``SpanIOProcessor`` assemble a
-# multi-message ``input``.
+# Additive: the original lk.* attribute is always preserved.
+# ``_ConversationRecorder`` accumulates these into structured ``input``/``output``
+# JSON arrays.
 CONVERSATION_MAP: Dict[str, ConversationTarget] = {
     # agent_turn: the system instructions in force for the turn. LiveKit writes it
     # before ``lk.user_input``, so it is the first prompt message and the

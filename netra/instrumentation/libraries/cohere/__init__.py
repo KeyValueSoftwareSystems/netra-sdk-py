@@ -20,8 +20,8 @@ from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer, set_span_in_
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
