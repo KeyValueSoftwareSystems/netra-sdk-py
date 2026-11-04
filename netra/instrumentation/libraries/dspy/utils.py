@@ -7,6 +7,8 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.util.types import AttributeValue
 
+from netra.instrumentation.message_builder import build_messages
+
 # Constants for span kinds
 SPAN_KIND_LLM = "llm"
 SPAN_KIND_CHAIN = "chain"
@@ -153,53 +155,48 @@ def get_llm_invocation_parameters(lm: Any, call_kwargs: Mapping[str, Any]) -> Di
 
 
 def extract_llm_input_messages(arguments: Mapping[str, Any]) -> Iterator[Tuple[str, Any]]:
-    """
-    Extract and format input messages for LLM calls.
-    Handles both prompt (string) and messages (list) formats.
-    """
+    """Extract structured input from LLM call arguments as a single (key, value) pair."""
+    entries = []
     if isinstance(prompt := arguments.get("prompt"), str):
-        yield f"{SpanAttributes.LLM_PROMPTS}.0.role", "user"
-        yield f"{SpanAttributes.LLM_PROMPTS}.0.content", prompt
+        entries.append({"role": "user", "content": prompt})
     elif isinstance(messages := arguments.get("messages"), list):
-        for i, message in enumerate(messages):
+        for message in messages:
             if not isinstance(message, dict):
                 continue
-            if (role := message.get("role")) is not None:
-                yield f"{SpanAttributes.LLM_PROMPTS}.{i}.role", role
-            if (content := message.get("content")) is not None:
-                yield f"{SpanAttributes.LLM_PROMPTS}.{i}.content", str(content)
+            role = message.get("role", "user")
+            content = message.get("content")
+            if content is not None:
+                entries.append({"role": role, "content": str(content)})
+    if entries:
+        yield "input", build_messages(entries)
 
 
 def extract_llm_output_messages(response: Any) -> Iterator[Tuple[str, Any]]:
-    """
-    Extract and format output messages from LLM response.
-    """
-    # Handle list of string responses
+    """Extract structured output from LLM response as a single (key, value) pair."""
+    entries = []
     if isinstance(response, list):
-        for i, message in enumerate(response):
+        for message in response:
             if isinstance(message, str):
-                yield f"{SpanAttributes.LLM_COMPLETIONS}.{i}.role", "assistant"
-                yield f"{SpanAttributes.LLM_COMPLETIONS}.{i}.content", message
-    # Handle single string response
+                entries.append({"role": "assistant", "content": message})
     elif isinstance(response, str):
-        yield f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant"
-        yield f"{SpanAttributes.LLM_COMPLETIONS}.0.content", response
-    # Handle structured response objects
+        entries.append({"role": "assistant", "content": response})
     elif hasattr(response, "choices"):
         try:
             response_dict = convert_to_dict(response)
-            choices = response_dict.get("choices", [])
-            for i, choice in enumerate(choices):
+            for choice in response_dict.get("choices", []):
                 if isinstance(choice, dict):
                     if message := choice.get("message"):
-                        if role := message.get("role"):
-                            yield f"{SpanAttributes.LLM_COMPLETIONS}.{i}.role", role
-                        if content := message.get("content"):
-                            yield f"{SpanAttributes.LLM_COMPLETIONS}.{i}.content", str(content)
-                    if finish_reason := choice.get("finish_reason"):
-                        yield f"{SpanAttributes.LLM_COMPLETIONS}.{i}.finish_reason", finish_reason
+                        role = message.get("role", "assistant")
+                        content = message.get("content")
+                        if content:
+                            entry = {"role": role, "content": str(content)}
+                            if finish_reason := choice.get("finish_reason"):
+                                entry["finish_reason"] = finish_reason
+                            entries.append(entry)
         except Exception:
             pass
+    if entries:
+        yield "output", build_messages(entries)
 
 
 def extract_usage_info(response: Any) -> Iterator[Tuple[str, Any]]:

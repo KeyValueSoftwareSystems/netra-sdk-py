@@ -5,11 +5,21 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace.status import Status, StatusCode
 
+from netra.instrumentation.message_builder import build_messages
+
 # Constants for consistent truncation and limits
 MAX_CONTENT_LENGTH = 1000
 MAX_ARGS_LENGTH = 500
 MAX_ITEMS_TO_PROCESS = 5
 MAX_FUNCTIONS_TO_PROCESS = 3
+
+# Conversation role for request parts, which carry a ``part_kind`` rather than a ``role``.
+_ROLE_BY_PART_KIND = {
+    "system-prompt": "system",
+    "user-prompt": "user",
+    "tool-return": "tool",
+    "retry-prompt": "user",
+}
 
 
 def _safe_set_attribute(span: Any, key: str, value: Any, max_length: Optional[int] = None) -> None:
@@ -42,20 +52,27 @@ def _set_timing_attributes(span: Any, start_time: float, end_time: float) -> Non
     _safe_set_attribute(span, "llm.response.duration", duration_ms)
 
 
+def _user_message(content: Any) -> str:
+    """Serialise *content* as a single user message for ``input``."""
+    return build_messages([{"role": "user", "content": str(content)[:MAX_CONTENT_LENGTH]}])
+
+
+def _assistant_message(content: Any, finish_reason: Optional[str] = None) -> str:
+    """Serialise *content* as a single assistant message for ``output``."""
+    entry: Dict[str, Any] = {"role": "assistant", "content": str(content)[:MAX_CONTENT_LENGTH]}
+    if finish_reason:
+        entry["finish_reason"] = finish_reason
+    return build_messages([entry])
+
+
 def _set_assistant_response_content(span: Any, result: Any, finish_reason: str = "completed") -> None:
-    """Set assistant response content in OpenAI wrapper format."""
+    """Set assistant response content as structured output."""
     if not span.is_recording():
         return
 
-    # Set the assistant response in the same format as OpenAI wrapper
-    index = 0  # Always use index 0 for pydantic_ai responses
-    _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.role", "assistant")
-    _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.finish_reason", finish_reason)
-
-    # Get the output content from the result
     output = _safe_get_attribute(result, "output")
     if output is not None:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{index}.content", output, MAX_CONTENT_LENGTH)
+        _safe_set_attribute(span, "output", _assistant_message(output, finish_reason))
 
 
 def set_pydantic_request_attributes(
@@ -114,8 +131,7 @@ def set_pydantic_response_attributes(span: Any, result: Any) -> None:
     # Set output content if available
     output = _safe_get_attribute(result, "output")
     if output is not None:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+        _safe_set_attribute(span, "output", _assistant_message(output))
 
 
 def should_suppress_instrumentation() -> bool:
@@ -172,8 +188,7 @@ def _set_user_prompt_node_attributes(span: Any, node: Any) -> None:
     # User prompt content
     user_prompt = _safe_get_attribute(node, "user_prompt")
     if user_prompt:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.0.content", user_prompt, MAX_CONTENT_LENGTH)
+        _safe_set_attribute(span, "input", _user_message(user_prompt))
         _safe_set_attribute(span, "pydantic_ai.user_prompt", user_prompt, MAX_CONTENT_LENGTH)
 
     # Instructions
@@ -211,6 +226,18 @@ def _set_user_prompt_node_attributes(span: Any, node: Any) -> None:
             _safe_set_attribute(span, f"pydantic_ai.system_prompt_dynamic_functions.{key}", func_type)
 
 
+def _request_part_entry(part: Any, role: Any, content: Any) -> Dict[str, Any]:
+    """Build an input message entry for a model request part."""
+    part_kind = _safe_get_attribute(part, "part_kind")
+    entry: Dict[str, Any] = {
+        "role": role or _ROLE_BY_PART_KIND.get(part_kind, "user"),
+        "content": str(content)[:MAX_CONTENT_LENGTH],
+    }
+    if part_kind == "tool-return" and (tool_call_id := _safe_get_attribute(part, "tool_call_id")):
+        entry["tool_call_id"] = tool_call_id
+    return entry
+
+
 def _set_model_request_node_attributes(span: Any, node: Any) -> None:
     """Set attributes specific to ModelRequestNode."""
     request = _safe_get_attribute(node, "request")
@@ -221,22 +248,22 @@ def _set_model_request_node_attributes(span: Any, node: Any) -> None:
     parts = _safe_get_attribute(request, "parts")
     if parts:
         _safe_set_attribute(span, "pydantic_ai.request.parts_count", len(parts))
+        input_entries = []
 
         for i, part in enumerate(parts[:MAX_ITEMS_TO_PROCESS]):
             part_type = type(part).__name__
             _safe_set_attribute(span, f"pydantic_ai.request.parts.{i}.type", part_type)
 
-            # Content for text parts
             content = _safe_get_attribute(part, "content")
             if content:
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{i}.content", content, MAX_CONTENT_LENGTH)
                 _safe_set_attribute(span, f"pydantic_ai.request.parts.{i}.content", content, MAX_CONTENT_LENGTH)
 
-            # Role for message parts
             role = _safe_get_attribute(part, "role")
             if role:
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_PROMPTS}.{i}.role", role)
                 _safe_set_attribute(span, f"pydantic_ai.request.parts.{i}.role", role)
+
+            if content:
+                input_entries.append(_request_part_entry(part, role, content))
 
             # Timestamp, tool call information
             _safe_set_attribute(
@@ -251,6 +278,9 @@ def _set_model_request_node_attributes(span: Any, node: Any) -> None:
             _safe_set_attribute(
                 span, f"pydantic_ai.request.parts.{i}.args", _safe_get_attribute(part, "args"), MAX_ARGS_LENGTH
             )
+
+        if input_entries:
+            _safe_set_attribute(span, "input", build_messages(input_entries))
 
     # Request metadata
     _safe_set_attribute(span, "pydantic_ai.request.model_name", _safe_get_attribute(request, "model_name"))
@@ -268,17 +298,16 @@ def _set_call_tools_node_attributes(span: Any, node: Any) -> None:
     parts = _safe_get_attribute(response, "parts")
     if parts:
         _safe_set_attribute(span, "pydantic_ai.response.parts_count", len(parts))
+        output_entries = []
 
         for i, part in enumerate(parts[:MAX_ITEMS_TO_PROCESS]):
             part_type = type(part).__name__
             _safe_set_attribute(span, f"pydantic_ai.response.parts.{i}.type", part_type)
 
-            # Content for text parts
             content = _safe_get_attribute(part, "content")
             if content:
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{i}.content", content, MAX_CONTENT_LENGTH)
                 _safe_set_attribute(span, f"pydantic_ai.response.parts.{i}.content", content, MAX_CONTENT_LENGTH)
-                _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.{i}.role", "assistant")
+                output_entries.append({"role": "assistant", "content": str(content)[:MAX_CONTENT_LENGTH]})
 
             # Tool call information
             _safe_set_attribute(
@@ -290,6 +319,9 @@ def _set_call_tools_node_attributes(span: Any, node: Any) -> None:
             _safe_set_attribute(
                 span, f"pydantic_ai.response.parts.{i}.args", _safe_get_attribute(part, "args"), MAX_ARGS_LENGTH
             )
+
+        if output_entries:
+            _safe_set_attribute(span, "output", build_messages(output_entries))
 
     # Usage information
     usage = _safe_get_attribute(response, "usage")
@@ -346,8 +378,7 @@ def _set_end_node_attributes(span: Any, node: Any) -> None:
     # Final output
     output = _safe_get_attribute(data, "output")
     if output is not None:
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-        _safe_set_attribute(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output, MAX_CONTENT_LENGTH)
+        _safe_set_attribute(span, "output", _assistant_message(output))
         _safe_set_attribute(span, "pydantic_ai.final_output", output, MAX_CONTENT_LENGTH)
 
     # Cost information
