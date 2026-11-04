@@ -672,14 +672,14 @@ class TestChatCompletionInputToolCalls:
 
         entries = self._input(messages)
 
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.1.content"] == "Hi!"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.2.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.role"] == "assistant"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.3.tool_call_id"] == "call_1"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.role"] == "tool"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.4.tool_call_id"] == "call_1"
+        assert [entry["role"] for entry in entries] == ["user", "assistant", "user", "assistant", "tool"]
+        assert entries[1]["content"] == "Hi!"
+        assert entries[3]["tool_call_id"] == "call_1"
+        assert entries[4]["tool_call_id"] == "call_1"
+
+    def test_no_recordable_messages_writes_no_input(self):
+        """Messages with no content or tool calls leave ``input`` untouched."""
+        assert "input" not in self._capture([{"role": "user", "content": None}])
 
 
 class TestRequestToolDefinitions:
@@ -864,7 +864,7 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
         assert result is response
         assert "gen_ai.request.tools" not in attrs
         assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-4o-mini"
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+        assert json.loads(attrs["output"]) == [{"role": "assistant", "content": "ok"}]
 
     def test_response_call_succeeds_when_tool_choice_cannot_be_serialised(self):
         from netra.instrumentation.libraries.openai.wrappers import responses_wrapper
@@ -878,7 +878,7 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
 
         assert result is response
         assert "llm.request.tool_choice" not in attrs
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+        assert json.loads(attrs["output"]) == [{"role": "assistant", "content": "ok"}]
 
     def test_response_call_succeeds_when_tool_model_dump_raises(self):
         from netra.instrumentation.libraries.openai.wrappers import responses_wrapper
@@ -912,8 +912,4 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
         assert result is response
         assert captured[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
         assert captured[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 12500
-        assert captured[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
-
-    def test_no_recordable_messages_writes_no_input(self):
-        """Messages with no content or tool calls leave ``input`` untouched."""
-        assert "input" not in self._capture([{"role": "user", "content": None}])
+        assert json.loads(captured["output"]) == [{"role": "assistant", "content": "ok"}]

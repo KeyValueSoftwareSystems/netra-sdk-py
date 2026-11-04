@@ -4,10 +4,11 @@ from opentelemetry import context as context_api
 from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
+
 
 def should_suppress_instrumentation() -> bool:
     """Check if instrumentation should be suppressed."""

@@ -10,8 +10,8 @@ from netra.instrumentation.libraries.cartesia.utils import (
     set_response_attributes,
     should_suppress_instrumentation,
 )
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 

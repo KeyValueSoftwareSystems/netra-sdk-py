@@ -330,14 +330,14 @@ class TestConversationMapping:
         assert _messages(attributes, side) == [expected]
         assert attributes[lk_key] == expected[1], "the original lk.pii.* attribute must be preserved"
 
-    def test_pii_chat_ctx_is_expanded_into_indexed_prompts(self, harness: _Harness) -> None:
+    def test_pii_chat_ctx_is_expanded_into_structured_input(self, harness: _Harness) -> None:
         chat_ctx = json.dumps({"items": [{"type": "message", "role": "user", "content": ["hi"]}]})
         attributes = _record(harness, "llm_node", {"lk.pii.chat_ctx": chat_ctx})
 
         assert _messages(attributes, "prompt") == [("user", "hi")]
         assert attributes["lk.pii.chat_ctx"] == chat_ctx
 
-    def test_conversation_content_does_not_write_input_directly(self, harness: _Harness) -> None:
+    def test_conversation_content_writes_structured_input(self, harness: _Harness) -> None:
         attributes = _record(harness, "agent_turn", {"lk.user_input": "hi"})
 
         assert "input" in attributes, "recorder writes structured input directly"

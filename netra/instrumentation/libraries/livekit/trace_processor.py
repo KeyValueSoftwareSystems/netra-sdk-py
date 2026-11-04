@@ -15,8 +15,6 @@ exactly what the parent-ward content propagation below does.
 
 from __future__ import annotations
 
-import itertools
-import logging
 import threading
 import weakref
 from typing import Any, Callable, Dict, Mapping, Optional, Tuple
@@ -77,8 +75,8 @@ from netra.instrumentation.libraries.livekit.utils import (
     stt_pricing_attributes_from,
     tts_pricing_attributes_from,
 )
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages, cap_message_content
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 

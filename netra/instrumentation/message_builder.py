@@ -4,13 +4,13 @@ Output format: ``[{"role": "…", "content": "…"}, …]``
 """
 
 import json
-import logging
 from typing import Any, Dict, List, Optional, Sequence
 
 from netra.config import get_attribute_max_len, get_conversation_max_len
 from netra.instrumentation.capture.bounded_capture import TRUNCATION_ELLIPSIS, TRUNCATION_MARKER_KEY
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 # ``json.dumps`` default item separator, counted when fitting entries to a budget.
 _ITEM_SEPARATOR_LEN = len(", ")

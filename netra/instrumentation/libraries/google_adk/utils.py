@@ -3,8 +3,8 @@ from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import build_messages
+from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 

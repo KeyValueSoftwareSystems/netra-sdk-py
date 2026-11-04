@@ -1,6 +1,5 @@
 """OpenTelemetry Mistral AI instrumentation"""
 
-import json
 import os
 from typing import Any, AsyncGenerator, Callable, Collection, Dict, Generator, Optional, Tuple, Union
 
@@ -25,8 +24,8 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
+from netra.instrumentation.message_builder import build_messages, to_json
 from netra.netra_logger import get_logger
-from netra.instrumentation.message_builder import build_messages, model_as_dict, to_json
 
 logger = get_logger(__name__)
 
