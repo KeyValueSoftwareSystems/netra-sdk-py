@@ -1,4 +1,4 @@
-name: Generate release notes (draft)
+name: Generate Release Note
 
 on:
   workflow_dispatch:
