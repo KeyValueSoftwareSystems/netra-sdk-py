@@ -360,6 +360,21 @@ prompt = Netra.prompts.get_prompt("my-prompt", use_cache=True, cache_ttl=300)
 Netra.prompts.clear_cache()
 ```
 
+### Linking prompts to traces
+
+Wrap your LLM calls in `use_prompt` to tag every span started inside the block with the prompt's identity (`netra.prompt.id`, `netra.prompt.name`, `netra.prompt.version`, `netra.prompt.label`):
+
+```python
+prompt = Netra.prompts.get_prompt("my-prompt", label="production")
+
+with Netra.prompts.use_prompt(prompt):
+    client.chat.completions.create(model="gpt-4o", messages=prompt["messages"])
+```
+
+- Pass the value returned by `get_prompt` as-is. A failed fetch (empty result) links nothing and does not raise.
+- Context is carried by `contextvars`, so spans in threads started with `threading.Thread` are not linked. `asyncio` tasks and `ThreadPoolExecutor` with copied context are.
+- Requires a Netra backend that returns prompt identity from `get_prompt`; older backends link nothing.
+
 Caching notes:
 
 - `use_cache` defaults to `False`; enable it per call when you want caching.
