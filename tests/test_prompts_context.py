@@ -89,5 +89,14 @@ def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> N
         with use_prompt(PROMPT), ThreadPoolExecutor(1) as pool:
             attrs = pool.submit(get_active_prompt_attributes).result()
         assert attrs[ATTR_PROMPT_ID] == "p1"
+
+        import threading
+
+        out: dict = {}
+        with use_prompt(PROMPT):
+            t = threading.Thread(target=lambda: out.update(get_active_prompt_attributes()))
+            t.start()
+            t.join()
+        assert out[ATTR_PROMPT_ID] == "p1"
     finally:
         ThreadingInstrumentor().uninstrument()

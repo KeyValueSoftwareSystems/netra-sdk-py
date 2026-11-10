@@ -372,7 +372,7 @@ with Netra.prompts.use_prompt(prompt):
 ```
 
 - Pass the value returned by `get_prompt` as-is. A failed fetch (empty result) links nothing and does not raise.
-- Context is carried by `contextvars`, so spans in threads started with `threading.Thread` are not linked. `asyncio` tasks and `ThreadPoolExecutor` with copied context are.
+- Spans in `threading.Thread`, `Timer` and `ThreadPoolExecutor` workers are linked while Netra's threading instrumentation is enabled (the default). With it disabled, only `asyncio` tasks inherit the prompt.
 - Requires a Netra backend that returns prompt identity from `get_prompt`; older backends link nothing.
 
 Caching notes:
