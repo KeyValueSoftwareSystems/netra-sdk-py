@@ -7,6 +7,7 @@ from opentelemetry.sdk.trace import SpanProcessor
 
 from netra.config import Config
 from netra.netra_logger import get_logger
+from netra.prompts.context import get_active_prompt_attributes
 from netra.session_manager import ATTR_SESSION_ID, ATTR_TENANT_ID, ATTR_USER_ID, SessionManager
 
 logger = get_logger(__name__)
@@ -78,6 +79,8 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
             span.set_attribute("library.name", Config.LIBRARY_NAME)
             span.set_attribute("library.version", Config.LIBRARY_VERSION)
             span.set_attribute("sdk.name", Config.SDK_NAME)
+            for key, value in get_active_prompt_attributes().items():
+                span.set_attribute(key, value)
 
             if session_id:
                 span.set_attribute(ATTR_SESSION_ID, session_id)
