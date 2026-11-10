@@ -4,6 +4,7 @@ from netra.cache import TTLCache
 from netra.config import Config
 from netra.netra_logger import NoticeLevel, get_logger
 from netra.prompts.client import PromptsHttpClient
+from netra.prompts.context import use_prompt
 
 logger = get_logger(__name__)
 
@@ -25,6 +26,8 @@ class Prompts:
         self._config = cfg
         self._client = PromptsHttpClient(cfg)
         self._cache: TTLCache[Any] = TTLCache(default_ttl=PROMPT_CACHE_TTL_SECONDS)
+
+    use_prompt = staticmethod(use_prompt)
 
     def clear_cache(self) -> None:
         """Clear all cached prompt entries."""
