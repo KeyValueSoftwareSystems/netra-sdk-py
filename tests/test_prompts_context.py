@@ -77,3 +77,17 @@ class TestSpanTagging:
         assert spans["inside"][ATTR_PROMPT_ID] == "p1"
         assert spans["inside"][ATTR_PROMPT_VERSION] == 3
         assert ATTR_PROMPT_ID not in spans["outside"]
+
+
+def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> None:
+    from concurrent.futures import ThreadPoolExecutor
+
+    from opentelemetry.instrumentation.threading import ThreadingInstrumentor
+
+    ThreadingInstrumentor().instrument()
+    try:
+        with use_prompt(PROMPT), ThreadPoolExecutor(1) as pool:
+            attrs = pool.submit(get_active_prompt_attributes).result()
+        assert attrs[ATTR_PROMPT_ID] == "p1"
+    finally:
+        ThreadingInstrumentor().uninstrument()
