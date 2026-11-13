@@ -19,9 +19,12 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      # Minor version only: an exact patch (like .python-version's 3.12.11) is not built for
+      # every runner image, so it breaks whenever `ubuntu-latest` moves to a newer Ubuntu.
       - uses: actions/setup-python@v5
+        id: setup-python
         with:
-          python-version-file: .python-version
+          python-version: "3.12"
 
       # Same version poetry.lock pins, so CI matches `poetry run pre-commit`.
       - name: Install pre-commit
@@ -30,7 +33,7 @@ jobs:
       - uses: actions/cache@v4
         with:
           path: ~/.cache/pre-commit
-          key: pre-commit-${{ runner.os }}-${{ hashFiles('.python-version', '.pre-commit-config.yaml') }}
+          key: pre-commit-${{ runner.os }}-${{ steps.setup-python.outputs.python-version }}-${{ hashFiles('.pre-commit-config.yaml') }}
 
       - name: Run pre-commit on all files
         run: pre-commit run --all-files --show-diff-on-failure
