@@ -8,9 +8,11 @@ from wrapt import wrap_function_wrapper
 from netra.instrumentation.libraries.openai.version import __version__
 from netra.instrumentation.libraries.openai.wrappers import (
     achat_wrapper,
+    adecisions_wrapper,
     aembeddings_wrapper,
     aresponses_wrapper,
     chat_wrapper,
+    decisions_wrapper,
     embeddings_wrapper,
     responses_wrapper,
 )
@@ -25,6 +27,10 @@ _instruments = ("openai >= 1.0.0",)
 # backend queries key off it -- so it is pinned here rather than derived from
 # ``__name__``, which would silently change the moment this file moves.
 _TRACER_NAME = "netra.instrumentation.openai"
+
+# The Decisions API only exists in newer openai releases, so its absence is expected
+# on older installs and must not be reported as an instrumentation failure.
+_DECISIONS_MODULE = "openai.resources.decisions"
 
 
 class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
@@ -87,6 +93,26 @@ class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         except Exception as e:
             logger.error(f"Failed to instrument responses: {e}")
 
+        self._instrument_decisions(tracer)
+
+    @staticmethod
+    def _instrument_decisions(tracer: Any) -> None:
+        """Wrap ``decisions.create`` (sync and async) when the installed openai has it.
+
+        Args:
+            tracer (Any): The tracer the decision spans are started from.
+
+        Returns:
+            None
+        """
+        try:
+            wrap_function_wrapper(_DECISIONS_MODULE, "Decisions.create", decisions_wrapper(tracer))
+            wrap_function_wrapper(_DECISIONS_MODULE, "AsyncDecisions.create", adecisions_wrapper(tracer))
+        except (AttributeError, ImportError):
+            logger.debug("openai Decisions API not available in the installed openai version; skipping")
+        except Exception as e:
+            logger.error(f"Failed to instrument decisions: {e}")
+
     def _uninstrument(self, **kwargs):  # type: ignore[no-untyped-def]
         """Uninstrument OpenAI client methods"""
 
@@ -113,3 +139,11 @@ class NetraOpenAIInstrumentor(BaseInstrumentor):  # type: ignore[misc]
             unwrap("openai.resources.responses", "AsyncResponses.create")
         except (AttributeError, ModuleNotFoundError):
             logger.error("Failed to uninstrument responses")
+
+        try:
+            # unwrap() takes the dotted path of the class that owns the method; given
+            # ``(module, "Class.method")`` it silently does nothing.
+            unwrap(f"{_DECISIONS_MODULE}.Decisions", "create")
+            unwrap(f"{_DECISIONS_MODULE}.AsyncDecisions", "create")
+        except (AttributeError, ImportError):
+            logger.debug("openai Decisions API not available in the installed openai version; nothing to unwrap")
