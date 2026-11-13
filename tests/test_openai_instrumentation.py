@@ -46,8 +46,8 @@ class TestNetraOpenAIInstrumentor:
         instrumentor._instrument()
 
         mock_get_tracer.assert_called_once()
-        # chat x2, embeddings x2, responses x2
-        assert mock_wrap_function.call_count == 6
+        # chat x2, embeddings x2, responses x2, decisions x2
+        assert mock_wrap_function.call_count == 8
 
     @patch("netra.instrumentation.libraries.openai.get_tracer")
     @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
@@ -63,7 +63,7 @@ class TestNetraOpenAIInstrumentor:
         mock_get_tracer.assert_called_once_with(
             "netra.instrumentation.openai", mock_get_tracer.call_args[0][1], mock_tracer_provider
         )
-        assert mock_wrap_function.call_count == 6
+        assert mock_wrap_function.call_count == 8
 
     @patch("netra.instrumentation.libraries.openai.unwrap")
     def test_uninstrument(self, mock_unwrap):
@@ -72,8 +72,8 @@ class TestNetraOpenAIInstrumentor:
 
         instrumentor._uninstrument()
 
-        # chat x2, completions x2, embeddings x2, responses x2
-        assert mock_unwrap.call_count == 8
+        # chat x2, completions x2, embeddings x2, responses x2, decisions x2
+        assert mock_unwrap.call_count == 10
 
 
 class TestWrappers:
@@ -936,3 +936,356 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
         assert captured[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
         assert captured[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 12500
         assert captured[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+
+DECISION_USAGE = {
+    "input_tokens": 1200,
+    "input_tokens_details": {"cached_tokens": 1000, "cache_write_tokens": 150},
+    "output_tokens": 12,
+    "output_tokens_details": {"reasoning_tokens": 4},
+    "total_tokens": 1212,
+}
+
+DECISION_ANSWERS = [
+    {"type": "predicate", "name": "is_spam", "probability": 0.08},
+    {
+        "type": "choice",
+        "name": "category",
+        "choice": "billing",
+        "confidence": 0.91,
+        "probabilities": [{"value": "billing", "probability": 0.91}, {"value": "tech", "probability": 0.09}],
+    },
+    {
+        "type": "score",
+        "name": "urgency",
+        "score": 2.4,
+        "confidence": 0.7,
+        "probabilities": [{"label": "low", "value": 1, "probability": 0.2}],
+    },
+    {"type": "refusal", "name": None},
+]
+
+DECISION_QUESTIONS = [
+    {"type": "predicate", "name": "is_spam", "instructions": "Is this message spam?"},
+    {
+        "type": "choice",
+        "name": "category",
+        "instructions": "Which team should handle this?",
+        "choices": [{"value": "billing"}, {"value": "tech", "description": "Technical issues"}],
+    },
+    {
+        "type": "score",
+        "name": "urgency",
+        "instructions": "How urgent is this?",
+        "levels": [{"label": "low"}, {"label": "medium"}, {"label": "high"}],
+    },
+]
+
+
+def _recording_span():
+    """Return a mock recording span plus the dict its set_attribute calls write into."""
+    span = Mock()
+    span.is_recording.return_value = True
+    captured: dict = {}
+    span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+    return span, captured
+
+
+class TestDecisionsInstrumentor:
+    """Registration of the Decisions API wrappers on NetraOpenAIInstrumentor."""
+
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
+    def test_decisions_create_is_wrapped_sync_and_async(self, mock_wrap_function, mock_get_tracer):
+        NetraOpenAIInstrumentor()._instrument()
+
+        targets = [(c.args[0], c.args[1]) for c in mock_wrap_function.call_args_list]
+        assert ("openai.resources.decisions", "Decisions.create") in targets
+        assert ("openai.resources.decisions", "AsyncDecisions.create") in targets
+
+    @patch("netra.instrumentation.libraries.openai.logger")
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
+    def test_openai_without_decisions_is_skipped_without_error(self, mock_wrap_function, mock_get_tracer, mock_logger):
+        """Older openai releases have no decisions module; that must not be logged as a failure."""
+
+        def wrap(module, name, wrapper):
+            if module == "openai.resources.decisions":
+                raise ModuleNotFoundError("No module named 'openai.resources.decisions'")
+
+        mock_wrap_function.side_effect = wrap
+
+        NetraOpenAIInstrumentor()._instrument()
+
+        mock_logger.error.assert_not_called()
+        # The other six targets were still wrapped.
+        assert mock_wrap_function.call_count == 7
+
+    @patch("netra.instrumentation.libraries.openai.unwrap")
+    def test_uninstrument_unwraps_decision_classes(self, mock_unwrap):
+        """unwrap() needs the owning class path; ``(module, "Class.method")`` would be a silent no-op."""
+        NetraOpenAIInstrumentor()._uninstrument()
+
+        targets = [(c.args[0], c.args[1]) for c in mock_unwrap.call_args_list]
+        assert ("openai.resources.decisions.Decisions", "create") in targets
+        assert ("openai.resources.decisions.AsyncDecisions", "create") in targets
+
+    @patch("netra.instrumentation.libraries.openai.logger")
+    @patch("netra.instrumentation.libraries.openai.unwrap")
+    def test_uninstrument_without_decisions_is_quiet(self, mock_unwrap, mock_logger):
+        def unwrap(obj, attr):
+            if str(obj).startswith("openai.resources.decisions"):
+                raise ImportError("No module named 'openai.resources.decisions'")
+
+        mock_unwrap.side_effect = unwrap
+
+        NetraOpenAIInstrumentor()._uninstrument()
+
+        assert not any("ecision" in str(c) for c in mock_logger.error.call_args_list)
+
+
+class TestDecisionRequestAttributes:
+    """set_request_attributes for operation_type="decision"."""
+
+    @staticmethod
+    def _capture(kwargs):
+        from netra.instrumentation.libraries.openai.utils import set_request_attributes
+
+        span, captured = _recording_span()
+        set_request_attributes(span, kwargs, "decision")
+        return captured
+
+    def test_model_and_request_type_are_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+
+        assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+        assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
+
+    def test_string_input_is_one_user_prompt(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Refund me now!"
+        assert f"{SpanAttributes.LLM_PROMPTS}.1.role" not in attrs
+
+    def test_questions_are_recorded_as_json_array(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+
+        assert json.loads(attrs["gen_ai.decision.questions"]) == DECISION_QUESTIONS
+
+    def test_mixed_input_items_are_recorded_in_order(self):
+        input_items = [
+            {"role": "system", "content": "You triage support tickets."},
+            {
+                "role": "user",
+                "type": "message",
+                "content": [{"type": "input_text", "text": "Card charged twice"}],
+            },
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": '{"id": 7}'},
+            {"type": "function_call_output", "call_id": "c1", "output": "2 charges found"},
+            {"type": "custom_tool_call", "call_id": "c2", "name": "grep", "input": "charge"},
+            {"type": "custom_tool_call_output", "call_id": "c2", "output": [{"type": "input_text", "text": "ok"}]},
+            {"role": "assistant", "content": "Looking into it."},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        p = SpanAttributes.LLM_PROMPTS
+        assert [attrs[f"{p}.{i}.role"] for i in range(7)] == [
+            "system",
+            "user",
+            "assistant",
+            "tool",
+            "assistant",
+            "tool",
+            "assistant",
+        ]
+        assert attrs[f"{p}.0.content"] == "You triage support tickets."
+        assert json.loads(attrs[f"{p}.1.content"]) == [{"type": "input_text", "text": "Card charged twice"}]
+        assert json.loads(attrs[f"{p}.2.content"]) == {"name": "lookup", "arguments": '{"id": 7}'}
+        assert attrs[f"{p}.2.tool_call_id"] == "c1"
+        assert attrs[f"{p}.3.content"] == "2 charges found"
+        assert attrs[f"{p}.3.tool_call_id"] == "c1"
+        assert json.loads(attrs[f"{p}.4.content"]) == {"name": "grep", "arguments": "charge"}
+        assert attrs[f"{p}.5.tool_call_id"] == "c2"
+        assert f"{p}.0.tool_call_id" not in attrs
+        assert attrs[f"{p}.6.content"] == "Looking into it."
+
+    def test_one_shot_iterables_are_not_consumed(self):
+        """The SDK accepts any iterable; reading a generator here would empty the real request."""
+        input_items = (m for m in [{"role": "user", "content": "hi"}])
+        questions = (q for q in DECISION_QUESTIONS)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": questions})
+
+        assert len(list(input_items)) == 1
+        assert len(list(questions)) == len(DECISION_QUESTIONS)
+        assert f"{SpanAttributes.LLM_PROMPTS}.0.role" not in attrs
+        assert "gen_ai.decision.questions" not in attrs
+
+    def test_unserialisable_question_does_not_raise(self):
+        question: dict = {"type": "predicate", "instructions": "x"}
+        question["self"] = question
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": [question]})
+
+        assert "gen_ai.decision.questions" not in attrs
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "hi"
+
+
+class TestDecisionResponseAttributes:
+    """set_response_attributes for a Decisions API response."""
+
+    @staticmethod
+    def _capture(response_dict):
+        from netra.instrumentation.libraries.openai.utils import set_response_attributes
+
+        span, captured = _recording_span()
+        set_response_attributes(span, response_dict)
+        return captured
+
+    def test_answers_are_recorded_as_attribute_and_completion(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
+        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]) == DECISION_ANSWERS
+        assert attrs[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
+
+    def test_usage_is_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert attrs[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] == 1200
+        assert attrs[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] == 12
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 1000
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 150
+        assert attrs[SpanAttributes.LLM_USAGE_REASONING_TOKENS] == 4
+        assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 1212
+
+    def test_non_decision_response_records_no_answers(self):
+        attrs = self._capture({"model": "gpt-4o-mini", "output_text": "ok"})
+
+        assert "gen_ai.decision.answers" not in attrs
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+
+class TestDecisionWrappers:
+    """decisions_wrapper / adecisions_wrapper span lifecycle."""
+
+    KWARGS = {"model": "gpt-6-luna", "input": "Card charged twice", "questions": DECISION_QUESTIONS}
+    RESPONSE = {"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE}
+
+    @staticmethod
+    def _tracer():
+        span, captured = _recording_span()
+        tracer = Mock()
+        span_context = MagicMock()
+        span_context.__enter__.return_value = span
+        tracer.start_as_current_span.return_value = span_context
+        return tracer, span, captured
+
+    def test_sync_wrapper_records_request_and_response(self):
+        from netra.instrumentation.libraries.openai.wrappers import DECISION_SPAN_NAME, decisions_wrapper
+
+        tracer, span, attrs = self._tracer()
+        wrapped = Mock(return_value=self.RESPONSE)
+
+        with patch("netra.instrumentation.libraries.openai.wrappers.record_span_timing"):
+            result = decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS))
+
+        assert result is self.RESPONSE
+        wrapped.assert_called_once_with(**self.KWARGS)
+        assert tracer.start_as_current_span.call_args.args[0] == DECISION_SPAN_NAME == "openai.decision"
+        assert tracer.start_as_current_span.call_args.kwargs["attributes"] == {"llm.request.type": "decision"}
+        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Card charged twice"
+        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+
+    def test_async_wrapper_records_request_and_response(self):
+        import asyncio
+
+        from netra.instrumentation.libraries.openai.wrappers import adecisions_wrapper
+
+        tracer, span, attrs = self._tracer()
+
+        async def wrapped(*args, **kwargs):
+            return self.RESPONSE
+
+        with patch("netra.instrumentation.libraries.openai.wrappers.record_span_timing"):
+            result = asyncio.run(adecisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS)))
+
+        assert result is self.RESPONSE
+        assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+
+    def test_api_error_marks_span_and_reraises(self):
+        from opentelemetry.trace.status import StatusCode
+
+        from netra.instrumentation.libraries.openai.wrappers import decisions_wrapper
+
+        tracer, span, _ = self._tracer()
+        wrapped = Mock(side_effect=RuntimeError("400 bad questions"))
+
+        with pytest.raises(RuntimeError, match="400 bad questions"):
+            decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS))
+
+        assert span.set_status.call_args.args[0].status_code == StatusCode.ERROR
+
+    @patch("netra.instrumentation.libraries.openai.wrappers.should_suppress_instrumentation", return_value=True)
+    def test_suppressed_instrumentation_skips_span(self, _):
+        from netra.instrumentation.libraries.openai.wrappers import decisions_wrapper
+
+        tracer, _, _ = self._tracer()
+        wrapped = Mock(return_value=self.RESPONSE)
+
+        assert decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS)) is self.RESPONSE
+        tracer.start_as_current_span.assert_not_called()
+
+
+class TestDecisionsAgainstRealSdk:
+    """End-to-end through the real openai Decisions resource (skipped on openai releases without it)."""
+
+    def test_sync_and_async_create_emit_decision_spans(self):
+        import asyncio
+
+        decisions_module = pytest.importorskip("openai.resources.decisions")
+        from openai.types.decision import Decision
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        decision = Decision.model_validate(
+            {"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE}
+        )
+
+        async def apost(*args, **kwargs):
+            return decision
+
+        # The resources bind ``_post`` to ``client.post`` at construction, so the HTTP layer is the client mock.
+        sync_client, async_client = Mock(), Mock()
+        sync_client.post.return_value = decision
+        async_client.post.side_effect = apost
+        sync_resource = decisions_module.Decisions(sync_client)
+        async_resource = decisions_module.AsyncDecisions(async_client)
+        instrumentor = NetraOpenAIInstrumentor()
+        instrumentor._instrument(tracer_provider=provider)
+        try:
+            assert sync_resource.create(**TestDecisionWrappers.KWARGS) is decision
+            assert asyncio.run(async_resource.create(**TestDecisionWrappers.KWARGS)) is decision
+        finally:
+            instrumentor._uninstrument()
+
+        assert sync_client.post.call_args.args[0] == "/decisions"
+
+        spans = exporter.get_finished_spans()
+        assert [s.name for s in spans] == ["openai.decision", "openai.decision"]
+        for span in spans:
+            assert span.attributes[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+            assert span.attributes[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
+            assert span.attributes[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 150
+            answers = json.loads(span.attributes["gen_ai.decision.answers"])
+            assert [a["type"] for a in answers] == ["predicate", "choice", "score", "refusal"]
+        # Uninstrument really removed the wrappers.
+        assert not hasattr(decisions_module.Decisions.create, "__wrapped__")

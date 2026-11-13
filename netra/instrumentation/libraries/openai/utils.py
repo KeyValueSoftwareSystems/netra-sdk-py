@@ -30,6 +30,13 @@ LLM_REQUEST_TOOL_CHOICE = "llm.request.tool_choice"
 # Tool types whose name/description/schema live under a key named after the type in
 # Chat Completions (``{"type": "function", "function": {...}}``) but flat in the Responses API.
 _NAMED_TOOL_TYPES = ("function", "custom")
+# Decisions API (``client.decisions.create``): the questions asked about the input and
+# the typed answers returned for them, each recorded as one JSON array.
+GEN_AI_DECISION_QUESTIONS = "gen_ai.decision.questions"
+GEN_AI_DECISION_ANSWERS = "gen_ai.decision.answers"
+# Decision input item types that carry a tool invocation, mapped to the key holding its arguments.
+_DECISION_TOOL_CALL_ARGUMENT_KEYS: Dict[str, str] = {"function_call": "arguments", "custom_tool_call": "input"}
+_DECISION_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
 
 
 def should_suppress_instrumentation() -> bool:
@@ -86,8 +93,99 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
         _set_chat_response_input(span, kwargs)
+    elif operation_type == "decision":
+        _set_decision_request_attributes(span, kwargs)
 
     _set_tool_attributes(span, kwargs)
+
+
+def _set_decision_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
+    """Record a Decisions API request's input and questions without ever failing the call.
+
+    Runs before the OpenAI call and serialises caller-supplied content, so any
+    failure is logged and the remaining attributes are left unset instead of
+    aborting the user's request.
+    """
+    try:
+        _set_decision_input(span, kwargs.get("input"))
+    except Exception:  # noqa: BLE001 - input capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision input", exc_info=True)
+
+    try:
+        _set_decision_questions(span, kwargs.get("questions"))
+    except Exception:  # noqa: BLE001 - question capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision questions", exc_info=True)
+
+
+def _as_prompt_content(content: Any) -> str:
+    """Render message content as a string: text as-is, content parts as JSON."""
+    if isinstance(content, str):
+        return content
+    return json.dumps(content, default=str)
+
+
+def _set_decision_input(span: Span, input_data: Any) -> None:
+    """Record the Decisions API ``input`` as ``gen_ai.prompt.*`` entries.
+
+    ``input`` is either a string (recorded as one user message) or a list of
+    messages, function / custom tool calls and their outputs. Tool calls are
+    recorded as assistant entries holding ``{"name", "arguments"}`` and tool
+    outputs as ``tool`` entries carrying their ``call_id``, matching how the
+    Responses API input is recorded. Only lists and tuples are walked: the SDK
+    accepts any iterable, and consuming a one-shot iterator here would empty
+    the request the caller is about to send.
+    """
+    if isinstance(input_data, str):
+        if input_data:
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
+        return
+
+    if not isinstance(input_data, (list, tuple)):
+        return
+
+    prompt_index = 0
+    for item in input_data:
+        if not isinstance(item, dict):
+            item = model_as_dict(item)
+        if not item:
+            continue
+
+        item_type = item.get("type") or "message"
+        if item_type in _DECISION_TOOL_CALL_ARGUMENT_KEYS:
+            role = "assistant"
+            content = json.dumps(
+                {"name": item.get("name", ""), "arguments": item.get(_DECISION_TOOL_CALL_ARGUMENT_KEYS[item_type], "")}
+            )
+        elif item_type in _DECISION_TOOL_OUTPUT_TYPES:
+            if not (output := item.get("output")):
+                continue
+            role = "tool"
+            content = _as_prompt_content(output)
+        else:
+            if not (message_content := item.get("content")):
+                continue
+            role = item.get("role", "user")
+            content = _as_prompt_content(message_content)
+
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
+        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", content)
+        if item_type != "message" and (call_id := item.get("call_id")):
+            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", call_id)
+        prompt_index += 1
+
+
+def _set_decision_questions(span: Span, questions: Any) -> None:
+    """Record the Decisions API ``questions`` as one JSON array under ``gen_ai.decision.questions``.
+
+    Questions are recorded as given (``type``, ``instructions``, ``name`` and the
+    ``choices`` / ``levels`` they offer). As with ``input``, only lists and tuples
+    are read so a one-shot iterable reaches the API intact.
+    """
+    if not isinstance(questions, (list, tuple)) or not questions:
+        return
+    serialised = [question if isinstance(question, dict) else model_as_dict(question) for question in questions]
+    span.set_attribute(GEN_AI_DECISION_QUESTIONS, json.dumps(serialised, default=str))
 
 
 def _set_tool_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
@@ -259,6 +357,29 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
         _set_custom_usage_attribute(span, usage, response_dict.get("model") or "")
 
     _set_response_message_attributes(span, response_dict)
+    _set_decision_answer_attributes(span, response_dict)
+
+
+def _set_decision_answer_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
+    """Record a Decisions API response's ``answers``, in question order.
+
+    The answers are recorded twice: as one JSON array under
+    ``gen_ai.decision.answers`` for querying, and as the span's single assistant
+    completion so they show up alongside the prompt like any other model output.
+    Each answer is a predicate, choice, score or refusal object, as returned.
+    Responses without an ``answers`` list (every other OpenAI API) are ignored.
+    """
+    answers = response_dict.get("answers")
+    if not isinstance(answers, list):
+        return
+    try:
+        serialised = json.dumps(answers, default=str)
+    except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision answers", exc_info=True)
+        return
+    span.set_attribute(GEN_AI_DECISION_ANSWERS, serialised)
+    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
+    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", serialised)
 
 
 def _first_present(usage: Dict[str, Any], *keys: str) -> Any:

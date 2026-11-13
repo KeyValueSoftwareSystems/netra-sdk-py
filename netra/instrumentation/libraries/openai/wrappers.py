@@ -22,6 +22,7 @@ logger = get_logger(__name__)
 CHAT_SPAN_NAME = "openai.chat"
 EMBEDDING_SPAN_NAME = "openai.embedding"
 RESPONSE_SPAN_NAME = "openai.response"
+DECISION_SPAN_NAME = "openai.decision"
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 LLM_RESPONSE_DURATION = "llm.response.duration"
@@ -274,6 +275,69 @@ def aresponses_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
                     logger.error("netra.instrumentation.libraries.openai: %s", e)
                     span.set_status(Status(StatusCode.ERROR, str(e)))
                     raise
+
+    return wrapper
+
+
+def decisions_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Wrapper for decisions.create (Decisions API).
+
+    The Decisions API has no streaming mode, so the whole call is one span.
+    """
+
+    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return wrapped(*args, **kwargs)
+
+        with tracer.start_as_current_span(
+            DECISION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "decision"}
+        ) as span:
+            try:
+                set_request_attributes(span, kwargs, "decision")
+                response = wrapped(*args, **kwargs)
+                end_time = time.time()
+                response_dict = model_as_dict(response)
+                set_response_attributes(span, response_dict)
+                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                logger.error("netra.instrumentation.libraries.openai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
+
+    return wrapper
+
+
+def adecisions_wrapper(tracer: Tracer) -> Callable[..., Awaitable[Any]]:
+    """Async wrapper for decisions.create (Decisions API)."""
+
+    async def wrapper(
+        wrapped: Callable[..., Awaitable[Any]], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]
+    ) -> Any:
+        if should_suppress_instrumentation():
+            return await wrapped(*args, **kwargs)
+
+        with tracer.start_as_current_span(
+            DECISION_SPAN_NAME, kind=SpanKind.CLIENT, attributes={"llm.request.type": "decision"}
+        ) as span:
+            try:
+                set_request_attributes(span, kwargs, "decision")
+                response = await wrapped(*args, **kwargs)
+                end_time = time.time()
+                response_dict = model_as_dict(response)
+                set_response_attributes(span, response_dict)
+                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                logger.error("netra.instrumentation.libraries.openai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                raise
 
     return wrapper
 
