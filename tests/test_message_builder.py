@@ -49,18 +49,54 @@ class TestBuildMessages:
         assert entries[0][TRUNCATION_MARKER_KEY] is True
         assert entries[1] == {"role": "user", "content": "ok"}
 
-    def test_oldest_messages_are_dropped_to_fit_the_attribute_limit(self, attribute_limit) -> None:
-        attribute_limit(200)
+    def test_every_message_is_kept_in_place_and_shortened_to_fit(self, attribute_limit) -> None:
+        attribute_limit(700)
         messages = [{"role": "user", "content": f"message {index} " + "x" * 40} for index in range(10)]
 
         serialised = build_messages(messages)
         entries = json.loads(serialised)
 
-        assert len(serialised) <= 200
-        assert 1 < len(entries) < len(messages)
-        # Every kept entry but the oldest is an untouched suffix of the conversation.
-        first_untouched = len(messages) - len(entries) + 1
-        assert entries[1:] == messages[first_untouched:]
+        assert len(serialised) <= 700
+        assert [entry["role"] for entry in entries] == ["user"] * 10
+        for index, entry in enumerate(entries):
+            assert entry["content"].startswith(f"message {index} ")
+            assert entry["content"].endswith(TRUNCATION_ELLIPSIS)
+            assert entry[TRUNCATION_MARKER_KEY] is True
+
+    def test_short_messages_stay_whole_when_a_long_one_is_shortened(self, attribute_limit) -> None:
+        attribute_limit(300)
+        messages = [
+            {"role": "system", "content": "be brief"},
+            {"role": "user", "content": "y" * 5000},
+            {"role": "assistant", "content": "ok"},
+        ]
+
+        entries = json.loads(build_messages(messages))
+
+        assert entries[0] == messages[0]
+        assert entries[2] == messages[2]
+        assert entries[1]["content"].startswith("yyy")
+        assert entries[1][TRUNCATION_MARKER_KEY] is True
+
+    def test_non_string_content_is_shortened_as_json_text(self, attribute_limit) -> None:
+        attribute_limit(200)
+        parts = [{"type": "text", "text": "z" * 500}]
+
+        entries = json.loads(build_messages([{"role": "user", "content": parts}]))
+
+        assert entries[0]["content"].startswith('[{"type": "text"')
+        assert entries[0][TRUNCATION_MARKER_KEY] is True
+
+    def test_leading_messages_are_kept_when_even_empty_contents_do_not_fit(self, attribute_limit) -> None:
+        attribute_limit(150)
+        messages = [{"role": "user", "content": f"m{index}"} for index in range(20)]
+
+        serialised = build_messages(messages)
+        entries = json.loads(serialised)
+
+        assert len(serialised) <= 150
+        assert 0 < len(entries) < 20
+        assert all(entry["role"] == "user" for entry in entries)
 
     def test_a_single_oversized_message_is_shortened_to_fit(self, attribute_limit) -> None:
         attribute_limit(100)

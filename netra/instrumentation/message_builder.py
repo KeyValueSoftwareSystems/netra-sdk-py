@@ -15,8 +15,7 @@ logger = get_logger(__name__)
 # ``json.dumps`` default item separator, counted when fitting entries to a budget.
 _ITEM_SEPARATOR_LEN = len(", ")
 
-# Bound on re-measure rounds when shortening an entry; escaping is uneven, so a
-# couple of rounds is enough and the bound only guards a pathological payload.
+# Max re-measure rounds when shortening contents to fit.
 _MAX_FIT_ROUNDS = 8
 
 
@@ -41,24 +40,29 @@ def to_json(value: Any) -> str:
 def build_messages(entries: Sequence[Any]) -> str:
     """Serialise message entries to a JSON array that fits the attribute length limit.
 
-    Each string ``content`` is capped at the conversation content limit. If the array
-    still exceeds the attribute limit, the oldest entries are dropped and the oldest
-    kept entry is shortened to fit. Shortened entries carry the truncation marker key.
-    The result is always valid JSON, so the attribute-level truncation downstream
-    never cuts it mid-structure.
+    Over the limit, every entry keeps its position and long contents are shortened
+    and marked truncated. The result is always valid JSON.
     """
     capped = [cap_message_content(entry) for entry in entries]
     serialised = to_json(capped)
     max_len = get_attribute_max_len()
     if len(serialised) <= max_len:
         return serialised
-    return _fit_newest(capped, max_len)
+    return _fit_all(capped, max_len)
 
 
 def _string_content(entry: Any) -> Optional[str]:
     """Return an entry's ``content`` if it is a string, else ``None``."""
     content = entry.get("content") if isinstance(entry, dict) else None
     return content if isinstance(content, str) else None
+
+
+def _content_text(entry: Any) -> Optional[str]:
+    """Return an entry's ``content`` as text that can be shortened, or ``None`` when it has none."""
+    if not isinstance(entry, dict) or entry.get("content") is None:
+        return None
+    content = entry["content"]
+    return content if isinstance(content, str) else to_json(content)
 
 
 def _with_truncated_content(entry: Dict[str, Any], content: str) -> Dict[str, Any]:
@@ -78,49 +82,58 @@ def cap_message_content(entry: Any) -> Any:
     return _with_truncated_content(entry, content[: max(limit - len(TRUNCATION_ELLIPSIS), 0)])
 
 
-def _fit_newest(entries: List[Any], max_len: int) -> str:
-    """Serialise the newest entries that fit within *max_len* characters."""
+def _fit_all(entries: List[Any], max_len: int) -> str:
+    """Shorten contents so all *entries* fit in *max_len*, keeping each entry in its position."""
+    texts = [_content_text(entry) for entry in entries]
+    skeleton = [entry if text is None else _with_truncated_content(entry, "") for entry, text in zip(entries, texts)]
+    sizes = [0 if text is None else len(to_json(text)) - len('""') for text in texts]
+    budget = max_len - len(to_json(skeleton))
+    for _ in range(_MAX_FIT_ROUNDS):
+        if budget <= 0:
+            break
+        limits = _fair_shares(sizes, budget)
+        fitted = [_shorten(entry, text, size, limit) for entry, text, size, limit in zip(entries, texts, sizes, limits)]
+        serialised = to_json(fitted)
+        overflow = len(serialised) - max_len
+        if overflow <= 0:
+            return serialised
+        budget -= overflow
+    return _fit_leading(skeleton, max_len)
+
+
+def _fair_shares(sizes: List[int], budget: int) -> List[int]:
+    """Split *budget* across *sizes*; sizes under an equal share stay whole."""
+    limits = [0] * len(sizes)
+    remaining = budget
+    left = sum(1 for size in sizes if size)
+    for index in sorted(range(len(sizes)), key=sizes.__getitem__):
+        if not sizes[index]:
+            continue
+        limits[index] = min(sizes[index], remaining // left)
+        remaining -= limits[index]
+        left -= 1
+    return limits
+
+
+def _shorten(entry: Any, text: Optional[str], size: int, limit: int) -> Any:
+    """Cut *entry*'s content to about *limit* serialised characters."""
+    if text is None or limit >= size:
+        return entry
+    return _with_truncated_content(entry, text[: len(text) * limit // size])
+
+
+def _fit_leading(skeleton: List[Any], max_len: int) -> str:
+    """Serialise the leading entries of *skeleton* that fit in *max_len*."""
     kept: List[Any] = []
     budget = max_len - len("[]")
-    for entry in reversed(entries):
-        room = budget - (_ITEM_SEPARATOR_LEN if kept else 0)
-        size = len(to_json(entry))
-        if size <= room:
-            kept.append(entry)
-            budget = room - size
-            continue
-        partial = _shrink_to_fit(entry, room)
-        if partial is not None:
-            kept.append(partial)
-        break
-
-    if len(kept) < len(entries):
-        logger.debug("Dropped %d oldest message(s) to fit the attribute length limit", len(entries) - len(kept))
-    return to_json(kept[::-1])
-
-
-def _shrink_to_fit(entry: Any, room: int) -> Optional[Dict[str, Any]]:
-    """Shorten an entry's content so its serialised form fits in *room* characters.
-
-    Escaping makes serialised length non-linear in content length, so the cut is
-    estimated from the measured ratio and re-measured each round. Returns ``None``
-    when the entry has no string content or cannot fit at all.
-    """
-    content = _string_content(entry)
-    if not content:
-        return None
-    overhead = len(to_json(_with_truncated_content(entry, "")))
-    keep = len(content)
-    for _ in range(_MAX_FIT_ROUNDS):
-        candidate = _with_truncated_content(entry, content[:keep])
-        size = len(to_json(candidate))
-        if size <= room:
-            return candidate
-        chars_per_kept = (size - overhead) / keep
-        keep = min(keep - 1, int((room - overhead) / chars_per_kept))
-        if keep <= 0:
-            return None
-    return None
+    for entry in skeleton:
+        size = len(to_json(entry)) + (_ITEM_SEPARATOR_LEN if kept else 0)
+        if size > budget:
+            break
+        kept.append(entry)
+        budget -= size
+    logger.debug("Kept %d of %d message(s) to fit the attribute length limit", len(kept), len(skeleton))
+    return to_json(kept)
 
 
 def _extract_tool_call(tc: Any) -> Dict[str, Any]:
