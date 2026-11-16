@@ -886,41 +886,7 @@ class TestChildToParentPropagation:
 
 
 class TestConversationReading:
-    def test_indexed_pairs_are_ordered_numerically_not_lexically(self) -> None:
-        conversation = conversation_from_attributes(
-            {
-                "gen_ai.prompt.10.role": "user",
-                "gen_ai.prompt.10.content": "eleventh",
-                "gen_ai.prompt.2.role": "user",
-                "gen_ai.prompt.2.content": "third",
-            }
-        )
-
-        assert conversation.prompts == [("user", "third"), ("user", "eleventh")]
-
-    def test_plural_prompts_form_is_accepted(self) -> None:
-        conversation = conversation_from_attributes({"gen_ai.prompts.0.role": "user", "gen_ai.prompts.0.content": "hi"})
-
-        assert conversation.prompts == [("user", "hi")]
-
-    def test_role_without_content_is_not_a_message(self) -> None:
-        conversation = conversation_from_attributes({"gen_ai.prompt.0.role": "user"})
-
-        assert conversation.prompts == []
-
-    def test_content_without_role_keeps_the_text(self) -> None:
-        conversation = conversation_from_attributes({"gen_ai.prompt.0.content": "hi"})
-
-        assert conversation.prompts == [("", "hi")]
-
-    def test_raw_input_is_suppressed_when_indexed_pairs_exist(self) -> None:
-        conversation = conversation_from_attributes(
-            {"gen_ai.prompt.0.role": "user", "gen_ai.prompt.0.content": "hi", "input": "hi"}
-        )
-
-        assert conversation.raw_input is None
-
-    def test_raw_io_is_kept_when_there_are_no_indexed_pairs(self) -> None:
+    def test_raw_io_is_read_verbatim(self) -> None:
         conversation = conversation_from_attributes({"input": "hi", "output": "hello"})
 
         assert (conversation.raw_input, conversation.raw_output) == ("hi", "hello")
@@ -932,8 +898,7 @@ class TestConversationReading:
     def test_empty_attributes_yield_an_empty_conversation(self) -> None:
         conversation = conversation_from_attributes(None)
 
-        assert conversation.prompts == []
-        assert conversation.completions == []
+        assert (conversation.raw_input, conversation.raw_output) == (None, None)
         assert conversation.carries_gen_ai is False
 
     def test_raw_io_is_dropped_when_not_allowed(self) -> None:

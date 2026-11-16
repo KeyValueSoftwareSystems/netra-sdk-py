@@ -13,7 +13,6 @@ tables themselves, then one section of helpers per payload LiveKit produces
 """
 
 import json
-import re
 from enum import Enum
 from typing import Any, Dict, List, Mapping, NamedTuple, Optional, Tuple
 
@@ -269,20 +268,13 @@ class SpanConversation(NamedTuple):
     """The conversation content read back off a finished span.
 
     Attributes:
-        prompts: The ``(role, content)`` pairs of a legacy indexed prompt
-            sequence, in index order.
-        completions: The same for the completion sequence.
         raw_input: The span's ``input`` (a structured message array or verbatim
-            text), but only when it carries no legacy indexed prompt pairs —
-            otherwise it is derived from them and copying both would duplicate
-            the conversation.
+            text).
         raw_output: The same for ``output``.
         carries_gen_ai: Whether the span has any ``gen_ai.*`` attribute at all,
             i.e. whether an LLM-aware instrumentation wrote it.
     """
 
-    prompts: List[Tuple[str, str]]
-    completions: List[Tuple[str, str]]
     raw_input: Optional[str]
     raw_output: Optional[str]
     carries_gen_ai: bool
@@ -438,14 +430,6 @@ EVENT_ROLE: Dict[str, str] = {
 # Payload field names (private)
 # ---------------------------------------------------------------------------
 
-# Legacy pattern for reading indexed conversation attributes off older spans.
-# Current spans use structured ``input``/``output`` JSON; this is the fallback.
-_INDEXED_MESSAGE_RE = re.compile(r"^gen_ai\.(prompt|completion)s?\.(\d+)\.(role|content)$")
-
-_PROMPT_GROUP = "prompt"
-_ROLE_FIELD = "role"
-_CONTENT_FIELD = "content"
-
 # The attribute key LiveKit puts message text under in a conversation event
 # (``_chat_ctx_to_otel_events``: ``{"content": item.raw_text_content or ""}``).
 _EVENT_CONTENT_KEY = "content"
@@ -578,26 +562,13 @@ def _structured_messages(raw: str) -> List[Tuple[str, str]]:
 def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> SpanConversation:
     """Read a finished span's conversation content back out of its attributes.
 
-    Current spans carry their conversation in ``input``/``output``, returned here
-    verbatim for ``messages_for_parent`` to expand. Spans written before the move to
-    structured ``input``/``output`` may still carry legacy indexed
-    ``gen_ai.prompt.N.*``/``gen_ai.completion.N.*`` pairs, which are read as well.
-
-    An entry carrying a role but no text is skipped — a role alone is not a message.
-    An entry carrying text but no role keeps the text; the caller supplies a role.
-
     Args:
         attributes: The finished span's attributes, or ``None``.
 
     Returns:
-        The prompt and completion pairs in index order, the verbatim
-        ``input``/``output`` for the sides that have no pairs, and whether the span
-        carries any ``gen_ai.*`` attribute. A malformed or empty mapping yields an
-        empty result rather than an error — a mapping failure must never break the
-        user's trace.
+        The verbatim ``input``/``output`` and whether the span carries any
+        ``gen_ai.*`` attribute; empty for a malformed mapping.
     """
-    prompt_entries: Dict[int, Dict[str, str]] = {}
-    completion_entries: Dict[int, Dict[str, str]] = {}
     raw_input: Optional[str] = None
     raw_output: Optional[str] = None
     carries_gen_ai = False
@@ -605,29 +576,12 @@ def conversation_from_attributes(attributes: Optional[Mapping[str, Any]]) -> Spa
     for key, value in (attributes or {}).items():
         if key == INPUT_ATTRIBUTE:
             raw_input = None if is_absent(value) else as_attribute_text(value)
-            continue
-        if key == OUTPUT_ATTRIBUTE:
+        elif key == OUTPUT_ATTRIBUTE:
             raw_output = None if is_absent(value) else as_attribute_text(value)
-            continue
-        if not key.startswith(GEN_AI_ATTRIBUTE_PREFIX):
-            continue
-        carries_gen_ai = True
-        match = _INDEXED_MESSAGE_RE.match(key)
-        if match is None:
-            continue
-        entries = prompt_entries if match.group(1) == _PROMPT_GROUP else completion_entries
-        entries.setdefault(int(match.group(2)), {})[match.group(3)] = as_attribute_text(value)
+        elif key.startswith(GEN_AI_ATTRIBUTE_PREFIX):
+            carries_gen_ai = True
 
-    prompts = _ordered_messages(prompt_entries)
-    completions = _ordered_messages(completion_entries)
-
-    return SpanConversation(
-        prompts=prompts,
-        completions=completions,
-        raw_input=raw_input if not prompts else None,
-        raw_output=raw_output if not completions else None,
-        carries_gen_ai=carries_gen_ai,
-    )
+    return SpanConversation(raw_input=raw_input, raw_output=raw_output, carries_gen_ai=carries_gen_ai)
 
 
 def messages_for_parent(conversation: SpanConversation, *, allow_raw_io: bool) -> List[ConversationMessage]:
@@ -645,20 +599,12 @@ def messages_for_parent(conversation: SpanConversation, *, allow_raw_io: bool) -
         The messages to append, prompts first. Empty when the child carried no
         conversation.
     """
-    messages = [
-        ConversationMessage(ConversationSide.PROMPT, role or FALLBACK_PROMPT_ROLE, content)
-        for role, content in conversation.prompts
-    ]
-    messages.extend(
-        ConversationMessage(ConversationSide.COMPLETION, role or FALLBACK_COMPLETION_ROLE, content)
-        for role, content in conversation.completions
-    )
     if not allow_raw_io:
-        return messages
-
-    messages.extend(_raw_io_messages(ConversationSide.PROMPT, conversation.raw_input, FALLBACK_PROMPT_ROLE))
-    messages.extend(_raw_io_messages(ConversationSide.COMPLETION, conversation.raw_output, FALLBACK_COMPLETION_ROLE))
-    return messages
+        return []
+    return [
+        *_raw_io_messages(ConversationSide.PROMPT, conversation.raw_input, FALLBACK_PROMPT_ROLE),
+        *_raw_io_messages(ConversationSide.COMPLETION, conversation.raw_output, FALLBACK_COMPLETION_ROLE),
+    ]
 
 
 def _raw_io_messages(side: ConversationSide, raw: Optional[str], fallback_role: str) -> List[ConversationMessage]:
@@ -673,27 +619,6 @@ def _raw_io_messages(side: ConversationSide, raw: Optional[str], fallback_role: 
     if not structured:
         return [ConversationMessage(side, fallback_role, raw)]
     return [ConversationMessage(side, role or fallback_role, content) for role, content in structured]
-
-
-def _ordered_messages(entries: Mapping[int, Mapping[str, str]]) -> List[Tuple[str, str]]:
-    """Flatten indexed role/content entries into ``(role, content)`` pairs.
-
-    Args:
-        entries: Index -> the fields collected for that index.
-
-    Returns:
-        The pairs in index order, skipping any index that carried no text. The
-        indices themselves are discarded: the caller re-numbers against the
-        parent's own counters.
-    """
-    pairs: List[Tuple[str, str]] = []
-    for index in sorted(entries):
-        fields = entries[index]
-        content = fields.get(_CONTENT_FIELD)
-        if content is None or content == "":
-            continue
-        pairs.append((fields.get(_ROLE_FIELD) or "", content))
-    return pairs
 
 
 # ---------------------------------------------------------------------------

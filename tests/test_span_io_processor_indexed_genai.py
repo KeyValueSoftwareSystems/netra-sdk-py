@@ -56,3 +56,29 @@ def test_non_message_gen_ai_keys_pass_through():
 
     assert span.attributes["gen_ai.request.model"] == "gpt-4"
     span.end()
+
+
+def test_messages_are_ordered_by_index_and_missing_indexes_skipped():
+    span = _start_span()
+    span.set_attribute("gen_ai.prompt.10.content", "last")
+    span.set_attribute("gen_ai.prompt.0.content", "first")
+    span.set_attribute("gen_ai.prompt.2.content", "middle")
+
+    assert json.loads(span.attributes["input"]) == [{"content": "first"}, {"content": "middle"}, {"content": "last"}]
+    span.end()
+
+
+def test_indexed_keys_passed_at_span_creation_are_folded():
+    provider = TracerProvider()
+    provider.add_span_processor(InstrumentationSpanProcessor())
+    provider.add_span_processor(SpanIOProcessor())
+    span = provider.get_tracer("test").start_span(
+        "third_party.chat",
+        attributes={"gen_ai.prompt.0.role": "user", "gen_ai.prompt.0.content": "hi", "gen_ai.request.model": "gpt-4"},
+    )
+
+    attrs = dict(span.attributes or {})
+    assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
+    assert attrs["gen_ai.request.model"] == "gpt-4"
+    assert not any(key.startswith("gen_ai.prompt") for key in attrs)
+    span.end()

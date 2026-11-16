@@ -105,6 +105,7 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
             if "output" not in attrs:
                 span.set_attribute("output", "")
             self._wrap_set_attribute(span)
+            self._fold_creation_attributes(span)
         except Exception:
             logger.exception("SpanIOProcessor.on_start failed")
 
@@ -171,6 +172,18 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
 
     def shutdown(self) -> None:
         """No-op shutdown."""
+
+    @staticmethod
+    def _fold_creation_attributes(span: Span) -> None:
+        """Fold indexed message keys passed at span creation, which bypass ``set_attribute``."""
+        attrs = getattr(span, "_attributes", None)
+        if not attrs:
+            return
+        indexed = {key: value for key, value in attrs.items() if _INDEXED_MSG_RE.match(key)}
+        for key in indexed:
+            del attrs[key]
+        if indexed:
+            span.set_attributes(indexed)
 
     @staticmethod
     def _wrap_set_attribute(span: Span) -> None:
