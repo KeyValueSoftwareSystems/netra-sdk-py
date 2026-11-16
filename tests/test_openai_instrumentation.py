@@ -1044,6 +1044,13 @@ class TestDecisionsInstrumentor:
         assert not any("ecision" in str(c) for c in mock_logger.error.call_args_list)
 
 
+@pytest.fixture
+def content_tracing_on(monkeypatch):
+    """Decision content is gated on TRACELOOP_TRACE_CONTENT, which other tests' Config() may have set to false."""
+    monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "true")
+
+
+@pytest.mark.usefixtures("content_tracing_on")
 class TestDecisionRequestAttributes:
     """set_request_attributes for operation_type="decision"."""
 
@@ -1061,12 +1068,15 @@ class TestDecisionRequestAttributes:
         assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
         assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
 
-    def test_string_input_is_one_user_prompt(self):
+    def test_string_input_is_one_user_entry(self):
         attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
 
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.role"] == "user"
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Refund me now!"
-        assert f"{SpanAttributes.LLM_PROMPTS}.1.role" not in attrs
+        assert json.loads(attrs["input"]) == [{"role": "user", "content": "Refund me now!"}]
+
+    def test_no_indexed_prompt_attributes_are_set(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        assert not any(key.startswith(f"{SpanAttributes.LLM_PROMPTS}.") for key in attrs)
 
     def test_questions_are_recorded_as_json_array(self):
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
@@ -1090,26 +1100,70 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
 
-        p = SpanAttributes.LLM_PROMPTS
-        assert [attrs[f"{p}.{i}.role"] for i in range(7)] == [
-            "system",
-            "user",
-            "assistant",
-            "tool",
-            "assistant",
-            "tool",
-            "assistant",
+        entries = json.loads(attrs["input"])
+        assert [e["role"] for e in entries] == ["system", "user", "assistant", "tool", "assistant", "tool", "assistant"]
+        assert entries[0] == {"role": "system", "content": "You triage support tickets."}
+        assert json.loads(entries[1]["content"]) == [{"type": "input_text", "text": "Card charged twice"}]
+        assert json.loads(entries[2]["content"]) == {"name": "lookup", "arguments": '{"id": 7}'}
+        assert entries[2]["tool_call_id"] == "c1"
+        assert entries[3] == {"role": "tool", "content": "2 charges found", "tool_call_id": "c1"}
+        assert json.loads(entries[4]["content"]) == {"name": "grep", "arguments": "charge"}
+        assert entries[5]["tool_call_id"] == "c2"
+        assert "tool_call_id" not in entries[0]
+        assert entries[6] == {"role": "assistant", "content": "Looking into it."}
+
+    def test_data_url_images_are_replaced_with_a_placeholder(self):
+        image_url = "data:image/png;base64," + "A" * 100_000
+        pdf_url = "data:application/pdf;base64," + "B" * 100_000
+        content = [
+            {"type": "input_text", "text": "Is this receipt legit?"},
+            {"type": "input_image", "image_url": image_url, "detail": "auto"},
+            {"type": "input_image", "image_url": "https://example.com/receipt.png"},
+            {"type": "input_file", "filename": "r.pdf", "file_data": pdf_url},
         ]
-        assert attrs[f"{p}.0.content"] == "You triage support tickets."
-        assert json.loads(attrs[f"{p}.1.content"]) == [{"type": "input_text", "text": "Card charged twice"}]
-        assert json.loads(attrs[f"{p}.2.content"]) == {"name": "lookup", "arguments": '{"id": 7}'}
-        assert attrs[f"{p}.2.tool_call_id"] == "c1"
-        assert attrs[f"{p}.3.content"] == "2 charges found"
-        assert attrs[f"{p}.3.tool_call_id"] == "c1"
-        assert json.loads(attrs[f"{p}.4.content"]) == {"name": "grep", "arguments": "charge"}
-        assert attrs[f"{p}.5.tool_call_id"] == "c2"
-        assert f"{p}.0.tool_call_id" not in attrs
-        assert attrs[f"{p}.6.content"] == "Looking into it."
+        input_items = [
+            {"role": "user", "content": content},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [{"type": "input_image", "image_url": image_url}],
+            },
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) < 1_000
+        entries = json.loads(attrs["input"])
+        assert json.loads(entries[0]["content"]) == [
+            {"type": "input_text", "text": "Is this receipt legit?"},
+            {"type": "input_image", "image_url": "[image]", "detail": "auto"},
+            {"type": "input_image", "image_url": "https://example.com/receipt.png"},
+            {"type": "input_file", "filename": "r.pdf", "file_data": "[file]"},
+        ]
+        assert json.loads(entries[1]["content"]) == [{"type": "input_image", "image_url": "[image]"}]
+        # The caller's request is left untouched.
+        assert content[1]["image_url"] == image_url
+
+    def test_content_is_not_recorded_when_content_tracing_is_off(self, monkeypatch):
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        assert "input" not in attrs
+        assert "gen_ai.decision.questions" not in attrs
+        assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
+
+    def test_content_override_records_content_when_tracing_is_off(self, monkeypatch):
+        from opentelemetry import context as context_api
+
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+        token = context_api.attach(context_api.set_value("override_enable_content_tracing", True))
+        try:
+            attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+        finally:
+            context_api.detach(token)
+
+        assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
 
     def test_one_shot_iterables_are_not_consumed(self):
         """The SDK accepts any iterable; reading a generator here would empty the real request."""
@@ -1120,7 +1174,7 @@ class TestDecisionRequestAttributes:
 
         assert len(list(input_items)) == 1
         assert len(list(questions)) == len(DECISION_QUESTIONS)
-        assert f"{SpanAttributes.LLM_PROMPTS}.0.role" not in attrs
+        assert "input" not in attrs
         assert "gen_ai.decision.questions" not in attrs
 
     def test_unserialisable_question_does_not_raise(self):
@@ -1130,9 +1184,10 @@ class TestDecisionRequestAttributes:
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": [question]})
 
         assert "gen_ai.decision.questions" not in attrs
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "hi"
+        assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
 
 
+@pytest.mark.usefixtures("content_tracing_on")
 class TestDecisionResponseAttributes:
     """set_response_attributes for a Decisions API response."""
 
@@ -1144,13 +1199,24 @@ class TestDecisionResponseAttributes:
         set_response_attributes(span, response_dict)
         return captured
 
-    def test_answers_are_recorded_as_attribute_and_completion(self):
+    def test_answers_are_recorded_as_attribute_and_output(self):
         attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
 
         assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.role"] == "assistant"
-        assert json.loads(attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"]) == DECISION_ANSWERS
+        (output,) = json.loads(attrs["output"])
+        assert output["role"] == "assistant"
+        assert json.loads(output["content"]) == DECISION_ANSWERS
+        assert not any(key.startswith(f"{SpanAttributes.LLM_COMPLETIONS}.") for key in attrs)
         assert attrs[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
+
+    def test_answers_are_not_recorded_when_content_tracing_is_off(self, monkeypatch):
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert "gen_ai.decision.answers" not in attrs
+        assert "output" not in attrs
+        assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 1212
 
     def test_usage_is_recorded(self):
         attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
@@ -1169,6 +1235,7 @@ class TestDecisionResponseAttributes:
         assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
 
 
+@pytest.mark.usefixtures("content_tracing_on")
 class TestDecisionWrappers:
     """decisions_wrapper / adecisions_wrapper span lifecycle."""
 
@@ -1197,7 +1264,7 @@ class TestDecisionWrappers:
         wrapped.assert_called_once_with(**self.KWARGS)
         assert tracer.start_as_current_span.call_args.args[0] == DECISION_SPAN_NAME == "openai.decision"
         assert tracer.start_as_current_span.call_args.kwargs["attributes"] == {"llm.request.type": "decision"}
-        assert attrs[f"{SpanAttributes.LLM_PROMPTS}.0.content"] == "Card charged twice"
+        assert json.loads(attrs["input"]) == [{"role": "user", "content": "Card charged twice"}]
         assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
 
     def test_async_wrapper_records_request_and_response(self):
@@ -1244,6 +1311,7 @@ class TestDecisionWrappers:
 class TestDecisionsAgainstRealSdk:
     """End-to-end through the real openai Decisions resource (skipped on openai releases without it)."""
 
+    @pytest.mark.usefixtures("content_tracing_on")
     def test_sync_and_async_create_emit_decision_spans(self):
         import asyncio
 

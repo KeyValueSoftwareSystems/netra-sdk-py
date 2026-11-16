@@ -1,5 +1,6 @@
 import json
 import math
+import os
 from typing import Any, Dict, List, Optional, TypeGuard
 
 from opentelemetry import context as context_api
@@ -34,14 +35,33 @@ _NAMED_TOOL_TYPES = ("function", "custom")
 # the typed answers returned for them, each recorded as one JSON array.
 GEN_AI_DECISION_QUESTIONS = "gen_ai.decision.questions"
 GEN_AI_DECISION_ANSWERS = "gen_ai.decision.answers"
+# Structured conversation attributes: one JSON array of ``{"role", "content"}`` entries
+# each, replacing the per-message indexed ``gen_ai.prompt.N.*`` / ``gen_ai.completion.N.*`` keys.
+INPUT_ATTRIBUTE = "input"
+OUTPUT_ATTRIBUTE = "output"
 # Decision input item types that carry a tool invocation, mapped to the key holding its arguments.
 _DECISION_TOOL_CALL_ARGUMENT_KEYS: Dict[str, str] = {"function_call": "arguments", "custom_tool_call": "input"}
 _DECISION_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+# A data URL's header (``data:<mime>;base64,``) is short; only this many leading
+# characters are scanned for its comma so a large non-data-URL string is not walked.
+_MAX_DATA_URL_HEADER_LEN = 256
 
 
 def should_suppress_instrumentation() -> bool:
     """Check if instrumentation should be suppressed"""
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
+
+
+def should_send_prompts() -> bool:
+    """Whether prompt/completion content may be recorded on spans.
+
+    Content capture is on unless TRACELOOP_TRACE_CONTENT is "false" (Config sets that
+    env var from its ``trace_content`` setting), and can be force-enabled per-context
+    via ``override_enable_content_tracing``.
+    """
+    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
+        context_api.get_value("override_enable_content_tracing")
+    )
 
 
 def model_as_dict(input_object: Any) -> Any:
@@ -102,12 +122,17 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 def _set_decision_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
     """Record a Decisions API request's input and questions without ever failing the call.
 
+    Both are caller content, so nothing is recorded when content tracing is off.
     Runs before the OpenAI call and serialises caller-supplied content, so any
     failure is logged and the remaining attributes are left unset instead of
     aborting the user's request.
     """
+    if not should_send_prompts():
+        return
+
     try:
-        _set_decision_input(span, kwargs.get("input"))
+        if input_json := _build_decision_input(kwargs.get("input")):
+            span.set_attribute(INPUT_ATTRIBUTE, input_json)
     except Exception:  # noqa: BLE001 - input capture is best-effort; never block the user's request
         logger.warning("netra.instrumentation.libraries.openai: failed to record decision input", exc_info=True)
 
@@ -117,62 +142,94 @@ def _set_decision_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None
         logger.warning("netra.instrumentation.libraries.openai: failed to record decision questions", exc_info=True)
 
 
+def _data_url_placeholder(value: str) -> Optional[str]:
+    """Return a short placeholder if ``value`` is a base64 data URL, else None.
+
+    ``data:image/png;base64,...`` becomes ``[image]``; any other media type
+    (e.g. an inline PDF in ``file_data``) becomes ``[file]``.
+    """
+    if not value.startswith("data:"):
+        return None
+    header_end = value.find(",", 0, _MAX_DATA_URL_HEADER_LEN)
+    if header_end == -1 or not value[:header_end].endswith(";base64"):
+        return None
+    return "[image]" if value.startswith("data:image/") else "[file]"
+
+
+def _without_inline_data(value: Any) -> Any:
+    """Copy ``value`` with every base64 data URL replaced by a short placeholder.
+
+    Image and file content parts usually carry their bytes as base64 data URLs;
+    serialising those in full only for the attribute length limit to cut them
+    leaves unreadable base64 on the span. The caller's objects are never mutated.
+    """
+    if isinstance(value, str):
+        return _data_url_placeholder(value) or value
+    if isinstance(value, dict):
+        return {key: _without_inline_data(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_without_inline_data(item) for item in value]
+    if as_dict := model_as_dict(value):
+        return _without_inline_data(as_dict)
+    return value
+
+
 def _as_prompt_content(content: Any) -> str:
-    """Render message content as a string: text as-is, content parts as JSON."""
+    """Render message content as a string: text as-is, content parts as JSON with inline data elided."""
+    content = _without_inline_data(content)
     if isinstance(content, str):
         return content
     return json.dumps(content, default=str)
 
 
-def _set_decision_input(span: Span, input_data: Any) -> None:
-    """Record the Decisions API ``input`` as ``gen_ai.prompt.*`` entries.
+def _decision_input_entry(item: Dict[str, Any]) -> Optional[Dict[str, Any]]:
+    """Convert one Decisions API input item to a ``{"role", "content"}`` entry, or None to skip it."""
+    item_type = item.get("type") or "message"
+    entry: Dict[str, Any]
+    if item_type in _DECISION_TOOL_CALL_ARGUMENT_KEYS:
+        arguments = item.get(_DECISION_TOOL_CALL_ARGUMENT_KEYS[item_type], "")
+        entry = {"role": "assistant", "content": json.dumps({"name": item.get("name", ""), "arguments": arguments})}
+    elif item_type in _DECISION_TOOL_OUTPUT_TYPES:
+        if not (output := item.get("output")):
+            return None
+        entry = {"role": "tool", "content": _as_prompt_content(output)}
+    else:
+        if not (message_content := item.get("content")):
+            return None
+        entry = {"role": item.get("role", "user"), "content": _as_prompt_content(message_content)}
+
+    if item_type != "message" and (call_id := item.get("call_id")):
+        entry["tool_call_id"] = call_id
+    return entry
+
+
+def _build_decision_input(input_data: Any) -> Optional[str]:
+    """Build the ``input`` attribute JSON for a Decisions API request.
 
     ``input`` is either a string (recorded as one user message) or a list of
     messages, function / custom tool calls and their outputs. Tool calls are
     recorded as assistant entries holding ``{"name", "arguments"}`` and tool
-    outputs as ``tool`` entries carrying their ``call_id``, matching how the
-    Responses API input is recorded. Only lists and tuples are walked: the SDK
-    accepts any iterable, and consuming a one-shot iterator here would empty
-    the request the caller is about to send.
+    outputs as ``tool`` entries; both carry their ``call_id`` as ``tool_call_id``.
+    Only lists and tuples are walked: the SDK accepts any iterable, and
+    consuming a one-shot iterator here would empty the request the caller is
+    about to send.
+
+    Returns:
+        A JSON array of ``{"role", "content"[, "tool_call_id"]}`` entries, or
+        None when there is nothing to record.
     """
+    entries: List[Dict[str, Any]] = []
     if isinstance(input_data, str):
         if input_data:
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.role", "user")
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.0.content", input_data)
-        return
+            entries.append({"role": "user", "content": input_data})
+    elif isinstance(input_data, (list, tuple)):
+        for item in input_data:
+            if not isinstance(item, dict):
+                item = model_as_dict(item)
+            if item and (entry := _decision_input_entry(item)):
+                entries.append(entry)
 
-    if not isinstance(input_data, (list, tuple)):
-        return
-
-    prompt_index = 0
-    for item in input_data:
-        if not isinstance(item, dict):
-            item = model_as_dict(item)
-        if not item:
-            continue
-
-        item_type = item.get("type") or "message"
-        if item_type in _DECISION_TOOL_CALL_ARGUMENT_KEYS:
-            role = "assistant"
-            content = json.dumps(
-                {"name": item.get("name", ""), "arguments": item.get(_DECISION_TOOL_CALL_ARGUMENT_KEYS[item_type], "")}
-            )
-        elif item_type in _DECISION_TOOL_OUTPUT_TYPES:
-            if not (output := item.get("output")):
-                continue
-            role = "tool"
-            content = _as_prompt_content(output)
-        else:
-            if not (message_content := item.get("content")):
-                continue
-            role = item.get("role", "user")
-            content = _as_prompt_content(message_content)
-
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
-        span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", content)
-        if item_type != "message" and (call_id := item.get("call_id")):
-            span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.tool_call_id", call_id)
-        prompt_index += 1
+    return json.dumps(entries) if entries else None
 
 
 def _set_decision_questions(span: Span, questions: Any) -> None:
@@ -365,21 +422,22 @@ def _set_decision_answer_attributes(span: Span, response_dict: Dict[str, Any]) -
 
     The answers are recorded twice: as one JSON array under
     ``gen_ai.decision.answers`` for querying, and as the span's single assistant
-    completion so they show up alongside the prompt like any other model output.
-    Each answer is a predicate, choice, score or refusal object, as returned.
-    Responses without an ``answers`` list (every other OpenAI API) are ignored.
+    ``output`` entry so they show up alongside the input like any other model
+    output. Each answer is a predicate, choice, score or refusal object, as
+    returned. Nothing is recorded when content tracing is off. Responses without
+    an ``answers`` list (every other OpenAI API) are ignored.
     """
     answers = response_dict.get("answers")
-    if not isinstance(answers, list):
+    if not isinstance(answers, list) or not should_send_prompts():
         return
     try:
         serialised = json.dumps(answers, default=str)
+        output_json = json.dumps([{"role": "assistant", "content": serialised}])
     except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
         logger.warning("netra.instrumentation.libraries.openai: failed to record decision answers", exc_info=True)
         return
     span.set_attribute(GEN_AI_DECISION_ANSWERS, serialised)
-    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-    span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.0.content", serialised)
+    span.set_attribute(OUTPUT_ATTRIBUTE, output_json)
 
 
 def _first_present(usage: Dict[str, Any], *keys: str) -> Any:
