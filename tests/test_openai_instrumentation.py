@@ -1050,7 +1050,23 @@ def content_tracing_on(monkeypatch):
     monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "true")
 
 
-@pytest.mark.usefixtures("content_tracing_on")
+@pytest.fixture
+def default_attribute_max_len(monkeypatch):
+    """Decision capture budgets against the active config's limit, which other tests' Config() may have shrunk."""
+    monkeypatch.setattr("netra.config._active_config", None)
+
+
+@pytest.fixture
+def attribute_max_len(monkeypatch):
+    """Shrink the attribute length limit decision capture budgets against."""
+
+    def set_limit(max_len: int) -> None:
+        monkeypatch.setattr("netra.instrumentation.libraries.openai.utils.get_attribute_max_len", lambda: max_len)
+
+    return set_limit
+
+
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
 class TestDecisionRequestAttributes:
     """set_request_attributes for operation_type="decision"."""
 
@@ -1177,6 +1193,129 @@ class TestDecisionRequestAttributes:
         assert "input" not in attrs
         assert "gen_ai.decision.questions" not in attrs
 
+    def test_data_url_images_in_question_instructions_are_replaced_with_a_placeholder(self):
+        image_url = "data:image/png;base64," + "A" * 100_000
+        instructions = [
+            {"type": "input_text", "text": "Does this photo show damage?"},
+            {"type": "input_image", "image_url": image_url},
+        ]
+        questions = [{"type": "predicate", "name": "damaged", "instructions": instructions}]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        assert json.loads(attrs["gen_ai.decision.questions"]) == [
+            {
+                "type": "predicate",
+                "name": "damaged",
+                "instructions": [
+                    {"type": "input_text", "text": "Does this photo show damage?"},
+                    {"type": "input_image", "image_url": "[image]"},
+                ],
+            }
+        ]
+        assert instructions[1]["image_url"] == image_url
+
+    def test_questions_past_the_attribute_limit_are_dropped_whole(self, attribute_max_len):
+        attribute_max_len(400)
+        questions = [{"type": "predicate", "name": f"q{i}", "instructions": "x" * 50} for i in range(20)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        recorded = json.loads(attrs["gen_ai.decision.questions"])
+        assert len(attrs["gen_ai.decision.questions"]) <= 400
+        assert 0 < len(recorded) < len(questions)
+        assert recorded == questions[: len(recorded)]
+
+    def test_question_too_large_for_the_limit_ends_the_recorded_questions(self):
+        choices = [{"value": f"c{i}", "description": "d" * 40_000} for i in range(100)]
+        questions = [
+            DECISION_QUESTIONS[0],
+            {"type": "choice", "name": "huge", "instructions": "Pick one", "choices": choices},
+            DECISION_QUESTIONS[2],
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        assert json.loads(attrs["gen_ai.decision.questions"]) == [DECISION_QUESTIONS[0]]
+
+    def test_large_input_is_cut_to_the_attribute_limit_as_valid_json(self):
+        document = "x" * 4_000_000
+        input_items = [
+            {"role": "user", "content": document},
+            {"type": "function_call_output", "call_id": "c1", "output": document},
+            {"role": "assistant", "content": "never reached"},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 50_000
+        (entry,) = json.loads(attrs["input"])
+        assert entry["role"] == "user"
+        assert document.startswith(entry["content"])
+        assert len(entry["content"]) > 49_000
+
+    @pytest.mark.parametrize(
+        "make_item",
+        [
+            lambda parts: {"role": "user", "content": parts},
+            lambda parts: {"type": "function_call_output", "call_id": "c1", "output": parts},
+        ],
+        ids=["message", "tool-output"],
+    )
+    def test_document_split_into_many_parts_is_cut_to_the_attribute_limit(self, make_item):
+        parts = [{"type": "input_text", "text": f"{i:03d}" + "x" * 39_997} for i in range(100)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": [make_item(parts)], "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 50_000
+        (entry,) = json.loads(attrs["input"])
+        assert entry["content"].startswith('[{"type": "input_text", "text": "000xxx')
+        assert '"text": "001' in entry["content"]
+        assert '"text": "002' not in entry["content"]
+        # The caller's parts are left untouched.
+        assert all(len(part["text"]) == 40_000 for part in parts)
+
+    def test_content_parts_share_one_text_budget_before_encoding(self):
+        """However content is split, at most the budget's worth of text is copied, so encoding stays bounded."""
+        from netra.instrumentation.libraries.openai.utils import _CharBudget, _without_inline_data
+
+        parts = [{"type": "input_text", "text": "x" * 40_000} for _ in range(100)]
+
+        copy = _without_inline_data(parts, _CharBudget(50_000))
+
+        # Every string counts, including each part's 10-character "input_text" type.
+        assert [len(part["text"]) for part in copy] == [40_000, 9_980]
+
+    def test_later_entries_share_the_budget_left_by_earlier_ones(self, attribute_max_len):
+        attribute_max_len(300)
+        input_items = [
+            {"role": "system", "content": "Be brief."},
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": '{"q": "' + "y" * 1_000 + '"}'},
+            {"type": "function_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "z" * 1_000}]},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 300
+        entries = json.loads(attrs["input"])
+        assert entries[0] == {"role": "system", "content": "Be brief."}
+        assert entries[1]["role"] == "assistant"
+        assert entries[1]["tool_call_id"] == "c1"
+        assert '"y' in entries[1]["content"]
+        assert len(entries) == 2
+
+    @pytest.mark.parametrize("text", ['"quoted"\n' * 1_000, "é中" * 1_000, "😀" * 1_000])
+    def test_escaped_content_still_fits_the_attribute_limit(self, attribute_max_len, text):
+        attribute_max_len(500)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": text, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 500
+        (entry,) = json.loads(attrs["input"])
+        assert entry["role"] == "user"
+        assert entry["content"]
+        assert text.startswith(entry["content"])
+
     def test_unserialisable_question_does_not_raise(self):
         question: dict = {"type": "predicate", "instructions": "x"}
         question["self"] = question
@@ -1187,7 +1326,7 @@ class TestDecisionRequestAttributes:
         assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
 
 
-@pytest.mark.usefixtures("content_tracing_on")
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
 class TestDecisionResponseAttributes:
     """set_response_attributes for a Decisions API response."""
 
@@ -1199,22 +1338,46 @@ class TestDecisionResponseAttributes:
         set_response_attributes(span, response_dict)
         return captured
 
-    def test_answers_are_recorded_as_attribute_and_output(self):
+    def test_answers_are_recorded_as_output_only(self):
         attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
 
-        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+        assert "gen_ai.decision.answers" not in attrs
         (output,) = json.loads(attrs["output"])
         assert output["role"] == "assistant"
         assert json.loads(output["content"]) == DECISION_ANSWERS
         assert not any(key.startswith(f"{SpanAttributes.LLM_COMPLETIONS}.") for key in attrs)
         assert attrs[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
 
+    def test_answers_past_the_attribute_limit_are_dropped_whole(self, attribute_max_len):
+        attribute_max_len(600)
+        answers = [{"type": "predicate", "value": True, "explanation": f'"{i}" ' * 10} for i in range(50)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": answers})
+
+        assert len(attrs["output"]) <= 600
+        (output,) = json.loads(attrs["output"])
+        recorded = json.loads(output["content"])
+        assert 0 < len(recorded) < len(answers)
+        assert recorded == answers[: len(recorded)]
+
+    def test_answer_too_large_for_the_limit_records_no_output(self, attribute_max_len):
+        attribute_max_len(100)
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": [{"type": "predicate", "explanation": "x" * 500}]})
+
+        assert "output" not in attrs
+
+    def test_empty_answers_are_recorded_as_an_empty_array(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": []})
+
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == []
+
     def test_answers_are_not_recorded_when_content_tracing_is_off(self, monkeypatch):
         monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
 
         attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
 
-        assert "gen_ai.decision.answers" not in attrs
         assert "output" not in attrs
         assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 1212
 
@@ -1231,11 +1394,11 @@ class TestDecisionResponseAttributes:
     def test_non_decision_response_records_no_answers(self):
         attrs = self._capture({"model": "gpt-4o-mini", "output_text": "ok"})
 
-        assert "gen_ai.decision.answers" not in attrs
+        assert "output" not in attrs
         assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
 
 
-@pytest.mark.usefixtures("content_tracing_on")
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
 class TestDecisionWrappers:
     """decisions_wrapper / adecisions_wrapper span lifecycle."""
 
@@ -1265,7 +1428,8 @@ class TestDecisionWrappers:
         assert tracer.start_as_current_span.call_args.args[0] == DECISION_SPAN_NAME == "openai.decision"
         assert tracer.start_as_current_span.call_args.kwargs["attributes"] == {"llm.request.type": "decision"}
         assert json.loads(attrs["input"]) == [{"role": "user", "content": "Card charged twice"}]
-        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == DECISION_ANSWERS
 
     def test_async_wrapper_records_request_and_response(self):
         import asyncio
@@ -1282,7 +1446,8 @@ class TestDecisionWrappers:
 
         assert result is self.RESPONSE
         assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
-        assert json.loads(attrs["gen_ai.decision.answers"]) == DECISION_ANSWERS
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == DECISION_ANSWERS
 
     def test_api_error_marks_span_and_reraises(self):
         from opentelemetry.trace.status import StatusCode
@@ -1311,7 +1476,7 @@ class TestDecisionWrappers:
 class TestDecisionsAgainstRealSdk:
     """End-to-end through the real openai Decisions resource (skipped on openai releases without it)."""
 
-    @pytest.mark.usefixtures("content_tracing_on")
+    @pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
     def test_sync_and_async_create_emit_decision_spans(self):
         import asyncio
 
@@ -1353,7 +1518,8 @@ class TestDecisionsAgainstRealSdk:
             assert span.attributes[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
             assert span.attributes[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
             assert span.attributes[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 150
-            answers = json.loads(span.attributes["gen_ai.decision.answers"])
+            (output,) = json.loads(span.attributes["output"])
+            answers = json.loads(output["content"])
             assert [a["type"] for a in answers] == ["predicate", "choice", "score", "refusal"]
         # Uninstrument really removed the wrappers.
         assert not hasattr(decisions_module.Decisions.create, "__wrapped__")
