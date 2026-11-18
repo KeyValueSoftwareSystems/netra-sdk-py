@@ -1,5 +1,6 @@
 import json
 import math
+import os
 from typing import Any, Dict, List, Optional, TypeGuard
 
 from opentelemetry import context as context_api
@@ -9,7 +10,7 @@ from opentelemetry.semconv_ai import (
 )
 from opentelemetry.trace import Span
 
-from netra.config import Config
+from netra.config import Config, get_attribute_max_len
 from netra.netra_logger import get_logger
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
@@ -30,11 +31,41 @@ LLM_REQUEST_TOOL_CHOICE = "llm.request.tool_choice"
 # Tool types whose name/description/schema live under a key named after the type in
 # Chat Completions (``{"type": "function", "function": {...}}``) but flat in the Responses API.
 _NAMED_TOOL_TYPES = ("function", "custom")
+# Structured conversation attributes: one JSON array of ``{"role", "content"}`` entries
+# each, replacing the per-message indexed ``gen_ai.prompt.N.*`` / ``gen_ai.completion.N.*`` keys.
+INPUT_ATTRIBUTE = "input"
+OUTPUT_ATTRIBUTE = "output"
+# Decision input item types that carry a tool invocation, mapped to the key holding its arguments.
+_DECISION_TOOL_CALL_ARGUMENT_KEYS: Dict[str, str] = {"function_call": "arguments", "custom_tool_call": "input"}
+_DECISION_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output")
+# A data URL's header (``data:<mime>;base64,``) is short; only this many leading
+# characters are scanned for its comma so a large non-data-URL string is not walked.
+_MAX_DATA_URL_HEADER_LEN = 256
+# Separator ``json.dumps`` puts between array items; used when arrays are assembled from pre-encoded items.
+_JSON_ITEM_SEPARATOR = ", "
+# Decisions API (``client.decisions.create``): the questions are recorded as the last
+# ``input`` entry and the answers as the ``output`` entry, each holding a JSON array.
+_DECISION_QUESTIONS_ROLE = "user"
+_DECISION_ANSWERS_ROLE = "assistant"
+# The questions entry may take at most 1/N of the ``input`` attribute, leaving the rest for the input items.
+_DECISION_QUESTIONS_MAX_SHARE = 2
 
 
 def should_suppress_instrumentation() -> bool:
     """Check if instrumentation should be suppressed"""
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
+
+
+def should_send_prompts() -> bool:
+    """Whether prompt/completion content may be recorded on spans.
+
+    Content capture is on unless TRACELOOP_TRACE_CONTENT is "false" (Config sets that
+    env var from its ``trace_content`` setting), and can be force-enabled per-context
+    via ``override_enable_content_tracing``.
+    """
+    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
+        context_api.get_value("override_enable_content_tracing")
+    )
 
 
 def model_as_dict(input_object: Any) -> Any:
@@ -86,8 +117,293 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         _set_chat_completion_input(span, kwargs.get("messages"))
     elif operation_type == "response":
         _set_chat_response_input(span, kwargs)
+    elif operation_type == "decision":
+        _set_decision_request_attributes(span, kwargs)
 
     _set_tool_attributes(span, kwargs)
+
+
+def _set_decision_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
+    """Record a Decisions API request's input and questions as ``input``, without ever failing the call.
+
+    Both are caller content, so nothing is recorded when content tracing is off.
+    Runs before the OpenAI call and serialises caller-supplied content, so any
+    failure is logged instead of aborting the user's request; questions that
+    cannot be serialised leave the input items still recorded.
+    """
+    if not should_send_prompts():
+        return
+
+    questions_entry: Optional[str] = None
+    try:
+        questions_entry = _decision_questions_entry(kwargs.get("questions"))
+    except Exception:  # noqa: BLE001 - question capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision questions", exc_info=True)
+
+    try:
+        if input_json := _build_decision_input(kwargs.get("input"), questions_entry):
+            span.set_attribute(INPUT_ATTRIBUTE, input_json)
+    except Exception:  # noqa: BLE001 - input capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision input", exc_info=True)
+
+
+def _data_url_placeholder(value: str) -> Optional[str]:
+    """Return a short placeholder if ``value`` is a base64 data URL, else None.
+
+    ``data:image/png;base64,...`` becomes ``[image]``; any other media type
+    (e.g. an inline PDF in ``file_data``) becomes ``[file]``.
+    """
+    if not value.startswith("data:"):
+        return None
+    header_end = value.find(",", 0, _MAX_DATA_URL_HEADER_LEN)
+    if header_end == -1 or not value[:header_end].endswith(";base64"):
+        return None
+    return "[image]" if value.startswith("data:image/") else "[file]"
+
+
+class _CharBudget:
+    """Characters of string content one copy may still keep, shared across the whole walk."""
+
+    __slots__ = ("remaining",)
+
+    def __init__(self, remaining: int) -> None:
+        self.remaining = remaining
+
+    def take(self, text: str) -> str:
+        """Return as much of ``text`` as the budget still allows, and charge it."""
+        kept = text[: max(self.remaining, 0)]
+        self.remaining -= len(kept)
+        return kept
+
+
+def _without_inline_data(value: Any, budget: Optional[_CharBudget] = None) -> Any:
+    """Copy ``value`` with every base64 data URL replaced by a short placeholder.
+
+    Image and file content parts usually carry their bytes as base64 data URLs;
+    serialising those in full only for the attribute length limit to cut them
+    leaves unreadable base64 on the span. When a ``budget`` is given, all the
+    strings in the copy together keep at most that many characters, and list
+    items past the point it runs out are left out, so serialising the copy
+    never encodes more text than the attribute could hold, however the content
+    is split into parts. The caller's objects are never mutated.
+    """
+    if isinstance(value, str):
+        if placeholder := _data_url_placeholder(value):
+            if budget is not None:
+                budget.remaining -= len(placeholder)
+            return placeholder
+        return value if budget is None else budget.take(value)
+    if isinstance(value, dict):
+        return {key: _without_inline_data(item, budget) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        copy: List[Any] = []
+        for item in value:
+            if budget is not None and budget.remaining <= 0:
+                break
+            copy.append(_without_inline_data(item, budget))
+        return copy
+    if as_dict := model_as_dict(value):
+        return _without_inline_data(as_dict, budget)
+    return value
+
+
+def _as_prompt_content(content: Any, max_len: int) -> str:
+    """Render message content as a string of at most ``max_len`` characters.
+
+    Text is kept as-is and content parts become JSON, with inline data elided
+    and at most ``max_len`` characters of text across all parts kept before
+    anything is encoded.
+    """
+    elided = _without_inline_data(content, _CharBudget(max_len))
+    rendered = elided if isinstance(elided, str) else json.dumps(elided, default=str)
+    return rendered[:max_len]
+
+
+def _decision_input_entry(item: Dict[str, Any], max_content_len: int) -> Optional[Dict[str, Any]]:
+    """Convert one Decisions API input item to a ``{"role", "content"}`` entry, or None to skip it.
+
+    The entry's ``content`` is at most ``max_content_len`` characters long.
+    """
+    item_type = item.get("type") or "message"
+    entry: Dict[str, Any]
+    if item_type in _DECISION_TOOL_CALL_ARGUMENT_KEYS:
+        arguments = item.get(_DECISION_TOOL_CALL_ARGUMENT_KEYS[item_type], "")
+        if isinstance(arguments, str):
+            arguments = arguments[:max_content_len]
+        call = json.dumps({"name": item.get("name", ""), "arguments": arguments}, default=str)
+        entry = {"role": "assistant", "content": call[:max_content_len]}
+    elif item_type in _DECISION_TOOL_OUTPUT_TYPES:
+        if not (output := item.get("output")):
+            return None
+        entry = {"role": "tool", "content": _as_prompt_content(output, max_content_len)}
+    else:
+        if not (message_content := item.get("content")):
+            return None
+        entry = {"role": item.get("role", "user"), "content": _as_prompt_content(message_content, max_content_len)}
+
+    if item_type != "message" and (call_id := item.get("call_id")):
+        entry["tool_call_id"] = call_id
+    return entry
+
+
+def _encode_entry_within(entry: Dict[str, Any], max_len: int) -> Optional[str]:
+    """JSON-encode ``entry``, shortening its ``content`` until the encoding fits ``max_len``.
+
+    Escaping makes the encoded content longer than the raw text (quotes and
+    newlines double, non-ASCII characters become ``\\uXXXX``), so the content is
+    cut in proportion to how far over the limit the encoding is and re-encoded.
+
+    Returns:
+        The encoded entry, or None when not even an empty ``content`` fits.
+    """
+    content: str = entry["content"]
+    overhead = len(json.dumps({**entry, "content": ""}, default=str))
+    if overhead > max_len:
+        return None
+    content_budget = max_len - overhead
+    while True:
+        encoded = json.dumps({**entry, "content": content}, default=str)
+        encoded_content_len = len(encoded) - overhead
+        if encoded_content_len <= content_budget:
+            return encoded
+        keep = len(content) * content_budget // encoded_content_len
+        content = content[: min(keep, len(content) - 1)]
+
+
+def _build_decision_input(input_data: Any, questions_entry: Optional[str] = None) -> Optional[str]:
+    """Build the ``input`` attribute JSON for a Decisions API request.
+
+    ``input`` is either a string (recorded as one user message) or a list of
+    messages, function / custom tool calls and their outputs. Tool calls are
+    recorded as assistant entries holding ``{"name", "arguments"}`` and tool
+    outputs as ``tool`` entries; both carry their ``call_id`` as ``tool_call_id``.
+    ``questions_entry``, the already-encoded questions entry, is appended last
+    so the questions read after the content they are asked about.
+    Only lists and tuples are walked: the SDK accepts any iterable, and
+    consuming a one-shot iterator here would empty the request the caller is
+    about to send.
+
+    The result never exceeds the configured attribute length. The questions
+    entry's room is set aside first, so a long input never pushes the questions
+    out; each input entry's content is then cut to the budget the earlier
+    entries left over and later entries are dropped once it is used up, so the
+    attribute stays valid JSON and a multi-megabyte input is never encoded in full.
+
+    Returns:
+        A JSON array of ``{"role", "content"[, "tool_call_id"]}`` entries, or
+        None when there is nothing to record.
+    """
+    if isinstance(input_data, str):
+        items: Any = [{"role": "user", "content": input_data}] if input_data else []
+    elif isinstance(input_data, (list, tuple)):
+        items = input_data
+    else:
+        items = []
+
+    encoded_entries: List[str] = []
+    remaining = get_attribute_max_len() - len("[]")
+    if questions_entry:
+        remaining -= len(questions_entry) + len(_JSON_ITEM_SEPARATOR)
+    for item in items:
+        separator_len = len(_JSON_ITEM_SEPARATOR) if encoded_entries else 0
+        budget = remaining - separator_len
+        if budget <= 0:
+            break
+        if not isinstance(item, dict):
+            item = model_as_dict(item)
+        if not item or not (entry := _decision_input_entry(item, budget)):
+            continue
+        if (encoded := _encode_entry_within(entry, budget)) is None:
+            break
+        encoded_entries.append(encoded)
+        remaining = budget - len(encoded)
+
+    if questions_entry:
+        encoded_entries.append(questions_entry)
+    return _join_json_array(encoded_entries) if encoded_entries else None
+
+
+def _join_json_array(encoded_items: List[str]) -> str:
+    """Join already-encoded JSON values into a JSON array, formatted as ``json.dumps`` would."""
+    return "[" + _JSON_ITEM_SEPARATOR.join(encoded_items) + "]"
+
+
+def _fitting_prefix_len(item_lengths: List[int], max_len: int) -> int:
+    """How many leading items fit in a JSON array of at most ``max_len`` characters.
+
+    ``item_lengths`` are the encoded length of each item; the array adds its
+    brackets and a separator between items.
+    """
+    used = len("[]")
+    for count, item_len in enumerate(item_lengths):
+        used += item_len + (len(_JSON_ITEM_SEPARATOR) if count else 0)
+        if used > max_len:
+            return count
+    return len(item_lengths)
+
+
+def _encode_items_within(items: List[Any], max_len: int) -> List[str]:
+    """JSON-encode ``items`` in order, stopping once they no longer fit a ``max_len`` array.
+
+    Inline data is elided first, and each item's text is copied only up to the
+    room left in the array, so no item costs more to encode than the attribute
+    could still hold. Items are kept whole: an item whose text alone uses up
+    that room cannot fit once encoded, so it and everything after it is left out.
+    """
+    encoded: List[str] = []
+    used = len("[]")
+    for item in items:
+        room = max_len - used - (len(_JSON_ITEM_SEPARATOR) if encoded else 0)
+        budget = _CharBudget(room)
+        copy = _without_inline_data(item, budget)
+        if budget.remaining <= 0:
+            break
+        value = json.dumps(copy, default=str)
+        used += len(value) + (len(_JSON_ITEM_SEPARATOR) if encoded else 0)
+        if used > max_len:
+            break
+        encoded.append(value)
+    return encoded
+
+
+def _items_entry(items: List[Any], role: str, max_len: int) -> Optional[str]:
+    """Encode ``{"role": role, "content": "<JSON array of items>"}`` in at most ``max_len`` characters.
+
+    The items' JSON is escaped again inside ``content``, so each item is sized
+    as such and only the leading items that fit are kept, whole, so ``content``
+    stays valid JSON.
+
+    Returns:
+        The encoded entry, or None when ``items`` is non-empty and not even the
+        first item fits.
+    """
+    encoded = _encode_items_within(items, max_len)
+    envelope_len = len(json.dumps({"role": role, "content": ""}))
+    escaped_lengths = [len(json.dumps(value)) - len('""') for value in encoded]
+    kept = encoded[: _fitting_prefix_len(escaped_lengths, max_len - envelope_len)]
+    if items and not kept:
+        return None
+    return json.dumps({"role": role, "content": _join_json_array(kept)})
+
+
+def _decision_questions_entry(questions: Any) -> Optional[str]:
+    """Encode the Decisions API ``questions`` as the ``user`` entry that ends the ``input`` attribute.
+
+    Its ``content`` is the questions as a JSON array, recorded as given
+    (``type``, ``instructions``, ``name`` and the ``choices`` / ``levels`` they
+    offer) with inline images in their instructions replaced by a placeholder.
+    The entry may use at most half the attribute length, so however many
+    questions are asked the input they are about still has room; whole
+    questions are dropped from the end past that. As with ``input``, only
+    lists and tuples are read so a one-shot iterable reaches the API intact.
+
+    Returns:
+        The encoded entry, or None when there are no questions to record.
+    """
+    if not isinstance(questions, (list, tuple)) or not questions:
+        return None
+    max_len = get_attribute_max_len() // _DECISION_QUESTIONS_MAX_SHARE - len("[]")
+    return _items_entry(list(questions), _DECISION_QUESTIONS_ROLE, max_len)
 
 
 def _set_tool_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
@@ -259,6 +575,28 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
         _set_custom_usage_attribute(span, usage, response_dict.get("model") or "")
 
     _set_response_message_attributes(span, response_dict)
+    _set_decision_answer_attributes(span, response_dict)
+
+
+def _set_decision_answer_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
+    """Record a Decisions API response's ``answers``, in question order, as the span's ``output``.
+
+    ``output`` holds a single assistant entry whose ``content`` is the answers
+    as a JSON array; each answer is a predicate, choice, score or refusal
+    object, as returned. Only as many whole answers as fit the attribute length
+    are kept (counting the escaping the nested JSON needs), so the attribute
+    stays valid JSON. Nothing is recorded when content tracing is off, or when
+    not even one answer fits. Responses without an ``answers`` list (every
+    other OpenAI API) are ignored.
+    """
+    answers = response_dict.get("answers")
+    if not isinstance(answers, list) or not should_send_prompts():
+        return
+    try:
+        if entry := _items_entry(answers, _DECISION_ANSWERS_ROLE, get_attribute_max_len() - len("[]")):
+            span.set_attribute(OUTPUT_ATTRIBUTE, _join_json_array([entry]))
+    except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision answers", exc_info=True)
 
 
 def _first_present(usage: Dict[str, Any], *keys: str) -> Any:

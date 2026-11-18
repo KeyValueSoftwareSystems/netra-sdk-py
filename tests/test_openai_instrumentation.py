@@ -46,8 +46,8 @@ class TestNetraOpenAIInstrumentor:
         instrumentor._instrument()
 
         mock_get_tracer.assert_called_once()
-        # chat x2, embeddings x2, responses x2
-        assert mock_wrap_function.call_count == 6
+        # chat x2, embeddings x2, responses x2, decisions x2
+        assert mock_wrap_function.call_count == 8
 
     @patch("netra.instrumentation.libraries.openai.get_tracer")
     @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
@@ -63,7 +63,7 @@ class TestNetraOpenAIInstrumentor:
         mock_get_tracer.assert_called_once_with(
             "netra.instrumentation.openai", mock_get_tracer.call_args[0][1], mock_tracer_provider
         )
-        assert mock_wrap_function.call_count == 6
+        assert mock_wrap_function.call_count == 8
 
     @patch("netra.instrumentation.libraries.openai.unwrap")
     def test_uninstrument(self, mock_unwrap):
@@ -72,8 +72,8 @@ class TestNetraOpenAIInstrumentor:
 
         instrumentor._uninstrument()
 
-        # chat x2, completions x2, embeddings x2, responses x2
-        assert mock_unwrap.call_count == 8
+        # chat x2, completions x2, embeddings x2, responses x2, decisions x2
+        assert mock_unwrap.call_count == 10
 
 
 class TestWrappers:
@@ -936,3 +936,626 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
         assert captured[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
         assert captured[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 12500
         assert captured[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+
+DECISION_USAGE = {
+    "input_tokens": 1200,
+    "input_tokens_details": {"cached_tokens": 1000, "cache_write_tokens": 150},
+    "output_tokens": 12,
+    "output_tokens_details": {"reasoning_tokens": 4},
+    "total_tokens": 1212,
+}
+
+DECISION_ANSWERS = [
+    {"type": "predicate", "name": "is_spam", "probability": 0.08},
+    {
+        "type": "choice",
+        "name": "category",
+        "choice": "billing",
+        "confidence": 0.91,
+        "probabilities": [{"value": "billing", "probability": 0.91}, {"value": "tech", "probability": 0.09}],
+    },
+    {
+        "type": "score",
+        "name": "urgency",
+        "score": 2.4,
+        "confidence": 0.7,
+        "probabilities": [{"label": "low", "value": 1, "probability": 0.2}],
+    },
+    {"type": "refusal", "name": None},
+]
+
+DECISION_QUESTIONS = [
+    {"type": "predicate", "name": "is_spam", "instructions": "Is this message spam?"},
+    {
+        "type": "choice",
+        "name": "category",
+        "instructions": "Which team should handle this?",
+        "choices": [{"value": "billing"}, {"value": "tech", "description": "Technical issues"}],
+    },
+    {
+        "type": "score",
+        "name": "urgency",
+        "instructions": "How urgent is this?",
+        "levels": [{"label": "low"}, {"label": "medium"}, {"label": "high"}],
+    },
+]
+
+
+def _recording_span():
+    """Return a mock recording span plus the dict its set_attribute calls write into."""
+    span = Mock()
+    span.is_recording.return_value = True
+    captured: dict = {}
+    span.set_attribute.side_effect = lambda key, value: captured.__setitem__(key, value)
+    return span, captured
+
+
+def _decision_input(input_json):
+    """Split a decision ``input`` attribute into its input entries and the questions its last entry holds."""
+    *entries, questions_entry = json.loads(input_json)
+    assert questions_entry["role"] == "user"
+    return entries, json.loads(questions_entry["content"])
+
+
+class TestDecisionsInstrumentor:
+    """Registration of the Decisions API wrappers on NetraOpenAIInstrumentor."""
+
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
+    def test_decisions_create_is_wrapped_sync_and_async(self, mock_wrap_function, mock_get_tracer):
+        NetraOpenAIInstrumentor()._instrument()
+
+        targets = [(c.args[0], c.args[1]) for c in mock_wrap_function.call_args_list]
+        assert ("openai.resources.decisions", "Decisions.create") in targets
+        assert ("openai.resources.decisions", "AsyncDecisions.create") in targets
+
+    @patch("netra.instrumentation.libraries.openai.logger")
+    @patch("netra.instrumentation.libraries.openai.get_tracer")
+    @patch("netra.instrumentation.libraries.openai.wrap_function_wrapper")
+    def test_openai_without_decisions_is_skipped_without_error(self, mock_wrap_function, mock_get_tracer, mock_logger):
+        """Older openai releases have no decisions module; that must not be logged as a failure."""
+
+        def wrap(module, name, wrapper):
+            if module == "openai.resources.decisions":
+                raise ModuleNotFoundError("No module named 'openai.resources.decisions'")
+
+        mock_wrap_function.side_effect = wrap
+
+        NetraOpenAIInstrumentor()._instrument()
+
+        mock_logger.error.assert_not_called()
+        # The other six targets were still wrapped.
+        assert mock_wrap_function.call_count == 7
+
+    @patch("netra.instrumentation.libraries.openai.unwrap")
+    def test_uninstrument_unwraps_decision_classes(self, mock_unwrap):
+        """unwrap() needs the owning class path; ``(module, "Class.method")`` would be a silent no-op."""
+        NetraOpenAIInstrumentor()._uninstrument()
+
+        targets = [(c.args[0], c.args[1]) for c in mock_unwrap.call_args_list]
+        assert ("openai.resources.decisions.Decisions", "create") in targets
+        assert ("openai.resources.decisions.AsyncDecisions", "create") in targets
+
+    @patch("netra.instrumentation.libraries.openai.logger")
+    @patch("netra.instrumentation.libraries.openai.unwrap")
+    def test_uninstrument_without_decisions_is_quiet(self, mock_unwrap, mock_logger):
+        def unwrap(obj, attr):
+            if str(obj).startswith("openai.resources.decisions"):
+                raise ImportError("No module named 'openai.resources.decisions'")
+
+        mock_unwrap.side_effect = unwrap
+
+        NetraOpenAIInstrumentor()._uninstrument()
+
+        assert not any("ecision" in str(c) for c in mock_logger.error.call_args_list)
+
+
+@pytest.fixture
+def content_tracing_on(monkeypatch):
+    """Decision content is gated on TRACELOOP_TRACE_CONTENT, which other tests' Config() may have set to false."""
+    monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "true")
+
+
+@pytest.fixture
+def default_attribute_max_len(monkeypatch):
+    """Decision capture budgets against the active config's limit, which other tests' Config() may have shrunk."""
+    monkeypatch.setattr("netra.config._active_config", None)
+
+
+@pytest.fixture
+def attribute_max_len(monkeypatch):
+    """Shrink the attribute length limit decision capture budgets against."""
+
+    def set_limit(max_len: int) -> None:
+        monkeypatch.setattr("netra.instrumentation.libraries.openai.utils.get_attribute_max_len", lambda: max_len)
+
+    return set_limit
+
+
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
+class TestDecisionRequestAttributes:
+    """set_request_attributes for operation_type="decision"."""
+
+    @staticmethod
+    def _capture(kwargs):
+        from netra.instrumentation.libraries.openai.utils import set_request_attributes
+
+        span, captured = _recording_span()
+        set_request_attributes(span, kwargs, "decision")
+        return captured
+
+    def test_model_and_request_type_are_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+
+        assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+        assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
+
+    def test_string_input_is_one_user_entry(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        entries, _ = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "Refund me now!"}]
+
+    def test_no_indexed_prompt_attributes_are_set(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        assert not any(key.startswith(f"{SpanAttributes.LLM_PROMPTS}.") for key in attrs)
+
+    def test_questions_are_recorded_as_the_last_input_entry(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "hi"}]
+        assert questions == DECISION_QUESTIONS
+        assert "gen_ai.decision.questions" not in attrs
+
+    def test_questions_without_recordable_input_are_still_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "", "questions": DECISION_QUESTIONS})
+
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == []
+        assert questions == DECISION_QUESTIONS
+
+    def test_long_input_never_pushes_out_the_questions(self, attribute_max_len):
+        attribute_max_len(1_000)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "x" * 5_000, "questions": DECISION_QUESTIONS[:1]})
+
+        assert len(attrs["input"]) <= 1_000
+        (entry,), questions = _decision_input(attrs["input"])
+        assert questions == DECISION_QUESTIONS[:1]
+        assert entry["content"] and set(entry["content"]) == {"x"}
+
+    def test_mixed_input_items_are_recorded_in_order(self):
+        input_items = [
+            {"role": "system", "content": "You triage support tickets."},
+            {
+                "role": "user",
+                "type": "message",
+                "content": [{"type": "input_text", "text": "Card charged twice"}],
+            },
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": '{"id": 7}'},
+            {"type": "function_call_output", "call_id": "c1", "output": "2 charges found"},
+            {"type": "custom_tool_call", "call_id": "c2", "name": "grep", "input": "charge"},
+            {"type": "custom_tool_call_output", "call_id": "c2", "output": [{"type": "input_text", "text": "ok"}]},
+            {"role": "assistant", "content": "Looking into it."},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        entries, _ = _decision_input(attrs["input"])
+        assert [e["role"] for e in entries] == ["system", "user", "assistant", "tool", "assistant", "tool", "assistant"]
+        assert entries[0] == {"role": "system", "content": "You triage support tickets."}
+        assert json.loads(entries[1]["content"]) == [{"type": "input_text", "text": "Card charged twice"}]
+        assert json.loads(entries[2]["content"]) == {"name": "lookup", "arguments": '{"id": 7}'}
+        assert entries[2]["tool_call_id"] == "c1"
+        assert entries[3] == {"role": "tool", "content": "2 charges found", "tool_call_id": "c1"}
+        assert json.loads(entries[4]["content"]) == {"name": "grep", "arguments": "charge"}
+        assert entries[5]["tool_call_id"] == "c2"
+        assert "tool_call_id" not in entries[0]
+        assert entries[6] == {"role": "assistant", "content": "Looking into it."}
+
+    def test_data_url_images_are_replaced_with_a_placeholder(self):
+        image_url = "data:image/png;base64," + "A" * 100_000
+        pdf_url = "data:application/pdf;base64," + "B" * 100_000
+        content = [
+            {"type": "input_text", "text": "Is this receipt legit?"},
+            {"type": "input_image", "image_url": image_url, "detail": "auto"},
+            {"type": "input_image", "image_url": "https://example.com/receipt.png"},
+            {"type": "input_file", "filename": "r.pdf", "file_data": pdf_url},
+        ]
+        input_items = [
+            {"role": "user", "content": content},
+            {
+                "type": "function_call_output",
+                "call_id": "c1",
+                "output": [{"type": "input_image", "image_url": image_url}],
+            },
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) < 2_000
+        entries, _ = _decision_input(attrs["input"])
+        assert json.loads(entries[0]["content"]) == [
+            {"type": "input_text", "text": "Is this receipt legit?"},
+            {"type": "input_image", "image_url": "[image]", "detail": "auto"},
+            {"type": "input_image", "image_url": "https://example.com/receipt.png"},
+            {"type": "input_file", "filename": "r.pdf", "file_data": "[file]"},
+        ]
+        assert json.loads(entries[1]["content"]) == [{"type": "input_image", "image_url": "[image]"}]
+        # The caller's request is left untouched.
+        assert content[1]["image_url"] == image_url
+
+    def test_content_is_not_recorded_when_content_tracing_is_off(self, monkeypatch):
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
+
+        assert "input" not in attrs
+        assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
+
+    def test_content_override_records_content_when_tracing_is_off(self, monkeypatch):
+        from opentelemetry import context as context_api
+
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+        token = context_api.attach(context_api.set_value("override_enable_content_tracing", True))
+        try:
+            attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
+        finally:
+            context_api.detach(token)
+
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "hi"}]
+        assert questions == DECISION_QUESTIONS
+
+    def test_one_shot_iterables_are_not_consumed(self):
+        """The SDK accepts any iterable; reading a generator here would empty the real request."""
+        input_items = (m for m in [{"role": "user", "content": "hi"}])
+        questions = (q for q in DECISION_QUESTIONS)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": questions})
+
+        assert len(list(input_items)) == 1
+        assert len(list(questions)) == len(DECISION_QUESTIONS)
+        assert "input" not in attrs
+
+    def test_data_url_images_in_question_instructions_are_replaced_with_a_placeholder(self):
+        image_url = "data:image/png;base64," + "A" * 100_000
+        instructions = [
+            {"type": "input_text", "text": "Does this photo show damage?"},
+            {"type": "input_image", "image_url": image_url},
+        ]
+        questions = [{"type": "predicate", "name": "damaged", "instructions": instructions}]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        _, recorded = _decision_input(attrs["input"])
+        assert recorded == [
+            {
+                "type": "predicate",
+                "name": "damaged",
+                "instructions": [
+                    {"type": "input_text", "text": "Does this photo show damage?"},
+                    {"type": "input_image", "image_url": "[image]"},
+                ],
+            }
+        ]
+        assert instructions[1]["image_url"] == image_url
+
+    def test_questions_past_the_attribute_limit_are_dropped_whole(self, attribute_max_len):
+        attribute_max_len(400)
+        questions = [{"type": "predicate", "name": f"q{i}", "instructions": "x" * 50} for i in range(20)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        assert len(attrs["input"]) <= 400
+        entries, recorded = _decision_input(attrs["input"])
+        # The questions entry takes at most half the attribute, so the input is still recorded.
+        assert len(json.dumps(json.loads(attrs["input"])[-1])) <= 200
+        assert entries == [{"role": "user", "content": "hi"}]
+        assert 0 < len(recorded) < len(questions)
+        assert recorded == questions[: len(recorded)]
+
+    def test_question_too_large_for_the_limit_ends_the_recorded_questions(self):
+        choices = [{"value": f"c{i}", "description": "d" * 40_000} for i in range(100)]
+        questions = [
+            DECISION_QUESTIONS[0],
+            {"type": "choice", "name": "huge", "instructions": "Pick one", "choices": choices},
+            DECISION_QUESTIONS[2],
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
+
+        _, recorded = _decision_input(attrs["input"])
+        assert recorded == [DECISION_QUESTIONS[0]]
+
+    def test_large_input_is_cut_to_the_attribute_limit_as_valid_json(self):
+        document = "x" * 4_000_000
+        input_items = [
+            {"role": "user", "content": document},
+            {"type": "function_call_output", "call_id": "c1", "output": document},
+            {"role": "assistant", "content": "never reached"},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 50_000
+        (entry,), questions = _decision_input(attrs["input"])
+        assert questions == DECISION_QUESTIONS
+        assert entry["role"] == "user"
+        assert document.startswith(entry["content"])
+        assert len(entry["content"]) > 49_000
+
+    @pytest.mark.parametrize(
+        "make_item",
+        [
+            lambda parts: {"role": "user", "content": parts},
+            lambda parts: {"type": "function_call_output", "call_id": "c1", "output": parts},
+        ],
+        ids=["message", "tool-output"],
+    )
+    def test_document_split_into_many_parts_is_cut_to_the_attribute_limit(self, make_item):
+        parts = [{"type": "input_text", "text": f"{i:03d}" + "x" * 39_997} for i in range(100)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": [make_item(parts)], "questions": DECISION_QUESTIONS})
+
+        assert len(attrs["input"]) <= 50_000
+        (entry,), _ = _decision_input(attrs["input"])
+        assert entry["content"].startswith('[{"type": "input_text", "text": "000xxx')
+        assert '"text": "001' in entry["content"]
+        assert '"text": "002' not in entry["content"]
+        # The caller's parts are left untouched.
+        assert all(len(part["text"]) == 40_000 for part in parts)
+
+    def test_content_parts_share_one_text_budget_before_encoding(self):
+        """However content is split, at most the budget's worth of text is copied, so encoding stays bounded."""
+        from netra.instrumentation.libraries.openai.utils import _CharBudget, _without_inline_data
+
+        parts = [{"type": "input_text", "text": "x" * 40_000} for _ in range(100)]
+
+        copy = _without_inline_data(parts, _CharBudget(50_000))
+
+        # Every string counts, including each part's 10-character "input_text" type.
+        assert [len(part["text"]) for part in copy] == [40_000, 9_980]
+
+    def test_later_entries_share_the_budget_left_by_earlier_ones(self, attribute_max_len):
+        attribute_max_len(300)
+        input_items = [
+            {"role": "system", "content": "Be brief."},
+            {"type": "function_call", "call_id": "c1", "name": "lookup", "arguments": '{"q": "' + "y" * 1_000 + '"}'},
+            {"type": "function_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "z" * 1_000}]},
+        ]
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": []})
+
+        assert len(attrs["input"]) <= 300
+        entries = json.loads(attrs["input"])
+        assert entries[0] == {"role": "system", "content": "Be brief."}
+        assert entries[1]["role"] == "assistant"
+        assert entries[1]["tool_call_id"] == "c1"
+        assert '"y' in entries[1]["content"]
+        assert len(entries) == 2
+
+    @pytest.mark.parametrize("text", ['"quoted"\n' * 1_000, "é中" * 1_000, "😀" * 1_000])
+    def test_escaped_content_still_fits_the_attribute_limit(self, attribute_max_len, text):
+        attribute_max_len(500)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": text, "questions": []})
+
+        assert len(attrs["input"]) <= 500
+        (entry,) = json.loads(attrs["input"])
+        assert entry["role"] == "user"
+        assert entry["content"]
+        assert text.startswith(entry["content"])
+
+    def test_unserialisable_question_does_not_raise(self):
+        question: dict = {"type": "predicate", "instructions": "x"}
+        question["self"] = question
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": [question]})
+
+        # The questions are left out; the input items are still recorded.
+        assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
+
+
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
+class TestDecisionResponseAttributes:
+    """set_response_attributes for a Decisions API response."""
+
+    @staticmethod
+    def _capture(response_dict):
+        from netra.instrumentation.libraries.openai.utils import set_response_attributes
+
+        span, captured = _recording_span()
+        set_response_attributes(span, response_dict)
+        return captured
+
+    def test_answers_are_recorded_as_output_only(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert "gen_ai.decision.answers" not in attrs
+        (output,) = json.loads(attrs["output"])
+        assert output["role"] == "assistant"
+        assert json.loads(output["content"]) == DECISION_ANSWERS
+        assert not any(key.startswith(f"{SpanAttributes.LLM_COMPLETIONS}.") for key in attrs)
+        assert attrs[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
+
+    def test_answers_past_the_attribute_limit_are_dropped_whole(self, attribute_max_len):
+        attribute_max_len(600)
+        answers = [{"type": "predicate", "value": True, "explanation": f'"{i}" ' * 10} for i in range(50)]
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": answers})
+
+        assert len(attrs["output"]) <= 600
+        (output,) = json.loads(attrs["output"])
+        recorded = json.loads(output["content"])
+        assert 0 < len(recorded) < len(answers)
+        assert recorded == answers[: len(recorded)]
+
+    def test_answer_too_large_for_the_limit_records_no_output(self, attribute_max_len):
+        attribute_max_len(100)
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": [{"type": "predicate", "explanation": "x" * 500}]})
+
+        assert "output" not in attrs
+
+    def test_empty_answers_are_recorded_as_an_empty_array(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": []})
+
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == []
+
+    def test_answers_are_not_recorded_when_content_tracing_is_off(self, monkeypatch):
+        monkeypatch.setenv("TRACELOOP_TRACE_CONTENT", "false")
+
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert "output" not in attrs
+        assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 1212
+
+    def test_usage_is_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE})
+
+        assert attrs[SpanAttributes.LLM_USAGE_PROMPT_TOKENS] == 1200
+        assert attrs[SpanAttributes.LLM_USAGE_COMPLETION_TOKENS] == 12
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_READ_INPUT_TOKENS] == 1000
+        assert attrs[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 150
+        assert attrs[SpanAttributes.LLM_USAGE_REASONING_TOKENS] == 4
+        assert attrs[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 1212
+
+    def test_non_decision_response_records_no_answers(self):
+        attrs = self._capture({"model": "gpt-4o-mini", "output_text": "ok"})
+
+        assert "output" not in attrs
+        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+
+
+@pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
+class TestDecisionWrappers:
+    """decisions_wrapper / adecisions_wrapper span lifecycle."""
+
+    KWARGS = {"model": "gpt-6-luna", "input": "Card charged twice", "questions": DECISION_QUESTIONS}
+    RESPONSE = {"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE}
+
+    @staticmethod
+    def _tracer():
+        span, captured = _recording_span()
+        tracer = Mock()
+        span_context = MagicMock()
+        span_context.__enter__.return_value = span
+        tracer.start_as_current_span.return_value = span_context
+        return tracer, span, captured
+
+    def test_sync_wrapper_records_request_and_response(self):
+        from netra.instrumentation.libraries.openai.wrappers import DECISION_SPAN_NAME, decisions_wrapper
+
+        tracer, span, attrs = self._tracer()
+        wrapped = Mock(return_value=self.RESPONSE)
+
+        with patch("netra.instrumentation.libraries.openai.wrappers.record_span_timing"):
+            result = decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS))
+
+        assert result is self.RESPONSE
+        wrapped.assert_called_once_with(**self.KWARGS)
+        assert tracer.start_as_current_span.call_args.args[0] == DECISION_SPAN_NAME == "openai.decision"
+        assert tracer.start_as_current_span.call_args.kwargs["attributes"] == {"llm.request.type": "decision"}
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "Card charged twice"}]
+        assert questions == DECISION_QUESTIONS
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == DECISION_ANSWERS
+
+    def test_async_wrapper_records_request_and_response(self):
+        import asyncio
+
+        from netra.instrumentation.libraries.openai.wrappers import adecisions_wrapper
+
+        tracer, span, attrs = self._tracer()
+
+        async def wrapped(*args, **kwargs):
+            return self.RESPONSE
+
+        with patch("netra.instrumentation.libraries.openai.wrappers.record_span_timing"):
+            result = asyncio.run(adecisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS)))
+
+        assert result is self.RESPONSE
+        assert attrs[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+        (output,) = json.loads(attrs["output"])
+        assert json.loads(output["content"]) == DECISION_ANSWERS
+
+    def test_api_error_marks_span_and_reraises(self):
+        from opentelemetry.trace.status import StatusCode
+
+        from netra.instrumentation.libraries.openai.wrappers import decisions_wrapper
+
+        tracer, span, _ = self._tracer()
+        wrapped = Mock(side_effect=RuntimeError("400 bad questions"))
+
+        with pytest.raises(RuntimeError, match="400 bad questions"):
+            decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS))
+
+        assert span.set_status.call_args.args[0].status_code == StatusCode.ERROR
+
+    @patch("netra.instrumentation.libraries.openai.wrappers.should_suppress_instrumentation", return_value=True)
+    def test_suppressed_instrumentation_skips_span(self, _):
+        from netra.instrumentation.libraries.openai.wrappers import decisions_wrapper
+
+        tracer, _, _ = self._tracer()
+        wrapped = Mock(return_value=self.RESPONSE)
+
+        assert decisions_wrapper(tracer)(wrapped, Mock(), (), dict(self.KWARGS)) is self.RESPONSE
+        tracer.start_as_current_span.assert_not_called()
+
+
+class TestDecisionsAgainstRealSdk:
+    """End-to-end through the real openai Decisions resource (skipped on openai releases without it)."""
+
+    @pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
+    def test_sync_and_async_create_emit_decision_spans(self):
+        import asyncio
+
+        decisions_module = pytest.importorskip("openai.resources.decisions")
+        from openai.types.decision import Decision
+        from opentelemetry.sdk.trace import TracerProvider
+        from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+        from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        decision = Decision.model_validate(
+            {"model": "gpt-6-luna", "answers": DECISION_ANSWERS, "usage": DECISION_USAGE}
+        )
+
+        async def apost(*args, **kwargs):
+            return decision
+
+        # The resources bind ``_post`` to ``client.post`` at construction, so the HTTP layer is the client mock.
+        sync_client, async_client = Mock(), Mock()
+        sync_client.post.return_value = decision
+        async_client.post.side_effect = apost
+        sync_resource = decisions_module.Decisions(sync_client)
+        async_resource = decisions_module.AsyncDecisions(async_client)
+        instrumentor = NetraOpenAIInstrumentor()
+        instrumentor._instrument(tracer_provider=provider)
+        try:
+            assert sync_resource.create(**TestDecisionWrappers.KWARGS) is decision
+            assert asyncio.run(async_resource.create(**TestDecisionWrappers.KWARGS)) is decision
+        finally:
+            instrumentor._uninstrument()
+
+        assert sync_client.post.call_args.args[0] == "/decisions"
+
+        spans = exporter.get_finished_spans()
+        assert [s.name for s in spans] == ["openai.decision", "openai.decision"]
+        for span in spans:
+            assert span.attributes[SpanAttributes.LLM_REQUEST_TYPE] == "decision"
+            assert span.attributes[SpanAttributes.LLM_RESPONSE_MODEL] == "gpt-6-luna"
+            assert span.attributes[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 150
+            (output,) = json.loads(span.attributes["output"])
+            answers = json.loads(output["content"])
+            assert [a["type"] for a in answers] == ["predicate", "choice", "score", "refusal"]
+        # Uninstrument really removed the wrappers.
+        assert not hasattr(decisions_module.Decisions.create, "__wrapped__")
