@@ -31,9 +31,6 @@ LLM_REQUEST_TOOL_CHOICE = "llm.request.tool_choice"
 # Tool types whose name/description/schema live under a key named after the type in
 # Chat Completions (``{"type": "function", "function": {...}}``) but flat in the Responses API.
 _NAMED_TOOL_TYPES = ("function", "custom")
-# Decisions API (``client.decisions.create``): the questions asked about the input,
-# recorded as one JSON array. The answers are recorded as the span's ``output``.
-GEN_AI_DECISION_QUESTIONS = "gen_ai.decision.questions"
 # Structured conversation attributes: one JSON array of ``{"role", "content"}`` entries
 # each, replacing the per-message indexed ``gen_ai.prompt.N.*`` / ``gen_ai.completion.N.*`` keys.
 INPUT_ATTRIBUTE = "input"
@@ -46,6 +43,12 @@ _DECISION_TOOL_OUTPUT_TYPES = ("function_call_output", "custom_tool_call_output"
 _MAX_DATA_URL_HEADER_LEN = 256
 # Separator ``json.dumps`` puts between array items; used when arrays are assembled from pre-encoded items.
 _JSON_ITEM_SEPARATOR = ", "
+# Decisions API (``client.decisions.create``): the questions are recorded as the last
+# ``input`` entry and the answers as the ``output`` entry, each holding a JSON array.
+_DECISION_QUESTIONS_ROLE = "user"
+_DECISION_ANSWERS_ROLE = "assistant"
+# The questions entry may take at most 1/N of the ``input`` attribute, leaving the rest for the input items.
+_DECISION_QUESTIONS_MAX_SHARE = 2
 
 
 def should_suppress_instrumentation() -> bool:
@@ -121,26 +124,27 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
 
 
 def _set_decision_request_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
-    """Record a Decisions API request's input and questions without ever failing the call.
+    """Record a Decisions API request's input and questions as ``input``, without ever failing the call.
 
     Both are caller content, so nothing is recorded when content tracing is off.
     Runs before the OpenAI call and serialises caller-supplied content, so any
-    failure is logged and the remaining attributes are left unset instead of
-    aborting the user's request.
+    failure is logged instead of aborting the user's request; questions that
+    cannot be serialised leave the input items still recorded.
     """
     if not should_send_prompts():
         return
 
+    questions_entry: Optional[str] = None
     try:
-        if input_json := _build_decision_input(kwargs.get("input")):
+        questions_entry = _decision_questions_entry(kwargs.get("questions"))
+    except Exception:  # noqa: BLE001 - question capture is best-effort; never block the user's request
+        logger.warning("netra.instrumentation.libraries.openai: failed to record decision questions", exc_info=True)
+
+    try:
+        if input_json := _build_decision_input(kwargs.get("input"), questions_entry):
             span.set_attribute(INPUT_ATTRIBUTE, input_json)
     except Exception:  # noqa: BLE001 - input capture is best-effort; never block the user's request
         logger.warning("netra.instrumentation.libraries.openai: failed to record decision input", exc_info=True)
-
-    try:
-        _set_decision_questions(span, kwargs.get("questions"))
-    except Exception:  # noqa: BLE001 - question capture is best-effort; never block the user's request
-        logger.warning("netra.instrumentation.libraries.openai: failed to record decision questions", exc_info=True)
 
 
 def _data_url_placeholder(value: str) -> Optional[str]:
@@ -266,21 +270,24 @@ def _encode_entry_within(entry: Dict[str, Any], max_len: int) -> Optional[str]:
         content = content[: min(keep, len(content) - 1)]
 
 
-def _build_decision_input(input_data: Any) -> Optional[str]:
+def _build_decision_input(input_data: Any, questions_entry: Optional[str] = None) -> Optional[str]:
     """Build the ``input`` attribute JSON for a Decisions API request.
 
     ``input`` is either a string (recorded as one user message) or a list of
     messages, function / custom tool calls and their outputs. Tool calls are
     recorded as assistant entries holding ``{"name", "arguments"}`` and tool
     outputs as ``tool`` entries; both carry their ``call_id`` as ``tool_call_id``.
+    ``questions_entry``, the already-encoded questions entry, is appended last
+    so the questions read after the content they are asked about.
     Only lists and tuples are walked: the SDK accepts any iterable, and
     consuming a one-shot iterator here would empty the request the caller is
     about to send.
 
-    The result never exceeds the configured attribute length: each entry's
-    content is cut to the budget the earlier entries left over and later
-    entries are dropped once it is used up, so the attribute stays valid JSON
-    and a multi-megabyte input is never encoded in full.
+    The result never exceeds the configured attribute length. The questions
+    entry's room is set aside first, so a long input never pushes the questions
+    out; each input entry's content is then cut to the budget the earlier
+    entries left over and later entries are dropped once it is used up, so the
+    attribute stays valid JSON and a multi-megabyte input is never encoded in full.
 
     Returns:
         A JSON array of ``{"role", "content"[, "tool_call_id"]}`` entries, or
@@ -291,10 +298,12 @@ def _build_decision_input(input_data: Any) -> Optional[str]:
     elif isinstance(input_data, (list, tuple)):
         items = input_data
     else:
-        return None
+        items = []
 
     encoded_entries: List[str] = []
     remaining = get_attribute_max_len() - len("[]")
+    if questions_entry:
+        remaining -= len(questions_entry) + len(_JSON_ITEM_SEPARATOR)
     for item in items:
         separator_len = len(_JSON_ITEM_SEPARATOR) if encoded_entries else 0
         budget = remaining - separator_len
@@ -309,6 +318,8 @@ def _build_decision_input(input_data: Any) -> Optional[str]:
         encoded_entries.append(encoded)
         remaining = budget - len(encoded)
 
+    if questions_entry:
+        encoded_entries.append(questions_entry)
     return _join_json_array(encoded_entries) if encoded_entries else None
 
 
@@ -355,20 +366,44 @@ def _encode_items_within(items: List[Any], max_len: int) -> List[str]:
     return encoded
 
 
-def _set_decision_questions(span: Span, questions: Any) -> None:
-    """Record the Decisions API ``questions`` as one JSON array under ``gen_ai.decision.questions``.
+def _items_entry(items: List[Any], role: str, max_len: int) -> Optional[str]:
+    """Encode ``{"role": role, "content": "<JSON array of items>"}`` in at most ``max_len`` characters.
 
-    Questions are recorded as given (``type``, ``instructions``, ``name`` and the
-    ``choices`` / ``levels`` they offer), with inline images in their
-    instructions replaced by a placeholder. Whole questions are dropped from the
-    end once the array would exceed the attribute length, so it stays valid
-    JSON. As with ``input``, only lists and tuples are read so a one-shot
-    iterable reaches the API intact.
+    The items' JSON is escaped again inside ``content``, so each item is sized
+    as such and only the leading items that fit are kept, whole, so ``content``
+    stays valid JSON.
+
+    Returns:
+        The encoded entry, or None when ``items`` is non-empty and not even the
+        first item fits.
+    """
+    encoded = _encode_items_within(items, max_len)
+    envelope_len = len(json.dumps({"role": role, "content": ""}))
+    escaped_lengths = [len(json.dumps(value)) - len('""') for value in encoded]
+    kept = encoded[: _fitting_prefix_len(escaped_lengths, max_len - envelope_len)]
+    if items and not kept:
+        return None
+    return json.dumps({"role": role, "content": _join_json_array(kept)})
+
+
+def _decision_questions_entry(questions: Any) -> Optional[str]:
+    """Encode the Decisions API ``questions`` as the ``user`` entry that ends the ``input`` attribute.
+
+    Its ``content`` is the questions as a JSON array, recorded as given
+    (``type``, ``instructions``, ``name`` and the ``choices`` / ``levels`` they
+    offer) with inline images in their instructions replaced by a placeholder.
+    The entry may use at most half the attribute length, so however many
+    questions are asked the input they are about still has room; whole
+    questions are dropped from the end past that. As with ``input``, only
+    lists and tuples are read so a one-shot iterable reaches the API intact.
+
+    Returns:
+        The encoded entry, or None when there are no questions to record.
     """
     if not isinstance(questions, (list, tuple)) or not questions:
-        return
-    if encoded := _encode_items_within(list(questions), get_attribute_max_len()):
-        span.set_attribute(GEN_AI_DECISION_QUESTIONS, _join_json_array(encoded))
+        return None
+    max_len = get_attribute_max_len() // _DECISION_QUESTIONS_MAX_SHARE - len("[]")
+    return _items_entry(list(questions), _DECISION_QUESTIONS_ROLE, max_len)
 
 
 def _set_tool_attributes(span: Span, kwargs: Dict[str, Any]) -> None:
@@ -558,15 +593,8 @@ def _set_decision_answer_attributes(span: Span, response_dict: Dict[str, Any]) -
     if not isinstance(answers, list) or not should_send_prompts():
         return
     try:
-        max_len = get_attribute_max_len()
-        encoded = _encode_items_within(answers, max_len)
-        # Each answer's JSON is escaped again inside ``content``; size it as such.
-        envelope_len = len(json.dumps([{"role": "assistant", "content": ""}]))
-        escaped_lengths = [len(json.dumps(answer)) - len('""') for answer in encoded]
-        kept = encoded[: _fitting_prefix_len(escaped_lengths, max_len - envelope_len)]
-        if answers and not kept:
-            return
-        span.set_attribute(OUTPUT_ATTRIBUTE, json.dumps([{"role": "assistant", "content": _join_json_array(kept)}]))
+        if entry := _items_entry(answers, _DECISION_ANSWERS_ROLE, get_attribute_max_len() - len("[]")):
+            span.set_attribute(OUTPUT_ATTRIBUTE, _join_json_array([entry]))
     except Exception:  # noqa: BLE001 - runs after the call succeeded; never cost the user their response
         logger.warning("netra.instrumentation.libraries.openai: failed to record decision answers", exc_info=True)
 

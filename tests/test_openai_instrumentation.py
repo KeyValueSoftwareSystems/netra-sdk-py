@@ -991,6 +991,13 @@ def _recording_span():
     return span, captured
 
 
+def _decision_input(input_json):
+    """Split a decision ``input`` attribute into its input entries and the questions its last entry holds."""
+    *entries, questions_entry = json.loads(input_json)
+    assert questions_entry["role"] == "user"
+    return entries, json.loads(questions_entry["content"])
+
+
 class TestDecisionsInstrumentor:
     """Registration of the Decisions API wrappers on NetraOpenAIInstrumentor."""
 
@@ -1087,17 +1094,38 @@ class TestDecisionRequestAttributes:
     def test_string_input_is_one_user_entry(self):
         attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
 
-        assert json.loads(attrs["input"]) == [{"role": "user", "content": "Refund me now!"}]
+        entries, _ = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "Refund me now!"}]
 
     def test_no_indexed_prompt_attributes_are_set(self):
         attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
 
         assert not any(key.startswith(f"{SpanAttributes.LLM_PROMPTS}.") for key in attrs)
 
-    def test_questions_are_recorded_as_json_array(self):
+    def test_questions_are_recorded_as_the_last_input_entry(self):
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": DECISION_QUESTIONS})
 
-        assert json.loads(attrs["gen_ai.decision.questions"]) == DECISION_QUESTIONS
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "hi"}]
+        assert questions == DECISION_QUESTIONS
+        assert "gen_ai.decision.questions" not in attrs
+
+    def test_questions_without_recordable_input_are_still_recorded(self):
+        attrs = self._capture({"model": "gpt-6-luna", "input": "", "questions": DECISION_QUESTIONS})
+
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == []
+        assert questions == DECISION_QUESTIONS
+
+    def test_long_input_never_pushes_out_the_questions(self, attribute_max_len):
+        attribute_max_len(1_000)
+
+        attrs = self._capture({"model": "gpt-6-luna", "input": "x" * 5_000, "questions": DECISION_QUESTIONS[:1]})
+
+        assert len(attrs["input"]) <= 1_000
+        (entry,), questions = _decision_input(attrs["input"])
+        assert questions == DECISION_QUESTIONS[:1]
+        assert entry["content"] and set(entry["content"]) == {"x"}
 
     def test_mixed_input_items_are_recorded_in_order(self):
         input_items = [
@@ -1116,7 +1144,7 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
 
-        entries = json.loads(attrs["input"])
+        entries, _ = _decision_input(attrs["input"])
         assert [e["role"] for e in entries] == ["system", "user", "assistant", "tool", "assistant", "tool", "assistant"]
         assert entries[0] == {"role": "system", "content": "You triage support tickets."}
         assert json.loads(entries[1]["content"]) == [{"type": "input_text", "text": "Card charged twice"}]
@@ -1148,8 +1176,8 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
 
-        assert len(attrs["input"]) < 1_000
-        entries = json.loads(attrs["input"])
+        assert len(attrs["input"]) < 2_000
+        entries, _ = _decision_input(attrs["input"])
         assert json.loads(entries[0]["content"]) == [
             {"type": "input_text", "text": "Is this receipt legit?"},
             {"type": "input_image", "image_url": "[image]", "detail": "auto"},
@@ -1166,7 +1194,6 @@ class TestDecisionRequestAttributes:
         attrs = self._capture({"model": "gpt-6-luna", "input": "Refund me now!", "questions": DECISION_QUESTIONS})
 
         assert "input" not in attrs
-        assert "gen_ai.decision.questions" not in attrs
         assert attrs[SpanAttributes.LLM_REQUEST_MODEL] == "gpt-6-luna"
 
     def test_content_override_records_content_when_tracing_is_off(self, monkeypatch):
@@ -1179,7 +1206,9 @@ class TestDecisionRequestAttributes:
         finally:
             context_api.detach(token)
 
-        assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "hi"}]
+        assert questions == DECISION_QUESTIONS
 
     def test_one_shot_iterables_are_not_consumed(self):
         """The SDK accepts any iterable; reading a generator here would empty the real request."""
@@ -1191,7 +1220,6 @@ class TestDecisionRequestAttributes:
         assert len(list(input_items)) == 1
         assert len(list(questions)) == len(DECISION_QUESTIONS)
         assert "input" not in attrs
-        assert "gen_ai.decision.questions" not in attrs
 
     def test_data_url_images_in_question_instructions_are_replaced_with_a_placeholder(self):
         image_url = "data:image/png;base64," + "A" * 100_000
@@ -1203,7 +1231,8 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
 
-        assert json.loads(attrs["gen_ai.decision.questions"]) == [
+        _, recorded = _decision_input(attrs["input"])
+        assert recorded == [
             {
                 "type": "predicate",
                 "name": "damaged",
@@ -1221,8 +1250,11 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
 
-        recorded = json.loads(attrs["gen_ai.decision.questions"])
-        assert len(attrs["gen_ai.decision.questions"]) <= 400
+        assert len(attrs["input"]) <= 400
+        entries, recorded = _decision_input(attrs["input"])
+        # The questions entry takes at most half the attribute, so the input is still recorded.
+        assert len(json.dumps(json.loads(attrs["input"])[-1])) <= 200
+        assert entries == [{"role": "user", "content": "hi"}]
         assert 0 < len(recorded) < len(questions)
         assert recorded == questions[: len(recorded)]
 
@@ -1236,7 +1268,8 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": questions})
 
-        assert json.loads(attrs["gen_ai.decision.questions"]) == [DECISION_QUESTIONS[0]]
+        _, recorded = _decision_input(attrs["input"])
+        assert recorded == [DECISION_QUESTIONS[0]]
 
     def test_large_input_is_cut_to_the_attribute_limit_as_valid_json(self):
         document = "x" * 4_000_000
@@ -1249,7 +1282,8 @@ class TestDecisionRequestAttributes:
         attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
 
         assert len(attrs["input"]) <= 50_000
-        (entry,) = json.loads(attrs["input"])
+        (entry,), questions = _decision_input(attrs["input"])
+        assert questions == DECISION_QUESTIONS
         assert entry["role"] == "user"
         assert document.startswith(entry["content"])
         assert len(entry["content"]) > 49_000
@@ -1268,7 +1302,7 @@ class TestDecisionRequestAttributes:
         attrs = self._capture({"model": "gpt-6-luna", "input": [make_item(parts)], "questions": DECISION_QUESTIONS})
 
         assert len(attrs["input"]) <= 50_000
-        (entry,) = json.loads(attrs["input"])
+        (entry,), _ = _decision_input(attrs["input"])
         assert entry["content"].startswith('[{"type": "input_text", "text": "000xxx')
         assert '"text": "001' in entry["content"]
         assert '"text": "002' not in entry["content"]
@@ -1294,7 +1328,7 @@ class TestDecisionRequestAttributes:
             {"type": "function_call_output", "call_id": "c1", "output": [{"type": "input_text", "text": "z" * 1_000}]},
         ]
 
-        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": DECISION_QUESTIONS})
+        attrs = self._capture({"model": "gpt-6-luna", "input": input_items, "questions": []})
 
         assert len(attrs["input"]) <= 300
         entries = json.loads(attrs["input"])
@@ -1308,7 +1342,7 @@ class TestDecisionRequestAttributes:
     def test_escaped_content_still_fits_the_attribute_limit(self, attribute_max_len, text):
         attribute_max_len(500)
 
-        attrs = self._capture({"model": "gpt-6-luna", "input": text, "questions": DECISION_QUESTIONS})
+        attrs = self._capture({"model": "gpt-6-luna", "input": text, "questions": []})
 
         assert len(attrs["input"]) <= 500
         (entry,) = json.loads(attrs["input"])
@@ -1322,7 +1356,7 @@ class TestDecisionRequestAttributes:
 
         attrs = self._capture({"model": "gpt-6-luna", "input": "hi", "questions": [question]})
 
-        assert "gen_ai.decision.questions" not in attrs
+        # The questions are left out; the input items are still recorded.
         assert json.loads(attrs["input"]) == [{"role": "user", "content": "hi"}]
 
 
@@ -1427,7 +1461,9 @@ class TestDecisionWrappers:
         wrapped.assert_called_once_with(**self.KWARGS)
         assert tracer.start_as_current_span.call_args.args[0] == DECISION_SPAN_NAME == "openai.decision"
         assert tracer.start_as_current_span.call_args.kwargs["attributes"] == {"llm.request.type": "decision"}
-        assert json.loads(attrs["input"]) == [{"role": "user", "content": "Card charged twice"}]
+        entries, questions = _decision_input(attrs["input"])
+        assert entries == [{"role": "user", "content": "Card charged twice"}]
+        assert questions == DECISION_QUESTIONS
         (output,) = json.loads(attrs["output"])
         assert json.loads(output["content"]) == DECISION_ANSWERS
 
