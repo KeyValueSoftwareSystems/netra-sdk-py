@@ -14,6 +14,7 @@ from opentelemetry.trace import Span, SpanKind, Tracer
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
+from netra.instrumentation.message_builder import build_messages
 from netra.instrumentation.span_utils import record_span_timing
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
@@ -440,11 +441,7 @@ def start_turn(tracer: Tracer, client: Any, thread_id: str, input_items: Any, pa
 
         messages = _input_messages(input_items, params)
         state.transcript = [_bounded_message(message) for message in messages]
-        if messages and should_send_prompts():
-            for index, message in enumerate(messages):
-                _set_content(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.role", message["role"])
-                _set_content(span, f"{SpanAttributes.LLM_PROMPTS}.{index}.content", message["content"])
-            _set_content(span, "input", json.dumps(messages))
+        _set_messages(span, "input", messages)
     except Exception as e:
         logger.error("Cannot set codex turn request attributes: %s", e)
     return state
@@ -1079,13 +1076,12 @@ def _record_tool_result(state: TurnState, item_type: str, item: Any, at_ns: Opti
             state.gen_start_ns = max(state.gen_start_ns or 0, finished_ns)
 
 
-def _set_messages(span: Span, prefix: str, key: str, messages: list[dict[str, str]]) -> None:
+def _set_messages(span: Span, key: str, messages: list[dict[str, str]]) -> None:
     """
-    Write messages as indexed ``gen_ai.prompt``/``gen_ai.completion`` attributes and as a JSON array.
+    Write messages as a JSON array of ``{role, content}`` entries.
 
     Args:
-        span (Span): The generation span.
-        prefix (str): ``SpanAttributes.LLM_PROMPTS`` or ``SpanAttributes.LLM_COMPLETIONS``.
+        span (Span): The span to write to.
         key (str): ``"input"`` or ``"output"``.
         messages (list): The messages to record.
 
@@ -1094,12 +1090,7 @@ def _set_messages(span: Span, prefix: str, key: str, messages: list[dict[str, st
     """
     if not messages or not should_send_prompts():
         return
-    for index, message in enumerate(messages):
-        span.set_attribute(f"{prefix}.{index}.role", message["role"])
-        span.set_attribute(f"{prefix}.{index}.content", message["content"])
-        if tool_call_id := message.get("tool_call_id"):
-            span.set_attribute(f"{prefix}.{index}.tool_call_id", tool_call_id)
-    span.set_attribute(key, json.dumps(messages))
+    span.set_attribute(key, build_messages(messages))
 
 
 def _generation_input(state: TurnState) -> list[dict[str, str]]:
@@ -1149,8 +1140,8 @@ def _emit_generation(state: TurnState, usage: Any) -> None:
         _set(span, ATTR_THREAD_ID, state.thread_id)
         _set(span, ATTR_TURN_ID, state.turn_id)
         _set(span, ATTR_REQUEST_INDEX, state.request_index)
-        _set_messages(span, SpanAttributes.LLM_PROMPTS, "input", _generation_input(state))
-        _set_messages(span, SpanAttributes.LLM_COMPLETIONS, "output", state.gen_outputs)
+        _set_messages(span, "input", _generation_input(state))
+        _set_messages(span, "output", state.gen_outputs)
         for name, attr in _USAGE_TOKEN_FIELDS.items():
             value = _get(usage, name)
             if isinstance(value, int) and not isinstance(value, bool):
@@ -1200,10 +1191,8 @@ def finish_turn(state: TurnState) -> None:
         _set(span, SpanAttributes.LLM_RESPONSE_MODEL, state.model)
 
         output = state.final_answer if state.final_answer is not None else state.last_message
-        if output is not None and should_send_prompts():
-            _set_content(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.role", "assistant")
-            _set_content(span, f"{SpanAttributes.LLM_COMPLETIONS}.0.content", output)
-            _set_content(span, "output", json.dumps([{"role": "assistant", "content": output}]))
+        if output is not None:
+            _set_messages(span, "output", [{"role": "assistant", "content": output}])
 
         # Output produced after the last usage report (e.g. an interrupted request) still
         # gets a generation span, just without usage.
