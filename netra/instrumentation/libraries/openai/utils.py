@@ -11,7 +11,6 @@ from opentelemetry.semconv_ai import (
 from opentelemetry.trace import Span
 
 from netra.config import Config, get_attribute_max_len
-from netra.netra_logger import get_logger
 from netra.instrumentation.message_builder import (
     build_chat_input,
     build_completion_output,
@@ -73,21 +72,6 @@ def should_send_prompts() -> bool:
     return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
         context_api.get_value("override_enable_content_tracing")
     )
-
-
-def model_as_dict(input_object: Any) -> Any:
-    """Convert OpenAI model object to dictionary"""
-    if hasattr(input_object, "model_dump"):
-        return input_object.model_dump()
-
-    elif hasattr(input_object, "to_dict"):
-        return input_object.to_dict()
-
-    elif isinstance(input_object, dict):
-        return input_object
-
-    else:
-        return {}
 
 
 def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: str) -> None:
