@@ -1,4 +1,3 @@
-import logging
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
@@ -6,8 +5,9 @@ from opentelemetry import context as context_api
 from opentelemetry import trace
 
 from netra.config import Config
+from netra.netra_logger import get_logger
 
-logger = logging.getLogger(__name__)
+logger = get_logger(__name__)
 
 ATTR_PROMPT_ID = f"{Config.LIBRARY_NAME}.prompt.id"
 ATTR_PROMPT_NAME = f"{Config.LIBRARY_NAME}.prompt.name"

@@ -362,7 +362,7 @@ Netra.prompts.clear_cache()
 
 ### Linking prompts to traces
 
-Wrap your LLM calls in `use_prompt` to tag every span started inside the block with the prompt's identity (`netra.prompt.id`, `netra.prompt.name`, `netra.prompt.version`, `netra.prompt.label`):
+`get_prompt` tags the span that is current at the call with the prompt's identity (`netra.prompt.id`, `netra.prompt.name`, `netra.prompt.version`, `netra.prompt.label`). To tag every span started inside a block, wrap your LLM calls in `use_prompt`:
 
 ```python
 prompt = Netra.prompts.get_prompt("my-prompt", label="production")
@@ -371,6 +371,7 @@ with Netra.prompts.use_prompt(prompt):
     client.chat.completions.create(model="gpt-4o", messages=prompt["messages"])
 ```
 
+- In test runs and multi-turn simulations, the root span (`TestRun.<name>` / each turn's span) is tagged with the prompt the agent fetched or used during the task, with no wrapping needed. If several prompts are used in one task, the last one wins.
 - Pass the value returned by `get_prompt` as-is. A failed fetch (empty result) links nothing and does not raise.
 - Spans in `threading.Thread`, `Timer` and `ThreadPoolExecutor` workers are linked while Netra's threading instrumentation is enabled (the default). With it disabled, only `asyncio` tasks inherit the prompt.
 - Requires a Netra backend that returns prompt identity from `get_prompt`; older backends link nothing.
