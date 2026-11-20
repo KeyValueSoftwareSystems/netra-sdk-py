@@ -283,6 +283,59 @@ def test_answers_that_do_not_fit_are_dropped_whole(
     assert kept["q0"] == {"type": "noul", "noul": 0.5}
 
 
+def test_non_ascii_content_is_recorded_unescaped(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    answers = {"facturación": {"type": "noul", "noul": 0.9, "note": "請求 😀"}}
+    monkeypatch.setattr(sys.modules[__name__], "ANSWERS", answers)
+    questions = {"facturación": Noul(instructions="¿Es sobre facturación? 請求")}
+    TypeSafeClient().system_one(state="Me cobraron dos veces 😀 二重請求", questions=questions)
+
+    attrs = _only_span(exporter).attributes
+    # Kept as the characters themselves, not as six-character \uXXXX escapes.
+    assert "\\u" not in attrs["input"]
+    assert "\\u" not in attrs["output"]
+    assert _input(attrs) == [
+        {"role": "user", "content": "Me cobraron dos veces 😀 二重請求"},
+        {"role": "user", "content": {"facturación": {"type": "noul", "instructions": "¿Es sobre facturación? 請求"}}},
+    ]
+    assert _output(attrs) == answers
+
+
+def test_long_non_ascii_state_is_cut_within_limit(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(typesafe_utils, "get_attribute_max_len", lambda: 300)
+    TypeSafeClient().system_one(state="二重請求" * 1000, questions=QUESTIONS)
+
+    attrs = _only_span(exporter).attributes
+    assert len(attrs["input"]) <= 300
+    state_entry, _ = _input(attrs)
+    # Unescaped, one character costs one: far more of the state fits than the
+    # ~20 characters six-character escapes would have left room for.
+    assert len(state_entry["content"]) > 100
+    assert set(state_entry["content"]) <= set("二重請求")
+
+
+def test_lone_surrogates_are_replaced_so_export_can_encode(
+    exporter: InMemorySpanExporter, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(sys.modules[__name__], "ANSWERS", {"q\ud800": "a\udfff"})
+    TypeSafeClient().system_one(state="bad\ud800", questions={"k\udc80": {"type": "noul"}})
+
+    attrs = _only_span(exporter).attributes
+    # OTLP encodes attributes as UTF-8, which lone surrogates would break.
+    attrs["input"].encode("utf-8")
+    attrs["output"].encode("utf-8")
+    assert _input(attrs) == [
+        {"role": "user", "content": "bad�"},
+        {"role": "user", "content": {"k�": {"type": "noul"}}},
+    ]
+    # pydantic's JSON-mode dump already rewrites a surrogate in a dict key its
+    # own way; the value reaches us intact and is replaced here.
+    assert list(_output(attrs).values()) == ["a�"]
+
+
 def test_error_is_recorded_and_reraised(exporter: InMemorySpanExporter) -> None:
     with pytest.raises(TypeSafeAPIError):
         TypeSafeClient(fail=True).system_one(state="x", questions=QUESTIONS)

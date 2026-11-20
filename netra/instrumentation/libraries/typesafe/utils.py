@@ -17,6 +17,7 @@ configured attribute length while staying valid JSON.
 
 import json
 import os
+import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -45,6 +46,9 @@ _JSON_ITEM_SEPARATOR = ", "
 # The questions entry may use at most 1/N of the attribute, so the state they
 # are asked about always keeps room however many questions there are.
 _QUESTIONS_MAX_SHARE = 2
+# A lone surrogate (half of a UTF-16 pair, e.g. from ``surrogateescape``-decoded
+# input) cannot be encoded as UTF-8, so the OTLP exporter would fail on it.
+_LONE_SURROGATE = re.compile("[\ud800-\udfff]")
 
 
 def should_suppress_instrumentation() -> bool:
@@ -83,7 +87,15 @@ def _json_default(value: Any) -> Any:
 
 
 def _dumps(value: Any) -> str:
-    return json.dumps(value, default=_json_default)
+    """Encode ``value`` as JSON, keeping non-ASCII text as-is.
+
+    ``ensure_ascii=False`` keeps e.g. ``é`` as one character instead of the
+    six-character ``\\u00e9``, so non-ASCII content is not cut far sooner than
+    ASCII content and stays readable.  Lone surrogates, which that would let
+    through and which cannot be encoded as UTF-8, are replaced by U+FFFD; the
+    swap is one character for one, so encoded lengths are unchanged.
+    """
+    return _LONE_SURROGATE.sub("\ufffd", json.dumps(value, ensure_ascii=False, default=_json_default))
 
 
 def _join_json_array(encoded_items: List[str]) -> str:
@@ -102,13 +114,13 @@ def _text_entry_within(role: str, content: str, max_len: int) -> Optional[str]:
     Returns:
         The encoded entry, or None when not even an empty ``content`` fits.
     """
-    overhead = len(json.dumps({"role": role, "content": ""}))
+    overhead = len(_dumps({"role": role, "content": ""}))
     budget = max_len - overhead
     if budget < 0:
         return None
     content = content[:budget]
     while True:
-        encoded = json.dumps({"role": role, "content": content})
+        encoded = _dumps({"role": role, "content": content})
         encoded_len = len(encoded) - overhead
         if encoded_len <= budget:
             return encoded
@@ -126,11 +138,11 @@ def _mapping_entry_within(role: str, mapping: Mapping[Any, Any], max_len: int) -
     Returns:
         The encoded entry, or None when the mapping is empty or not even its first member fits.
     """
-    available = max_len - len(json.dumps({"role": role, "content": "{}"}))
+    available = max_len - len(_dumps({"role": role, "content": "{}"}))
     kept: List[str] = []
     for key, value in mapping.items():
-        encoded = json.dumps(str(key)) + ": " + _dumps(value)
-        escaped_len = len(json.dumps(encoded)) - len('""')
+        encoded = _dumps(str(key)) + ": " + _dumps(value)
+        escaped_len = len(_dumps(encoded)) - len('""')
         cost = escaped_len + (len(_JSON_ITEM_SEPARATOR) if kept else 0)
         if cost > available:
             break
@@ -138,7 +150,7 @@ def _mapping_entry_within(role: str, mapping: Mapping[Any, Any], max_len: int) -
         available -= cost
     if not kept:
         return None
-    return json.dumps({"role": role, "content": "{" + _JSON_ITEM_SEPARATOR.join(kept) + "}"})
+    return _dumps({"role": role, "content": "{" + _JSON_ITEM_SEPARATOR.join(kept) + "}"})
 
 
 # --------------------------------------------------------------------------------------
