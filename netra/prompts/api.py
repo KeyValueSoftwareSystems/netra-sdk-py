@@ -4,7 +4,7 @@ from netra.cache import TTLCache
 from netra.config import Config
 from netra.netra_logger import NoticeLevel, get_logger
 from netra.prompts.client import PromptsHttpClient
-from netra.prompts.context import use_prompt
+from netra.prompts.context import record_prompt, use_prompt
 
 logger = get_logger(__name__)
 
@@ -61,6 +61,7 @@ class Prompts:
         if use_cache:
             cached = self._cache.get(cache_key)
             if cached is not None:
+                record_prompt(cached)
                 return cached
 
         result = self._client.get_prompt_version(prompt_name=name, label=label)
@@ -68,4 +69,5 @@ class Prompts:
         if use_cache and result is not None and result != {}:
             self._cache.set(cache_key, result, cache_ttl)
 
+        record_prompt(result)
         return result

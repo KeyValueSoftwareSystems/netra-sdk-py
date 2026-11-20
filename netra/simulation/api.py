@@ -5,6 +5,7 @@ from typing import Any, Optional
 
 from netra.config import Config
 from netra.netra_logger import NoticeLevel, get_logger
+from netra.prompts.context import collect_prompts
 from netra.simulation.client import SimulationHttpClient
 from netra.simulation.constants import DEFAULT_MAX_TURNS, LOG_PREFIX, SPAN_NAME
 from netra.simulation.hooks import (
@@ -550,13 +551,16 @@ class Simulation:
                         span_context = otel_span.get_span_context()
                         trace_id = format_trace_id(span_context.trace_id)
 
-                    response_message, task_session_id = await execute_task(
-                        task,
-                        message,
-                        session_id,
-                        raw_files=raw_files,
-                        setup_context=setup_context,
-                    )
+                    with collect_prompts() as prompts:
+                        response_message, task_session_id = await execute_task(
+                            task,
+                            message,
+                            session_id,
+                            raw_files=raw_files,
+                            setup_context=setup_context,
+                        )
+                    if prompts and otel_span:
+                        otel_span.set_attributes(prompts[-1])
                     if task_session_id:
                         session_id = task_session_id
 
