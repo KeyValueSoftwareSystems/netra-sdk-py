@@ -100,3 +100,20 @@ def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> N
         assert out[ATTR_PROMPT_ID] == "p1"
     finally:
         ThreadingInstrumentor().uninstrument()
+
+
+class TestRecordPrompt:
+    def test_collects_and_tags_current_span(self) -> None:
+        from netra.prompts.context import collect_prompts, record_prompt
+
+        provider = TracerProvider()
+        exporter = InMemorySpanExporter()
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        tracer = provider.get_tracer("t")
+        with collect_prompts() as collected:
+            with tracer.start_as_current_span("agent"):
+                record_prompt(PROMPT)
+            with use_prompt({**PROMPT, "promptId": "p2"}):
+                pass
+        assert exporter.get_finished_spans()[0].attributes[ATTR_PROMPT_ID] == "p1"
+        assert collected[-1][ATTR_PROMPT_ID] == "p2"

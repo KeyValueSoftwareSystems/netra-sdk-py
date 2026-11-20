@@ -31,6 +31,7 @@ from netra.evaluation.utils import (
     validate_run_inputs,
 )
 from netra.netra_logger import NoticeLevel, get_logger
+from netra.prompts.context import collect_prompts
 from netra.span_wrapper import SpanWrapper
 
 logger = get_logger(__name__)
@@ -508,7 +509,10 @@ class Evaluation:
                 ctx.span_id = format_span_id(span_context.span_id)
             ctx.session_id = get_session_id_from_baggage()
 
-            ctx.task_output, ctx.status = await execute_task(task, ctx.item_input)
+            with collect_prompts() as prompts:
+                ctx.task_output, ctx.status = await execute_task(task, ctx.item_input)
+            if prompts and otel_span:
+                otel_span.set_attributes(prompts[-1])
             ctx.test_run_item_id = self._post_completed_status(run_id, ctx)
 
             return {
