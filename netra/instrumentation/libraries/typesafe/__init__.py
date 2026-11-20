@@ -11,7 +11,11 @@ from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
-_instruments = ("typesafe-sdk >= 0.6.0",)
+# 0.7.0 is the first release built on pydantic. 0.6.x returns msgspec structs, which
+# have no ``model_dump``: the span would silently lose its model, token usage and
+# output, and the questions would be recorded as struct reprs. Below 0.7.0 the
+# dependency check skips instrumentation instead.
+_instruments = ("typesafe-sdk >= 0.7.0",)
 
 # The exported OpenTelemetry scope name is a wire contract -- dashboards and
 # backend queries key off it -- so it is pinned here rather than derived from
