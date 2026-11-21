@@ -5,13 +5,14 @@ This module centralizes common helpers that can be reused across the codebase.
 
 from __future__ import annotations
 
-from typing import AbstractSet, Any, Optional, Set
+from typing import AbstractSet, Any, FrozenSet, Optional, Set
 
 import httpx
 
 from netra.config import get_attribute_max_len
 from netra.instrumentation.capture.bounded_capture import TRUNCATION_MARKER_KEY
 from netra.instrumentation.instruments import (
+    ALL_INSTRUMENTS,
     DEFAULT_INSTRUMENTS_FOR_ROOT,
     InstrumentSet,
     NetraInstruments,
@@ -193,3 +194,23 @@ def resolve_root_instruments(
         resolved_root = {m.value for m in effective_root if m is not all_sentinel} - blocked_root_values
 
     return resolved_root
+
+
+def resolve_cost_excluded_instruments(
+    cost_excluded_instruments: Optional[AbstractSet[NetraInstruments]],
+) -> FrozenSet[str]:
+    """Resolve ``cost_excluded_instruments`` to the instrumentation names whose spans lose their usage attributes.
+
+    Args:
+        cost_excluded_instruments: User-supplied set.  ``None`` or an empty set
+            excludes nothing.  A set containing ``InstrumentSet.ALL`` excludes
+            every instrumentation, whatever else it contains.
+
+    Returns:
+        The instrumentation-name strings to pass to ``InstrumentationSpanProcessor``.
+    """
+    if not cost_excluded_instruments:
+        return frozenset()
+    if InstrumentSet.ALL in cost_excluded_instruments:
+        return frozenset(member.value for member in ALL_INSTRUMENTS)
+    return frozenset(member.value for member in cost_excluded_instruments)

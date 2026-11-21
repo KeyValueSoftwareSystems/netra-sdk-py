@@ -7,12 +7,10 @@ from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 from opentelemetry.trace import INVALID_SPAN_ID, SpanContext
 
-from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES
+from netra.instrumentation.instruments import instrumentation_name_for_scope
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
-
-_INSTRUMENTATION_PREFIXES = ("opentelemetry.instrumentation.", "netra.instrumentation.")
 
 _MAX_ROOT_CANDIDATES = 4096
 _ROOT_CANDIDATE_TTL_SECONDS = 600.0
@@ -382,11 +380,10 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         scope, and a scope that the first accepted but the second could not name
         would slip past the allow-list unchecked.
 
-        A scope named ``netra.instrumentation.libraries.fastapi`` resolves to ``fastapi``.
-        A third-party scope registered in ``THIRD_PARTY_INSTRUMENTATION_SCOPES``
-        resolves to its ``InstrumentSet`` value — ``livekit-agents`` to
-        ``livekit`` — which is what brings those spans under ``root_instruments``
-        control despite the non-conforming scope name.
+        Resolution is ``instrumentation_name_for_scope``, shared with the
+        ``netra.instrumentation.name`` attribute: ``netra.instrumentation.fastapi``
+        resolves to ``fastapi``, ``netra.instrumentation.mistralai`` to
+        ``mistral_ai``, and the third-party ``livekit-agents`` to ``livekit``.
 
         Args:
             span: The span to inspect.
@@ -403,17 +400,7 @@ class RootInstrumentFilterProcessor(SpanProcessor):  # type: ignore[misc]
         if not isinstance(name, str) or not name:
             return None
 
-        # Exact-match aliases first: a third-party scope carries no prefix, so
-        # the two branches cannot both claim the same name.
-        alias = THIRD_PARTY_INSTRUMENTATION_SCOPES.get(name)
-        if alias is not None:
-            return alias
-
-        if name.startswith(_INSTRUMENTATION_PREFIXES):
-            base = name.rsplit(".", 1)[-1].strip()
-            return base if base else name
-
-        return None
+        return instrumentation_name_for_scope(name)
 
     def _evict_stale_candidates(self) -> None:
         """Evict entries whose span ended more than ``_ROOT_CANDIDATE_TTL_SECONDS`` ago.
