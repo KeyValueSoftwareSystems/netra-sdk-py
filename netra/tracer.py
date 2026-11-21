@@ -1,5 +1,5 @@
 import threading
-from typing import Any, Dict, Optional, Set
+from typing import Any, Dict, FrozenSet, Optional, Set
 
 from opentelemetry import trace
 from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
@@ -33,7 +33,12 @@ class Tracer:
     and appropriate span processors.
     """
 
-    def __init__(self, cfg: Config, root_instrument_names: Optional[Set[str]] = None) -> None:
+    def __init__(
+        self,
+        cfg: Config,
+        root_instrument_names: Optional[Set[str]] = None,
+        cost_excluded_instrument_names: FrozenSet[str] = frozenset(),
+    ) -> None:
         """Initialize the Netra tracer with the provided configuration.
 
         Args:
@@ -42,9 +47,13 @@ class Tracer:
                 that are allowed to produce root-level spans.  When provided, a
                 ``RootInstrumentFilterProcessor`` is installed that discards root
                 spans (and their entire subtree) from all other instrumentations.
+            cost_excluded_instrument_names: Instrumentation-name strings whose
+                spans have their usage attributes removed before export, so core
+                records no cost for them.  Empty by default.
         """
         self.cfg = cfg
         self._root_instrument_names = root_instrument_names
+        self._cost_excluded_instrument_names = cost_excluded_instrument_names
         self._setup_tracer()
 
     def _setup_tracer(self) -> None:
@@ -126,7 +135,7 @@ class Tracer:
             # It also redacts sensitive HTTP header attributes in on_end (see its
             # own docstring), which must precede the exporting span processor added
             # below -- satisfied here with room to spare.
-            provider.add_span_processor(InstrumentationSpanProcessor())
+            provider.add_span_processor(InstrumentationSpanProcessor(self._cost_excluded_instrument_names))
             provider.add_span_processor(SessionSpanProcessor())
             provider.add_span_processor(SpanIOProcessor())
             provider.add_span_processor(LlmTraceIdentifierSpanProcessor())
