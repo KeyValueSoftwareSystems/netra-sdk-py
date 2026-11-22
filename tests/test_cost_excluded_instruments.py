@@ -175,6 +175,28 @@ def test_manual_span_keeps_usage_when_all_excluded(exporter: InMemorySpanExporte
 
 
 @pytest.mark.parametrize(
+    ("scope", "excluded"),
+    [
+        # Netra.start_span(..., module_name="litellm") calls trace.get_tracer("litellm").
+        ("litellm", {NetraInstruments.LITELLM}),
+        # The decorators call trace.get_tracer(func.__name__), so `@task def openai()` has scope "openai".
+        ("openai", {NetraInstruments.OPENAI}),
+        ("openai", {NetraInstruments.ALL}),
+        ("requests", {NetraInstruments.ALL}),
+    ],
+    ids=["start_span_litellm", "decorator_openai_named", "decorator_openai_all", "decorator_requests_all"],
+)
+def test_manual_span_whose_tracer_name_equals_an_excluded_instrument_keeps_usage(
+    exporter: InMemorySpanExporter, scope: str, excluded: set[NetraInstruments]
+) -> None:
+    provider = _provider(exporter, resolve_cost_excluded_instruments(excluded))
+
+    _emit(provider, scope, set_later={"netra.usage": CUSTOM_USAGE})
+
+    assert _attributes(_only_span(exporter))["netra.usage"] == CUSTOM_USAGE
+
+
+@pytest.mark.parametrize(
     ("instruments", "expected"),
     [
         (None, frozenset()),

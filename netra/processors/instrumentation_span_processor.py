@@ -197,7 +197,13 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         """
         if not self._cost_excluded_instrument_names:
             return
-        if self._extract_instrumentation_name(span) not in self._cost_excluded_instrument_names:
+        # Resolve without _extract_instrumentation_name's raw-name fallback: decorator and
+        # Netra.start_span tracers are named by the user (func.__name__, module_name), so a
+        # scope like "litellm" or "openai" must not be mistaken for that instrumentation.
+        scope_name = getattr(getattr(span, "instrumentation_scope", None), "name", None)
+        if not isinstance(scope_name, str):
+            return
+        if instrumentation_name_for_scope(scope_name) not in self._cost_excluded_instrument_names:
             return
 
         attributes = getattr(span, "_attributes", None)
