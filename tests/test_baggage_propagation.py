@@ -6,6 +6,8 @@ end to end against a local HTTP server.
 """
 
 import asyncio
+import json
+import logging
 import threading
 import urllib.request
 from contextlib import contextmanager
@@ -23,8 +25,11 @@ from opentelemetry.baggage.propagation import W3CBaggagePropagator
 from opentelemetry.propagate import get_global_textmap, inject, set_global_textmap
 from opentelemetry.propagators.composite import CompositePropagator
 from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.sdk.trace.export import SimpleSpanProcessor
+from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 from opentelemetry.trace.propagation.tracecontext import TraceContextTextMapPropagator
 
+from netra.exporters.filtering_span_exporter import FilteringSpanExporter
 from netra.instrumentation.http import propagation
 from netra.instrumentation.http.hooks import (
     aiohttp_instrument_kwargs,
@@ -35,14 +40,30 @@ from netra.instrumentation.http.hooks import (
 from netra.instrumentation.http.propagation import (
     HostGatedPropagator,
     ensure_gated_propagator,
+    extract_local,
     inject_context,
     inject_local,
     install_gated_propagator,
     register_hook_destination,
 )
 from netra.instrumentation.instruments import InstrumentSet
+from netra.instrumentation.libraries.subprocess.utils import extract_subprocess_context
 from netra.instrumentation.wiring.activation import _instrument_kwargs
 from netra.instrumentation.wiring.registry import CUSTOM_INSTRUMENTORS
+from netra.processors.local_filtering_span_processor import (
+    _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY,
+    LocalFilteringSpanProcessor,
+    block_spans_local,
+)
+from netra.processors.session_span_processor import SessionSpanProcessor
+from netra.session_manager import (
+    ATTR_SESSION_ID,
+    ATTR_TENANT_ID,
+    ATTR_USER_ID,
+    CUSTOM_BAGGAGE_PREFIX,
+    CUSTOM_KEYS_BAGGAGE_KEY,
+    SESSION_BAGGAGE_KEYS,
+)
 
 _PROVIDER = TracerProvider()
 _TRACER = _PROVIDER.get_tracer(__name__)
@@ -58,14 +79,15 @@ def gated_propagator() -> Iterator[None]:
     set_global_textmap(previous)
     propagation._gating_installed = False
     propagation._replacement_warned = False
+    propagation._inbound_session_notice_logged = False
     with propagation._hook_destinations_lock:
         propagation._hook_destinations.clear()
 
 
 @contextmanager
-def allowlist(*hosts: str) -> Iterator[None]:
-    """Patch the active config's baggage allowlist."""
-    cfg = SimpleNamespace(propagate_baggage_hosts=tuple(hosts))
+def allowlist(*hosts: str, trust_inbound: bool = False) -> Iterator[None]:
+    """Patch the active config's baggage allowlist and inbound-trust setting."""
+    cfg = SimpleNamespace(propagate_baggage_hosts=tuple(hosts), trust_inbound_baggage=trust_inbound)
     with patch.object(propagation, "get_active_config", return_value=cfg):
         yield
 
@@ -142,8 +164,8 @@ class TestGatedPropagator:
     def test_fields_and_extract_delegate(self) -> None:
         gated = get_global_textmap()
         assert {"traceparent", "baggage"} <= gated.fields
-        ctx = gated.extract({"baggage": "session_id=abc"})
-        assert baggage.get_baggage("session_id", ctx) == "abc"
+        ctx = gated.extract({"baggage": "app.region=eu"})
+        assert baggage.get_baggage("app.region", ctx) == "eu"
 
 
 class TestInjectContext:
@@ -177,6 +199,167 @@ class TestInjectContext:
             carrier: Dict[str, str] = {}
             inject_local(carrier)
         assert "session_id=sess-1" in carrier["baggage"]
+
+    def test_control_keys_never_sent_to_another_host(self) -> None:
+        with allowlist("internal.corp"), session_span(), block_spans_local(["llm*"]):
+            carrier: Dict[str, str] = {}
+            inject_context(carrier, "https://api.internal.corp/x")
+        assert "session_id=sess-1" in carrier["baggage"]
+        assert "netra.local_blocked_spans" not in carrier["baggage"]
+
+    def test_inject_local_keeps_control_keys(self) -> None:
+        with allowlist(), session_span(), block_spans_local(["llm*"]):
+            carrier: Dict[str, str] = {}
+            inject_local(carrier)
+        assert "netra.local_blocked_spans" in carrier["baggage"]
+
+
+def _forged_headers() -> Dict[str, str]:
+    """Inbound headers a caller could send to pose as another user and hide its spans."""
+    entries = {
+        "session_id": "forged-session",
+        "user_id": "victim",
+        "tenant_id": "other-customer",
+        "custom_keys": "plan",
+        "custom.plan": "enterprise",
+        "netra.local_blocked_spans": json.dumps(["GET*", "llm*"]),
+        "app.region": "eu",
+    }
+    return {
+        "traceparent": "00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01",
+        "baggage": ",".join(f"{k}={quote(v, safe='')}" for k, v in entries.items()),
+    }
+
+
+_RESERVED = ("session_id", "user_id", "tenant_id", "custom_keys", "custom.plan", "netra.local_blocked_spans")
+
+
+class TestInboundBaggage:
+    """``extract`` is a trust boundary: callers must not set Netra-reserved baggage."""
+
+    def test_reserved_keys_dropped_by_default(self) -> None:
+        with allowlist():
+            ctx = get_global_textmap().extract(_forged_headers())
+        for key in _RESERVED:
+            assert baggage.get_baggage(key, ctx) is None, key
+
+    def test_trace_context_and_other_baggage_kept(self) -> None:
+        with allowlist():
+            ctx = get_global_textmap().extract(_forged_headers())
+        assert baggage.get_baggage("app.region", ctx) == "eu"
+        span_context = trace.get_current_span(ctx).get_span_context()
+        assert span_context.is_valid
+        assert format(span_context.trace_id, "032x") == "0af7651916cd43dd8448eb211c80319c"
+
+    def test_session_keys_accepted_when_inbound_trusted(self) -> None:
+        with allowlist(trust_inbound=True):
+            ctx = get_global_textmap().extract(_forged_headers())
+        assert baggage.get_baggage("user_id", ctx) == "victim"
+        assert baggage.get_baggage("tenant_id", ctx) == "other-customer"
+        assert baggage.get_baggage("custom.plan", ctx) == "enterprise"
+        assert baggage.get_baggage("netra.local_blocked_spans", ctx) is None
+
+    def test_header_cannot_override_values_already_in_context(self) -> None:
+        base = baggage.set_baggage("user_id", "real-user")
+        base = baggage.set_baggage("netra.local_blocked_spans", json.dumps(["internal*"]), base)
+        with allowlist():
+            ctx = get_global_textmap().extract(_forged_headers(), context=base)
+        assert baggage.get_baggage("user_id", ctx) == "real-user"
+        assert baggage.get_baggage("netra.local_blocked_spans", ctx) == json.dumps(["internal*"])
+        assert baggage.get_baggage("tenant_id", ctx) is None
+
+    def test_notice_logged_once(self, caplog: pytest.LogCaptureFixture) -> None:
+        with allowlist(), caplog.at_level(logging.WARNING, logger="netra.notice"):
+            get_global_textmap().extract(_forged_headers())
+            get_global_textmap().extract(_forged_headers())
+        notices = [r for r in caplog.records if "NETRA_TRUST_INBOUND_BAGGAGE" in r.getMessage()]
+        assert len(notices) == 1
+
+    def test_no_notice_without_session_keys(self, caplog: pytest.LogCaptureFixture) -> None:
+        with allowlist(), caplog.at_level(logging.WARNING, logger="netra.notice"):
+            get_global_textmap().extract({"baggage": "app.region=eu"})
+        assert not [r for r in caplog.records if "NETRA_TRUST_INBOUND_BAGGAGE" in r.getMessage()]
+
+    def test_every_key_the_processors_read_is_filtered(self) -> None:
+        # Built from the constants the processors read, so a key added there is covered here.
+        keys = [
+            *SESSION_BAGGAGE_KEYS,
+            CUSTOM_KEYS_BAGGAGE_KEY,
+            f"{CUSTOM_BAGGAGE_PREFIX}plan",
+            _LOCAL_BLOCKED_SPANS_BAGGAGE_KEY,
+        ]
+        with allowlist():
+            ctx = get_global_textmap().extract({"baggage": ",".join(f"{k}=forged" for k in keys)})
+        assert {k: baggage.get_baggage(k, ctx) for k in keys} == {k: None for k in keys}
+
+    def test_extract_local_trusts_this_hosts_carrier(self) -> None:
+        with allowlist():
+            ctx = extract_local(_forged_headers())
+        assert baggage.get_baggage("user_id", ctx) == "victim"
+        assert baggage.get_baggage("netra.local_blocked_spans", ctx) is not None
+
+    def test_subprocess_child_restores_parent_session(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        with allowlist(), session_span():
+            env: Dict[str, str] = {}
+            inject_local(env)
+        for key, value in env.items():
+            monkeypatch.setenv(key, value)
+        with allowlist():
+            token = extract_subprocess_context()
+        assert token is not None
+        try:
+            assert baggage.get_baggage("user_id") == "user-1"
+        finally:
+            context_api.detach(token)
+
+
+class TestFastAPIInboundBaggage:
+    """End to end: a forged ``baggage`` header neither re-labels nor hides a FastAPI request."""
+
+    @pytest.fixture
+    def app_spans(self) -> Iterator[Tuple[Any, InMemorySpanExporter]]:
+        from fastapi import FastAPI
+        from fastapi.testclient import TestClient
+
+        from netra.instrumentation.libraries.fastapi import NetraFastAPIInstrumentor
+
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider()
+        provider.add_span_processor(LocalFilteringSpanProcessor())
+        provider.add_span_processor(SessionSpanProcessor())
+        provider.add_span_processor(SimpleSpanProcessor(FilteringSpanExporter(exporter, [])))
+
+        app = FastAPI()
+
+        @app.get("/chat")
+        def chat() -> Dict[str, bool]:
+            with provider.get_tracer("app").start_as_current_span("llm.call"):
+                pass
+            return {"ok": True}
+
+        NetraFastAPIInstrumentor.instrument_app(app, tracer_provider=provider)
+        yield TestClient(app), exporter
+
+    def test_forged_identity_and_block_ignored(self, app_spans: Tuple[Any, InMemorySpanExporter]) -> None:
+        client, exporter = app_spans
+        with allowlist():
+            client.get("/chat", headers=_forged_headers())
+        spans = exporter.get_finished_spans()
+        assert sorted(s.name for s in spans) == ["GET", "llm.call"]
+        for span in spans:
+            attrs = dict(span.attributes or {})
+            assert not [k for k in attrs if k in (ATTR_SESSION_ID, ATTR_USER_ID, ATTR_TENANT_ID)], attrs
+            assert "netra.custom.plan" not in attrs
+            assert "netra.local_blocked_spans" not in attrs
+
+    def test_trusted_callers_set_session(self, app_spans: Tuple[Any, InMemorySpanExporter]) -> None:
+        client, exporter = app_spans
+        with allowlist(trust_inbound=True):
+            client.get("/chat", headers=_forged_headers())
+        spans = exporter.get_finished_spans()
+        assert len(spans) == 2
+        for span in spans:
+            assert (span.attributes or {}).get(ATTR_USER_ID) == "victim"
 
 
 class TestHookRegistry:

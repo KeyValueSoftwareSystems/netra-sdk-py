@@ -8,7 +8,14 @@ from opentelemetry.sdk.trace import SpanProcessor
 from netra.config import Config
 from netra.netra_logger import get_logger
 from netra.prompts.context import get_active_prompt_attributes
-from netra.session_manager import ATTR_SESSION_ID, ATTR_TENANT_ID, ATTR_USER_ID, SessionManager
+from netra.session_manager import (
+    ATTR_SESSION_ID,
+    ATTR_TENANT_ID,
+    ATTR_USER_ID,
+    CUSTOM_BAGGAGE_PREFIX,
+    CUSTOM_KEYS_BAGGAGE_KEY,
+    SessionManager,
+)
 
 logger = get_logger(__name__)
 
@@ -74,7 +81,7 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
             session_id = _resolve_baggage("session_id", ctx, parent_context)
             user_id = _resolve_baggage("user_id", ctx, parent_context)
             tenant_id = _resolve_baggage("tenant_id", ctx, parent_context)
-            custom_keys = _resolve_baggage("custom_keys", ctx, parent_context)
+            custom_keys = _resolve_baggage(CUSTOM_KEYS_BAGGAGE_KEY, ctx, parent_context)
 
             span.set_attribute("library.name", Config.LIBRARY_NAME)
             span.set_attribute("library.version", Config.LIBRARY_VERSION)
@@ -90,7 +97,7 @@ class SessionSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 span.set_attribute(ATTR_TENANT_ID, tenant_id)
             if custom_keys:
                 for key in custom_keys.split(","):
-                    value = _resolve_baggage(f"custom.{key}", ctx, parent_context)
+                    value = _resolve_baggage(f"{CUSTOM_BAGGAGE_PREFIX}{key}", ctx, parent_context)
                     if value:
                         span.set_attribute(f"{Config.LIBRARY_NAME}.custom.{key}", value)
 
