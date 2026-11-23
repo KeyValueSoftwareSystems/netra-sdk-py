@@ -552,15 +552,18 @@ class Simulation:
                         trace_id = format_trace_id(span_context.trace_id)
 
                     with collect_prompts() as prompts:
-                        response_message, task_session_id = await execute_task(
-                            task,
-                            message,
-                            session_id,
-                            raw_files=raw_files,
-                            setup_context=setup_context,
-                        )
-                    if prompts and otel_span:
-                        otel_span.set_attributes(prompts[-1])
+                        try:
+                            response_message, task_session_id = await execute_task(
+                                task,
+                                message,
+                                session_id,
+                                raw_files=raw_files,
+                                setup_context=setup_context,
+                            )
+                        finally:
+                            # Tag even when the task fails so the errored span keeps its prompt link.
+                            if prompts and otel_span:
+                                otel_span.set_attributes(prompts[-1])
                     if task_session_id:
                         session_id = task_session_id
 
