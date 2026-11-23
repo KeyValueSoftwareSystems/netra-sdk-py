@@ -1,3 +1,5 @@
+import json
+
 import pytest
 from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
@@ -5,13 +7,15 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from netra.processors.session_span_processor import SessionSpanProcessor
 from netra.prompts.context import (
-    ATTR_PROMPT_ID,
-    ATTR_PROMPT_LABEL,
-    ATTR_PROMPT_NAME,
-    ATTR_PROMPT_VERSION,
+    ATTR_PROMPT,
     get_active_prompt_attributes,
     use_prompt,
 )
+
+
+def _prompt(attrs: dict) -> dict:
+    return json.loads(attrs[ATTR_PROMPT])
+
 
 PROMPT = {
     "messages": [{"role": "user", "content": "hi"}],
@@ -28,12 +32,9 @@ class TestUsePrompt:
 
     def test_active_prompt_yields_identity_attributes(self) -> None:
         with use_prompt(PROMPT):
-            assert get_active_prompt_attributes() == {
-                ATTR_PROMPT_ID: "p1",
-                ATTR_PROMPT_NAME: "welcome",
-                ATTR_PROMPT_VERSION: 3,
-                ATTR_PROMPT_LABEL: "production",
-            }
+            attrs = get_active_prompt_attributes()
+            assert list(attrs) == [ATTR_PROMPT]
+            assert _prompt(attrs) == {"id": "p1", "name": "welcome", "version": 3, "label": "production"}
         assert get_active_prompt_attributes() == {}
 
     @pytest.mark.parametrize("prompt", [None, {}, {"promptId": "p1"}, {"versionNumber": 1}, "not-a-mapping"])
@@ -43,14 +44,14 @@ class TestUsePrompt:
 
     def test_version_zero_is_kept(self) -> None:
         with use_prompt({"promptId": "p1", "versionNumber": 0}):
-            assert get_active_prompt_attributes()[ATTR_PROMPT_VERSION] == 0
+            assert _prompt(get_active_prompt_attributes())["version"] == 0
 
     def test_nested_blocks_restore_outer_prompt(self) -> None:
         inner = {**PROMPT, "promptId": "p2"}
         with use_prompt(PROMPT):
             with use_prompt(inner):
-                assert get_active_prompt_attributes()[ATTR_PROMPT_ID] == "p2"
-            assert get_active_prompt_attributes()[ATTR_PROMPT_ID] == "p1"
+                assert _prompt(get_active_prompt_attributes())["id"] == "p2"
+            assert _prompt(get_active_prompt_attributes())["id"] == "p1"
 
     def test_prompt_reset_when_block_raises(self) -> None:
         with pytest.raises(RuntimeError):
@@ -74,9 +75,8 @@ class TestSpanTagging:
             pass
 
         spans = {s.name: s.attributes for s in exporter.get_finished_spans()}
-        assert spans["inside"][ATTR_PROMPT_ID] == "p1"
-        assert spans["inside"][ATTR_PROMPT_VERSION] == 3
-        assert ATTR_PROMPT_ID not in spans["outside"]
+        assert _prompt(spans["inside"]) == {"id": "p1", "name": "welcome", "version": 3, "label": "production"}
+        assert ATTR_PROMPT not in spans["outside"]
 
 
 def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> None:
@@ -88,7 +88,7 @@ def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> N
     try:
         with use_prompt(PROMPT), ThreadPoolExecutor(1) as pool:
             attrs = pool.submit(get_active_prompt_attributes).result()
-        assert attrs[ATTR_PROMPT_ID] == "p1"
+        assert _prompt(attrs)["id"] == "p1"
 
         import threading
 
@@ -97,7 +97,7 @@ def test_prompt_propagates_into_threadpool_with_threading_instrumentation() -> N
             t = threading.Thread(target=lambda: out.update(get_active_prompt_attributes()))
             t.start()
             t.join()
-        assert out[ATTR_PROMPT_ID] == "p1"
+        assert _prompt(out)["id"] == "p1"
     finally:
         ThreadingInstrumentor().uninstrument()
 
@@ -115,5 +115,5 @@ class TestRecordPrompt:
                 record_prompt(PROMPT)
             with use_prompt({**PROMPT, "promptId": "p2"}):
                 pass
-        assert exporter.get_finished_spans()[0].attributes[ATTR_PROMPT_ID] == "p1"
-        assert collected[-1][ATTR_PROMPT_ID] == "p2"
+        assert _prompt(exporter.get_finished_spans()[0].attributes)["id"] == "p1"
+        assert _prompt(collected[-1])["id"] == "p2"

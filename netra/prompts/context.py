@@ -1,3 +1,4 @@
+import json
 from contextlib import contextmanager
 from typing import Any, Dict, Iterator, List, Mapping, Optional
 
@@ -9,10 +10,8 @@ from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
-ATTR_PROMPT_ID = f"{Config.LIBRARY_NAME}.prompt.id"
-ATTR_PROMPT_NAME = f"{Config.LIBRARY_NAME}.prompt.name"
-ATTR_PROMPT_VERSION = f"{Config.LIBRARY_NAME}.prompt.version"
-ATTR_PROMPT_LABEL = f"{Config.LIBRARY_NAME}.prompt.label"
+# JSON object: {"id", "version", and optionally "name", "label"}.
+ATTR_PROMPT = f"{Config.LIBRARY_NAME}.prompt"
 
 # Prompt identity tagged onto every span started inside `use_prompt`. Stored in the
 # OTel context (not a bare ContextVar) so the threading instrumentation carries it
@@ -44,12 +43,12 @@ def prompt_attributes(prompt: Any) -> Dict[str, Any]:
         logger.debug("Active prompt has no promptId/versionNumber; spans will not be linked: %s", list(prompt))
         return {}
 
-    attributes: Dict[str, Any] = {ATTR_PROMPT_ID: prompt_id, ATTR_PROMPT_VERSION: version}
+    value: Dict[str, Any] = {"id": prompt_id, "version": version}
     if prompt.get("promptName"):
-        attributes[ATTR_PROMPT_NAME] = prompt["promptName"]
+        value["name"] = prompt["promptName"]
     if prompt.get("label"):
-        attributes[ATTR_PROMPT_LABEL] = prompt["label"]
-    return attributes
+        value["label"] = prompt["label"]
+    return {ATTR_PROMPT: json.dumps(value)}
 
 
 def _collect(attributes: Dict[str, Any]) -> None:

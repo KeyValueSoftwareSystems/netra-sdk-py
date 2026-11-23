@@ -362,7 +362,7 @@ Netra.prompts.clear_cache()
 
 ### Linking prompts to traces
 
-`get_prompt` tags the span that is current at the call with the prompt's identity (`netra.prompt.id`, `netra.prompt.name`, `netra.prompt.version`, `netra.prompt.label`). To tag every span started inside a block, wrap your LLM calls in `use_prompt`:
+`get_prompt` tags the span that is current at the call with the prompt's identity in a single `netra.prompt` attribute (a JSON object with `id`, `version`, and, when present, `name` and `label`). To tag every span started inside a block, wrap your LLM calls in `use_prompt`:
 
 ```python
 prompt = Netra.prompts.get_prompt("my-prompt", label="production")
