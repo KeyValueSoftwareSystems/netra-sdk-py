@@ -6,6 +6,8 @@ from opentelemetry.trace import Span, SpanKind, Tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.instrumentation.libraries.google_genai.utils import (
+    set_decision_request_attributes,
+    set_decision_response_attributes,
     set_request_attributes,
     set_response_attributes,
     should_suppress_instrumentation,
@@ -20,6 +22,7 @@ CONTENT_SPAN_NAME = "genai.generate_content"
 CONTENT_STREAM_SPAN_NAME = "genai.generate_content_stream"
 IMAGES_SPAN_NAME = "genai.generate_images"
 VIDEOS_SPAN_NAME = "genai.generate_videos"
+DECISION_SPAN_NAME = "genai.decision"
 TIME_TO_FIRST_TOKEN = "gen_ai.performance.time_to_first_token"
 RELATIVE_TIME_TO_FIRST_TOKEN = "gen_ai.performance.relative_time_to_first_token"
 LLM_RESPONSE_DURATION = "llm.response.duration"
@@ -70,6 +73,71 @@ def acontent_wrapper(tracer: Tracer) -> Callable[..., Any]:
                 response = await wrapped(*args, **kwargs)
                 end_time = time.time()
                 set_response_attributes(span, response)
+                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                logger.error("netra.instrumentation.libraries.google_genai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper
+
+
+def decisions_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Wrapper for ``decisions.create`` (Gemini Decisions API).
+
+    The Decisions API has no streaming mode, so the whole call is one span.
+    """
+
+    def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return wrapped(*args, **kwargs)
+
+        with tracer.start_as_current_span(
+            DECISION_SPAN_NAME,
+            kind=SpanKind.CLIENT,
+            attributes={"gen_ai.system": "Gemini", "llm.request.type": "decision"},
+        ) as span:
+            try:
+                set_decision_request_attributes(span, kwargs)
+                response = wrapped(*args, **kwargs)
+                end_time = time.time()
+                set_decision_response_attributes(span, response)
+                record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
+                record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
+                record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
+                span.set_status(Status(StatusCode.OK))
+                return response
+            except Exception as e:
+                logger.error("netra.instrumentation.libraries.google_genai: %s", e)
+                span.set_status(Status(StatusCode.ERROR, str(e)))
+                span.record_exception(e)
+                raise
+
+    return wrapper
+
+
+def adecisions_wrapper(tracer: Tracer) -> Callable[..., Any]:
+    """Async wrapper for ``decisions.create`` (Gemini Decisions API)."""
+
+    async def wrapper(wrapped: Callable[..., Any], instance: Any, args: Tuple[Any, ...], kwargs: Dict[str, Any]) -> Any:
+        if should_suppress_instrumentation():
+            return await wrapped(*args, **kwargs)
+
+        with tracer.start_as_current_span(
+            DECISION_SPAN_NAME,
+            kind=SpanKind.CLIENT,
+            attributes={"gen_ai.system": "Gemini", "llm.request.type": "decision"},
+        ) as span:
+            try:
+                set_decision_request_attributes(span, kwargs)
+                response = await wrapped(*args, **kwargs)
+                end_time = time.time()
+                set_decision_response_attributes(span, response)
                 record_span_timing(span, LLM_RESPONSE_DURATION, end_time)
                 record_span_timing(span, TIME_TO_FIRST_TOKEN, end_time, record_event_timestamp=True)
                 record_span_timing(span, RELATIVE_TIME_TO_FIRST_TOKEN, end_time, use_root_span=True)
