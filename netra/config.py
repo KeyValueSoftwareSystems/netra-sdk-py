@@ -1,5 +1,6 @@
 import json
 import os
+import warnings
 from typing import Any, Dict, FrozenSet, List, Optional, Tuple
 
 from opentelemetry.util.re import parse_env_headers
@@ -37,6 +38,11 @@ _DEFAULT_AUDIO_MAX_REQUEST_BYTES = 262144
 _MIN_AUDIO_BATCH_BYTES = 1024
 _MIN_AUDIO_BATCH_INTERVAL_MS = 100
 _MAX_AUDIO_BATCH_INTERVAL_MS = 30000
+
+
+def _has_control_characters(value: str) -> bool:
+    """Return whether ``value`` contains a control character other than tab (invalid in an HTTP header value)."""
+    return any((ord(char) < 32 and char != "\t") or ord(char) == 127 for char in value)
 
 
 class Config:
@@ -87,7 +93,7 @@ class Config:
         """
         self.app_name = self._get_app_name(app_name)
         self.otlp_endpoint = self._get_otlp_endpoint()
-        self.api_key = os.getenv("NETRA_API_KEY")
+        self.api_key = self._get_api_key()
         self.headers = self._parse_headers(headers)
 
         self._validate_api_key()
@@ -135,12 +141,18 @@ class Config:
 
         Env-only by design: there is no ``capture_audio`` parameter on
         ``Netra.init()``.  Whether audio is captured at all is decided by
-        :attr:`audio_capture_enabled`, not by a flag.
+        :attr:`audio_capture_enabled`, which is off when ``trace_content`` is
+        off or ``NETRA_AUDIO_CAPTURE=false``, and otherwise on whenever an
+        authenticated endpoint resolves.
 
         Every validation failure logs a ``WARNING`` naming the setting and the
         value actually used, then falls back to a safe value.  A bad number MUST
         NOT raise out of ``Netra.init()``.
         """
+        # Call audio carries everything the transcript does, so it is content and
+        # follows ``trace_content``. NETRA_AUDIO_CAPTURE=false turns it off on its
+        # own, keeping transcripts and every other span.
+        self.audio_capture_requested = self._get_bool_config(None, "NETRA_AUDIO_CAPTURE", default=True)
         self.audio_endpoint_override = os.getenv("NETRA_AUDIO_ENDPOINT")
         self.audio_batch_bytes = self._get_int_config(
             None, "NETRA_AUDIO_BATCH_BYTES", default=_DEFAULT_AUDIO_BATCH_BYTES
@@ -215,10 +227,12 @@ class Config:
     def audio_endpoint(self) -> Optional[str]:
         """Return the audio ingest URL, or None if audio must not be sent.
 
-        This is the ONLY gate on audio capture: there is no ``capture_audio``
-        flag.  A non-None return means audio WILL be captured and streamed once a
-        LiveKit session starts.  Returns None unless a concrete endpoint resolves
-        AND an auth header is present.
+        This is the ONLY gate on audio capture: ``trace_content`` and
+        ``NETRA_AUDIO_CAPTURE`` are folded into it, so no caller checks them
+        separately.  A non-None return means audio WILL be captured and streamed
+        once a LiveKit session starts.  Returns None unless content capture is on,
+        ``NETRA_AUDIO_CAPTURE`` is not ``false``, a concrete endpoint resolves AND
+        an auth header is present.
 
         Callers treat None as "disable capture entirely", not "retry later" — the
         result is resolved from init-time state and does not change during the
@@ -234,14 +248,26 @@ class Config:
     def _resolve_audio_endpoint(self) -> Optional[str]:
         """Work out the audio ingest URL, warning if a credential is missing.
 
+        Sets :attr:`audio_off_reason` whenever it returns ``None``, so the startup
+        log line can say why capture is off.
+
         Returns:
             The absolute audio ingest URL, or ``None`` when audio must not be sent.
         """
+        self.audio_off_reason: Optional[str] = None
+        if not self.trace_content:
+            self.audio_off_reason = "trace_content is off"
+            return None
+        if not self.audio_capture_requested:
+            self.audio_off_reason = "NETRA_AUDIO_CAPTURE is false"
+            return None
+
         if self.audio_endpoint_override:
             url = self.audio_endpoint_override
         elif self.otlp_endpoint:
             url = self.otlp_endpoint.rstrip("/") + _AUDIO_CHUNK_PATH
         else:
+            self.audio_off_reason = "no audio endpoint resolved"
             return None
 
         if not any(header in self.headers for header in _AUDIO_AUTH_HEADERS):
@@ -249,6 +275,7 @@ class Config:
                 "netra.audio: an audio endpoint resolved but no credential is configured; "
                 "audio capture is disabled. Set NETRA_API_KEY or pass an auth header."
             )
+            self.audio_off_reason = "no audio credential configured"
             return None
 
         return url
@@ -263,8 +290,9 @@ class Config:
         none of it, never one speaker.
 
         Returns:
-            True when an audio endpoint resolves; False otherwise, meaning no
-            audio is captured or streamed.
+            True when an audio endpoint resolves (which requires content capture
+            on and ``NETRA_AUDIO_CAPTURE`` not ``false``); False otherwise,
+            meaning no audio is captured or streamed.
         """
         return self.audio_endpoint() is not None
 
@@ -276,14 +304,52 @@ class Config:
         """Get OTLP endpoint from environment variables."""
         return os.getenv("NETRA_OTLP_ENDPOINT") or os.getenv("OTEL_EXPORTER_OTLP_ENDPOINT")
 
+    def _get_api_key(self) -> Optional[str]:
+        """Get the API key from ``NETRA_API_KEY``, stripped of surrounding whitespace.
+
+        Secrets mounted from Kubernetes or ``.env`` files often end in a newline,
+        which HTTP clients reject as a header value; the upstream exporter then
+        logs the full key on every failed batch. A key that still contains a
+        control character after stripping is dropped with a warning.
+        """
+        api_key = (os.getenv("NETRA_API_KEY") or "").strip()
+        if not api_key:
+            return None
+        if _has_control_characters(api_key):
+            warnings.warn(
+                "NETRA_API_KEY contains control characters and was ignored; telemetry will not be authenticated.",
+                stacklevel=3,
+            )
+            return None
+        return api_key
+
     def _parse_headers(self, headers: Optional[str] | Dict[str, str]) -> Dict[str, str] | Any:
-        """Parse headers from parameter or environment variable."""
+        """Parse headers from parameter or environment variable.
+
+        String values are stripped, and a header whose value still contains a
+        control character is dropped with a warning that names the header but
+        never its value.
+        """
         headers = headers or os.getenv("NETRA_HEADERS")
         if isinstance(headers, str):
-            return parse_env_headers(headers)
+            parsed = parse_env_headers(headers)
         elif isinstance(headers, dict):
-            return headers
-        return {}
+            parsed = headers
+        else:
+            return {}
+
+        cleaned: Dict[str, Any] = {}
+        for name, value in parsed.items():
+            if isinstance(value, str):
+                value = value.strip()
+                if _has_control_characters(value):
+                    warnings.warn(
+                        f"Netra header {name!r} contains control characters and was ignored.",
+                        stacklevel=4,
+                    )
+                    continue
+            cleaned[name] = value
+        return cleaned
 
     def _validate_api_key(self) -> None:
         """Validate that an API key exists for Netra endpoints.

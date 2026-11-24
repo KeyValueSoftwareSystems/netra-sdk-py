@@ -332,13 +332,29 @@ def wrap_async_generator(tracer: Tracer) -> Callable[..., Any]:
         span = tracer.start_span(GENERATE_SPAN_NAME, kind=SpanKind.CLIENT)
         start_time = time.time()
         generator = None
-        context = None
         try:
-            context = context_api.attach(set_span_in_context(span))
-            set_request_attributes(span, kwargs)
-            generator = wrapped(*args, **kwargs)
-            async for chunk in generator:
+            # An async generator runs in its caller's context, so a context
+            # attached across ``yield`` would leak this span into the caller's
+            # code between chunks (and after an early ``break``). Attach it only
+            # while the request is created and while each chunk is pulled.
+            token = context_api.attach(set_span_in_context(span))
+            try:
+                set_request_attributes(span, kwargs)
+                generator = wrapped(*args, **kwargs)
+                iterator = generator.__aiter__()
+            finally:
+                context_api.detach(token)
+
+            while True:
+                token = context_api.attach(set_span_in_context(span))
+                try:
+                    chunk = await iterator.__anext__()
+                except StopAsyncIteration:
+                    break
+                finally:
+                    context_api.detach(token)
                 yield chunk
+
             end_time = time.time()
             span.set_attribute("deepgram.response.duration", end_time - start_time)
             span.set_status(Status(StatusCode.OK))
@@ -348,13 +364,10 @@ def wrap_async_generator(tracer: Tracer) -> Callable[..., Any]:
             span.record_exception(e)
             raise
         finally:
-            if generator is not None:
-                await generator.aclose()
-            if context is not None:
-                try:
-                    context_api.detach(context)
-                except ValueError:
-                    pass
-            span.end()
+            try:
+                if generator is not None and hasattr(generator, "aclose"):
+                    await generator.aclose()
+            finally:
+                span.end()
 
     return async_wrapper

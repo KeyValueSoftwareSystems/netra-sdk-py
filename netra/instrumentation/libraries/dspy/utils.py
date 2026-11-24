@@ -19,6 +19,26 @@ def should_suppress_instrumentation() -> bool:
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
+def is_dspy_language_model(obj: Any) -> bool:
+    """Return whether *obj* is a ``dspy.LM`` / ``dspy.BaseLM``.
+
+    Matched by class name and module rather than ``isinstance`` so this works
+    without importing DSPy.
+    """
+    return any(
+        cls.__name__ in ("LM", "BaseLM") and (cls.__module__ or "").startswith("dspy") for cls in type(obj).__mro__
+    )
+
+
+def describe_language_model(lm: Any) -> Dict[str, Any]:
+    """Return the only part of an LM object safe to export: its model name.
+
+    ``lm.kwargs`` holds ``api_key`` and ``api_base``, and ``lm.history`` every
+    prompt and response it has served, so the object is never dumped whole.
+    """
+    return {"model": getattr(lm, "model", None)}
+
+
 class DSPyJSONEncoder(json.JSONEncoder):
     """
     Provides support for non-JSON-serializable objects in DSPy.
@@ -40,11 +60,15 @@ class DSPyJSONEncoder(json.JSONEncoder):
             except ImportError:
                 pass
 
-            # Fallback for other objects
+            if is_dspy_language_model(o):
+                return describe_language_model(o)
+
+            # Fallback for other objects. Their attributes can hold credentials
+            # (an LM-like object's ``kwargs["api_key"]``), so drop those keys.
             if hasattr(o, "dict") and callable(o.dict):
-                return o.dict()
+                return redact_sensitive_arguments(o.dict())
             if hasattr(o, "__dict__"):
-                return o.__dict__
+                return redact_sensitive_arguments(o.__dict__)
             return repr(o)
 
 
@@ -108,6 +132,8 @@ def convert_to_dict(obj: Any) -> Any:
     Recursively converts objects to dicts if they have conversion methods.
     Handles nested lists and dictionaries.
     """
+    if is_dspy_language_model(obj):
+        return describe_language_model(obj)
     if hasattr(obj, "model_dump") and callable(obj.model_dump):
         return obj.model_dump()
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
@@ -115,7 +141,7 @@ def convert_to_dict(obj: Any) -> Any:
     elif hasattr(obj, "dict") and callable(obj.dict):
         return obj.dict()
     elif hasattr(obj, "__dict__"):
-        return obj.__dict__
+        return redact_sensitive_arguments(obj.__dict__)
     elif isinstance(obj, dict):
         return {key: convert_to_dict(value) for key, value in obj.items()}
     elif isinstance(obj, (list, tuple)):
@@ -135,21 +161,74 @@ def get_llm_model_name(lm: Any) -> Optional[str]:
     return None
 
 
+# Only these invocation parameters are exported. ``lm.kwargs`` also carries
+# provider credentials and endpoints (``api_key``, ``api_base``), so an
+# allowlist is used rather than a denylist of provider-specific key names.
+ALLOWED_INVOCATION_PARAMETERS = frozenset(
+    {
+        "model",
+        "temperature",
+        "max_tokens",
+        "top_p",
+        "n",
+        "stop",
+        "frequency_penalty",
+        "presence_penalty",
+        "seed",
+        "response_format",
+    }
+)
+
+_SENSITIVE_ARGUMENT_NAMES = frozenset(
+    {
+        "api_key",
+        "apikey",
+        "api_base",
+        "base_url",
+        "token",
+        "access_token",
+        "password",
+        "secret",
+        "client_secret",
+        "authorization",
+        "headers",
+        "extra_headers",
+    }
+)
+_SENSITIVE_ARGUMENT_SUFFIXES = ("_key", "_secret", "_token", "_password")
+
+
+def is_sensitive_argument_name(name: Any) -> bool:
+    """Return True for argument names that may hold credentials or endpoints."""
+    if not isinstance(name, str):
+        return False
+    lowered = name.lower()
+    return lowered in _SENSITIVE_ARGUMENT_NAMES or lowered.endswith(_SENSITIVE_ARGUMENT_SUFFIXES)
+
+
+def redact_sensitive_arguments(obj: Any) -> Any:
+    """Recursively drop credential-like keys from dicts before they are exported."""
+    if isinstance(obj, dict):
+        return {k: redact_sensitive_arguments(v) for k, v in obj.items() if not is_sensitive_argument_name(k)}
+    if isinstance(obj, list):
+        return [redact_sensitive_arguments(item) for item in obj]
+    return obj
+
+
 def get_llm_invocation_parameters(lm: Any, call_kwargs: Mapping[str, Any]) -> Dict[str, Any]:
     """
-    Merge LM instance kwargs with call-time kwargs to get full invocation parameters.
+    Merge LM instance kwargs with call-time kwargs to get the exported invocation parameters.
+
+    Only ``ALLOWED_INVOCATION_PARAMETERS`` are kept, so credentials such as
+    ``api_key`` and ``api_base`` never reach span attributes.
     """
     lm_kwargs = getattr(lm, "kwargs", {})
     if not isinstance(lm_kwargs, dict):
         lm_kwargs = {}
 
-    # Filter out internal parameters
-    filtered_call_kwargs = {
-        k: v for k, v in call_kwargs.items() if k not in ["self", "kwargs", "wrapped", "instance", "args"]
-    }
-
     # Merge with call-level kwargs taking precedence
-    return {**lm_kwargs, **filtered_call_kwargs}
+    merged = {**lm_kwargs, **call_kwargs}
+    return {k: v for k, v in merged.items() if k in ALLOWED_INVOCATION_PARAMETERS}
 
 
 def extract_llm_input_messages(arguments: Mapping[str, Any]) -> Iterator[Tuple[str, Any]]:

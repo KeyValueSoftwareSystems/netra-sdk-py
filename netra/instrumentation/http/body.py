@@ -12,6 +12,11 @@ Two entry points, one pipeline behind both:
   reads it, via a buffer from :func:`new_body_buffer`.
 * :func:`build_response_output` for a body the HTTP library already holds whole.
 
+Bodies are content: with ``trace_content=False`` both entry points record the
+envelope (URL or status, and sanitized headers) without the body. An LLM SDK
+talks over these same transports, so an ungated body would export the prompt
+and completion through the HTTP child span of a correctly gated LLM span.
+
 The second exists because "already in memory" is not the same as "free to
 record": parsing and re-serializing a 200 MB response so the exporter can keep
 50,000 characters of it is Netra's own allocation, and it is avoidable by
@@ -24,6 +29,7 @@ from typing import Any, Mapping, Union
 from netra.config import get_attribute_max_len
 from netra.instrumentation.capture.bounded_capture import BoundedStreamBuffer, serialize_within_budget
 from netra.instrumentation.capture.stream_formats import parse_streaming_body
+from netra.instrumentation.span_utils import should_capture_content
 
 # A body is parsed before it is serialized onto the span, and parsing can shrink
 # it: an SSE event ``data: {...}\n\n`` loses its framing and becomes ``{...}, ``.
@@ -63,9 +69,10 @@ def build_streaming_output(envelope: Mapping[str, Any], body_buffer: BoundedStre
         The serialized value, bounded by the configured ``attribute_max_len``.
         The ``body`` key is omitted when the stream carried no bytes at all, on
         the same contract as :func:`build_response_output`: a stream that
-        yielded nothing is bodiless, not a body that happens to be empty.
+        yielded nothing is bodiless, not a body that happens to be empty. It is
+        also omitted when content capture is off (``trace_content=False``).
     """
-    if not body_buffer.total_bytes:
+    if not body_buffer.total_bytes or not should_capture_content():
         return json.dumps(dict(envelope), default=str)
 
     max_len = get_attribute_max_len()
@@ -92,8 +99,11 @@ def build_response_output(envelope: Mapping[str, Any], raw_body: Union[bytes, by
     Returns:
         The serialized value, bounded by the configured ``attribute_max_len``.
         The ``body`` key is omitted entirely when *raw_body* is empty, so a
-        bodiless response stays distinguishable from one carrying an empty body.
+        bodiless response stays distinguishable from one carrying an empty body,
+        and when content capture is off (``trace_content=False``).
     """
+    if not should_capture_content():
+        return json.dumps(dict(envelope), default=str)
     buffer = new_body_buffer()
     if raw_body:
         buffer.append(raw_body)
