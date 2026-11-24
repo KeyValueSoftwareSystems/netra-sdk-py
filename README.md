@@ -136,6 +136,7 @@ async def async_span(data):
 - **Replicate** - Cloud-based model hosting platform
 - **Together AI** - Collaborative AI platform
 - **Transformers** - Hugging Face transformers library
+- **TypeSafe (Jev)** - Jev `system_one` calls via the `typesafe-sdk` client, including `jev` and `jevlang`
 - **Vertex AI** - Google Cloud AI platform
 - **Watson X** - IBM's enterprise AI platform
 

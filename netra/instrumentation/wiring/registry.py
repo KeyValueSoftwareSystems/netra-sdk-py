@@ -334,6 +334,9 @@ CUSTOM_INSTRUMENTORS: dict[InstrumentSet, tuple[InstrumentorSpec, ...]] = {
     InstrumentSet.HONCHO: (
         InstrumentorSpec(("honcho-ai",), "netra.instrumentation.libraries.honcho", "NetraHonchoInstrumentor"),
     ),
+    InstrumentSet.TYPESAFE: (
+        InstrumentorSpec(("typesafe-sdk",), "netra.instrumentation.libraries.typesafe", "NetraTypeSafeInstrumentor"),
+    ),
 }
 
 

@@ -68,6 +68,7 @@ INSTRUMENT_TRIGGERS: dict[InstrumentSet, tuple[str, ...]] = {
     InstrumentSet.SAGEMAKER: ("boto3", "botocore"),
     InstrumentSet.TOGETHER: ("together",),
     InstrumentSet.TRANSFORMERS: ("transformers",),
+    InstrumentSet.TYPESAFE: ("typesafe_sdk",),
     InstrumentSet.VERTEXAI: ("vertexai",),
     InstrumentSet.VOYAGEAI: ("voyageai",),
     InstrumentSet.WATSONX: ("ibm_watsonx_ai", "ibm_watson_machine_learning"),
