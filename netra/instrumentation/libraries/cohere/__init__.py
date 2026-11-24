@@ -1,4 +1,3 @@
-import os
 from typing import Any, Collection, Dict, Generator, Iterator, List, Optional, Union
 
 from opentelemetry import context as context_api
@@ -20,6 +19,7 @@ from opentelemetry.trace import Span, SpanKind, Tracer, get_tracer, set_span_in_
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
+from netra.content_capture import is_content_capture_enabled
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -62,9 +62,7 @@ _TRACER_NAME = "netra.instrumentation.cohere"
 
 
 def should_send_prompts() -> bool:
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or context_api.get_value(
-        "override_enable_content_tracing"
-    )
+    return is_content_capture_enabled()
 
 
 def _set_span_attribute(span: Span, name: str, value: Any) -> None:

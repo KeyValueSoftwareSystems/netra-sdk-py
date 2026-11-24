@@ -1,13 +1,12 @@
 import json
-import os
 from typing import Any, Optional
 
-from opentelemetry import context as context_api
 from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
+from netra.content_capture import is_content_capture_enabled
 from netra.instrumentation.span_utils import _safe_set_attribute
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
@@ -60,9 +59,7 @@ def should_send_prompts() -> bool:
     (Config sets that env var from its ``trace_content`` setting), and can
     be force-enabled per-context via ``override_enable_content_tracing``.
     """
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
-    )
+    return is_content_capture_enabled()
 
 
 def _serialize(value: Any) -> str:

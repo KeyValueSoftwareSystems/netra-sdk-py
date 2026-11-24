@@ -6,6 +6,7 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 from opentelemetry.util.http import remove_url_credentials, sanitize_method
 
+from netra.content_capture import is_content_capture_enabled
 from netra.instrumentation.capture.bounded_capture import BoundedStreamBuffer
 from netra.instrumentation.http.body import build_response_output, build_streaming_output
 from netra.instrumentation.http.headers import sanitize_header_mapping
@@ -81,7 +82,7 @@ def set_span_input(span: Span, request: httpx.Request) -> None:
         span: The active OpenTelemetry span.
         request: The outgoing httpx Request.
     """
-    if not span.is_recording():
+    if not span.is_recording() or not is_content_capture_enabled():
         return
     try:
         input_data: Dict[str, Any] = {
@@ -100,7 +101,7 @@ def set_span_output(span: Span, response: httpx.Response) -> None:
         span: The active OpenTelemetry span.
         response: The received httpx Response.
     """
-    if not span.is_recording():
+    if not span.is_recording() or not is_content_capture_enabled():
         return
     try:
         output_data: Dict[str, Any] = {
@@ -121,7 +122,7 @@ def set_streaming_span_output(span: Span, response: httpx.Response, body_buffer:
         body_buffer: Body bytes accumulated during iteration, capped at the
             configured attribute length.
     """
-    if not span.is_recording():
+    if not span.is_recording() or not is_content_capture_enabled():
         return
     try:
         output_data: Dict[str, Any] = {

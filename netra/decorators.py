@@ -27,6 +27,7 @@ from opentelemetry import trace
 from netra.netra_logger import NoticeLevel, get_logger
 
 from .config import Config
+from .content_capture import is_content_capture_enabled
 from .session_manager import SessionManager
 from .span_wrapper import SpanType
 
@@ -139,6 +140,11 @@ def _add_span_attributes(
 
     span.set_attribute(f"{Config.LIBRARY_NAME}.entity.type", entity_type)
 
+    # Arguments are the caller's content: skip serializing them at all when
+    # trace_content is off, rather than relying on the export-time strip.
+    if not is_content_capture_enabled():
+        return
+
     try:
         sig = inspect.signature(func)
         param_names = list(sig.parameters.keys())
@@ -196,7 +202,7 @@ def _add_output_attributes(span: trace.Span, result: Any) -> None:
         result: The result to serialize and add as an attribute.
     """
     try:
-        if not span.is_recording() or _span_has_output(span):
+        if not span.is_recording() or not is_content_capture_enabled() or _span_has_output(span):
             return
         serialized_output = _serialize_value(result)
         span.set_attribute("output", serialized_output)

@@ -15,6 +15,7 @@ from opentelemetry.trace import Span
 from opentelemetry.util.http import sanitize_method
 from starlette.routing import Match
 
+from netra.content_capture import is_content_capture_enabled
 from netra.instrumentation.http.body import build_response_output
 from netra.instrumentation.http.headers import sanitize_asgi_headers
 from netra.netra_logger import get_logger
@@ -125,7 +126,7 @@ def set_span_input(span: Span, scope: Dict[str, Any], body: bytes) -> None:
         scope: The ASGI scope dictionary.
         body: The raw request body bytes.
     """
-    if not span.is_recording():
+    if not span.is_recording() or not is_content_capture_enabled():
         return
     try:
         input_data: Dict[str, Any] = {
@@ -154,7 +155,7 @@ def set_span_output(
         headers: Raw ASGI response header pairs.
         body: The raw response body bytes.
     """
-    if not span.is_recording():
+    if not span.is_recording() or not is_content_capture_enabled():
         return
     try:
         output_data: Dict[str, Any] = {

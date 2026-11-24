@@ -68,6 +68,15 @@ class Tracer:
         if isinstance(current_provider, sdk_trace.TracerProvider):
             provider = current_provider
             logger.info("Reusing existing TracerProvider. Possible loss of Resource attributes")
+            if not getattr(self.cfg, "trace_content", True):
+                # Processors already on this provider run before Netra's, so an
+                # exporter the application registered earlier receives spans
+                # before ContentGatingSpanProcessor strips their content.
+                logger.warning(
+                    "trace_content is off but an existing TracerProvider is being reused; span "
+                    "processors registered on it before Netra.init() may export prompt/completion "
+                    "content. Initialise Netra before adding other exporters to keep content in-process."
+                )
         else:
             provider = TracerProvider(resource=resource)
             trace.set_tracer_provider(provider)
@@ -101,6 +110,7 @@ class Tracer:
                 exporter = original_exporter
 
             from netra.processors import (
+                ContentGatingSpanProcessor,
                 InstrumentationSpanProcessor,
                 LlmTraceIdentifierSpanProcessor,
                 LocalFilteringSpanProcessor,
@@ -138,6 +148,12 @@ class Tracer:
 
             if self.cfg.enable_scrubbing:
                 provider.add_span_processor(ScrubbingSpanProcessor())  # type: ignore[no-untyped-call]
+
+            # ORDER MATTERS: ContentGatingSpanProcessor must be the last processor before
+            # the exporting one, so no processor's on_end can put content back on a
+            # span after it has been stripped.
+            if not getattr(self.cfg, "trace_content", True):
+                provider.add_span_processor(ContentGatingSpanProcessor())
 
             if self.cfg.disable_batch:
                 provider.add_span_processor(SimpleSpanProcessor(exporter))
