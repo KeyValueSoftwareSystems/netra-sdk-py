@@ -26,7 +26,7 @@ from netra.simulation import Simulation
 from netra.span_wrapper import ActionModel, SpanType, SpanWrapper, UsageModel
 from netra.tracer import Tracer
 from netra.usage import Usage
-from netra.utils import resolve_root_instruments
+from netra.utils import resolve_cost_excluded_instruments, resolve_root_instruments
 
 logger = get_logger(__name__)
 
@@ -72,6 +72,7 @@ class Netra:
         metrics_export_interval_ms: Optional[int] = None,
         export_auto_metrics: Optional[bool] = None,
         root_instruments: Optional[AbstractSet[NetraInstruments]] = None,
+        cost_excluded_instruments: Optional[AbstractSet[NetraInstruments]] = None,
     ) -> None:
         """
         Thread-safe initialization of Netra.
@@ -111,6 +112,17 @@ class Netra:
                 originate under an unwanted server root without emitting the server span itself.
                 Pass a set containing ``NetraInstruments.ALL`` to allow all
                 instrumentations to produce root spans (legacy behaviour).
+            cost_excluded_instruments: Set of instruments whose LLM cost is
+                reported somewhere else, such as a custom span in a proxy or
+                gateway layer.  Spans from these instrumentations are exported
+                without their usage attributes (``netra.usage``, every
+                ``gen_ai.usage.*`` and ``llm.usage.*`` key, and
+                ``gen_ai.audio.duration``), so Netra records no cost or token
+                counts for them.  Model, prompts and completions are kept.
+                Defaults to ``None`` (nothing excluded).  A set containing
+                ``NetraInstruments.ALL`` excludes every instrumentation.  Spans
+                created with ``Netra.start_span`` or the decorators are never
+                affected, so usage set on them is still priced.
 
         Returns:
             None
@@ -152,7 +164,11 @@ class Netra:
             )
 
             # Initialize tracer (OTLP exporter, span processor, resource)
-            Tracer(cfg, root_instrument_names=resolved_root)
+            Tracer(
+                cfg,
+                root_instrument_names=resolved_root,
+                cost_excluded_instrument_names=resolve_cost_excluded_instruments(cost_excluded_instruments),
+            )
 
             # Gate session baggage by destination host for every injector, before
             # any instrumentor can call the global propagator.

@@ -548,6 +548,32 @@ def test_childless_allowed_root_on_a_real_span_is_exported(make_sdk_pipeline, sp
     assert exported_names(recorder) == ["openai.chat"]
 
 
+@pytest.mark.parametrize(
+    ("scope_name", "allowed_name"),
+    [
+        ("netra.instrumentation.mistralai", "mistral_ai"),
+        ("netra.instrumentation.cohere", "cohere_ai"),
+        ("netra.instrumentation.pydantic_ai_slim", "pydantic_ai"),
+        ("opentelemetry.instrumentation.llamaindex", "llama_index"),
+        ("opentelemetry.instrumentation.mcp.instrumentation", "mcp"),
+        ("opentelemetry.instrumentation.crewai.instrumentation", "crew"),
+    ],
+)
+def test_allowed_root_whose_scope_is_not_named_after_its_instrument_is_exported(
+    make_sdk_pipeline, scope_name, allowed_name
+):
+    # These scopes are named after the package (or a submodule of it), not the
+    # InstrumentSet value. Resolving them by last segment made every one of
+    # them an unknown instrumentation, so their roots were dropped even with
+    # the instrument in the default root allow-list.
+    provider, recorder = make_sdk_pipeline({allowed_name}, SimpleSpanProcessor)
+
+    provider.get_tracer(scope_name).start_span("chat").end()
+    provider.force_flush()
+
+    assert exported_names(recorder) == ["chat"]
+
+
 @sdk_span_processors
 def test_blocked_instrumentation_span_under_a_manual_root_is_kept_on_real_spans(make_sdk_pipeline, span_processor_cls):
     # Only *root-connected* candidates are dropped: the same redis span that is
