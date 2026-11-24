@@ -1,7 +1,8 @@
 """The instrumentations the SDK knows about, and the sets enabled by default.
 
 This module is pure data: enum members, the default instrument sets and the
-scope aliases the span processors key off.  It deliberately imports nothing
+scope aliases the span processors key off, plus the pure function that resolves
+a scope to its instrumentation.  It deliberately imports nothing
 beyond the standard library — every consumer of ``netra`` reaches it, including
 processes that never call ``Netra.init()``.
 """
@@ -116,21 +117,30 @@ class InstrumentSet(Enum):
     set given to ``Netra.init()`` restores the legacy behaviour where **every**
     instrumentation available in the environment is enabled, bypassing the
     curated default lists below.
+
+    A member may also declare ``scope_packages``: the package names its spans'
+    instrumentation scopes use when those differ from the member's value
+    (``netra.instrumentation.mistralai`` for ``mistral_ai``).  See
+    :func:`instrumentation_name_for_scope`.
     """
 
     origin: Optional[_Origin]
+    scope_packages: tuple[str, ...]
 
-    def __new__(cls, value: Any, origin: Optional[_Origin] = None) -> "InstrumentSet":
+    def __new__(
+        cls, value: Any, origin: Optional[_Origin] = None, scope_packages: tuple[str, ...] = ()
+    ) -> "InstrumentSet":
         member = object.__new__(cls)
         member._value_ = value
         member.origin = origin
+        member.scope_packages = scope_packages
         return member
 
     ALL = ("__all__", None)
 
     ADK = ("google_adk", _Origin.CUSTOM)
     AGNO = ("agno", _Origin.CUSTOM)
-    AIOHTTP = ("aiohttp", _Origin.CUSTOM)
+    AIOHTTP = ("aiohttp", _Origin.CUSTOM, ("aiohttp_client",))
     AIOHTTP_SERVER = ("aiohttp_server", _Origin.CUSTOM)
     AIO_PIKA = ("aio_pika", _Origin.CUSTOM)
     AIOKAFKA = ("aiokafka", _Origin.CUSTOM)
@@ -150,13 +160,13 @@ class InstrumentSet(Enum):
     CASSANDRA = ("cassandra", _Origin.CUSTOM)
     CEREBRAS = ("cerebras", _Origin.CUSTOM)
     CELERY = ("celery", _Origin.CUSTOM)
-    CHROMA = ("chroma", _Origin.TRACELOOP)
+    CHROMA = ("chroma", _Origin.TRACELOOP, ("chromadb",))
     CLAUDE_AGENT_SDK = ("claude_agent_sdk", _Origin.CUSTOM)
     CODEX = ("codex", _Origin.CUSTOM)
     CLICK = ("click", _Origin.CUSTOM)
-    COHEREAI = ("cohere_ai", _Origin.CUSTOM)
+    COHEREAI = ("cohere_ai", _Origin.CUSTOM, ("cohere",))
     CONFLUENT_KAFKA = ("confluent_kafka", _Origin.CUSTOM)
-    CREW = ("crew", _Origin.TRACELOOP)
+    CREW = ("crew", _Origin.TRACELOOP, ("crewai",))
     DEEPGRAM = ("deepgram", _Origin.CUSTOM)
     DBAPI = ("dbapi", _Origin.CUSTOM)
     DJANGO = ("django", _Origin.CUSTOM)
@@ -174,17 +184,17 @@ class InstrumentSet(Enum):
     HONCHO = ("honcho", _Origin.CUSTOM)
     HTTPX = ("httpx", _Origin.CUSTOM)
     JINJA2 = ("jinja2", _Origin.CUSTOM)
-    KAFKA_PYTHON = ("kafka_python", _Origin.CUSTOM)
+    KAFKA_PYTHON = ("kafka_python", _Origin.CUSTOM, ("kafka",))
     LANCEDB = ("lancedb", _Origin.TRACELOOP)
     LANGCHAIN = ("langchain", _Origin.TRACELOOP)
     LITELLM = ("litellm", _Origin.CUSTOM)
     LIVEKIT = ("livekit", _Origin.CUSTOM)
-    LLAMA_INDEX = ("llama_index", _Origin.TRACELOOP)
+    LLAMA_INDEX = ("llama_index", _Origin.TRACELOOP, ("llamaindex",))
     LOGGING = ("logging", _Origin.CUSTOM)
     MARQO = ("marqo", _Origin.TRACELOOP)
     MCP = ("mcp", _Origin.TRACELOOP)
     MILVUS = ("milvus", _Origin.TRACELOOP)
-    MISTRALAI = ("mistral_ai", _Origin.CUSTOM)
+    MISTRALAI = ("mistral_ai", _Origin.CUSTOM, ("mistralai",))
     MYSQL = ("mysql", _Origin.CUSTOM)
     MYSQLCLIENT = ("mysqlclient", _Origin.CUSTOM)
     OLLAMA = ("ollama", _Origin.TRACELOOP)
@@ -194,13 +204,13 @@ class InstrumentSet(Enum):
     PINECONE = ("pinecone", _Origin.TRACELOOP)
     PSYCOPG = ("psycopg", _Origin.CUSTOM)
     PSYCOPG2 = ("psycopg2", _Origin.CUSTOM)
-    PYDANTIC_AI = ("pydantic_ai", _Origin.CUSTOM)
+    PYDANTIC_AI = ("pydantic_ai", _Origin.CUSTOM, ("pydantic_ai_slim",))
     PYMEMCACHE = ("pymemcache", _Origin.CUSTOM)
     PYMONGO = ("pymongo", _Origin.CUSTOM)
     PYMSSQL = ("pymssql", _Origin.CUSTOM)
     PYMYSQL = ("pymysql", _Origin.CUSTOM)
     PYRAMID = ("pyramid", _Origin.CUSTOM)
-    QDRANTDB = ("qdrant_db", _Origin.CUSTOM)
+    QDRANTDB = ("qdrant_db", _Origin.CUSTOM, ("qdrant",))
     REDIS = ("redis", _Origin.CUSTOM)
     REMOULADE = ("remoulade", _Origin.CUSTOM)
     REPLICATE = ("replicate", _Origin.TRACELOOP)
@@ -221,7 +231,7 @@ class InstrumentSet(Enum):
     VERTEXAI = ("vertexai", _Origin.TRACELOOP)
     VOYAGEAI = ("voyageai", _Origin.TRACELOOP)
     WATSONX = ("watsonx", _Origin.TRACELOOP)
-    WEAVIATEDB = ("weaviate_db", _Origin.CUSTOM)
+    WEAVIATEDB = ("weaviate_db", _Origin.CUSTOM, ("weaviate",))
     WRITER = ("writer", _Origin.TRACELOOP)
     WSGI = ("wsgi", _Origin.CUSTOM)
 
@@ -252,6 +262,53 @@ THIRD_PARTY_INSTRUMENTATION_SCOPES: dict[str, str] = {
     # llm_node / tts_node / function_tool) under this scope.
     "livekit-agents": InstrumentSet.LIVEKIT.value,
 }
+
+
+_INSTRUMENTATION_SCOPE_PREFIXES = ("netra.instrumentation.", "opentelemetry.instrumentation.")
+
+# Built from each member's ``scope_packages``, so a member that declares its
+# package is resolved without any other change.
+_INSTRUMENT_NAME_BY_SCOPE_PACKAGE: dict[str, str] = {
+    package: member.value for member in InstrumentSet for package in member.scope_packages
+}
+
+
+def instrumentation_name_for_scope(scope_name: str) -> Optional[str]:
+    """Return the ``InstrumentSet`` value of the instrumentation that owns ``scope_name``.
+
+    The single answer to "which instrumentation produced this span?" for every
+    span processor that keys off it: the ``netra.instrumentation.name``
+    attribute, ``root_instruments`` filtering and ``cost_excluded_instruments``.
+
+    A conventional scope is ``<prefix>.<package>[.<submodule>...]``, where the
+    package is what identifies the instrumentation.  Tracers created with
+    ``get_tracer(__name__)`` in a submodule (``opentelemetry.instrumentation.crewai.instrumentation``,
+    ``...openai.v1``, ``...grpc._client``) carry trailing segments, so the last
+    segment is not reliable.  The package maps to the member that declares it in
+    ``scope_packages`` (``mistralai`` to ``mistral_ai``), or else names the
+    member directly.
+
+    Args:
+        scope_name: The span's instrumentation scope name.
+
+    Returns:
+        The member value for a recognised scope.  For a conventional scope whose
+        package no member claims, the package itself, so callers still see it as
+        an instrumentation span they don't recognise.  ``None`` for any other
+        scope: a Netra decorator, ``Netra.start_span`` or a user tracer.
+    """
+    alias = THIRD_PARTY_INSTRUMENTATION_SCOPES.get(scope_name)
+    if alias is not None:
+        return alias
+
+    for prefix in _INSTRUMENTATION_SCOPE_PREFIXES:
+        if scope_name.startswith(prefix):
+            package = scope_name[len(prefix) :].split(".", 1)[0].strip()
+            if not package:
+                return scope_name
+            return _INSTRUMENT_NAME_BY_SCOPE_PACKAGE.get(package, package)
+
+    return None
 
 
 # Default instrument sets
