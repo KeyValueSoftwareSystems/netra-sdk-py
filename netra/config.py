@@ -141,12 +141,18 @@ class Config:
 
         Env-only by design: there is no ``capture_audio`` parameter on
         ``Netra.init()``.  Whether audio is captured at all is decided by
-        :attr:`audio_capture_enabled`, not by a flag.
+        :attr:`audio_capture_enabled`, which is off when ``trace_content`` is
+        off or ``NETRA_AUDIO_CAPTURE=false``, and otherwise on whenever an
+        authenticated endpoint resolves.
 
         Every validation failure logs a ``WARNING`` naming the setting and the
         value actually used, then falls back to a safe value.  A bad number MUST
         NOT raise out of ``Netra.init()``.
         """
+        # Call audio carries everything the transcript does, so it is content and
+        # follows ``trace_content``. NETRA_AUDIO_CAPTURE=false turns it off on its
+        # own, keeping transcripts and every other span.
+        self.audio_capture_requested = self._get_bool_config(None, "NETRA_AUDIO_CAPTURE", default=True)
         self.audio_endpoint_override = os.getenv("NETRA_AUDIO_ENDPOINT")
         self.audio_batch_bytes = self._get_int_config(
             None, "NETRA_AUDIO_BATCH_BYTES", default=_DEFAULT_AUDIO_BATCH_BYTES
@@ -221,10 +227,12 @@ class Config:
     def audio_endpoint(self) -> Optional[str]:
         """Return the audio ingest URL, or None if audio must not be sent.
 
-        This is the ONLY gate on audio capture: there is no ``capture_audio``
-        flag.  A non-None return means audio WILL be captured and streamed once a
-        LiveKit session starts.  Returns None unless a concrete endpoint resolves
-        AND an auth header is present.
+        This is the ONLY gate on audio capture: ``trace_content`` and
+        ``NETRA_AUDIO_CAPTURE`` are folded into it, so no caller checks them
+        separately.  A non-None return means audio WILL be captured and streamed
+        once a LiveKit session starts.  Returns None unless content capture is on,
+        ``NETRA_AUDIO_CAPTURE`` is not ``false``, a concrete endpoint resolves AND
+        an auth header is present.
 
         Callers treat None as "disable capture entirely", not "retry later" — the
         result is resolved from init-time state and does not change during the
@@ -240,14 +248,26 @@ class Config:
     def _resolve_audio_endpoint(self) -> Optional[str]:
         """Work out the audio ingest URL, warning if a credential is missing.
 
+        Sets :attr:`audio_off_reason` whenever it returns ``None``, so the startup
+        log line can say why capture is off.
+
         Returns:
             The absolute audio ingest URL, or ``None`` when audio must not be sent.
         """
+        self.audio_off_reason: Optional[str] = None
+        if not self.trace_content:
+            self.audio_off_reason = "trace_content is off"
+            return None
+        if not self.audio_capture_requested:
+            self.audio_off_reason = "NETRA_AUDIO_CAPTURE is false"
+            return None
+
         if self.audio_endpoint_override:
             url = self.audio_endpoint_override
         elif self.otlp_endpoint:
             url = self.otlp_endpoint.rstrip("/") + _AUDIO_CHUNK_PATH
         else:
+            self.audio_off_reason = "no audio endpoint resolved"
             return None
 
         if not any(header in self.headers for header in _AUDIO_AUTH_HEADERS):
@@ -255,6 +275,7 @@ class Config:
                 "netra.audio: an audio endpoint resolved but no credential is configured; "
                 "audio capture is disabled. Set NETRA_API_KEY or pass an auth header."
             )
+            self.audio_off_reason = "no audio credential configured"
             return None
 
         return url
@@ -269,8 +290,9 @@ class Config:
         none of it, never one speaker.
 
         Returns:
-            True when an audio endpoint resolves; False otherwise, meaning no
-            audio is captured or streamed.
+            True when an audio endpoint resolves (which requires content capture
+            on and ``NETRA_AUDIO_CAPTURE`` not ``false``); False otherwise,
+            meaning no audio is captured or streamed.
         """
         return self.audio_endpoint() is not None
 

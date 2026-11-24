@@ -140,7 +140,7 @@ def warn_instrumentation_inactive(name: str, reason: str) -> None:
         # The host escalated warnings to errors (``-W error``, pytest
         # ``filterwarnings = error``). This runs inside the client's own
         # ``import``, so a diagnostic must never become an exception there.
-        logger.warning(message)
+        logger.notice(message)
 
 
 def apply_custom_instrumentation(instrument: InstrumentSet) -> None:

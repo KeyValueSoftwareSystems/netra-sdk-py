@@ -26,7 +26,30 @@ def reset_netra_state() -> Generator[None, None, None]:
     and doesn't interfere with other tests.
     """
     # Import here to avoid circular imports
+    import netra.config as netra_config
     from netra import Netra
+
+    # Netra.init() also changes process-wide state that outlives the test: the
+    # active Config (which should_capture_content() and the attribute limits read
+    # before any env var), TRACELOOP_TRACE_CONTENT, and the levels, handlers and
+    # propagation that configure_package_logging() sets on these loggers. Left
+    # behind, a test that calls init() changes what later tests capture and log.
+    saved_active_config = netra_config._active_config
+    saved_trace_content_env = os.environ.get("TRACELOOP_TRACE_CONTENT")
+    saved_loggers = [
+        (logger, logger.level, logger.propagate, list(logger.handlers))
+        for logger in (
+            logging.getLogger(name)
+            for name in (
+                "netra",
+                "httpx",
+                "httpcore",
+                "opentelemetry.trace",
+                "opentelemetry.instrumentation",
+                "opentelemetry.instrumentation.instrumentor",
+            )
+        )
+    ]
 
     # Reset state before test
     with Netra._init_lock:
@@ -37,6 +60,15 @@ def reset_netra_state() -> Generator[None, None, None]:
     # Reset state after test
     with Netra._init_lock:
         Netra._initialized = False
+    netra_config._active_config = saved_active_config
+    if saved_trace_content_env is None:
+        os.environ.pop("TRACELOOP_TRACE_CONTENT", None)
+    else:
+        os.environ["TRACELOOP_TRACE_CONTENT"] = saved_trace_content_env
+    for logger, level, propagate, handlers in saved_loggers:
+        logger.setLevel(level)
+        logger.propagate = propagate
+        logger.handlers[:] = handlers
 
 
 @pytest.fixture  # type: ignore

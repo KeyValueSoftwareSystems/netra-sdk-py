@@ -1490,3 +1490,75 @@ class TestAudioConfigResolution:
 
         assert config.audio_capture_enabled is True
         assert not hasattr(config, "audio_roles")
+
+
+class TestAudioCaptureSwitches:
+    """Call audio is content: it follows ``trace_content`` and has its own off switch."""
+
+    @staticmethod
+    def _authenticated_env(monkeypatch: pytest.MonkeyPatch) -> None:
+        for name in list(os.environ):
+            if name.startswith(("NETRA_", "OTEL_")):
+                monkeypatch.delenv(name, raising=False)
+        monkeypatch.setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "https://collector.getnetra.com")
+        monkeypatch.setenv("NETRA_API_KEY", "key")
+
+    def test_on_by_default_with_an_authenticated_endpoint(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._authenticated_env(monkeypatch)
+        config = Config()
+        assert config.audio_capture_enabled is True
+        assert config.audio_off_reason is None
+
+    @pytest.mark.parametrize("via_env", [True, False])
+    def test_trace_content_off_turns_audio_off(self, monkeypatch: pytest.MonkeyPatch, via_env: bool) -> None:
+        self._authenticated_env(monkeypatch)
+        if via_env:
+            monkeypatch.setenv("NETRA_TRACE_CONTENT", "false")
+            config = Config()
+        else:
+            config = Config(trace_content=False)
+
+        assert config.audio_endpoint() is None
+        assert config.audio_capture_enabled is False
+        assert config.audio_off_reason == "trace_content is off"
+        assert build_audio_sender(config, session_id="s") is None
+
+    def test_audio_capture_false_turns_only_audio_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        self._authenticated_env(monkeypatch)
+        monkeypatch.setenv("NETRA_AUDIO_CAPTURE", "false")
+        monkeypatch.setenv("NETRA_AUDIO_ENDPOINT", "https://ingest.example/v1/audio/chunk")
+
+        config = Config()
+
+        assert config.trace_content is True
+        assert config.audio_endpoint() is None
+        assert config.audio_capture_enabled is False
+        assert config.audio_off_reason == "NETRA_AUDIO_CAPTURE is false"
+        assert build_audio_sender(config, session_id="s") is None
+
+    def test_a_disabled_capture_does_not_warn_about_a_missing_credential(
+        self, monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+    ) -> None:
+        self._authenticated_env(monkeypatch)
+        monkeypatch.delenv("NETRA_API_KEY")
+        monkeypatch.setenv("NETRA_AUDIO_CAPTURE", "false")
+
+        with caplog.at_level("WARNING"):
+            Config()
+
+        assert not [r for r in caplog.records if "no credential is configured" in r.getMessage()]
+
+    def test_startup_log_names_why_capture_is_off(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from netra.instrumentation.libraries import livekit as livekit_module
+
+        self._authenticated_env(monkeypatch)
+        monkeypatch.setenv("NETRA_AUDIO_CAPTURE", "false")
+        config = Config()
+        fake_logger = MagicMock()
+        monkeypatch.setattr(livekit_module, "logger", fake_logger)
+
+        livekit_module.NetraLiveKitInstrumentor._log_audio_decision(config)
+
+        message, *args = fake_logger.info.call_args.args
+        assert "OFF" in message
+        assert "NETRA_AUDIO_CAPTURE is false" in args

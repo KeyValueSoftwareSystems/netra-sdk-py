@@ -1,7 +1,7 @@
 """Span processor for instrumentation name recording, attribute truncation, header redaction, and usage stripping."""
 
 import os
-from typing import Any, Callable, Mapping, Optional, Set, Union
+from typing import Any, Callable, FrozenSet, Mapping, Optional, Set, Union
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor

@@ -189,8 +189,8 @@ class NetraLiveKitInstrumentor(BaseInstrumentor):  # type: ignore[misc]
         try:
             if not config.audio_capture_enabled:
                 logger.info(
-                    "netra.livekit: call audio capture is OFF (no authenticated audio endpoint "
-                    "resolved). Traces are unaffected"
+                    "netra.livekit: call audio capture is OFF (%s). Traces are unaffected",
+                    getattr(config, "audio_off_reason", None) or "no authenticated audio endpoint resolved",
                 )
                 return
 

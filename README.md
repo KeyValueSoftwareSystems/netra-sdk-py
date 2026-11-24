@@ -206,6 +206,16 @@ async def async_span(data):
 - **OpenAI Codex** - Codex agent turns, model requests and tool calls via the `openai-codex` SDK
 
 
+### When an instrumentation can't be enabled
+
+If a library is installed in a version Netra doesn't support, or its instrumentation fails to start, Netra leaves that library untraced and emits one `RuntimeWarning`, for example:
+
+```text
+Netra: MISTRALAI instrumentation is inactive (installed version is not supported: ...); calls to this library will not be traced.
+```
+
+Your application keeps running either way. If you run with warnings turned into errors (`python -W error`, or pytest `filterwarnings = error`), the message is logged through the `netra.notice` logger instead of raised. To stop the warning for a library you don't want traced, leave it out with `Netra.init(block_instruments={InstrumentSet.MISTRALAI})`.
+
 ## 📊 Context and Event Logging
 
 Track user sessions and add custom context:
@@ -243,9 +253,9 @@ Netra.set_custom_event(event_name="conversion", attributes={
 
 ### Session context in servers and workers
 
-`set_session_id`, `set_user_id` and `set_tenant_id` are **sticky for the current thread** (or asyncio task): the value stays set until you change or clear it. That suits scripts and single-session processes, but a server or worker that reuses threads (gunicorn/uWSGI sync workers, Celery, queue consumer loops) would carry one request's ids into the next.
+`set_session_id`, `set_user_id` and `set_tenant_id` keep their value on the current thread (or asyncio task) until you change or clear it. That is fine for scripts, but servers and workers reuse threads (gunicorn/uWSGI sync workers, Celery, queue consumers), so one request's ids would end up on the next request's traces.
 
-For per-request or per-job ids, use `Netra.session_scope()`. The ids apply only inside the block and the previous values are restored on exit, even if the block raises:
+For anything handled per request or per job, use `Netra.session_scope()`. The ids apply only inside the block, and the previous values come back when the block ends, even if it raises:
 
 ```python
 def handle(request):
@@ -257,9 +267,11 @@ def handle(request):
         return process(request)
 ```
 
-Fields you leave out (or pass as `None`) are inherited from the enclosing context (for example a tenant set once at startup). A field passed as `""` is cleared for the block, so `user_id=request.user_id or ""` never picks up an outer user. Sticky `set_*` calls made inside the block are also undone on exit.
+- An id you leave out, or pass as `None`, keeps the value from outside the block (for example a tenant set once at startup).
+- An id passed as `""` is empty inside the block. Use `user_id=request.user_id or ""` for anonymous requests so they never pick up another user's id.
+- `set_session_id` / `set_user_id` / `set_tenant_id` calls made inside the block are undone when it ends.
 
-If you use the sticky setters, clear them when the request ends:
+If you use the setters directly instead, clear them when each request ends:
 
 ```python
 Netra.set_user_id("")   # "" or None clears just that id
@@ -448,6 +460,34 @@ Caching notes:
 - When `use_cache` is `True`, do not mutate the returned list or nested dicts — the same objects may be served on later cache hits.
 - The model pricing cache is cleared automatically when `Netra.shutdown()` is called.
 
+## 🔒 Data Privacy
+
+### Turning off content capture
+
+By default Netra records the content of your AI calls. Pass `trace_content=False` to `Netra.init()` (or set `NETRA_TRACE_CONTENT=false`) to keep it out of your traces:
+
+| Not recorded when `trace_content=False` | Still recorded |
+|---|---|
+| Prompts and completions | Model and provider |
+| Tool call arguments and results | Token usage |
+| Voice transcripts and LiveKit call audio | Latency and errors |
+| HTTP request and response bodies | Span names, ids, URLs and status codes |
+| | HTTP headers (with secrets redacted) |
+
+Inputs and outputs of functions you decorate with `@workflow`, `@task`, `@agent` or `@span` are always recorded, because you choose which functions to decorate. Don't decorate a function whose arguments you don't want recorded.
+
+To stop only LiveKit call audio and keep transcripts and everything else, set `NETRA_AUDIO_CAPTURE=false`.
+
+### Secrets are redacted automatically
+
+Whatever `trace_content` is set to, Netra removes credentials before spans leave your process:
+
+- **HTTP headers**: `Authorization`, `Cookie`, `Set-Cookie`, `X-API-Key`, `apikey`, and any header whose name contains `key`, `token`, `secret`, `password`, `signature` or `credential` as a word (`X-Goog-Api-Key`, `X-Session-Token`, `api_key`). Values are replaced with `[REDACTED]`. Headers such as `X-RateLimit-Remaining-Tokens` and `Idempotency-Key` are kept. To redact more headers, list them in `NETRA_REDACT_HEADERS`.
+- **URLs**: `user:password@` is removed, and query parameters such as `api_key`, `key`, `token`, `access_token`, `code`, `sig` and `signature`, plus any name containing `key`, `token` or `secret` (`subscription-key`, `auth_token`), are replaced with `REDACTED`.
+- **DSPy**: language model objects are recorded as their model name only, and arguments such as `api_key` are dropped, so provider keys passed to `dspy.LM(...)` never reach your traces.
+
+If `NETRA_API_KEY` has surrounding whitespace or a trailing newline (common with Kubernetes secrets and `.env` files), it is trimmed. A key containing other control characters is ignored with a warning, and spans are sent unauthenticated.
+
 ## 🔧 Advanced Configuration
 
 ### Environment Variables
@@ -463,7 +503,9 @@ Netra SDK can be configured using the following environment variables:
 | `NETRA_API_KEY` | API key for authentication | `None` |
 | `NETRA_HEADERS` | Additional headers in W3C Correlation-Context format | `None` |
 | `NETRA_DISABLE_BATCH` | Disable batch span processor (`true`/`false`) | `false` |
-| `NETRA_TRACE_CONTENT` | Whether to capture content (`true`/`false`). When `false`, prompts, completions, tool arguments/results, transcripts and HTTP request/response bodies are not recorded; model, usage, ids, URLs, status and (redacted) headers still are. Inputs and outputs of `@workflow`/`@task`/`@agent`/`@span` decorated functions are always recorded, since you choose what to decorate. LiveKit call audio is controlled separately by the audio settings. | `true` |
+| `NETRA_TRACE_CONTENT` | Record prompts, completions, tool calls, transcripts, call audio and HTTP bodies (`true`/`false`). See [Data Privacy](#-data-privacy) for what is kept when `false` | `true` |
+| `NETRA_AUDIO_CAPTURE` | Send LiveKit call audio to Netra (`true`/`false`). Audio is also off when `NETRA_TRACE_CONTENT` is `false` or no API key is set | `true` |
+| `NETRA_REDACT_HEADERS` | Comma-separated extra HTTP header names to redact, on top of the built-in list | `None` |
 | `NETRA_ENV` | Deployment environment (e.g., `prod`, `staging`, `dev`) | `local` |
 | `NETRA_RESOURCE_ATTRS` | JSON string of custom resource attributes | `{}` |
 

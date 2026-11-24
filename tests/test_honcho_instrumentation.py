@@ -1250,7 +1250,15 @@ class TestSerializationEdgeCases:
 
 
 class TestIntegration:
-    """Integration tests verifying instrument/uninstrument cycle."""
+    """Integration tests verifying instrument/uninstrument cycle.
+
+    These patch the real SDK, which is not a declared dependency, so they skip
+    when ``honcho`` is not installed.
+    """
+
+    @pytest.fixture(autouse=True)
+    def _require_honcho(self) -> None:
+        pytest.importorskip("honcho")
 
     def test_instrument_and_uninstrument_cycle(self):
         instrumentor = NetraHonchoInstrumentor()
