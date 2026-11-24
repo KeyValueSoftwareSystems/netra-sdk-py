@@ -18,10 +18,12 @@ Traceloop instrumentors treat that override.
 """
 
 import threading
-from typing import Any, Mapping, Optional, Set, Tuple
+from typing import Any, List, Mapping, Optional, Set, Tuple
 
 from opentelemetry import context as otel_context
+from opentelemetry.attributes import BoundedAttributes
 from opentelemetry.sdk.trace import Event, ReadableSpan, Span, SpanProcessor
+from opentelemetry.sdk.util import BoundedList
 
 from netra.content_capture import is_content_override_active
 from netra.netra_logger import get_logger
@@ -119,11 +121,55 @@ def is_content_attribute(key: str) -> bool:
     return False
 
 
-def _without_content(attributes: Optional[Mapping[str, Any]]) -> Optional[dict]:  # type: ignore[type-arg]
-    """Return a copy of *attributes* without content keys, or None if none were present."""
-    if not attributes or not any(is_content_attribute(key) for key in attributes):
-        return None
-    return {key: value for key, value in attributes.items() if not is_content_attribute(key)}
+def _content_keys(attributes: Optional[Mapping[str, Any]]) -> List[str]:
+    """Return the keys of *attributes* that hold content."""
+    return [key for key in attributes or () if is_content_attribute(key)]
+
+
+def _strip_span_attributes(span: ReadableSpan) -> None:
+    """Delete content keys from the span's attributes in place.
+
+    Deleting keeps the span's ``BoundedAttributes`` (and so its limits and
+    ``dropped_attributes`` count), which swapping in a new dict would lose. A
+    span whose attributes are immutable falls back to a filtered copy.
+    """
+    attributes = getattr(span, "_attributes", None)
+    content_keys = _content_keys(attributes)
+    if not content_keys:
+        return
+    try:
+        for key in content_keys:
+            del attributes[key]  # type: ignore[union-attr]
+    except TypeError:
+        span._attributes = {key: value for key, value in attributes.items() if key not in content_keys}  # type: ignore[union-attr]
+
+
+def _strip_event(event: Event) -> Event:
+    """Return *event* without content attributes, keeping its attribute limits and dropped count."""
+    attributes = event.attributes
+    content_keys = _content_keys(attributes)
+    if not content_keys:
+        return event
+    kept = {key: value for key, value in attributes.items() if key not in content_keys}
+    if isinstance(attributes, BoundedAttributes):
+        bounded = BoundedAttributes(attributes.maxlen, kept, immutable=True, max_value_len=attributes.max_value_len)
+        bounded.dropped = attributes.dropped
+        return Event(name=event.name, attributes=bounded, timestamp=event.timestamp)
+    return Event(name=event.name, attributes=kept, timestamp=event.timestamp)
+
+
+def _strip_span_events(span: ReadableSpan) -> None:
+    """Replace the span's events with content-free copies, keeping its ``dropped_events`` count."""
+    events = getattr(span, "_events", None)
+    if not events or not any(_content_keys(event.attributes) for event in events):
+        return
+    stripped = [_strip_event(event) for event in events]
+    if isinstance(events, BoundedList):
+        rebuilt = BoundedList.from_seq(events._dq.maxlen, stripped)
+        rebuilt.dropped = events.dropped
+        span._events = rebuilt
+    else:
+        span._events = tuple(stripped)
 
 
 class ContentGatingSpanProcessor(SpanProcessor):  # type: ignore[misc]
@@ -157,13 +203,8 @@ class ContentGatingSpanProcessor(SpanProcessor):  # type: ignore[misc]
                     self._override_span_ids.discard(key)
                     return
 
-            filtered = _without_content(getattr(span, "_attributes", None))
-            if filtered is not None:
-                span._attributes = filtered
-
-            events = getattr(span, "_events", None)
-            if events:
-                span._events = tuple(self._strip_event(event) for event in events)
+            _strip_span_attributes(span)
+            _strip_span_events(span)
         except Exception:
             # Failing open would export the very content this processor exists to
             # withhold, so drop every attribute rather than risk it.
@@ -173,13 +214,6 @@ class ContentGatingSpanProcessor(SpanProcessor):  # type: ignore[misc]
                 span._events = ()
             except Exception:
                 logger.debug("ContentGatingSpanProcessor: could not clear span attributes", exc_info=True)
-
-    @staticmethod
-    def _strip_event(event: Event) -> Event:
-        filtered = _without_content(event.attributes)
-        if filtered is None:
-            return event
-        return Event(name=event.name, attributes=filtered, timestamp=event.timestamp)
 
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """No-op; this processor holds no spans."""

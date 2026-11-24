@@ -17,7 +17,8 @@ import httpx
 import pytest
 import requests
 from opentelemetry import context as context_api
-from opentelemetry.sdk.trace import TracerProvider
+from opentelemetry.attributes import BoundedAttributes
+from opentelemetry.sdk.trace import SpanLimits, TracerProvider
 from opentelemetry.sdk.trace.export import SimpleSpanProcessor
 from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanExporter
 
@@ -205,9 +206,30 @@ class TestContentGatingSpanProcessor:
         assert SECRET not in _exported_text(exporter)
         assert exported.attributes["gen_ai.request.model"] == "embed-x"
 
+    def test_keeps_limits_and_dropped_counts(self) -> None:
+        exporter = InMemorySpanExporter()
+        provider = TracerProvider(span_limits=SpanLimits(max_span_attributes=2, max_events=1))
+        provider.add_span_processor(ContentGatingSpanProcessor())
+        provider.add_span_processor(SimpleSpanProcessor(exporter))
+        with provider.get_tracer("test").start_as_current_span("llm") as span:
+            span.set_attribute("dropped_by_limit", 1)
+            span.set_attribute("input", SECRET)
+            span.set_attribute("gen_ai.request.model", "gpt-x")
+            span.add_event("dropped_by_limit")
+            span.add_event("prompt", {"gen_ai.prompt": SECRET, "kind": "prompt"})
+        provider.shutdown()
+
+        (exported,) = exporter.get_finished_spans()
+        assert SECRET not in _exported_text(exporter)
+        assert dict(exported.attributes) == {"gen_ai.request.model": "gpt-x"}
+        assert exported.dropped_attributes == 1
+        assert exported.dropped_events == 1
+        assert isinstance(exported._attributes, BoundedAttributes)
+        assert dict(exported.events[0].attributes) == {"kind": "prompt"}
+
     def test_fails_closed_when_stripping_raises(self, gated_pipeline: Tuple[Any, InMemorySpanExporter]) -> None:
         tracer, exporter = gated_pipeline
-        with patch("netra.processors.content_gating_span_processor._without_content", side_effect=RuntimeError("boom")):
+        with patch("netra.processors.content_gating_span_processor._content_keys", side_effect=RuntimeError("boom")):
             with tracer.start_as_current_span("llm") as span:
                 span.set_attribute("output", SECRET)
                 span.add_event("e", {"gen_ai.prompt": SECRET})
