@@ -3,6 +3,7 @@ Unit tests for ScrubbingSpanProcessor class.
 Tests scrubbing functionality for sensitive data patterns and edge cases.
 """
 
+import json
 from unittest.mock import Mock, patch
 
 from netra.processors.scrubbing_span_processor import ScrubbingSpanProcessor
@@ -362,3 +363,29 @@ class TestScrubbingSpanProcessor:
         assert result["normal_field"] == "This should not be scrubbed"
         assert result["request_data"]["user"]["profile"]["preferences"] == ["email_notifications", "sms_alerts"]
         assert result["response_list"][0]["role"] == "admin"
+
+    def test_input_output_message_lists_stay_valid_json(self):
+        """Scrubbing a message list must not consume the JSON around a matched value."""
+        processor = ScrubbingSpanProcessor()
+        mock_span = Mock()
+        mock_span._attributes = {
+            "input": json.dumps([{"role": "user", "content": "my password: hunter2"}]),
+            "output": json.dumps([{"role": "assistant", "content": "Authorization: abc123"}]),
+        }
+
+        processor.on_end(mock_span)
+
+        assert json.loads(mock_span._attributes["input"]) == [{"role": "user", "content": "my [SCRUBBED]"}]
+        assert json.loads(mock_span._attributes["output"]) == [{"role": "assistant", "content": "[SCRUBBED]"}]
+
+    def test_input_output_plain_text_and_clean_json_kept(self):
+        """Non-JSON input is scrubbed as text; JSON with nothing to scrub is left byte for byte."""
+        processor = ScrubbingSpanProcessor()
+        mock_span = Mock()
+        clean = '[{"role":"user","content":"hi"}]'
+        mock_span._attributes = {"input": "password: hunter2", "output": clean}
+
+        processor.on_end(mock_span)
+
+        assert mock_span._attributes["input"] == "[SCRUBBED]"
+        assert mock_span._attributes["output"] == clean

@@ -8,8 +8,9 @@ The format is based on Keep a Changelog and this project adheres to Semantic Ver
 
 ### Changed
 
-- **LLM messages are recorded only in `input`/`output`** - Each span carries its conversation as JSON arrays of `{role, content}` messages in `input` and `output`. The indexed `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` attributes are no longer exported, including ones written by third-party instrumentations. Requires a Netra platform release that reads span `input`/`output`.
-- **Long conversations stay valid JSON** - When `input`/`output` exceed `NETRA_ATTRIBUTE_MAX_LEN`, every message keeps its position and long contents are shortened and marked `__truncated__`.
+- **LLM messages are recorded only in `input`/`output`** - Each span carries its conversation as JSON arrays of `{role, content}` messages in `input` and `output`. The indexed `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` attributes are no longer exported, including ones written by third-party instrumentations. Evaluator mappings and dashboards that read them (for example `metadata."gen_ai.completion.0.content"`) must read the span's `input` / `output` instead (for example `output[0].content`). Requires a Netra platform release that reads span `input`/`output`.
+- **Long conversations stay valid JSON** - When `input`/`output` exceed `NETRA_ATTRIBUTE_MAX_LEN`, long contents are shortened and marked `__truncated__`. When that isn't enough, the oldest messages are dropped.
+- **One shape for tool calls** - Every instrumentation records a tool call as an assistant entry whose `content` is `{"name", "arguments"}`, and a tool result as a `tool` entry; both carry the call id as `tool_call_id` when there is one.
 
 ### Fixed
 

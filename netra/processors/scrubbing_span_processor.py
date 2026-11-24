@@ -1,3 +1,4 @@
+import json
 import re
 from typing import Any, Dict, Optional, Union
 
@@ -53,6 +54,9 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         "set-cookie",
     }
 
+    # Attributes holding JSON message lists; their strings are scrubbed one by one so the JSON stays valid.
+    JSON_ATTRIBUTES = {"input", "output"}
+
     def __init__(self):  # type: ignore[no-untyped-def]
         """Initialize the scrubbing span processor."""
         self.scrub_replacement = "[SCRUBBED]"
@@ -104,6 +108,8 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
             return key, self.scrub_replacement
 
         # Scrub value based on its type
+        if isinstance(value, str) and key in self.JSON_ATTRIBUTES:
+            return key, self._scrub_json_string(value)
         if isinstance(value, str):
             scrubbed_value = self._scrub_string_value(value)
             return key, scrubbed_value
@@ -147,6 +153,22 @@ class ScrubbingSpanProcessor(SpanProcessor):  # type: ignore[misc]
         # No extra fallback required now that we pre-scrub 13-19 digit sequences
 
         return scrubbed_value
+
+    def _scrub_json_string(self, value: str) -> str:
+        """Scrub the strings inside a JSON value so it stays valid JSON; non-JSON text is scrubbed as a string.
+
+        Args:
+            value: The attribute value
+
+        Returns:
+            The scrubbed value, unchanged when nothing was scrubbed
+        """
+        try:
+            parsed = json.loads(value)
+        except ValueError:
+            return self._scrub_string_value(value)
+        _, scrubbed = self._scrub_key_value("", parsed)
+        return value if scrubbed == parsed else json.dumps(scrubbed)
 
     def _scrub_dict_value(self, value: Dict[str, Any]) -> Dict[str, Any]:
         """Recursively scrub sensitive data from a dictionary value.

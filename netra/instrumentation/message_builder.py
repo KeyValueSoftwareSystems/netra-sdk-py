@@ -40,8 +40,8 @@ def to_json(value: Any) -> str:
 def build_messages(entries: Sequence[Any]) -> str:
     """Serialise message entries to a JSON array that fits the attribute length limit.
 
-    Over the limit, every entry keeps its position and long contents are shortened
-    and marked truncated. The result is always valid JSON.
+    Over the limit, long contents are shortened and marked truncated; when that isn't
+    enough, the oldest entries are dropped. The result is always valid JSON.
     """
     capped = [cap_message_content(entry) for entry in entries]
     serialised = to_json(capped)
@@ -83,9 +83,19 @@ def cap_message_content(entry: Any) -> Any:
 
 
 def _fit_all(entries: List[Any], max_len: int) -> str:
-    """Shorten contents so all *entries* fit in *max_len*, keeping each entry in its position."""
+    """Shorten contents so *entries* fit in *max_len*, keeping each entry in its position.
+
+    When even empty contents don't fit, the oldest entries are dropped until the rest take at most
+    half of *max_len*, leaving the other half for their shortened contents.
+    """
     texts = [_content_text(entry) for entry in entries]
     skeleton = [entry if text is None else _with_truncated_content(entry, "") for entry, text in zip(entries, texts)]
+    if len(to_json(skeleton)) > max_len:
+        keep = _trailing_fit_count(skeleton, max_len // 2)
+        logger.debug("Kept the last %d of %d message(s) to fit the attribute length limit", keep, len(entries))
+        if not keep:
+            return "[]"
+        entries, texts, skeleton = entries[-keep:], texts[-keep:], skeleton[-keep:]
     sizes = [0 if text is None else len(to_json(text)) - len('""') for text in texts]
     budget = max_len - len(to_json(skeleton))
     for _ in range(_MAX_FIT_ROUNDS):
@@ -98,7 +108,7 @@ def _fit_all(entries: List[Any], max_len: int) -> str:
         if overflow <= 0:
             return serialised
         budget -= overflow
-    return _fit_leading(skeleton, max_len)
+    return to_json(skeleton)
 
 
 def _fair_shares(sizes: List[int], budget: int) -> List[int]:
@@ -122,18 +132,16 @@ def _shorten(entry: Any, text: Optional[str], size: int, limit: int) -> Any:
     return _with_truncated_content(entry, text[: len(text) * limit // size])
 
 
-def _fit_leading(skeleton: List[Any], max_len: int) -> str:
-    """Serialise the leading entries of *skeleton* that fit in *max_len*."""
-    kept: List[Any] = []
+def _trailing_fit_count(entries: List[Any], max_len: int) -> int:
+    """Count how many entries from the end of *entries* fit in a JSON array of *max_len* characters."""
     budget = max_len - len("[]")
-    for entry in skeleton:
-        size = len(to_json(entry)) + (_ITEM_SEPARATOR_LEN if kept else 0)
-        if size > budget:
+    count = 0
+    for entry in reversed(entries):
+        budget -= len(to_json(entry)) + (_ITEM_SEPARATOR_LEN if count else 0)
+        if budget < 0:
             break
-        kept.append(entry)
-        budget -= size
-    logger.debug("Kept %d of %d message(s) to fit the attribute length limit", len(kept), len(skeleton))
-    return to_json(kept)
+        count += 1
+    return count
 
 
 def _extract_tool_call(tc: Any) -> Dict[str, Any]:
@@ -151,13 +159,28 @@ def _extract_tool_call(tc: Any) -> Dict[str, Any]:
         arguments = getattr(func, "arguments", "") or ""
         tc_id = getattr(tc, "id", None)
 
-    entry: Dict[str, Any] = {
-        "role": "assistant",
-        "content": to_json({"name": name, "arguments": arguments}),
-    }
-    if tc_id:
-        entry["tool_call_id"] = tc_id
+    return tool_call_entry(name, arguments, tc_id)
+
+
+def tool_call_entry(name: Any, arguments: Any, call_id: Any = None) -> Dict[str, Any]:
+    """Build the entry for one tool call: ``content`` holds ``{name, arguments}``, ``tool_call_id`` the call id."""
+    entry: Dict[str, Any] = {"role": "assistant", "content": to_json({"name": name, "arguments": arguments})}
+    if call_id:
+        entry["tool_call_id"] = call_id
     return entry
+
+
+def tool_result_entry(result: Any, call_id: Any = None) -> Dict[str, Any]:
+    """Build the entry for one tool result, linked to its call by ``tool_call_id``."""
+    entry: Dict[str, Any] = {"role": "tool", "content": result if isinstance(result, str) else to_json(result)}
+    if call_id:
+        entry["tool_call_id"] = call_id
+    return entry
+
+
+def tool_call_entries(tool_calls: Any) -> List[Dict[str, Any]]:
+    """Build one entry per OpenAI-style tool call (``{id, function: {name, arguments}}``)."""
+    return [entry for entry in map(_extract_tool_call, tool_calls or []) if entry]
 
 
 def build_chat_input(messages: Any) -> Optional[str]:
@@ -217,16 +240,11 @@ def build_response_api_input(kwargs: Dict[str, Any]) -> Optional[str]:
                 name = message.get("name", "")
                 arguments = message.get("arguments", "")
                 if name or arguments:
-                    entries.append(
-                        {
-                            "role": "assistant",
-                            "content": to_json({"name": name, "arguments": arguments}),
-                        }
-                    )
+                    entries.append(tool_call_entry(name, arguments, message.get("call_id")))
             elif msg_type == "function_call_output":
                 output_val = str(message.get("output") or "")
                 if output_val:
-                    entries.append({"role": "tool", "content": output_val})
+                    entries.append(tool_result_entry(output_val, message.get("call_id")))
             elif msg_type in ("reasoning", "reasoning_summary"):
                 continue
             else:
@@ -259,13 +277,8 @@ def build_completion_output(response_dict: Any) -> Optional[str]:
             if not isinstance(element, dict):
                 continue
             if element.get("type") == "function_call":
-                name = element.get("name", "")
-                arguments = element.get("arguments", "")
                 entries.append(
-                    {
-                        "role": "assistant",
-                        "content": to_json({"name": name, "arguments": arguments}),
-                    }
+                    tool_call_entry(element.get("name", ""), element.get("arguments", ""), element.get("call_id"))
                 )
             elif content := element.get("content"):
                 for chunk in content:

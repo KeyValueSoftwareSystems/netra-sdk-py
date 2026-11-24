@@ -3,7 +3,7 @@ from typing import Any, Dict, List
 
 from opentelemetry.semconv_ai import SpanAttributes
 
-from netra.instrumentation.message_builder import build_messages
+from netra.instrumentation.message_builder import build_messages, tool_call_entry, tool_result_entry
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -102,36 +102,23 @@ def extract_llm_request_attributes(llm_request_dict: Dict[str, Any]) -> Dict[str
             parts = content.get("parts", [])
 
             text_parts: List[str] = []
-            func_calls: List[Dict[str, Any]] = []
-            func_responses: List[Dict[str, Any]] = []
+            tool_entries: List[Dict[str, Any]] = []
 
             for part in parts:
                 if "text" in part and part.get("text") is not None:
                     text_parts.append(str(part["text"]))
                 elif "function_call" in part:
                     func_call = part["function_call"]
-                    entry: Dict[str, Any] = {"name": func_call.get("name", ""), "args": func_call.get("args", {})}
-                    if "id" in func_call:
-                        entry["id"] = func_call["id"]
-                    func_calls.append(entry)
+                    tool_entries.append(
+                        tool_call_entry(func_call.get("name", ""), func_call.get("args", {}), func_call.get("id"))
+                    )
                 elif "function_response" in part:
                     func_resp = part["function_response"]
-                    resp_entry: Dict[str, Any] = {
-                        "name": func_resp.get("name", ""),
-                        "result": func_resp.get("response", {}),
-                    }
-                    if "id" in func_resp:
-                        resp_entry["id"] = func_resp["id"]
-                    func_responses.append(resp_entry)
+                    tool_entries.append(tool_result_entry(func_resp.get("response", {}), func_resp.get("id")))
 
-            msg: Dict[str, Any] = {"role": role}
             if text_parts:
-                msg["content"] = "\n".join(text_parts)
-            if func_calls:
-                msg["function_calls"] = func_calls
-            if func_responses:
-                msg["function_responses"] = func_responses
-            all_inputs.append(msg)
+                all_inputs.append({"role": role, "content": "\n".join(text_parts)})
+            all_inputs.extend(tool_entries)
 
     try:
         attributes["input"] = build_messages(all_inputs)
@@ -226,34 +213,20 @@ def extract_llm_response_attributes(last_response: Any, accumulated_text: List[s
 
     text_parts: List[str] = accumulated_text if accumulated_text else []
     tool_calls: List[Dict[str, Any]] = []
-    tool_call_index = 0
 
     for part in parts:
         if func_call := getattr(part, "function_call", None):
-            entry: Dict[str, Any] = {}
-            if call_id := getattr(func_call, "id", None):
-                entry["id"] = call_id
-            if call_name := getattr(func_call, "name", None):
-                entry["name"] = call_name
-            args = getattr(func_call, "args", {})
-            entry["arguments"] = args
-            tool_calls.append(entry)
-            tool_call_index += 1
+            tool_calls.append(
+                tool_call_entry(
+                    getattr(func_call, "name", "") or "", getattr(func_call, "args", {}), getattr(func_call, "id", None)
+                )
+            )
         elif not accumulated_text and (text := getattr(part, "text", None)) is not None:
             text_parts.append(str(text))
 
-    output: Dict[str, Any] = {"role": "assistant"}
-    if text_parts:
-        output["content"] = "\n".join(text_parts)
-    if tool_calls:
-        output["tool_calls"] = tool_calls
-
-    if len(output) > 1:
-        try:
-            attributes["output"] = json.dumps(output)
-        except Exception:
-            logger.exception("Failed to serialize LLM response output to JSON")
-            attributes["output"] = str(output)
+    entries = ([{"role": "assistant", "content": "\n".join(text_parts)}] if text_parts else []) + tool_calls
+    if entries:
+        attributes["output"] = build_messages(entries)
 
     return attributes
 

@@ -38,7 +38,7 @@ from netra.instrumentation.libraries.agno.utils import (
     should_suppress_instrumentation,
     update_active_span_with_system_prompt,
 )
-from netra.instrumentation.message_builder import build_messages
+from netra.instrumentation.message_builder import build_messages, tool_call_entries
 from netra.instrumentation.span_utils import record_span_timing
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
@@ -259,10 +259,10 @@ class _LlmStreamOutputMixin:
                 tc_serialized = serialize_value(self._tool_calls, clean=True)
                 if tc_serialized:
                     try:
-                        tc_data = json.loads(tc_serialized)
+                        entries = tool_call_entries(json.loads(tc_serialized))
                     except (json.JSONDecodeError, ValueError):
-                        tc_data = tc_serialized
-                    output_str = build_messages([{"role": "assistant", "tool_calls": tc_data}])
+                        entries = [{"role": "assistant", "content": tc_serialized}]
+                    output_str = build_messages(entries)
                     self._netra_output = tc_serialized
             except Exception as e:
                 logger.debug(

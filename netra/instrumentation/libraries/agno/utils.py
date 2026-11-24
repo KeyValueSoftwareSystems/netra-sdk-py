@@ -8,7 +8,7 @@ from opentelemetry.semconv_ai import SpanAttributes
 from opentelemetry.trace import Span
 
 from netra.instrumentation.http.headers import sanitize_asgi_headers
-from netra.instrumentation.message_builder import build_messages
+from netra.instrumentation.message_builder import build_messages, tool_call_entries
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
@@ -732,7 +732,7 @@ def format_messages_as_input(messages: Any) -> Optional[str]:
             tool_calls = getattr(msg, "tool_calls", None)
             if tool_calls:
                 try:
-                    msg_list.append({"role": str(role), "tool_calls": _normalize(tool_calls, clean=True)})
+                    msg_list.extend(tool_call_entries(_normalize(tool_calls, clean=True)))
                     continue
                 except Exception as e:
                     logger.debug(
@@ -782,7 +782,7 @@ def format_response_as_output(response: Any) -> Optional[str]:
         tool_calls = _safe_getattr(response, "tool_calls")
         if tool_calls:
             try:
-                return build_messages([{"role": "assistant", "tool_calls": _normalize(tool_calls, clean=True)}])
+                return build_messages(tool_call_entries(_normalize(tool_calls, clean=True)))
             except Exception as e:
                 logger.debug("netra.instrumentation.libraries.agno: failed to serialize tool_calls as output: %s", e)
 

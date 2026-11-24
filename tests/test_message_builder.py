@@ -87,7 +87,7 @@ class TestBuildMessages:
         assert entries[0]["content"].startswith('[{"type": "text"')
         assert entries[0][TRUNCATION_MARKER_KEY] is True
 
-    def test_leading_messages_are_kept_when_even_empty_contents_do_not_fit(self, attribute_limit) -> None:
+    def test_newest_messages_are_kept_when_even_empty_contents_do_not_fit(self, attribute_limit) -> None:
         attribute_limit(150)
         messages = [{"role": "user", "content": f"m{index}"} for index in range(20)]
 
@@ -96,7 +96,17 @@ class TestBuildMessages:
 
         assert len(serialised) <= 150
         assert 0 < len(entries) < 20
-        assert all(entry["role"] == "user" for entry in entries)
+        assert [entry["content"] for entry in entries] == [f"m{index}" for index in range(20 - len(entries), 20)]
+
+    def test_long_conversation_keeps_the_last_user_message_with_its_text(self) -> None:
+        messages = [{"role": "assistant" if index % 2 else "user", "content": f"turn {index}"} for index in range(999)]
+        messages.append({"role": "user", "content": "the current question"})
+
+        serialised = build_messages(messages)
+        entries = json.loads(serialised)
+
+        assert len(serialised) <= message_builder.get_attribute_max_len()
+        assert entries[-1] == {"role": "user", "content": "the current question"}
 
     def test_a_single_oversized_message_is_shortened_to_fit(self, attribute_limit) -> None:
         attribute_limit(100)
@@ -182,3 +192,20 @@ class TestBuilders:
             {"role": "tool", "content": "42"},
             {"role": "user", "content": "and?"},
         ]
+
+    def test_responses_api_tool_calls_carry_their_call_id(self) -> None:
+        call = {"type": "function_call", "call_id": "call_9", "name": "lookup", "arguments": '{"id": 42}'}
+        tool_call = {"role": "assistant", "content": json.dumps({"name": "lookup", "arguments": '{"id": 42}'})}
+
+        inputs = json.loads(
+            build_response_api_input(
+                {"input": [call, {"type": "function_call_output", "call_id": "call_9", "output": "shipped"}]}
+            )
+        )
+        outputs = json.loads(build_completion_output({"output": [call]}))
+
+        assert inputs == [
+            {**tool_call, "tool_call_id": "call_9"},
+            {"role": "tool", "content": "shipped", "tool_call_id": "call_9"},
+        ]
+        assert outputs == [{**tool_call, "tool_call_id": "call_9"}]
