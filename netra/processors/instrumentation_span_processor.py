@@ -1,4 +1,4 @@
-"""Span processor for instrumentation name recording, attribute truncation, and header redaction."""
+"""Span processor for instrumentation name recording, attribute truncation, header redaction, and usage stripping."""
 
 import os
 from typing import Any, Callable, FrozenSet, Mapping, Optional, Set, Union
@@ -8,7 +8,7 @@ from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
 from netra.config import Config, get_attribute_max_len
 from netra.instrumentation.http.headers import REDACTED, get_sensitive_headers
-from netra.instrumentation.instruments import THIRD_PARTY_INSTRUMENTATION_SCOPES, InstrumentSet
+from netra.instrumentation.instruments import InstrumentSet, instrumentation_name_for_scope
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -18,11 +18,27 @@ TruncatableValue = Union[str, bytes, bytearray]
 SetAttributeFunc = Callable[[str, Any], None]
 
 # Constants
-_OTEL_INSTRUMENTATION_PREFIX = "opentelemetry.instrumentation."
-_NETRA_INSTRUMENTATION_PREFIX = "netra.instrumentation."
 _HTTPX_INSTRUMENTATION = "httpx"
 _URL_ATTRIBUTE_KEYS = frozenset({"http.url", "url.full"})
 _DEFAULT_BLOCKED_URL_PATTERNS = frozenset({"getnetra", "githubusercontent"})
+
+# Usage attributes core prices a span from.  Spans from a cost-excluded
+# instrumentation lose all of them, so the call is priced only from the span
+# the user reports it on (for example, in their proxy layer).
+_CUSTOM_USAGE_ATTRIBUTE = f"{Config.LIBRARY_NAME}.usage"
+_AUDIO_DURATION_ATTRIBUTE = "gen_ai.audio.duration"
+# Prefixes rather than a key list: every instrumentation writes usage under
+# different keys, and core reads both cache spellings and the per-TTL counts.
+_USAGE_ATTRIBUTE_PREFIXES = ("gen_ai.usage.", "llm.usage.")
+
+
+def _is_usage_attribute(key: str) -> bool:
+    """Return whether ``key`` carries usage core can price from.
+
+    ``netra.usage`` is matched exactly, so ``netra.usage.source`` (not priced) is kept.
+    """
+    return key in (_CUSTOM_USAGE_ATTRIBUTE, _AUDIO_DURATION_ATTRIBUTE) or key.startswith(_USAGE_ATTRIBUTE_PREFIXES)
+
 
 # The semantic-convention prefixes upstream OTel instrumentations record headers
 # under (``opentelemetry.util.http.normalise_{request,response}_header_name``).
@@ -94,9 +110,16 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
     patterns (e.g., internal service URLs).
     """
 
-    def __init__(self) -> None:
-        """Snapshot the sensitive header set once; the active config is fixed by the time processors are built."""
+    def __init__(self, cost_excluded_instrument_names: FrozenSet[str] = frozenset()) -> None:
+        """Snapshot the sensitive header set once; the active config is fixed by the time processors are built.
+
+        Args:
+            cost_excluded_instrument_names: Instrumentation names (``InstrumentSet``
+                values) whose spans have their usage attributes removed before
+                export.  Empty by default, which removes nothing.
+        """
         self._sensitive_headers = _normalised_sensitive_headers()
+        self._cost_excluded_instrument_names = cost_excluded_instrument_names
 
     def on_start(
         self,
@@ -124,12 +147,15 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     def on_end(self, span: ReadableSpan) -> None:
         """Redact sensitive ``http.{request,response}.header.*`` attributes recorded by
-        upstream OTel instrumentations, replacing their values with ``[REDACTED]``.
+        upstream OTel instrumentations, replacing their values with ``[REDACTED]``, and
+        remove the usage attributes of spans from cost-excluded instrumentations.
 
         Must run before the exporting span processor: every processor's ``on_end``
-        receives the same span, so redacting here is what the exporter sees. This
-        processor is registered well before the exporter (see ``tracer.py``), and
-        no other processor reads these attribute keys, so this placement is safe.
+        receives the same span, so changing attributes here is what the exporter sees.
+        This processor is registered well before the exporter (see ``tracer.py``).
+        Stripping usage here rather than at write time also covers attributes passed at
+        span creation and the token aliases ``SpanIOProcessor`` writes after this
+        processor's ``set_attribute`` wrapper.
 
         Args:
             span: The ended span.
@@ -144,6 +170,11 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         except Exception:
             logger.exception("Error redacting header attributes on span")
 
+        try:
+            self._strip_usage_if_cost_excluded(span)
+        except Exception:
+            logger.exception("Error stripping usage attributes from cost-excluded span")
+
     def force_flush(self, timeout_millis: int = 30000) -> bool:
         """Forces export of all spans. No-op for this processor.
 
@@ -157,6 +188,30 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
 
     def shutdown(self) -> None:
         """Shuts down the processor. No-op for this processor."""
+
+    def _strip_usage_if_cost_excluded(self, span: ReadableSpan) -> None:
+        """Delete every usage attribute from ``span`` when its instrumentation is cost-excluded.
+
+        Args:
+            span: The ended span.
+        """
+        if not self._cost_excluded_instrument_names:
+            return
+        # Resolve without _extract_instrumentation_name's raw-name fallback: decorator and
+        # Netra.start_span tracers are named by the user (func.__name__, module_name), so a
+        # scope like "litellm" or "openai" must not be mistaken for that instrumentation.
+        scope_name = getattr(getattr(span, "instrumentation_scope", None), "name", None)
+        if not isinstance(scope_name, str):
+            return
+        if instrumentation_name_for_scope(scope_name) not in self._cost_excluded_instrument_names:
+            return
+
+        attributes = getattr(span, "_attributes", None)
+        if not attributes:
+            return
+
+        for key in [key for key in attributes if _is_usage_attribute(key)]:
+            del attributes[key]
 
     def _wrap_set_attribute(self, span: Span) -> None:
         """Wraps span.set_attribute and span.set_attributes to add truncation and URL blocking logic.
@@ -283,16 +338,13 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
             span.set_attribute(attribute_key, instrumentation_name)
 
     @staticmethod
-    def _extract_instrumentation_name(span: Span) -> Optional[str]:
+    def _extract_instrumentation_name(span: ReadableSpan) -> Optional[str]:
         """Extracts the instrumentation name from the span's scope.
 
-        For scopes with known prefixes (opentelemetry.instrumentation.* or
-        netra.instrumentation.*), returns just the final component.  A
-        third-party scope registered in ``THIRD_PARTY_INSTRUMENTATION_SCOPES``
-        resolves to its ``InstrumentSet`` value — ``livekit-agents`` to
-        ``livekit`` — so those spans get stamped with the same instrumentation
-        name as every other instrumentation instead of being skipped for
-        carrying a non-conforming scope.  Otherwise, returns the full scope name.
+        An instrumentation scope resolves to its ``InstrumentSet`` value through
+        ``instrumentation_name_for_scope`` (``netra.instrumentation.mistralai``
+        to ``mistral_ai``, ``livekit-agents`` to ``livekit``).  Any other scope
+        is returned unchanged.
 
         Args:
             span: The span to extract the instrumentation name from.
@@ -308,15 +360,7 @@ class InstrumentationSpanProcessor(SpanProcessor):  # type: ignore[misc]
         if not isinstance(name, str) or not name:
             return None
 
-        alias = THIRD_PARTY_INSTRUMENTATION_SCOPES.get(name)
-        if alias is not None:
-            return alias
-
-        if name.startswith(_OTEL_INSTRUMENTATION_PREFIX) or name.startswith(_NETRA_INSTRUMENTATION_PREFIX):
-            base_name = name.rsplit(".", 1)[-1].strip()
-            return base_name if base_name else name
-
-        return name
+        return instrumentation_name_for_scope(name) or name
 
     @staticmethod
     def _is_httpx_instrumentation(instrumentation_name: Optional[str]) -> bool:
