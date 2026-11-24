@@ -90,6 +90,7 @@ class CustomInstruments(Enum):
     HERMES_AGENT = "hermes_agent"
     HONCHO = "honcho"
     LIVEKIT = "livekit"
+    TYPESAFE = "typesafe"
 
 
 class _Origin(Enum):
@@ -214,6 +215,7 @@ class InstrumentSet(Enum):
     TORNADO = ("tornado", _Origin.CUSTOM)
     TORTOISEORM = ("tortoiseorm", _Origin.CUSTOM)
     TRANSFORMERS = ("transformers", _Origin.TRACELOOP)
+    TYPESAFE = ("typesafe", _Origin.CUSTOM)
     URLLIB = ("urllib", _Origin.CUSTOM)
     URLLIB3 = ("urllib3", _Origin.CUSTOM)
     VERTEXAI = ("vertexai", _Origin.TRACELOOP)
@@ -287,6 +289,7 @@ DEFAULT_INSTRUMENTS: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.HAYSTACK,
         InstrumentSet.BEDROCK,
         InstrumentSet.TOGETHER,
+        InstrumentSet.TYPESAFE,
         InstrumentSet.REPLICATE,
         InstrumentSet.ALEPHALPHA,
         InstrumentSet.WATSONX,
@@ -350,6 +353,7 @@ DEFAULT_INSTRUMENTS_FOR_ROOT: frozenset[InstrumentSet] = frozenset(
         InstrumentSet.HAYSTACK,
         InstrumentSet.BEDROCK,
         InstrumentSet.TOGETHER,
+        InstrumentSet.TYPESAFE,
         InstrumentSet.REPLICATE,
         InstrumentSet.ALEPHALPHA,
         InstrumentSet.WATSONX,
