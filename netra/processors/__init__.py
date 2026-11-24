@@ -1,3 +1,4 @@
+from netra.processors.content_gating_span_processor import ContentGatingSpanProcessor
 from netra.processors.instrumentation_span_processor import InstrumentationSpanProcessor
 from netra.processors.llm_trace_identifier_span_processor import LlmTraceIdentifierSpanProcessor
 from netra.processors.local_filtering_span_processor import LocalFilteringSpanProcessor
@@ -8,6 +9,7 @@ from netra.processors.session_span_processor import SessionSpanProcessor
 from netra.processors.span_io_processor import SpanIOProcessor
 
 __all__ = [
+    "ContentGatingSpanProcessor",
     "SessionSpanProcessor",
     "InstrumentationSpanProcessor",
     "SpanIOProcessor",

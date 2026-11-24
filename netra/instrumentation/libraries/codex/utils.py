@@ -1,12 +1,10 @@
 import json
-import os
 import threading
 import time
 from dataclasses import dataclass, field
 from enum import Enum
 from typing import Any, Optional
 
-from opentelemetry import context as context_api
 from opentelemetry import trace
 from opentelemetry.context import Context
 from opentelemetry.semconv_ai import SpanAttributes
@@ -14,6 +12,7 @@ from opentelemetry.trace import Span, SpanKind, Tracer
 from opentelemetry.trace.status import Status, StatusCode
 
 from netra.config import Config
+from netra.content_capture import is_content_capture_enabled
 from netra.instrumentation.span_utils import record_span_timing
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
@@ -108,9 +107,7 @@ def should_send_prompts() -> bool:
     Returns:
         bool: True if content may be recorded.
     """
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
-    )
+    return is_content_capture_enabled()
 
 
 def _serialize(value: Any) -> str:

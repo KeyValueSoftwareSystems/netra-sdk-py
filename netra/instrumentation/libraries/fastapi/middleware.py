@@ -14,6 +14,7 @@ from opentelemetry.propagators import textmap
 from opentelemetry.trace import SpanKind, Status, StatusCode, Tracer
 from starlette.types import ASGIApp
 
+from netra.content_capture import is_content_capture_enabled
 from netra.instrumentation.libraries.fastapi.utils import (
     build_request_url,
     get_default_span_details,
@@ -223,13 +224,16 @@ class NetraFastAPIMiddleware:
         response_status_code: List[int] = []
         response_headers: List[List[Tuple[bytes, bytes]]] = [[]]
         response_body_parts: List[bytes] = []
+        # Bodies are only ever used as span content; don't hold them in memory
+        # for the life of the request when trace_content is off.
+        capture_bodies = is_content_capture_enabled()
 
         async def capture_receive() -> Any:
             """Intercept ASGI receive to accumulate request body chunks."""
             message = await receive()
             if message.get("type") == "http.request":
                 body = message.get("body", b"")
-                if body:
+                if body and capture_bodies:
                     request_body_parts.append(body)
             return message
 
@@ -240,7 +244,7 @@ class NetraFastAPIMiddleware:
                 response_headers[0] = list(message.get("headers", []))
             elif message["type"] == "http.response.body":
                 body = message.get("body", b"")
-                if body:
+                if body and capture_bodies:
                     response_body_parts.append(body)
             await send(message)
 

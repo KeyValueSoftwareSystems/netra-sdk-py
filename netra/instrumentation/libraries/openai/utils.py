@@ -1,6 +1,5 @@
 import json
 import math
-import os
 from typing import Any, Dict, List, Optional, TypeGuard
 
 from opentelemetry import context as context_api
@@ -11,6 +10,7 @@ from opentelemetry.semconv_ai import (
 from opentelemetry.trace import Span
 
 from netra.config import Config, get_attribute_max_len
+from netra.content_capture import is_content_capture_enabled
 from netra.netra_logger import get_logger
 from netra.span_wrapper import ATTRIBUTE, UsageModel
 
@@ -63,9 +63,7 @@ def should_send_prompts() -> bool:
     env var from its ``trace_content`` setting), and can be force-enabled per-context
     via ``override_enable_content_tracing``.
     """
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
-    )
+    return is_content_capture_enabled()
 
 
 def model_as_dict(input_object: Any) -> Any:
@@ -113,12 +111,13 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
     if (reasoning := kwargs.get("reasoning")) is not None:
         span.set_attribute(SpanAttributes.LLM_REQUEST_REASONING_EFFORT, json.dumps(reasoning))
 
-    if operation_type == "chat":
-        _set_chat_completion_input(span, kwargs.get("messages"))
-    elif operation_type == "response":
-        _set_chat_response_input(span, kwargs)
-    elif operation_type == "decision":
+    if operation_type == "decision":
         _set_decision_request_attributes(span, kwargs)
+    elif should_send_prompts():
+        if operation_type == "chat":
+            _set_chat_completion_input(span, kwargs.get("messages"))
+        elif operation_type == "response":
+            _set_chat_response_input(span, kwargs)
 
     _set_tool_attributes(span, kwargs)
 
@@ -574,7 +573,8 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
         _set_usage_attributes(span, usage)
         _set_custom_usage_attribute(span, usage, response_dict.get("model") or "")
 
-    _set_response_message_attributes(span, response_dict)
+    if should_send_prompts():
+        _set_response_message_attributes(span, response_dict)
     _set_decision_answer_attributes(span, response_dict)
 
 

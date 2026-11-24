@@ -16,7 +16,6 @@ configured attribute length while staying valid JSON.
 """
 
 import json
-import os
 import re
 from collections.abc import Mapping, Sequence
 from typing import Any, Dict, List, Optional, Tuple
@@ -27,6 +26,7 @@ from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY
 from opentelemetry.trace import Span
 
 from netra.config import Config, get_attribute_max_len
+from netra.content_capture import is_content_capture_enabled
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
@@ -61,9 +61,7 @@ def should_suppress_instrumentation() -> bool:
 
 def should_send_prompts() -> bool:
     """Whether call content may be recorded (``trace_content``, or a per-context override)."""
-    return (os.getenv("TRACELOOP_TRACE_CONTENT") or "true").lower() == "true" or bool(
-        context_api.get_value("override_enable_content_tracing")
-    )
+    return is_content_capture_enabled()
 
 
 # --------------------------------------------------------------------------------------

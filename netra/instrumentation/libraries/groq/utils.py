@@ -5,6 +5,7 @@ from opentelemetry.instrumentation.utils import _SUPPRESS_INSTRUMENTATION_KEY
 from opentelemetry.semconv_ai import SUPPRESS_LANGUAGE_MODEL_INSTRUMENTATION_KEY, SpanAttributes
 from opentelemetry.trace import Span
 
+from netra.content_capture import is_content_capture_enabled
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -54,7 +55,8 @@ def set_request_attributes(span: Span, kwargs: Dict[str, Any], operation_type: s
         if (value := kwargs.get(key)) is not None:
             span.set_attribute(attribute, value)
 
-    _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))
+    if is_content_capture_enabled():
+        _set_chat_input(span, kwargs.get("messages"), kwargs.get("prompt"))
 
 
 def _set_chat_input(span: Span, messages: Any, prompt: Any) -> None:
@@ -88,7 +90,8 @@ def set_response_attributes(span: Span, response_dict: Dict[str, Any]) -> None:
     if usage := response_dict.get("usage"):
         _set_usage_attributes(span, usage)
 
-    _set_response_message_attributes(span, response_dict)
+    if is_content_capture_enabled():
+        _set_response_message_attributes(span, response_dict)
 
 
 def _set_usage_attributes(span: Span, usage: Dict[str, Any]) -> None:
