@@ -133,11 +133,14 @@ def warn_instrumentation_inactive(name: str, reason: str) -> None:
         if name in _instrumentations_warned_inactive:
             return
         _instrumentations_warned_inactive.add(name)
-    warnings.warn(
-        f"Netra: {name} instrumentation is inactive ({reason}); calls to this library will not be traced.",
-        RuntimeWarning,
-        stacklevel=2,
-    )
+    message = f"Netra: {name} instrumentation is inactive ({reason}); calls to this library will not be traced."
+    try:
+        warnings.warn(message, RuntimeWarning, stacklevel=2)
+    except Warning:
+        # The host escalated warnings to errors (``-W error``, pytest
+        # ``filterwarnings = error``). This runs inside the client's own
+        # ``import``, so a diagnostic must never become an exception there.
+        logger.warning(message)
 
 
 def apply_custom_instrumentation(instrument: InstrumentSet) -> None:

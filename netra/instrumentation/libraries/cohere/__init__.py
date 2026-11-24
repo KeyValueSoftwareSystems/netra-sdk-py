@@ -1,4 +1,3 @@
-import os
 from typing import Any, Collection, Dict, Generator, Iterator, List, Optional, Union
 
 from opentelemetry import context as context_api
@@ -244,15 +243,31 @@ def _llm_request_type_by_method(method_name: Optional[str]) -> LLMRequestTypeVal
 
 
 def _build_from_streaming_response(
-    span: Span, response: Iterator[Any], llm_request_type: LLMRequestTypeValues, context_token: Any
+    span: Span, response: Iterator[Any], llm_request_type: LLMRequestTypeValues
 ) -> Generator[Any, None, None]:
-    """Build response from streaming events and set span attributes."""
+    """Yield the SDK's stream events and record the accumulated response on *span*.
+
+    The span is current only while an event is being pulled from the SDK (that
+    is when its HTTP request runs), never across ``yield``: a generator runs in
+    its caller's context, so a span attached across ``yield`` would parent the
+    caller's own spans between events -- and, after an early ``break``, every
+    later span on that thread.
+    """
     response_id = None
     content_parts = []
     usage_info = None
+    iterator = iter(response)
 
     try:
-        for event in response:
+        while True:
+            token = context_api.attach(set_span_in_context(span))
+            try:
+                event = next(iterator)
+            except StopIteration:
+                break
+            finally:
+                context_api.detach(token)
+
             if hasattr(event, "type"):
                 if event.type == "message-start" and hasattr(event, "id"):
                     response_id = event.id
@@ -305,8 +320,13 @@ def _build_from_streaming_response(
         span.set_status(Status(StatusCode.ERROR))
         raise
     finally:
-        span.end()
-        context_api.detach(context_token)
+        try:
+            # Stopping early must still release the SDK's own stream (its HTTP response).
+            close = getattr(iterator, "close", None)
+            if callable(close):
+                close()
+        finally:
+            span.end()
 
 
 @_with_tracer_wrapper
@@ -331,26 +351,26 @@ def _wrap(tracer: Tracer, to_wrap: Dict[str, str], wrapped: Any, instance: Any, 
             },
         )
 
-        ctx = set_span_in_context(span)
-        token = context_api.attach(ctx)
-
+        # Current only while the call is made; the stream re-attaches the span
+        # around each pull, so nothing stays attached once this returns.
+        token = context_api.attach(set_span_in_context(span))
         try:
             if span.is_recording():
                 _set_input_attributes(span, llm_request_type, kwargs)
 
             response = wrapped(*args, **kwargs)
-
-            if response:
-                return _build_from_streaming_response(span, response, llm_request_type, token)
-            else:
-                span.set_status(Status(StatusCode.ERROR))
-                span.end()
-                return response
         except Exception:
             span.set_status(Status(StatusCode.ERROR))
             span.end()
-            context_api.detach(token)
             raise
+        finally:
+            context_api.detach(token)
+
+        if response:
+            return _build_from_streaming_response(span, response, llm_request_type)
+        span.set_status(Status(StatusCode.ERROR))
+        span.end()
+        return response
     else:
         with tracer.start_as_current_span(
             name,

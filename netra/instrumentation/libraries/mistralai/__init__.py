@@ -1,10 +1,9 @@
 """OpenTelemetry Mistral AI instrumentation"""
 
 import json
-import os
 from importlib import import_module
 from types import SimpleNamespace
-from typing import Any, AsyncGenerator, Callable, Collection, Dict, Generator, List, Optional, Tuple
+from typing import Any, Callable, Collection, Dict, List, Optional, Tuple
 
 from opentelemetry import context as context_api
 from opentelemetry.instrumentation.instrumentor import BaseInstrumentor
@@ -18,13 +17,14 @@ from opentelemetry.semconv_ai import (
     LLMRequestTypeValues,
     SpanAttributes,
 )
-from opentelemetry.trace import SpanKind, get_tracer, set_span_in_context
+from opentelemetry.trace import Span, SpanKind, get_tracer, set_span_in_context
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import wrap_function_wrapper
 
 from netra.instrumentation.libraries.mistralai.config import Config
 from netra.instrumentation.libraries.mistralai.utils import dont_throw
 from netra.instrumentation.libraries.mistralai.version import __version__
+from netra.instrumentation.llm_common import AsyncLLMStream, BaseLLMStream, LLMStream
 from netra.instrumentation.span_utils import should_capture_content as should_send_prompts
 from netra.netra_logger import get_logger
 
@@ -327,39 +327,59 @@ def _accumulate_chunk(accumulated_response: SimpleNamespace, res: Any) -> None:
                 accumulated_choice.message.role = delta.role
 
 
-def _accumulate_streaming_response(
-    span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
-) -> Generator[Any, None, None]:
-    accumulated_response = _new_accumulated_response()
+class _MistralStreamMixin(BaseLLMStream):
+    """Accumulation shared by the sync and async Mistral stream wrappers.
 
-    try:
-        for res in response:
-            yield res
-            _accumulate_chunk(accumulated_response, res)
+    The wrapper is a proxy over the SDK's ``EventStream`` / ``EventStreamAsync``,
+    so ``with client.chat.stream(...) as s:`` and ``close()`` keep working, and
+    the span ends exactly once however the stream ends (fully read, ``break``
+    then close, an error, cancellation, or garbage collection).
+    """
 
-        _set_response_attributes(span, llm_request_type, accumulated_response)
-        span.set_status(Status(StatusCode.OK))
-    finally:
-        span.end()
-        if token is not None:
+    def __init__(self, span: Span, response: Any, llm_request_type: LLMRequestTypeValues) -> None:
+        super().__init__(span=span, response=response)
+        self._self_llm_request_type = llm_request_type
+        self._self_accumulated = _new_accumulated_response()
+
+    def _process_chunk(self, chunk: Any) -> None:
+        _accumulate_chunk(self._self_accumulated, chunk)
+        if any(getattr(choice.message, "content", "") for choice in self._self_accumulated.choices):
+            self._record_first_token()
+
+    def _apply_response_attributes(self) -> None:
+        _set_response_attributes(self._self_span, self._self_llm_request_type, self._self_accumulated)
+
+    def _extract_output_text(self) -> str:
+        return "".join(
+            content
+            for choice in self._self_accumulated.choices
+            if isinstance(content := getattr(choice.message, "content", None), str)
+        )
+
+
+class MistralStream(_MistralStreamMixin, LLMStream):
+    """Sync ``chat.stream`` / ``fim.stream`` wrapper.
+
+    The span is current only while a chunk is pulled from the SDK, never across
+    the caller's loop body, so an early ``break`` cannot leave it attached.
+    """
+
+    def __next__(self) -> Any:
+        token = context_api.attach(set_span_in_context(self._self_span))
+        try:
+            return super().__next__()
+        finally:
             context_api.detach(token)
 
 
-async def _aaccumulate_streaming_response(
-    span: Any, llm_request_type: LLMRequestTypeValues, response: Any, token: Any = None
-) -> AsyncGenerator[Any, None]:
-    accumulated_response = _new_accumulated_response()
+class AsyncMistralStream(_MistralStreamMixin, AsyncLLMStream):
+    """Async ``chat.stream_async`` / ``fim.stream_async`` wrapper."""
 
-    try:
-        async for res in response:
-            yield res
-            _accumulate_chunk(accumulated_response, res)
-
-        _set_response_attributes(span, llm_request_type, accumulated_response)
-        span.set_status(Status(StatusCode.OK))
-    finally:
-        span.end()
-        if token is not None:
+    async def __anext__(self) -> Any:
+        token = context_api.attach(set_span_in_context(self._self_span))
+        try:
+            return await super().__anext__()
+        finally:
             context_api.detach(token)
 
 
@@ -412,28 +432,26 @@ def _wrap(
             },
         )
 
-        ctx = set_span_in_context(span)
-        token = context_api.attach(ctx)
-
+        # Current only while the request is made; the stream re-attaches the span
+        # around each pull, so nothing stays attached once this returns.
+        token = context_api.attach(set_span_in_context(span))
         try:
             if span.is_recording():
                 _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
             response = wrapped(*args, **kwargs)
-
-            if response:
-                return _accumulate_streaming_response(span, llm_request_type, response, token)
-            else:
-                span.set_status(Status(StatusCode.ERROR))
-                span.end()
-                context_api.detach(token)
-
-            return response
         except Exception:
             span.set_status(Status(StatusCode.ERROR))
             span.end()
-            context_api.detach(token)
             raise
+        finally:
+            context_api.detach(token)
+
+        if response:
+            return MistralStream(span, response, llm_request_type)
+        span.set_status(Status(StatusCode.ERROR))
+        span.end()
+        return response
     else:
         with tracer.start_as_current_span(
             name,
@@ -484,28 +502,24 @@ async def _awrap(
             },
         )
 
-        ctx = set_span_in_context(span)
-        token = context_api.attach(ctx)
-
+        token = context_api.attach(set_span_in_context(span))
         try:
             if span.is_recording():
                 _set_input_attributes(span, llm_request_type, to_wrap, kwargs)
 
             response = await wrapped(*args, **kwargs)
-
-            if response:
-                return _aaccumulate_streaming_response(span, llm_request_type, response, token)
-            else:
-                span.set_status(Status(StatusCode.ERROR))
-                span.end()
-                context_api.detach(token)
-
-            return response
         except Exception:
             span.set_status(Status(StatusCode.ERROR))
             span.end()
-            context_api.detach(token)
             raise
+        finally:
+            context_api.detach(token)
+
+        if response:
+            return AsyncMistralStream(span, response, llm_request_type)
+        span.set_status(Status(StatusCode.ERROR))
+        span.end()
+        return response
     else:
         with tracer.start_as_current_span(
             name,

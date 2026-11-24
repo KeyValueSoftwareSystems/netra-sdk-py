@@ -20,6 +20,7 @@ Two concerns live here:
    the underlying stream propagate.
 """
 
+import asyncio
 import time
 from typing import Any, AsyncIterator, Dict, Iterator, Optional
 
@@ -27,6 +28,7 @@ from opentelemetry.trace import Span
 from opentelemetry.trace.status import Status, StatusCode
 from wrapt import ObjectProxy
 
+from netra.config import Config
 from netra.instrumentation.span_utils import record_span_timing
 from netra.netra_logger import get_logger
 
@@ -63,6 +65,14 @@ def to_jsonable(value: Any) -> Any:
     if isinstance(value, (dict, list, tuple, str, int, float, bool)):
         return value
     return str(value)
+
+
+# Upper bound on the choice index a stream chunk may address. Real streams use
+# ``n`` well under this; a larger index (a buggy or hostile OpenAI-compatible
+# server) would otherwise make ``_ensure_choice`` allocate one dict per slot.
+MAX_STREAM_CHOICES = 128
+
+STREAM_CANCELLED_ATTRIBUTE = f"{Config.LIBRARY_NAME}.entity.cancelled"
 
 
 def _safe_index(value: Any) -> int:
@@ -138,7 +148,10 @@ class BaseLLMStream(ObjectProxy):  # type: ignore[misc]
         record_span_timing(self._self_span, TIME_TO_FIRST_TOKEN, first_token_time, record_event_timestamp=True)
         record_span_timing(self._self_span, RELATIVE_TIME_TO_FIRST_TOKEN, first_token_time, use_root_span=True)
 
-    def _ensure_choice(self, index: int) -> Dict[str, Any]:
+    def _ensure_choice(self, index: int) -> Optional[Dict[str, Any]]:
+        """Return the accumulator for choice *index*, or ``None`` when the index is out of range."""
+        if not 0 <= index < MAX_STREAM_CHOICES:
+            return None
         choices = self._self_complete_response["choices"]
         while len(choices) <= index:
             if "messages" in self._self_request_kwargs:
@@ -159,6 +172,8 @@ class BaseLLMStream(ObjectProxy):  # type: ignore[misc]
                 if not isinstance(choice, dict):
                     continue
                 accumulated = self._ensure_choice(_safe_index(choice.get("index")))
+                if accumulated is None:
+                    continue
                 delta = choice.get("delta") or {}
                 content_piece = None
                 if isinstance(delta, dict) and delta.get("content"):
@@ -242,10 +257,15 @@ class BaseLLMStream(ObjectProxy):  # type: ignore[misc]
         except Exception:
             logger.debug("Failed to process stream chunk", exc_info=True)
 
-    def _finalize_span(self, error: Optional[BaseException] = None) -> None:
+    def _finalize_span(self, error: Optional[BaseException] = None, cancelled: bool = False) -> None:
         """End the span once, recording accumulated attributes and the outcome.
 
         Safe to call any number of times; only the first call has an effect.
+
+        Args:
+            error: The exception that ended the stream, if it failed.
+            cancelled: True when the consumer was cancelled or stopped early; the
+                span is marked cancelled and its status left unset.
         """
         if self._self_span_ended:
             return
@@ -268,6 +288,8 @@ class BaseLLMStream(ObjectProxy):  # type: ignore[misc]
             if error is not None:
                 span.record_exception(error)
                 span.set_status(Status(StatusCode.ERROR, str(error)))
+            elif cancelled:
+                span.set_attribute(STREAM_CANCELLED_ATTRIBUTE, True)
             else:
                 span.set_status(Status(StatusCode.OK))
         except Exception:
@@ -285,10 +307,20 @@ class BaseLLMStream(ObjectProxy):  # type: ignore[misc]
         except Exception:
             pass
 
-    @staticmethod
-    def _error_from_exit(exc_val: Any) -> Optional[BaseException]:
-        # Only real errors mark the span as failed; GeneratorExit / cancellation do not.
-        return exc_val if isinstance(exc_val, Exception) else None
+    def _finalize_after(self, exc: Optional[BaseException]) -> None:
+        """End the span for a stream that stopped with *exc* (``None`` for a clean exit).
+
+        Matches the decorators: ``asyncio.CancelledError`` and ``GeneratorExit``
+        (a client disconnect, a timeout, a consumer stopping early) mark the span
+        cancelled; a successful ``SystemExit`` is not an error; anything else,
+        including ``KeyboardInterrupt``, fails it.
+        """
+        if exc is None or (isinstance(exc, SystemExit) and exc.code in (0, None)):
+            self._finalize_span()
+        elif isinstance(exc, (asyncio.CancelledError, GeneratorExit)):
+            self._finalize_span(cancelled=True)
+        else:
+            self._finalize_span(error=exc)
 
 
 class LLMStream(BaseLLMStream):
@@ -303,8 +335,8 @@ class LLMStream(BaseLLMStream):
         except StopIteration:
             self._finalize_span()
             raise
-        except Exception as e:
-            self._finalize_span(error=e)
+        except BaseException as e:
+            self._finalize_after(e)
             raise
         self._handle_chunk(chunk)
         return chunk
@@ -322,7 +354,7 @@ class LLMStream(BaseLLMStream):
                 return exit_(exc_type, exc_val, exc_tb)
             return None
         finally:
-            self._finalize_span(error=self._error_from_exit(exc_val))
+            self._finalize_after(exc_val)
 
     def close(self) -> None:
         """Close the stream and end the span."""
@@ -344,8 +376,8 @@ class AsyncLLMStream(BaseLLMStream):
         except StopAsyncIteration:
             self._finalize_span()
             raise
-        except Exception as e:
-            self._finalize_span(error=e)
+        except BaseException as e:
+            self._finalize_after(e)
             raise
         self._handle_chunk(chunk)
         return chunk
@@ -363,7 +395,7 @@ class AsyncLLMStream(BaseLLMStream):
                 return await exit_(exc_type, exc_val, exc_tb)
             return None
         finally:
-            self._finalize_span(error=self._error_from_exit(exc_val))
+            self._finalize_after(exc_val)
 
     async def aclose(self) -> None:
         """Close the stream and end the span."""

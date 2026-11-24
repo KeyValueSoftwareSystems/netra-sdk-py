@@ -98,6 +98,25 @@ class TestInactiveInstrumentationWarning:
         assert len(messages) == 1
         assert "ImportError" in messages[0] and "AssistantMessage" in messages[0]
 
+    def test_warnings_as_errors_never_escape_activation(self, caplog: pytest.LogCaptureFixture) -> None:
+        def explode() -> None:
+            raise RuntimeError("instrumentor blew up")
+
+        # The host runs with ``-W error``: activation happens inside its own
+        # ``import``, so the inactive warning must be logged, not raised.
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            run_activation(Activation("ERRORLIB", explode))
+
+        assert any("ERRORLIB instrumentation is inactive" in r.getMessage() for r in caplog.records)
+
+    def test_warnings_as_errors_on_an_unsupported_version_does_not_raise(self) -> None:
+        spec = InstrumentorSpec(("pytest",), __name__, "_UnsupportedVersionInstrumentor")
+
+        with warnings.catch_warnings():
+            warnings.simplefilter("error")
+            activation._apply_instrumentor(spec, "ERRORLIB2")
+
     def test_a_supported_cohere_major_is_not_rejected(self) -> None:
         pytest.importorskip("opentelemetry.instrumentation.cohere")
         from netra.instrumentation.libraries.cohere import _instruments

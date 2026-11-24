@@ -7,8 +7,6 @@ from opentelemetry.semconv_ai import (
     SpanAttributes,
 )
 
-from netra.instrumentation.span_utils import should_capture_content
-
 from netra.config import get_attribute_max_len
 
 # The size-bounded JSON encoding of decision input / questions / answers is shared
@@ -25,6 +23,7 @@ from netra.instrumentation.libraries.openai.utils import (
     _join_json_array,
     should_send_prompts,
 )
+from netra.instrumentation.span_utils import should_capture_content
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)

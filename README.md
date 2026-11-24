@@ -257,7 +257,7 @@ def handle(request):
         return process(request)
 ```
 
-Fields you leave out are inherited from the enclosing context (for example a tenant set once at startup).
+Fields you leave out (or pass as `None`) are inherited from the enclosing context (for example a tenant set once at startup). A field passed as `""` is cleared for the block, so `user_id=request.user_id or ""` never picks up an outer user. Sticky `set_*` calls made inside the block are also undone on exit.
 
 If you use the sticky setters, clear them when the request ends:
 
@@ -463,7 +463,7 @@ Netra SDK can be configured using the following environment variables:
 | `NETRA_API_KEY` | API key for authentication | `None` |
 | `NETRA_HEADERS` | Additional headers in W3C Correlation-Context format | `None` |
 | `NETRA_DISABLE_BATCH` | Disable batch span processor (`true`/`false`) | `false` |
-| `NETRA_TRACE_CONTENT` | Whether to capture prompt/completion content (`true`/`false`) | `true` |
+| `NETRA_TRACE_CONTENT` | Whether to capture content (`true`/`false`). When `false`, prompts, completions, tool arguments/results, transcripts and HTTP request/response bodies are not recorded; model, usage, ids, URLs, status and (redacted) headers still are. Inputs and outputs of `@workflow`/`@task`/`@agent`/`@span` decorated functions are always recorded, since you choose what to decorate. LiveKit call audio is controlled separately by the audio settings. | `true` |
 | `NETRA_ENV` | Deployment environment (e.g., `prod`, `staging`, `dev`) | `local` |
 | `NETRA_RESOURCE_ATTRS` | JSON string of custom resource attributes | `{}` |
 

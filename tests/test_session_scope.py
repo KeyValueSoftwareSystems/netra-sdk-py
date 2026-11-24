@@ -139,6 +139,37 @@ class TestSessionScope:
         assert result["inside"]["session_id"] == "room-1"
         assert result["after"] == EMPTY
 
+    def test_scope_with_no_fields_still_undoes_sticky_sets_inside_it(self, tracer: Any) -> None:
+        def run() -> Dict[str, Any]:
+            with Netra.session_scope(session_id=None, user_id=None, tenant_id=None):
+                Netra.set_user_id("resolved-inside")
+                inside = _ids_on_new_span(tracer)
+            return {"inside": inside, "after": _ids_on_new_span(tracer)}
+
+        result = _run_in_thread(run)
+        assert result["inside"]["user_id"] == "resolved-inside"
+        assert result["after"] == EMPTY
+
+    def test_scope_with_empty_strings_still_undoes_sticky_sets_inside_it(self, tracer: Any) -> None:
+        def run() -> Dict[str, Optional[str]]:
+            with Netra.session_scope(session_id="", user_id=""):
+                Netra.set_session_id("resolved-inside")
+            return _ids_on_new_span(tracer)
+
+        assert _run_in_thread(run) == EMPTY
+
+    def test_empty_string_clears_an_inherited_field_for_the_block(self, tracer: Any) -> None:
+        def run() -> Dict[str, Any]:
+            Netra.set_user_id("alice")
+            Netra.set_tenant_id("acme")
+            with Netra.session_scope(session_id="s2", user_id=""):
+                inside = _ids_on_new_span(tracer)
+            return {"inside": inside, "after": _ids_on_new_span(tracer)}
+
+        result = _run_in_thread(run)
+        assert result["inside"] == {"session_id": "s2", "user_id": None, "tenant_id": "acme"}
+        assert result["after"] == {"session_id": None, "user_id": "alice", "tenant_id": "acme"}
+
 
 class TestClearing:
     @pytest.mark.parametrize("key", ["session_id", "user_id", "tenant_id"])

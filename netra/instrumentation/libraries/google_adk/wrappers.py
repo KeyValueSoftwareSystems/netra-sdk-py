@@ -1,7 +1,7 @@
 import json
 import time
 from contextlib import contextmanager
-from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Tuple, cast
+from typing import Any, AsyncIterator, Callable, Dict, Generator, List, Optional, Tuple, cast
 
 from opentelemetry import context as opentelemetry_context
 from opentelemetry import trace as opentelemetry_api_trace
@@ -101,19 +101,41 @@ class NoOpTracer:
 
 
 class _SpanScope:
-    """Manages span lifecycle for async generators (start, attach context, record errors, detach, end)."""
+    """Manages a span's lifecycle (start, attach context, record errors, detach, end).
 
-    def __init__(self, tracer: Tracer, name: str, kind: SpanKind = SpanKind.CLIENT) -> None:
-        """Start a span and attach it as the current context.
+    A coroutine attaches the span for its whole body. An async generator must
+    not: it runs in its caller's context, so a span attached across ``yield``
+    would parent the caller's own spans between events and, after an early
+    ``break``, every later span in that task. Generators pass ``attach=False``
+    and pull each item through :meth:`next_item`, which makes the span current
+    only while the wrapped generator is producing.
+    """
+
+    def __init__(self, tracer: Tracer, name: str, kind: SpanKind = SpanKind.CLIENT, attach: bool = True) -> None:
+        """Start a span, attaching it as the current context unless *attach* is False.
 
         Args:
             tracer: The OpenTelemetry tracer used to start the span.
             name: The span name.
             kind: The span kind; defaults to SpanKind.CLIENT.
+            attach: Attach the span until :meth:`end`. Async generators pass False.
         """
         self.span = tracer.start_span(name, kind=kind)
-        ctx = opentelemetry_api_trace.set_span_in_context(self.span)
-        self._token = opentelemetry_context.attach(ctx)
+        self._token: Optional[object] = None
+        if attach:
+            self._token = opentelemetry_context.attach(opentelemetry_api_trace.set_span_in_context(self.span))
+
+    async def next_item(self, iterator: AsyncIterator[Any]) -> Any:
+        """Pull the next item from *iterator* with this span current, then detach it.
+
+        Raises:
+            StopAsyncIteration: When *iterator* is exhausted.
+        """
+        token = opentelemetry_context.attach(opentelemetry_api_trace.set_span_in_context(self.span))
+        try:
+            return await iterator.__anext__()
+        finally:
+            opentelemetry_context.detach(token)
 
     def record_error(self, exc: Exception) -> None:
         """Record an exception on the span and set its status to ERROR.
@@ -129,15 +151,27 @@ class _SpanScope:
             logger.warning("Failed to record error on span: %s", e)
 
     def end(self) -> None:
-        """Detach the span from the active context and end it."""
-        try:
-            opentelemetry_context.detach(self._token)
-        except Exception as e:
-            logger.warning("Failed to detach span context: %s", e)
+        """Detach the span from the active context (if attached) and end it."""
+        if self._token is not None:
+            try:
+                opentelemetry_context.detach(self._token)
+            except Exception as e:
+                logger.warning("Failed to detach span context: %s", e)
+            self._token = None
         try:
             self.span.end()
         except Exception as e:
             logger.warning("Failed to end span: %s", e)
+
+
+async def _aclose(iterator: Any) -> None:
+    """Close a wrapped async generator early, so its own cleanup runs now rather than at GC."""
+    aclose = getattr(iterator, "aclose", None)
+    if callable(aclose):
+        try:
+            await aclose()
+        except Exception as e:
+            logger.debug("Failed to close wrapped ADK generator: %s", e)
 
 
 def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[Any]]:
@@ -168,7 +202,7 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
         async def new_function() -> AsyncIterator[Any]:
             agent_name = getattr(instance, "name", "unknown")
             try:
-                scope = _SpanScope(tracer, f"ADK.Agent.{agent_name}")
+                scope = _SpanScope(tracer, f"ADK.Agent.{agent_name}", attach=False)
             except Exception as e:
                 logger.warning("Failed to start agent span: %s", e)
                 async for event in wrapped(*args, **kwargs):
@@ -198,8 +232,13 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 logger.warning("Failed to set agent span attributes: %s", e)
 
             last_text_output: List[str] = []
+            events = wrapped(*args, **kwargs)
             try:
-                async for event in wrapped(*args, **kwargs):
+                while True:
+                    try:
+                        event = await scope.next_item(events)
+                    except StopAsyncIteration:
+                        break
                     try:
                         parts = event.content.parts if event.content and event.content.parts else []
                         texts = [str(getattr(p, "text", "")) for p in parts if getattr(p, "text", None) is not None]
@@ -217,7 +256,10 @@ def base_agent_run_async_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                         span.set_attribute("output", "\n".join(last_text_output))
                     except Exception as e:
                         logger.warning("Failed to set agent output attribute: %s", e)
-                scope.end()
+                try:
+                    await _aclose(events)
+                finally:
+                    scope.end()
 
         return new_function()
 
@@ -255,7 +297,7 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             model_name = getattr(llm_request, "model", "unknown") if llm_request else "unknown"
 
             try:
-                scope = _SpanScope(tracer, model_name)
+                scope = _SpanScope(tracer, model_name, attach=False)
             except Exception as e:
                 logger.warning("Failed to start LLM span: %s", e)
                 async for item in wrapped(*args, **kwargs):
@@ -293,6 +335,7 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             prev_item = None
             span_ended = False
             first_token_recorded = False
+            items = wrapped(*args, **kwargs)
 
             try:
                 # Capture timestamp right before the LLM call to measure TIME_TO_FIRST_TOKEN accurately.
@@ -300,7 +343,11 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
                 # GenAI uses span start time since delay to actual call is negligible.
                 # Keeps latency metrics reasonably aligned across both.
                 llm_call_start = time.time()
-                async for item in wrapped(*args, **kwargs):
+                while True:
+                    try:
+                        item = await scope.next_item(items)
+                    except StopAsyncIteration:
+                        break
                     if not first_token_recorded:
                         first_token_time = time.time()
                         record_span_timing(
@@ -347,10 +394,12 @@ def run_and_handle_error_wrapper(tracer: Tracer) -> Callable[..., AsyncIterator[
             finally:
                 # Also covers GeneratorExit (aclose / early break) and
                 # CancelledError, which ``except Exception`` does not catch:
-                # without this the span is never ended and its context stays
-                # attached.
-                if not span_ended:
-                    scope.end()
+                # without this the span is never ended.
+                try:
+                    await _aclose(items)
+                finally:
+                    if not span_ended:
+                        scope.end()
 
         return new_function()
 

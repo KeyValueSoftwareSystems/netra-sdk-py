@@ -255,28 +255,107 @@ def _case_google_genai(tracer: Any) -> Tuple[str, ...]:
     return ("gen_ai.request.model", "gen_ai.usage.prompt_tokens")
 
 
+def _claude_agent_sdk_stand_in() -> Any:
+    """Patch in a minimal ``claude_agent_sdk`` when the real package is not installed.
+
+    The instrumentor's modules import message and block types from it at import
+    time. ``patch.dict`` restores ``sys.modules`` on exit, which also drops the
+    Netra modules imported against the stand-in so no later test sees them.
+    """
+    import importlib.util
+    import sys
+    import types
+    from unittest import mock
+
+    if importlib.util.find_spec("claude_agent_sdk") is not None:
+        return mock.patch.dict(sys.modules)
+
+    fake = types.ModuleType("claude_agent_sdk")
+
+    class _Record:
+        def __init__(self, **kwargs: Any) -> None:
+            self.__dict__.update(kwargs)
+
+    for name in (
+        "AssistantMessage",
+        "ClaudeAgentOptions",
+        "ResultMessage",
+        "SystemMessage",
+        "TextBlock",
+        "ThinkingBlock",
+        "ToolResultBlock",
+        "ToolUseBlock",
+        "UserMessage",
+    ):
+        setattr(fake, name, type(name, (_Record,), {}))
+    return mock.patch.dict(sys.modules, {"claude_agent_sdk": fake})
+
+
 def _case_claude_agent_sdk(tracer: Any) -> Tuple[str, ...]:
-    pytest.importorskip("claude_agent_sdk")
-    from claude_agent_sdk import ClaudeAgentOptions
+    import sys
 
-    from netra.instrumentation.libraries.claude_agent_sdk import utils
+    with _claude_agent_sdk_stand_in():
+        # Re-import the instrumentor so it binds to whichever SDK module is now installed.
+        for module in [m for m in sys.modules if m.startswith("netra.instrumentation.libraries.claude_agent_sdk")]:
+            del sys.modules[module]
+        sdk = __import__("claude_agent_sdk")
+        from netra.instrumentation.libraries.claude_agent_sdk import utils
 
-    with tracer.start_as_current_span("claude-agent") as span:
-        utils.set_request_attributes(span, SENTINEL, ClaudeAgentOptions(model="claude-test", system_prompt=SENTINEL))
-        result = SimpleNamespace(
-            result=SENTINEL,
-            structured_output={"answer": SENTINEL},
-            num_turns=1,
-            session_id="s1",
-            stop_reason="end_turn",
-            is_error=False,
-            permission_denials=[{"tool_input": SENTINEL}],
-            errors=None,
-            model_usage=None,
-            usage=None,
-        )
-        utils.set_result_message_attributes(tracer, span, result)
-    return ("gen_ai.request.model", "gen_ai.claude_code.num_turns")
+        def options(**kwargs: Any) -> Any:
+            base = dict(
+                model="claude-test",
+                system_prompt=SENTINEL,
+                permission_mode=None,
+                max_turns=None,
+                cwd=None,
+                session_id=None,
+                continue_conversation=None,
+            )
+            base.update(kwargs)
+            return sdk.ClaudeAgentOptions(**base)
+
+        def assistant(*blocks: Any) -> Any:
+            return sdk.AssistantMessage(
+                content=list(blocks),
+                model="claude-test",
+                message_id="m1",
+                session_id="s1",
+                stop_reason=None,
+                parent_tool_use_id=None,
+                error=None,
+            )
+
+        with tracer.start_as_current_span("claude-agent") as span:
+            utils.set_request_attributes(span, SENTINEL, options())
+            parent_ctx = context_api.get_current()
+            utils.set_assistant_message_attributes(
+                tracer,
+                parent_ctx,
+                assistant(
+                    sdk.TextBlock(text=SENTINEL),
+                    sdk.ThinkingBlock(thinking=SENTINEL),
+                    sdk.ToolUseBlock(id="tool-1", name="Bash", input={"command": SENTINEL}),
+                ),
+            )
+            utils.set_user_message_attributes(
+                tracer,
+                parent_ctx,
+                sdk.UserMessage(content=[sdk.ToolResultBlock(tool_use_id="tool-1", content=SENTINEL, is_error=False)]),
+            )
+            result = SimpleNamespace(
+                result=SENTINEL,
+                structured_output={"answer": SENTINEL},
+                num_turns=1,
+                session_id="s1",
+                stop_reason="end_turn",
+                is_error=False,
+                permission_denials=[{"tool_input": SENTINEL}],
+                errors=None,
+                model_usage=None,
+                usage=None,
+            )
+            utils.set_result_message_attributes(tracer, span, result)
+    return ("gen_ai.request.model", "gen_ai.claude_code.num_turns", "gen_ai.tool.name")
 
 
 def _case_pydantic_ai(tracer: Any) -> Tuple[str, ...]:
@@ -450,6 +529,42 @@ def _case_deepgram(tracer: Any) -> Tuple[str, ...]:
     return ("gen_ai.request.model", "gen_ai.response.request_id")
 
 
+def _case_http_bodies(tracer: Any) -> Tuple[str, ...]:
+    import httpx
+    import requests
+
+    from netra.instrumentation.http.body import new_body_buffer
+    from netra.instrumentation.libraries.fastapi import utils as fastapi_utils
+    from netra.instrumentation.libraries.httpx import utils as httpx_utils
+    from netra.instrumentation.libraries.requests import utils as requests_utils
+
+    body = json.dumps({"messages": [{"role": "user", "content": SENTINEL}]}).encode()
+    url = "https://api.example.com/v1/chat/completions"
+
+    with tracer.start_as_current_span("httpx.POST") as span:
+        request = httpx.Request("POST", url, content=body)
+        httpx_utils.set_span_input(span, request)
+        httpx_utils.set_span_output(span, httpx.Response(200, content=body, request=request))
+    with tracer.start_as_current_span("httpx.stream") as span:
+        buffer = new_body_buffer()
+        buffer.append(b"data: " + body + b"\n\n")
+        httpx_utils.set_streaming_span_output(span, httpx.Response(200, request=request), buffer)
+
+    with tracer.start_as_current_span("requests.POST") as span:
+        prepared = requests.Request("POST", url, data=body).prepare()
+        requests_utils.set_span_input(span, prepared)
+        response = requests.Response()
+        response.status_code = 200
+        response._content = body
+        requests_utils.set_span_output(span, response)
+
+    with tracer.start_as_current_span("fastapi.POST") as span:
+        scope = {"type": "http", "scheme": "https", "server": ("app", 443), "path": "/chat", "headers": []}
+        fastapi_utils.set_span_input(span, scope, body)
+        fastapi_utils.set_span_output(span, 200, [], body)
+    return ("input", "output")
+
+
 CASES: Dict[str, Callable[..., Tuple[str, ...]]] = {
     "openai": _case_openai,
     "litellm": _case_litellm,
@@ -465,6 +580,7 @@ CASES: Dict[str, Callable[..., Tuple[str, ...]]] = {
     "elevenlabs": _case_elevenlabs,
     "cartesia": _case_cartesia,
     "deepgram": _case_deepgram,
+    "http_bodies": _case_http_bodies,
 }
 
 

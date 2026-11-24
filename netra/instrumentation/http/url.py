@@ -16,6 +16,8 @@ from urllib.parse import unquote_plus
 
 from opentelemetry.util.http import remove_url_credentials
 
+from netra.instrumentation.http.headers import has_sensitive_segment
+
 REDACTED_VALUE = "REDACTED"
 
 # Compared case-insensitively against the percent-decoded parameter name.
@@ -38,8 +40,33 @@ SENSITIVE_QUERY_PARAMS: FrozenSet[str] = frozenset(
         "x-goog-signature",
         "x-goog-credential",
         "password",
+        "auth",
+        "jwt",
+        "client_assertion",
     }
 )
+
+# Segment matches that name a kind of credential rather than carry one (OAuth's
+# ``token_type=bearer`` / ``token_type_hint=refresh_token``).
+NON_SENSITIVE_QUERY_PARAMS: FrozenSet[str] = frozenset({"token_type", "token_type_hint"})
+
+
+def is_sensitive_query_param(name: str) -> bool:
+    """Return whether a query parameter's value must be redacted.
+
+    Uses the same rule as headers: an exact name from
+    :data:`SENSITIVE_QUERY_PARAMS`, or any ``-``/``_``-separated segment that is
+    or ends in a credential word (``access_key``, ``subscription-key``,
+    ``auth_token``, ``private_token``), unless the name is in
+    :data:`NON_SENSITIVE_QUERY_PARAMS`.
+
+    Args:
+        name: The raw (still percent-encoded) parameter name.
+    """
+    decoded = unquote_plus(name).strip().lower()
+    if decoded in SENSITIVE_QUERY_PARAMS:
+        return True
+    return decoded not in NON_SENSITIVE_QUERY_PARAMS and has_sensitive_segment(decoded)
 
 
 def redact_query_secrets(params: str) -> str:
@@ -58,7 +85,7 @@ def redact_query_secrets(params: str) -> str:
         name, sep, value = part.partition("=")
         if not sep or not value:
             continue
-        if unquote_plus(name).strip().lower() in SENSITIVE_QUERY_PARAMS:
+        if is_sensitive_query_param(name):
             parts[index] = f"{name}={REDACTED_VALUE}"
             changed = True
     return "&".join(parts) if changed else params

@@ -19,6 +19,26 @@ def should_suppress_instrumentation() -> bool:
     return context_api.get_value(_SUPPRESS_INSTRUMENTATION_KEY) is True
 
 
+def is_dspy_language_model(obj: Any) -> bool:
+    """Return whether *obj* is a ``dspy.LM`` / ``dspy.BaseLM``.
+
+    Matched by class name and module rather than ``isinstance`` so this works
+    without importing DSPy.
+    """
+    return any(
+        cls.__name__ in ("LM", "BaseLM") and (cls.__module__ or "").startswith("dspy") for cls in type(obj).__mro__
+    )
+
+
+def describe_language_model(lm: Any) -> Dict[str, Any]:
+    """Return the only part of an LM object safe to export: its model name.
+
+    ``lm.kwargs`` holds ``api_key`` and ``api_base``, and ``lm.history`` every
+    prompt and response it has served, so the object is never dumped whole.
+    """
+    return {"model": getattr(lm, "model", None)}
+
+
 class DSPyJSONEncoder(json.JSONEncoder):
     """
     Provides support for non-JSON-serializable objects in DSPy.
@@ -40,11 +60,15 @@ class DSPyJSONEncoder(json.JSONEncoder):
             except ImportError:
                 pass
 
-            # Fallback for other objects
+            if is_dspy_language_model(o):
+                return describe_language_model(o)
+
+            # Fallback for other objects. Their attributes can hold credentials
+            # (an LM-like object's ``kwargs["api_key"]``), so drop those keys.
             if hasattr(o, "dict") and callable(o.dict):
-                return o.dict()
+                return redact_sensitive_arguments(o.dict())
             if hasattr(o, "__dict__"):
-                return o.__dict__
+                return redact_sensitive_arguments(o.__dict__)
             return repr(o)
 
 
@@ -108,6 +132,8 @@ def convert_to_dict(obj: Any) -> Any:
     Recursively converts objects to dicts if they have conversion methods.
     Handles nested lists and dictionaries.
     """
+    if is_dspy_language_model(obj):
+        return describe_language_model(obj)
     if hasattr(obj, "model_dump") and callable(obj.model_dump):
         return obj.model_dump()
     elif hasattr(obj, "to_dict") and callable(obj.to_dict):
@@ -115,7 +141,7 @@ def convert_to_dict(obj: Any) -> Any:
     elif hasattr(obj, "dict") and callable(obj.dict):
         return obj.dict()
     elif hasattr(obj, "__dict__"):
-        return obj.__dict__
+        return redact_sensitive_arguments(obj.__dict__)
     elif isinstance(obj, dict):
         return {key: convert_to_dict(value) for key, value in obj.items()}
     elif isinstance(obj, (list, tuple)):

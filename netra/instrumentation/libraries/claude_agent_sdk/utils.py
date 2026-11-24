@@ -21,7 +21,7 @@ from opentelemetry.trace import Span, SpanKind, StatusCode, Tracer
 from opentelemetry.trace.status import Status
 
 from netra.config import Config
-from netra.instrumentation.span_utils import record_span_timing
+from netra.instrumentation.span_utils import record_span_timing, set_content_attribute, should_capture_content
 from netra.netra_logger import get_logger
 from netra.span_wrapper import SpanType
 
@@ -107,7 +107,7 @@ def _set_input_conversation(span: Span, role: str, content: str, prompt_index: i
     Returns:
         int: The incremented prompt index after writing.
     """
-    if role and content:
+    if role and content and should_capture_content():
         span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.role", role)
         span.set_attribute(f"{SpanAttributes.LLM_PROMPTS}.{prompt_index}.content", content)
         prompt_index += 1
@@ -127,7 +127,7 @@ def _set_output_conversation(span: Span, role: str, content: str, completion_ind
     Returns:
         int: The incremented completion index after writing.
     """
-    if role and content:
+    if role and content and should_capture_content():
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{completion_index}.role", role)
         span.set_attribute(f"{SpanAttributes.LLM_COMPLETIONS}.{completion_index}.content", content)
         completion_index += 1
@@ -246,11 +246,11 @@ def _start_tool_call_span(
         tool_span = tracer.start_span(block.name, context=parent_ctx, kind=SpanKind.CLIENT)
         tool_ctx = trace.set_span_in_context(tool_span)
         try:
-            tool_input = _serialize(block.input)
             tool_span.set_attribute(f"{Config.LIBRARY_NAME}.span.type", "TOOL")
             tool_span.set_attribute("gen_ai.tool.name", block.name)
             tool_span.set_attribute("gen_ai.tool.call.id", block.id)
-            tool_span.set_attribute("input", _build_message_array("assistant", tool_input))
+            if should_capture_content():
+                tool_span.set_attribute("input", _build_message_array("assistant", _serialize(block.input)))
             if message.model:
                 tool_span.set_attribute(SpanAttributes.LLM_RESPONSE_MODEL, message.model)
             if message.session_id:
@@ -299,9 +299,10 @@ def _end_tool_call_span(block: ToolResultBlock) -> None:
 
         span = tool_entry["span"]
         try:
-            result_content = _serialize(block.content)
-            span.set_attribute("output", _build_message_array("tool", result_content))
-            _set_output_conversation(span, "tool", result_content)
+            if should_capture_content():
+                result_content = _serialize(block.content)
+                span.set_attribute("output", _build_message_array("tool", result_content))
+                _set_output_conversation(span, "tool", result_content)
 
             if block.is_error:
                 span.set_status(Status(StatusCode.ERROR))
@@ -369,7 +370,7 @@ def set_request_attributes(span: Span, prompt: Any, options: ClaudeAgentOptions 
     except Exception as e:
         logger.error(f"Cannot extract prompt from request: {e}")
 
-    if input_messages:
+    if input_messages and should_capture_content():
         span.set_attribute("input", json.dumps(input_messages))
 
 
@@ -483,7 +484,7 @@ def set_assistant_message_attributes(
                         span.set_status(Status(StatusCode.ERROR, str(message.error)))
                         span.set_attribute("gen_ai.error", str(message.error))
                     _set_output_conversation(span, role, content)
-                    span.set_attribute("output", _build_message_array(role, content))
+                    set_content_attribute(span, "output", _build_message_array(role, content))
                     record_span_timing(
                         span, TIME_TO_FIRST_TOKEN, token_time, reference_time=start_time, record_event_timestamp=True
                     )
@@ -543,7 +544,9 @@ def set_result_message_attributes(
         _set_output_conversation(span, "assistant", result)
 
     # structured_output is the canonical LLM response when present; fall back to result.
-    if message.structured_output is not None:
+    if not should_capture_content():
+        pass
+    elif message.structured_output is not None:
         span.set_attribute("output", _build_message_array("assistant", _serialize(message.structured_output)))
     elif message.result:
         span.set_attribute("output", _build_message_array("assistant", message.result))
@@ -558,9 +561,11 @@ def set_result_message_attributes(
             span.set_attribute(SpanAttributes.LLM_RESPONSE_STOP_REASON, message.stop_reason)
         if message.is_error:
             span.set_status(Status(StatusCode.ERROR))
-        if message.structured_output is not None:
+        # Structured output is model output, and each permission denial carries the
+        # denied tool call's input, so both are content.
+        if message.structured_output is not None and should_capture_content():
             span.set_attribute(ATTR_CLAUDE_CODE_STRUCTURED_OUTPUT, _serialize(message.structured_output))
-        if message.permission_denials:
+        if message.permission_denials and should_capture_content():
             span.set_attribute(ATTR_CLAUDE_CODE_PERMISSION_DENIALS, _serialize(message.permission_denials))
         if message.errors:
             span.set_attribute(ATTR_CLAUDE_CODE_ERRORS, _serialize(message.errors))

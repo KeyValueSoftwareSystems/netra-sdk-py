@@ -613,12 +613,15 @@ class SessionManager:
     ) -> Iterator[None]:
         """Scoped form of :meth:`attach_session_context`.
 
-        Detaches on exit, including when the body raises.
+        Always attaches a context and detaches it on exit, including when the
+        body raises, so anything set inside the block -- including sticky
+        ``set_*`` calls -- is undone on exit.
 
         Args:
-            session_id: Session identifier to put in baggage, if any.
-            user_id: User identifier to put in baggage, if any.
-            tenant_id: Tenant identifier to put in baggage, if any.
+            session_id: Session identifier to put in baggage. ``None`` inherits
+                the enclosing value; ``""`` clears it for the block.
+            user_id: User identifier, with the same ``None``/``""`` meaning.
+            tenant_id: Tenant identifier, with the same ``None``/``""`` meaning.
 
         Yields:
             None. The session baggage is active for the duration of the block.
@@ -626,15 +629,16 @@ class SessionManager:
         # Attaches directly rather than via attach_session_context() so the token
         # keeps its concrete OTel type here; both paths share _build_session_context,
         # which is what keeps the baggage keys from drifting.
-        ctx = _build_session_context(
-            otel_context.get_current(),
-            session_id=session_id,
-            user_id=user_id,
-            tenant_id=tenant_id,
-        )
-        if ctx is None:
-            yield
-            return
+        current = otel_context.get_current()
+        ctx = _build_session_context(current, session_id=session_id, user_id=user_id, tenant_id=tenant_id) or current
+        # "" clears the field for the block, as it does for the sticky setters;
+        # None leaves it inherited.
+        cleared = {"session_id": session_id, "user_id": user_id, "tenant_id": tenant_id}
+        for key in _SESSION_BAGGAGE_KEYS:
+            if cleared[key] == "" and baggage.get_baggage(key, ctx) is not None:
+                ctx = baggage.remove_baggage(key, ctx)
+        # Always attach, even when nothing changed: the detach on exit is what
+        # undoes a sticky set_*() call made inside the block.
         token = otel_context.attach(ctx)
         try:
             yield

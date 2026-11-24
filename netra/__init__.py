@@ -82,7 +82,11 @@ class Netra:
             app_name: Name of the application
             headers: Headers to be sent to the server
             disable_batch: Whether to disable batch processing
-            trace_content: Whether to trace content
+            trace_content: Whether to record content: prompts, completions, tool
+                arguments and results, transcripts, and HTTP request/response bodies.
+                Model, usage, ids, URLs, status and redacted headers are recorded
+                either way. Inputs and outputs of decorated functions
+                (``@workflow``, ``@task``, ...) are always recorded.
             debug_mode: Whether to enable debug mode
             resource_attributes: Resource attributes to be sent to the server
             environment: Environment to be sent to the server
@@ -458,8 +462,10 @@ class Netra:
         Apply session_id / user_id / tenant_id to spans started inside the block only.
 
         The previous values are restored on exit, including when the block raises,
-        so ids never bleed into later requests handled by the same thread. Fields
-        left as ``None`` are inherited from the enclosing context.
+        so ids never bleed into later requests handled by the same thread. This
+        also undoes ``set_session_id``/``set_user_id``/``set_tenant_id`` calls made
+        inside the block. Fields left as ``None`` are inherited from the enclosing
+        context; a field passed as ``""`` is cleared for the block.
 
         Example:
             with Netra.session_scope(session_id=req.session, user_id=req.user, tenant_id=req.tenant):

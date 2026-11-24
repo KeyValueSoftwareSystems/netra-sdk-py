@@ -141,6 +141,13 @@ class TestCredentialHeaders:
             "x-db-password",
             "x-service-credential",
             "X-Custom-Api-Key",
+            "apikey",
+            "apiKey",
+            "x-apikey",
+            "api_key",
+            "x_api_key",
+            "x-authtoken",
+            "x_client_secret",
         ],
     )
     def test_credential_headers_are_redacted_on_both_shapes(self, header):
@@ -165,6 +172,16 @@ class TestCredentialHeaders:
     def test_debugging_headers_pass_through(self, header):
         assert sanitize_header_mapping({header: "value"})[header] == "value"
         assert not is_sensitive_header(header)
+
+    def test_underscore_spelling_of_a_safe_header_still_passes_through(self):
+        assert not is_sensitive_header("idempotency_key")
+
+    def test_configured_extra_header_matches_either_separator(self, monkeypatch):
+        monkeypatch.setenv("NETRA_REDACT_HEADERS", "x_custom_auth")
+        config_module.set_active_config(Config())
+
+        assert is_sensitive_header("x-custom-auth")
+        assert is_sensitive_header("x_custom_auth")
 
     def test_configured_extra_headers_are_still_redacted(self, monkeypatch):
         monkeypatch.setenv("NETRA_REDACT_HEADERS", "x-tenant-id")
@@ -226,6 +243,27 @@ class TestUrlRedaction:
     )
     def test_secret_parameters_are_redacted(self, url, expected):
         assert redact_url_secrets(url) == expected
+
+    @pytest.mark.parametrize(
+        "name",
+        [
+            "access_key",
+            "api-key",
+            "subscription-key",
+            "auth_token",
+            "auth",
+            "secret",
+            "private_token",
+            "session_token",
+            "client_assertion",
+        ],
+    )
+    def test_credential_parameters_are_redacted_by_segment(self, name):
+        assert redact_url_secrets(f"https://h/p?{name}=s3cret&page=2") == f"https://h/p?{name}={REDACTED_VALUE}&page=2"
+
+    @pytest.mark.parametrize("name", ["token_type", "token_type_hint", "page", "keyword", "sort"])
+    def test_parameters_naming_no_credential_pass_through(self, name):
+        assert redact_url_secrets(f"https://h/p?{name}=value") == f"https://h/p?{name}=value"
 
     @pytest.mark.parametrize("name", ["KEY", "Api_Key", "ACCESS_TOKEN", "Sig", "x-amz-signature", "api%5Fkey"])
     def test_parameter_names_match_case_insensitively_and_decoded(self, name):

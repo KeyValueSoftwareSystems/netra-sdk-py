@@ -338,6 +338,51 @@ class TestAsyncStreamLifecycle:
 
 
 @pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDER_IDS)
+class TestStreamInterruption:
+    """A cancelled or interrupted consumer ends the span at once, not at garbage collection."""
+
+    def test_cancellation_ends_span_marked_cancelled(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, _, async_factory, kwargs, chunks, span_name = provider
+        held: List[Any] = []
+
+        async def run() -> None:
+            stream = await _open_async(
+                tracer, async_factory, kwargs, FakeAsyncStream(chunks(), error=asyncio.CancelledError())
+            )
+            held.append(stream)  # keep it alive: __del__ must not be what ends the span
+            async for _ in stream:
+                pass
+
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(run())
+        span = _only_span(exporter, span_name)
+        assert span.status.status_code == StatusCode.UNSET
+        assert span.attributes.get("netra.entity.cancelled") is True
+
+    def test_keyboard_interrupt_ends_span_as_error(self, provider: Any, tracer: Any, exporter: Any) -> None:
+        _, sync_factory, _, kwargs, chunks, span_name = provider
+        stream = _open_sync(tracer, sync_factory, kwargs, FakeStream(chunks(), error=KeyboardInterrupt()))
+
+        with pytest.raises(KeyboardInterrupt):
+            for _ in stream:
+                pass
+        assert _only_span(exporter, span_name).status.status_code == StatusCode.ERROR
+
+
+def test_out_of_range_choice_index_is_skipped(tracer: Any, exporter: Any) -> None:
+    chunks = [
+        {"model": "m-1", "choices": [{"index": 1_000_000_000, "delta": {"content": "huge"}}]},
+        {"model": "m-1", "choices": [{"index": -1, "delta": {"content": "negative"}}]},
+        {"model": "m-1", "choices": [{"index": 0, "delta": {"content": "ok"}, "finish_reason": "stop"}]},
+    ]
+    stream = _open_sync(tracer, openai_wrappers.chat_wrapper, CHAT_KWARGS, FakeStream(chunks))
+
+    assert len(list(stream)) == 3
+    assert len(stream._self_complete_response["choices"]) == 1
+    assert _only_span(exporter, "openai.chat").status.status_code == StatusCode.OK
+
+
+@pytest.mark.parametrize("provider", PROVIDERS, ids=PROVIDER_IDS)
 def test_telemetry_errors_never_reach_the_users_loop(provider: Any, tracer: Any, exporter: Any) -> None:
     """A malformed chunk (e.g. ``"index": null``, or a chunk that isn't a dict) is skipped, not raised."""
     name, sync_factory, _, kwargs, chunks, span_name = provider
