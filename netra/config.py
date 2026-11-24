@@ -125,6 +125,7 @@ class Config:
         self.redact_headers = self._get_redact_headers()
 
         self.propagate_baggage_hosts = self._get_propagate_baggage_hosts()
+        self.trust_inbound_baggage = self._get_bool_config(None, "NETRA_TRUST_INBOUND_BAGGAGE", default=False)
 
         self._resolve_audio_settings()
 

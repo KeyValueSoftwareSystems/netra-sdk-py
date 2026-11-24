@@ -2,9 +2,9 @@ import os
 from typing import Any, Dict, Mapping, Optional
 
 from opentelemetry import context as context_api
-from opentelemetry import propagate, trace
+from opentelemetry import trace
 
-from netra.instrumentation.http.propagation import inject_local
+from netra.instrumentation.http.propagation import extract_local, inject_local
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
@@ -84,7 +84,7 @@ def extract_subprocess_context() -> Any:
             return None
 
         carrier = {k.lower(): v for k, v in os.environ.items()}
-        ctx = propagate.extract(carrier)
+        ctx = extract_local(carrier)
         span_ctx = trace.get_current_span(ctx).get_span_context()
 
         if not span_ctx.is_valid:

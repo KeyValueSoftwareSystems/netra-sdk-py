@@ -14,6 +14,7 @@ from opentelemetry.propagators import textmap
 from opentelemetry.trace import SpanKind, Status, StatusCode, Tracer
 from starlette.types import ASGIApp
 
+from netra.instrumentation.http.propagation import ensure_gated_propagator
 from netra.instrumentation.libraries.fastapi.utils import (
     build_request_url,
     get_default_span_details,
@@ -194,6 +195,8 @@ class NetraFastAPIMiddleware:
             await self.app(scope, receive, send)
             return
 
+        # Re-wrap so a propagator replaced after init still filters caller baggage.
+        ensure_gated_propagator()
         ctx = extract(carrier=scope, getter=_asgi_getter)
         token = context_api.attach(ctx)
 

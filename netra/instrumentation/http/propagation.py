@@ -28,17 +28,19 @@ The allowlist is fail-closed: with no hosts configured -- or no known
 destination, as for gRPC, message brokers or botocore -- baggage propagates to
 *nobody*.  Internal services are opted back in via the
 ``NETRA_PROPAGATE_BAGGAGE_HOSTS`` environment variable.
+
+``extract`` reverts Netra-reserved baggage sent by a caller (see :func:`_filter_inbound_baggage`).
 """
 
 import logging
 import threading
 from collections import OrderedDict
-from typing import Any, MutableMapping, Optional, Set, Tuple, cast
+from typing import Any, List, MutableMapping, Optional, Set, Tuple, cast
 from urllib.parse import urlparse
 
 from opentelemetry import baggage, trace
 from opentelemetry.context import Context, create_key, get_current, get_value, set_value
-from opentelemetry.propagate import get_global_textmap, inject, set_global_textmap
+from opentelemetry.propagate import extract, get_global_textmap, inject, set_global_textmap
 from opentelemetry.propagators.textmap import (
     CarrierT,
     Getter,
@@ -50,6 +52,7 @@ from opentelemetry.propagators.textmap import (
 
 from netra.config import get_active_config
 from netra.netra_logger import get_logger
+from netra.session_manager import CUSTOM_BAGGAGE_PREFIX, CUSTOM_KEYS_BAGGAGE_KEY, SESSION_BAGGAGE_KEYS
 
 logger = get_logger(__name__)
 
@@ -79,6 +82,73 @@ _replacement_warned = False
 
 # Clients whose redirect guard has already logged a failure at warning level.
 _redirect_guard_warned: Set[str] = set()
+
+# Keys SessionSpanProcessor stamps onto every span as session identity, taken
+# from session_manager so a newly added key is filtered here as well.
+_SESSION_BAGGAGE_KEYS = frozenset((*SESSION_BAGGAGE_KEYS, CUSTOM_KEYS_BAGGAGE_KEY))
+_SESSION_BAGGAGE_PREFIX = CUSTOM_BAGGAGE_PREFIX
+# Netra-internal control keys such as ``netra.local_blocked_spans``.
+_CONTROL_BAGGAGE_PREFIX = "netra."
+
+_inbound_session_notice_logged = False
+
+
+def _is_control_key(key: str) -> bool:
+    """Return True for a Netra-internal control key that must not cross hosts."""
+    return key.startswith(_CONTROL_BAGGAGE_PREFIX)
+
+
+def _is_session_key(key: str) -> bool:
+    """Return True for a key SessionSpanProcessor reads as session identity."""
+    return key in _SESSION_BAGGAGE_KEYS or key.startswith(_SESSION_BAGGAGE_PREFIX)
+
+
+def _trust_inbound_session() -> bool:
+    """Return True when the service accepts session identity from its callers' baggage."""
+    cfg = get_active_config()
+    return bool(getattr(cfg, "trust_inbound_baggage", False)) if cfg is not None else False
+
+
+def _filter_inbound_baggage(extracted: Context, base: Context) -> Context:
+    """Revert reserved baggage keys that *extract* added or changed back to their values in *base*."""
+    before = baggage.get_all(base)
+    after = baggage.get_all(extracted)
+    trust_session = _trust_inbound_session()
+    ctx = extracted
+    dropped_session: List[str] = []
+    for key in set(before) | set(after):
+        if before.get(key) == after.get(key):
+            continue
+        is_session = not _is_control_key(key) and _is_session_key(key)
+        if not (_is_control_key(key) or (is_session and not trust_session)):
+            continue
+        if is_session:
+            dropped_session.append(key)
+        ctx = baggage.set_baggage(key, before[key], ctx) if key in before else baggage.remove_baggage(key, ctx)
+    if dropped_session:
+        _log_inbound_session_dropped(dropped_session)
+    return ctx
+
+
+def _log_inbound_session_dropped(keys: List[str]) -> None:
+    """Explain, once per process, why caller-supplied session baggage was ignored."""
+    global _inbound_session_notice_logged
+    if _inbound_session_notice_logged:
+        return
+    _inbound_session_notice_logged = True
+    logger.notice(
+        "Ignored session baggage sent by a caller (%s). Session, user and tenant ids are only taken "
+        "from Netra.set_session_id()/set_user_id()/set_tenant_id() in this service. If the callers are "
+        "your own services, set NETRA_TRUST_INBOUND_BAGGAGE=true to accept them.",
+        ", ".join(sorted(keys)),
+    )
+
+
+def _without_control_keys(ctx: Context) -> Context:
+    """Return *ctx* without Netra-internal control baggage."""
+    for key in [k for k in baggage.get_all(ctx) if _is_control_key(k)]:
+        ctx = baggage.remove_baggage(key, ctx)
+    return ctx
 
 
 def _host_allowed(url: Optional[str]) -> bool:
@@ -148,7 +218,7 @@ class HostGatedPropagator(TextMapPropagator):  # type: ignore[misc]
     Baggage is cleared from the context before delegating, rather than the
     header being stripped afterwards, so gating works for any carrier type
     (header dicts, gRPC metadata, environment mappings) and any propagator mix.
-    Extraction is delegated unchanged.
+    Control keys never go to another host, and reserved keys a carrier sends are reverted on extract.
     """
 
     def __init__(self, inner: TextMapPropagator) -> None:
@@ -165,7 +235,10 @@ class HostGatedPropagator(TextMapPropagator):  # type: ignore[misc]
         context: Optional[Context] = None,
         getter: Getter[CarrierT] = default_getter,
     ) -> Context:
-        return self._inner.extract(carrier, context=context, getter=getter)
+        # Context subclasses dict, so an empty one is falsy: compare to None.
+        base = get_current() if context is None else context
+        extracted = self._inner.extract(carrier, context=base, getter=getter)
+        return _filter_inbound_baggage(extracted, base)
 
     def inject(
         self,
@@ -178,8 +251,8 @@ class HostGatedPropagator(TextMapPropagator):  # type: ignore[misc]
         destination = cast(Optional[str], get_value(_DESTINATION_KEY, ctx))
         if destination is None:
             destination = _pop_hook_destination(ctx)
-        if destination != LOCAL_DESTINATION and not _host_allowed(destination):
-            ctx = baggage.clear(ctx)
+        if destination != LOCAL_DESTINATION:
+            ctx = _without_control_keys(ctx) if _host_allowed(destination) else baggage.clear(ctx)
         self._inner.inject(carrier, context=ctx, setter=setter)
 
     @property
@@ -297,3 +370,11 @@ def guard_redirect_baggage(carrier: MutableMapping[Any, Any], url: Optional[str]
 def inject_local(carrier: MutableMapping[Any, Any]) -> None:
     """Inject the full context, baggage included, into a carrier that stays on this host."""
     inject(carrier, context=set_value(_DESTINATION_KEY, LOCAL_DESTINATION))
+
+
+def extract_local(carrier: Any) -> Context:
+    """Extract the full context, baggage included, from a carrier written by this host (never network input)."""
+    propagator = get_global_textmap()
+    if isinstance(propagator, HostGatedPropagator):
+        return propagator.inner.extract(carrier)
+    return extract(carrier)

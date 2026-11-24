@@ -151,7 +151,14 @@ def _current_entity_name(entity_type: str) -> Optional[str]:
 # through ``_build_session_context`` rather than calling ``set_baggage`` inline —
 # otherwise the global setter and the scoped attach can drift apart. Derived from
 # _SESSION_ATTR_KEYS so the baggage keys and the span-attribute keys stay in step.
-_SESSION_BAGGAGE_KEYS: Tuple[str, ...] = tuple(_SESSION_ATTR_KEYS)
+# The inbound baggage filter in ``netra.instrumentation.http.propagation`` reads
+# these too, so a key added here is also protected from caller-supplied values.
+SESSION_BAGGAGE_KEYS: Tuple[str, ...] = tuple(_SESSION_ATTR_KEYS)
+
+# Baggage key listing the custom attributes to stamp, and the prefix each one is
+# stored under (``custom.<name>``). Read by ``SessionSpanProcessor``.
+CUSTOM_KEYS_BAGGAGE_KEY = "custom_keys"
+CUSTOM_BAGGAGE_PREFIX = "custom."
 
 
 def _build_session_context(
@@ -175,7 +182,7 @@ def _build_session_context(
     """
     values = {"session_id": session_id, "user_id": user_id, "tenant_id": tenant_id}
     changed = False
-    for key in _SESSION_BAGGAGE_KEYS:
+    for key in SESSION_BAGGAGE_KEYS:
         value = values[key]
         if isinstance(value, str) and value:
             ctx = baggage.set_baggage(key, value, ctx)
