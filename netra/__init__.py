@@ -1,6 +1,7 @@
 import atexit
 import threading
-from typing import AbstractSet, Any, Dict, List, Optional
+from contextlib import contextmanager
+from typing import AbstractSet, Any, Dict, Generator, List, Optional
 
 from opentelemetry import context as context_api
 from opentelemetry import metrics as otel_metrics
@@ -358,6 +359,9 @@ class Netra:
         """
         Set session_id context attributes for all spans.
 
+        Sticky to the current thread/task; in worker loops wrap each job in
+        :meth:`session_scope` or call :meth:`clear_session_context`.
+
         Args:
             session_id: Session identifier
         """
@@ -376,6 +380,9 @@ class Netra:
         """
         Set user_id context attributes for all spans.
 
+        Sticky to the current thread/task; in worker loops wrap each job in
+        :meth:`session_scope` or call :meth:`clear_session_context`.
+
         Args:
             user_id: User identifier
         """
@@ -392,6 +399,9 @@ class Netra:
         """
         Set tenant_id context attributes for all spans.
 
+        Sticky to the current thread/task; in worker loops wrap each job in
+        :meth:`session_scope` or call :meth:`clear_session_context`.
+
         Args:
             tenant_id: Tenant identifier
         """
@@ -404,6 +414,49 @@ class Netra:
             SessionManager.set_session_context("tenant_id", tenant_id)
         else:
             logger.notice("netra: set_tenant_id: Tenant ID must be provided for setting tenant_id.")
+
+    @classmethod
+    @contextmanager
+    def session_scope(
+        cls,
+        *,
+        session_id: Optional[str] = None,
+        user_id: Optional[str] = None,
+        tenant_id: Optional[str] = None,
+    ) -> Generator[None, None, None]:
+        """
+        Scope session_id, user_id and tenant_id to a block of code.
+
+        On exit the context is restored, discarding any ids set inside the block.
+        Fields left as ``None`` are inherited from the enclosing context.
+
+        Args:
+            session_id: Session identifier for spans started in the block.
+            user_id: User identifier for spans started in the block.
+            tenant_id: Tenant identifier for spans started in the block.
+
+        Yields:
+            None.
+        """
+        fields: Dict[str, Optional[str]] = {}
+        for name, value in (("session_id", session_id), ("user_id", user_id), ("tenant_id", tenant_id)):
+            if value is None:
+                continue
+            if not isinstance(value, str):
+                logger.notice(
+                    f"netra: session_scope: {name} must be a string, got {type(value)}", level=NoticeLevel.ERROR
+                )
+                continue
+            fields[name] = value
+        with SessionManager.session_scope(**fields):
+            yield
+
+    @classmethod
+    def clear_session_context(cls) -> None:
+        """
+        Remove session_id, user_id and tenant_id from the current context.
+        """
+        SessionManager.clear_session_context()
 
     @classmethod
     def update_span_name(cls, name: str) -> None:

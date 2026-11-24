@@ -502,11 +502,10 @@ class SessionManager:
           2. Sets the corresponding span attribute on the currently active span
              (if one exists), so the caller's span also carries the value.
 
-        The attach is deliberately never detached: ``Netra.set_session_id()`` and
-        friends are documented as process-sticky, and existing users rely on the
-        session id outliving the call that set it. For a scoped session id that
-        is restored on exit — what instrumentation wants — use
-        :meth:`attach_session_context` or :meth:`session_scope` instead.
+        The attach is deliberately never detached: existing users rely on the
+        value outliving the call that set it. It is sticky to the current
+        thread/task until an enclosing scope exits. For a scoped value use
+        :meth:`attach_session_context` or :meth:`session_scope`.
 
         Args:
             session_key: Key to set (``"session_id"``, ``"user_id"``, or ``"tenant_id"``)
@@ -578,7 +577,8 @@ class SessionManager:
     ) -> Iterator[None]:
         """Scoped form of :meth:`attach_session_context`.
 
-        Detaches on exit, including when the body raises.
+        Detaches on exit, including when the body raises, which also discards
+        anything :meth:`set_session_context` attached inside the block.
 
         Args:
             session_id: Session identifier to put in baggage, if any.
@@ -591,20 +591,36 @@ class SessionManager:
         # Attaches directly rather than via attach_session_context() so the token
         # keeps its concrete OTel type here; both paths share _build_session_context,
         # which is what keeps the baggage keys from drifting.
+        current = otel_context.get_current()
         ctx = _build_session_context(
-            otel_context.get_current(),
+            current,
             session_id=session_id,
             user_id=user_id,
             tenant_id=tenant_id,
         )
-        if ctx is None:
-            yield
-            return
-        token = otel_context.attach(ctx)
+        # Always attach so the detach discards sticky attaches made inside.
+        token = otel_context.attach(ctx if ctx is not None else current)
         try:
             yield
         finally:
             otel_context.detach(token)
+
+    @staticmethod
+    def clear_session_context() -> None:
+        """Remove session_id, user_id and tenant_id from the current context.
+
+        Sticky like :meth:`set_session_context`; already-started spans keep their ids.
+        """
+        try:
+            current = otel_context.get_current()
+            ctx = current
+            for key in _SESSION_BAGGAGE_KEYS:
+                if baggage.get_baggage(key, ctx) is not None:
+                    ctx = baggage.remove_baggage(key, ctx)
+            if ctx is not current:
+                otel_context.attach(ctx)
+        except Exception as e:
+            logger.exception(f"Failed to clear session context: {e}")
 
     @staticmethod
     def set_custom_event(name: str, attributes: Dict[str, Any]) -> None:
