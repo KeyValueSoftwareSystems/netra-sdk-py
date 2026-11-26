@@ -3,10 +3,20 @@ Unit tests for CohereInstrumentor class.
 Minimal tests focusing on core functionality and happy path scenarios.
 """
 
+import json
+from types import SimpleNamespace
 from typing import Collection
 from unittest.mock import Mock, patch
 
-from netra.instrumentation.libraries.cohere import CohereInstrumentor, _llm_request_type_by_method, should_send_prompts
+from opentelemetry.semconv_ai import LLMRequestTypeValues
+
+from netra.instrumentation.libraries.cohere import (
+    CohereInstrumentor,
+    _llm_request_type_by_method,
+    _set_input_attributes,
+    _set_response_attributes,
+    should_send_prompts,
+)
 
 
 class TestCohereInstrumentor:
@@ -132,3 +142,50 @@ class TestUtilityFunctions:
         for method, expected_type in test_cases:
             result = _llm_request_type_by_method(method)
             assert result == expected_type
+
+
+class TestSpanIO:
+    """Test structured ``input``/``output`` built from Cohere requests and responses."""
+
+    @staticmethod
+    def _span():
+        span = Mock()
+        span.attributes = {}
+        span.set_attribute.side_effect = span.attributes.__setitem__
+        return span
+
+    def test_chat_messages_become_input_entries(self):
+        """Chat message dicts keep their role and content."""
+        span = self._span()
+        messages = [{"role": "system", "content": "Be brief"}, {"role": "user", "content": "Hi"}]
+
+        _set_input_attributes(span, LLMRequestTypeValues.CHAT, {"messages": messages})
+
+        assert json.loads(span.attributes["input"]) == messages
+
+    def test_chat_response_content_items_join_into_one_assistant_entry(self):
+        """Text items of a chat response's content list join into one assistant entry."""
+        span = self._span()
+        content = [SimpleNamespace(type="text", text="Hello"), SimpleNamespace(type="text", text="world")]
+        response = SimpleNamespace(id="r1", message=SimpleNamespace(content=content), usage=None)
+
+        _set_response_attributes(span, LLMRequestTypeValues.CHAT, response)
+
+        assert json.loads(span.attributes["output"]) == [{"role": "assistant", "content": "Hello\nworld"}]
+
+    def test_rerank_documents_and_results(self):
+        """Rerank documents and query become input entries and results become output entries."""
+        span = self._span()
+        response = SimpleNamespace(
+            id="r1", results=[SimpleNamespace(index=1, relevance_score=0.9, document=SimpleNamespace(text="doc b"))]
+        )
+
+        _set_input_attributes(span, LLMRequestTypeValues.RERANK, {"documents": ["doc a", "doc b"], "query": "q"})
+        _set_response_attributes(span, LLMRequestTypeValues.RERANK, response)
+
+        assert json.loads(span.attributes["input"]) == [
+            {"role": "system", "content": "doc a"},
+            {"role": "system", "content": "doc b"},
+            {"role": "user", "content": "q"},
+        ]
+        assert json.loads(span.attributes["output"]) == [{"role": "assistant", "content": "Doc 1, Score: 0.9\ndoc b"}]

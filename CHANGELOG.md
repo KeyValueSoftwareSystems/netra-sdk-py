@@ -4,6 +4,20 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [Unreleased]
+
+### Changed
+
+- **LLM messages are recorded only in `input`/`output`** - Each span carries its conversation as JSON arrays of `{role, content}` messages in `input` and `output`. The indexed `gen_ai.prompt.N.*` / `gen_ai.completion.N.*` attributes are no longer exported, including ones written by third-party instrumentations. Evaluator mappings and dashboards that read them (for example `metadata."gen_ai.completion.0.content"`) must read the span's `input` / `output` instead (for example `output[0].content`). Requires a Netra platform release that reads span `input`/`output`.
+- **Long conversations stay valid JSON** - When `input`/`output` exceed `NETRA_ATTRIBUTE_MAX_LEN`, long contents are shortened and marked `__truncated__`. When that isn't enough, the oldest messages are dropped.
+- **One shape for tool calls** - Every instrumentation records a tool call as an assistant entry whose `content` is `{"name", "arguments"}`, and a tool result as a `tool` entry; both carry the call id as `tool_call_id` when there is one.
+
+### Fixed
+
+- **Speech responses recorded as output** - Cartesia, ElevenLabs and Deepgram responses and transcripts are written to `output`.
+- **SDK object content kept** - Message content such as Mistral or Cohere chunk lists is serialised as JSON instead of being dropped.
+- **LiveKit turn registry no longer grows per call** - Ended `user_turn` spans are removed from the registry.
+
 ## [1.3.0] - 2026-11-24
 
 ### Added

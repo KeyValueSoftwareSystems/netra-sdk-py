@@ -1,17 +1,20 @@
 import json
 import re
-from typing import Any, Callable, Dict, Mapping, Optional
+from typing import Any, Callable, Dict, List, Mapping, Optional, Tuple
 
 from opentelemetry import context as otel_context
 from opentelemetry.sdk.trace import ReadableSpan, Span, SpanProcessor
 
+from netra.instrumentation.message_builder import build_messages, tool_call_entry
 from netra.netra_logger import get_logger
 
 logger = get_logger(__name__)
 
-# Patterns for gen_ai indexed attributes
-_PROMPT_RE = re.compile(r"^gen_ai\.prompts?\.(\d+)\.(role|content)$")
-_COMPLETION_RE = re.compile(r"^gen_ai\.completions?\.(\d+)\.(role|content)$")
+# Failsafe for third-party / legacy instrumentors that still emit indexed
+# gen_ai.prompt(s).N.* / gen_ai.completion(s).N.* keys.  Those keys are folded
+# into structured ``input``/``output`` JSON and are never written to the span.
+_INDEXED_MSG_RE = re.compile(r"^gen_ai\.(prompts?|completions?)\.(\d+)\.(.+)$")
+_TOOL_CALL_FIELD_RE = re.compile(r"^tool_calls\.(\d+)\.(.+)$")
 
 _TRACELOOP_PREFIX = "traceloop."
 _NETRA_PREFIX = "netra."
@@ -24,16 +27,30 @@ _USAGE_COMPLETION_TOKENS = "gen_ai.usage.completion_tokens"
 SetAttributeFunc = Callable[[str, Any], None]
 
 
+def _span_key(context: Any) -> Tuple[int, int]:
+    """Identify a span by its trace and span ids (``SpanContext`` itself isn't hashable)."""
+    return context.trace_id, context.span_id
+
+
 def _build_messages(index_map: Dict[int, Dict[str, str]]) -> str:
     """Serialize an index→message dict to a JSON array ordered by index.
 
-    Args:
-        index_map: Mapping of integer index to partial message dict.
-
-    Returns:
-        JSON string of the ordered message list.
+    Folded ``tool_calls.J.*`` fields become one tool-call entry each, after the message they belong to.
     """
-    return json.dumps([index_map[i] for i in sorted(index_map)])
+    entries: List[Dict[str, Any]] = []
+    for index in sorted(index_map):
+        message: Dict[str, str] = {}
+        tool_calls: Dict[int, Dict[str, str]] = {}
+        for field, value in index_map[index].items():
+            if tool_call_field := _TOOL_CALL_FIELD_RE.match(field):
+                tool_calls.setdefault(int(tool_call_field.group(1)), {})[tool_call_field.group(2)] = value
+            else:
+                message[field] = value
+        if "content" in message or not tool_calls:
+            entries.append(message)
+        for _, call in sorted(tool_calls.items()):
+            entries.append(tool_call_entry(call.get("name", ""), call.get("arguments", ""), call.get("id")))
+    return build_messages(entries)
 
 
 def _extract_traceloop_input(raw: Any) -> str:
@@ -92,6 +109,10 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
     ``InstrumentationSpanProcessor``.
     """
 
+    def __init__(self) -> None:
+        """Track, per span context, the writer of messages folded from indexed keys until the span ends."""
+        self._pending_folds: Dict[Tuple[int, int], Callable[[Any], None]] = {}
+
     def on_start(
         self,
         span: Span,
@@ -109,12 +130,13 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                 span.set_attribute("input", "")
             if "output" not in attrs:
                 span.set_attribute("output", "")
-            self._wrap_set_attribute(span)
+            self._wrap_set_attribute(span, self._pending_folds)
+            self._fold_creation_attributes(span)
         except Exception:
             logger.exception("SpanIOProcessor.on_start failed")
 
     def on_end(self, span: ReadableSpan) -> None:
-        """Promote ``netra.input``/``netra.output`` over ``input``/``output`` if present.
+        """Write messages folded from indexed keys, then promote ``netra.input``/``netra.output``.
 
         Called after all instrumentation has written its attributes, so user-set
         values always win. Falls back gracefully if OTel internals change.
@@ -123,6 +145,7 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
             span: The span that has ended.
         """
         try:
+            build_folded_messages = self._pending_folds.pop(_span_key(span.context), None)
             attrs = getattr(span, "_attributes", None)
             if attrs is None:
                 logger.debug(
@@ -138,6 +161,9 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     type(attrs).__name__,
                 )
                 return
+
+            if build_folded_messages:
+                build_folded_messages(attrs)
 
             try:
                 user_input = attrs.get("netra.user.input")
@@ -178,11 +204,26 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         """No-op shutdown."""
 
     @staticmethod
-    def _wrap_set_attribute(span: Span) -> None:
+    def _fold_creation_attributes(span: Span) -> None:
+        """Fold indexed message keys passed at span creation, which bypass ``set_attribute``."""
+        attrs = getattr(span, "_attributes", None)
+        if not attrs:
+            return
+        indexed = {key: value for key, value in attrs.items() if _INDEXED_MSG_RE.match(key)}
+        for key in indexed:
+            del attrs[key]
+        if indexed:
+            span.set_attributes(indexed)
+
+    @staticmethod
+    def _wrap_set_attribute(span: Span, pending_folds: Dict[Tuple[int, int], Callable[[Any], None]]) -> None:
         """Replace ``span.set_attribute`` and ``span.set_attributes`` with normalising closures.
 
-        Per-span accumulators for gen_ai prompts/completions are closure-scoped
-        so each span owns its own independent state.
+        Per-span accumulators for legacy indexed gen_ai prompts/completions are
+        closure-scoped so each span owns its own independent state.  Indexed keys
+        are never written; their fields are folded into structured ``input``/
+        ``output`` JSON so third-party instrumentors still produce readable
+        conversation data without bloating the attribute count.
 
         ``set_attributes`` (plural) in the OTel SDK writes directly to
         ``_attributes`` without calling ``set_attribute``, so it must also be
@@ -198,76 +239,78 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
         writes directly to ``_attributes`` without re-entering any instance
         wrapper.
 
-        ``_prev_set_attribute`` calls ``type(span).set_attributes`` — the class method
-        installed by ``InstrumentationSpanProcessor`` — to write directly to
-        ``_attributes``.
-
         Args:
             span: The span whose ``set_attribute``/``set_attributes`` will be replaced.
+            pending_folds: Where the span's folded-message writer is registered for ``on_end``.
         """
         _prev_set_attribute: SetAttributeFunc = span.set_attribute
 
-        # Per-span accumulators for gen_ai indexed attributes
+        # Per-span accumulators for legacy indexed gen_ai attributes (failsafe only).
         prompts: Dict[int, Dict[str, str]] = {}
         completions: Dict[int, Dict[str, str]] = {}
-
-        _gen_ai_owns_input = [False]
-        _gen_ai_owns_output = [False]
+        gen_ai_owns_input = False
+        gen_ai_owns_output = False
 
         def _is_empty(v: Any) -> bool:
             return v is None or v == ""
 
+        # Folded messages are pending until the span ends, so an owned side counts as set.
         def _input_is_empty() -> bool:
-            return _is_empty((span.attributes or {}).get("input"))
+            return not gen_ai_owns_input and _is_empty((span.attributes or {}).get("input"))
 
         def _output_is_empty() -> bool:
-            return _is_empty((span.attributes or {}).get("output"))
+            return not gen_ai_owns_output and _is_empty((span.attributes or {}).get("output"))
+
+        def build_folded_messages(attributes: Any) -> None:
+            """Write the folded messages into ``input``/``output`` once, when the span ends."""
+            if gen_ai_owns_input and prompts:
+                attributes["input"] = _build_messages(prompts)
+            if gen_ai_owns_output and completions:
+                attributes["output"] = _build_messages(completions)
 
         def patched_set_attribute(key: str, value: Any) -> None:  # noqa: C901
+            nonlocal gen_ai_owns_input, gen_ai_owns_output
             try:
-                # 1. gen_ai.prompts.* / gen_ai.prompt.* → keep original + update input
-                prompt_match = _PROMPT_RE.match(key)
-                if prompt_match:
-                    _prev_set_attribute(key, value)
-                    idx = int(prompt_match.group(1))
-                    field = prompt_match.group(2)
-                    prompts.setdefault(idx, {})[field] = str(value)
-                    if _input_is_empty() or _gen_ai_owns_input[0]:
-                        _prev_set_attribute("input", _build_messages(prompts))
-                        _gen_ai_owns_input[0] = True
+                # 1. Failsafe: fold indexed gen_ai.prompt(s).N.* / gen_ai.completion(s).N.*
+                # into structured input/output, built in on_end. Never write the indexed key itself.
+                indexed = _INDEXED_MSG_RE.match(key)
+                if indexed:
+                    pending_folds[_span_key(span.get_span_context())] = build_folded_messages
+                    kind, idx_s, field = indexed.group(1), indexed.group(2), indexed.group(3)
+                    idx = int(idx_s)
+                    if kind.startswith("prompt"):
+                        prompts.setdefault(idx, {})[field] = str(value)
+                        gen_ai_owns_input = gen_ai_owns_input or _input_is_empty()
+                    else:
+                        completions.setdefault(idx, {})[field] = str(value)
+                        gen_ai_owns_output = gen_ai_owns_output or _output_is_empty()
                     return
 
-                # 2. gen_ai.completions.* / gen_ai.completion.* → keep original + update output
-                completion_match = _COMPLETION_RE.match(key)
-                if completion_match:
-                    _prev_set_attribute(key, value)
-                    idx = int(completion_match.group(1))
-                    field = completion_match.group(2)
-                    completions.setdefault(idx, {})[field] = str(value)
-                    if _output_is_empty() or _gen_ai_owns_output[0]:
-                        _prev_set_attribute("output", _build_messages(completions))
-                        _gen_ai_owns_output[0] = True
-                    return
+                # An explicit input/output written later wins over the folded messages.
+                if key == "input":
+                    gen_ai_owns_input = False
+                elif key == "output":
+                    gen_ai_owns_output = False
 
-                # 3. traceloop.entity.input → input  (no traceloop key written)
+                # 2. traceloop.entity.input → input  (no traceloop key written)
                 if key == "traceloop.entity.input":
                     if _input_is_empty():
                         _prev_set_attribute("input", _extract_traceloop_input(value))
                     return
 
-                # 4. traceloop.entity.output → output  (no traceloop key written)
+                # 3. traceloop.entity.output → output  (no traceloop key written)
                 if key == "traceloop.entity.output":
                     if _output_is_empty():
                         _prev_set_attribute("output", _extract_traceloop_output(value))
                     return
 
-                # 5. Other traceloop.* → netra.*  (no traceloop key written)
+                # 4. Other traceloop.* → netra.*  (no traceloop key written)
                 if key.startswith(_TRACELOOP_PREFIX):
                     new_key = _NETRA_PREFIX + key[len(_TRACELOOP_PREFIX) :]
                     _prev_set_attribute(new_key, value)
                     return
 
-                # 6. gen_ai.usage token aliasing
+                # 5. gen_ai.usage token aliasing
                 if key == _USAGE_INPUT_TOKENS:
                     _prev_set_attribute(_USAGE_PROMPT_TOKENS, value)
                     return
@@ -276,7 +319,7 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                     _prev_set_attribute(_USAGE_COMPLETION_TOKENS, value)
                     return
 
-                # 7. db.statement → input (DB instrumentations: PyMySQL, etc.)
+                # 6. db.statement → input (DB instrumentations: PyMySQL, etc.)
                 # Keep db.statement; never map into output (query results / params are user data).
                 if key == "db.statement":
                     _prev_set_attribute(key, value)
@@ -284,7 +327,7 @@ class SpanIOProcessor(SpanProcessor):  # type: ignore[misc]
                         _prev_set_attribute("input", value if isinstance(value, str) else str(value))
                     return
 
-                # 8. Everything else — pass through unchanged
+                # 7. Everything else — pass through unchanged
                 _prev_set_attribute(key, value)
 
             except Exception:
