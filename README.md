@@ -240,6 +240,33 @@ Netra.set_custom_event(event_name="conversion", attributes={
     "value": 99.99
 })
 ```
+
+### Background workers and queue consumers
+
+Identifiers set with `set_session_id`, `set_user_id` and `set_tenant_id` apply to all subsequent spans in the current thread or asyncio task. They remain in effect until the enclosing span or decorated function exits or, if there is none, for the lifetime of the thread or task.
+
+In workers that process multiple jobs on the same thread or task, identifiers from one job can therefore be attributed to the next. A job that does not set its own identifiers is recorded under the previous job's user and tenant.
+
+To isolate jobs, wrap each one in `Netra.session_scope()`. When the block exits, the context in effect before the block is restored, discarding any identifiers set within it:
+
+```python
+while True:
+    job = queue.get()
+    with Netra.session_scope(user_id=job.user_id, tenant_id=job.tenant_id):
+        handle(job)
+```
+
+If the job sets its own identifiers, `session_scope()` can be used without arguments as an isolation boundary:
+
+```python
+while True:
+    job = queue.get()
+    with Netra.session_scope():
+        handle(job)  # may call Netra.set_user_id(...) inside
+```
+
+Where the processing loop cannot be restructured, call `Netra.clear_session_context()` at the start of each job. This removes the session, user and tenant identifiers from all spans started afterwards.
+
 ## 🔄 Custom Span Tracking
 
 Use the custom span tracking utility to track external API calls with detailed observability:
