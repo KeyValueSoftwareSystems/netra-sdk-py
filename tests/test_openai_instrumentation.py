@@ -912,7 +912,7 @@ class TestToolAndCacheTierCaptureNeverFailsTheCall:
         assert result is response
         assert captured[SpanAttributes.LLM_USAGE_CACHE_CREATION_INPUT_TOKENS] == 7000
         assert captured[SpanAttributes.LLM_USAGE_TOTAL_TOKENS] == 12500
-        assert captured[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+        assert json.loads(captured["output"]) == [{"role": "assistant", "content": "ok"}]
 
 
 DECISION_USAGE = {
@@ -1405,8 +1405,7 @@ class TestDecisionResponseAttributes:
     def test_non_decision_response_records_no_answers(self):
         attrs = self._capture({"model": "gpt-4o-mini", "output_text": "ok"})
 
-        assert "output" not in attrs
-        assert attrs[f"{SpanAttributes.LLM_COMPLETIONS}.0.content"] == "ok"
+        assert json.loads(attrs["output"]) == [{"role": "assistant", "content": "ok"}]
 
 
 @pytest.mark.usefixtures("content_tracing_on", "default_attribute_max_len")
