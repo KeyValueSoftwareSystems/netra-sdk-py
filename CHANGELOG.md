@@ -4,11 +4,27 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
-## [1.3.1] - 2026-11-27
+## [1.4.0] - 2026-11-27
+
+### Added
+
+- **`cost_excluded_instruments` keeps LLM cost from being counted twice** - Some applications already report the cost of an LLM call on their own span, for example in a proxy or gateway layer. If the provider's instrumentation also records usage, Netra counts the call twice. The new `Netra.init(cost_excluded_instruments=...)` parameter takes a set of `InstrumentSet` members. Spans from those instrumentations are exported without their usage attributes: `netra.usage`, every `gen_ai.usage.*` and `llm.usage.*` key, and `gen_ai.audio.duration`. So Netra records no cost or token counts for them. The model, prompts and completions are kept. `netra.usage.source` is not a usage attribute, so it is kept as well. A set containing `InstrumentSet.ALL` excludes every instrumentation. The default is `None`, which excludes nothing, so existing setups export the same spans as before. Spans created with `Netra.start_span` or the decorators are never affected, so usage set on them is still priced. **This applies only to spans from instrumentations.** A decorator or `Netra.start_span` tracer whose name happens to match an instrumentation, such as `openai` or `litellm`, keeps its usage attributes. The usage attributes are removed when the span ends, just before export. This also covers attributes passed when the span is created and the token aliases that Netra adds later. If removing them fails, the span is still exported and the error is logged in debug mode.
+
+  ```python
+  Netra.init(cost_excluded_instruments={InstrumentSet.OPENAI, InstrumentSet.LITELLM})
+  ```
 
 ### Changed
 
 - **Hermes Agent turns are now agent entities** - Each `hermes-agent.turn` and `hermes-agent.subagent.turn` span now opens an agent entity named after the span, the same way an `@agent`-decorated function does. The turn span and every span started inside it, such as LLM calls and tool calls, now carry `netra.agent.name`, so Hermes runs appear in the Agents dashboard and can be selected by agent in online evals. Before, only `netra.span.type: "AGENT"` was set, and the spans had no agent name. The span is still created by the Hermes instrumentation's own tracer, so `root_instruments` and `block_instruments` apply to it as before. The agent entity is removed when the turn ends, including when it raises. **Every Hermes agent is reported under one of these two names**, so separate Hermes agents in one project are not told apart by agent name. When a Hermes turn runs inside an application's own `@agent` span, spans inside the turn take the Hermes name, so they count towards `hermes-agent.turn` in the Agents dashboard instead of the application's agent. The application's own span keeps its name, so online evals scoped to that agent still match the trace.
+
+### Fixed
+
+- **Spans from instrumentations whose scope is not named after their `InstrumentSet` value are recognised again** - Netra used to work out which instrumentation produced a span from the last segment of its instrumentation scope. Many scopes do not end with the `InstrumentSet` value. Some are named after the library's package, such as `netra.instrumentation.mistralai` for `mistral_ai`, `netra.instrumentation.cohere` for `cohere_ai` and `opentelemetry.instrumentation.llamaindex` for `llama_index`. Others come from a submodule, such as `opentelemetry.instrumentation.crewai.instrumentation` and `opentelemetry.instrumentation.mcp.instrumentation`. These spans had two problems:
+  - They got no `netra.instrumentation.name` attribute.
+  - Their root spans, and everything under them, were dropped, even when the instrumentation was in `root_instruments`. This includes Mistral, Cohere, Pydantic AI, LlamaIndex, MCP and CrewAI, which are all in the default root allow-list.
+
+  The instrumentation is now taken from the package segment of the scope. `InstrumentSet` members whose package name differs from their value say so, so these scopes resolve correctly: `AIOHTTP` (`aiohttp_client`), `CHROMA` (`chromadb`), `COHEREAI` (`cohere`), `CREW` (`crewai`), `KAFKA_PYTHON` (`kafka`), `LLAMA_INDEX` (`llamaindex`), `MISTRALAI` (`mistralai`), `PYDANTIC_AI` (`pydantic_ai_slim`), `QDRANTDB` (`qdrant`) and `WEAVIATEDB` (`weaviate`). The `netra.instrumentation.name` attribute, `root_instruments` filtering and `cost_excluded_instruments` all use this one resolution. **Root spans that were dropped before are now exported**, so these instrumentations can produce traces where they produced none, and their spans now carry `netra.instrumentation.name`.
 
 ## [1.3.0] - 2026-11-24
 
