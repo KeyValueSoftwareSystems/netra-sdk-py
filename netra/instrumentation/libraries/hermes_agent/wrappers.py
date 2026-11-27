@@ -23,8 +23,11 @@ from netra.instrumentation.libraries.hermes_agent.utils import (
     set_turn_response_attributes,
 )
 from netra.netra_logger import get_logger
+from netra.session_manager import SessionManager
 
 logger = get_logger(__name__)
+
+_AGENT_ENTITY_TYPE = "agent"
 
 # Tool call ids currently being traced on this execution context. Hermes's
 # handle_function_call re-enters itself when the tool_search bridge unwraps a
@@ -121,8 +124,13 @@ def run_conversation_wrapper(tracer: Tracer) -> Callable[..., Any]:
         except Exception as e:
             logger.error("Failed to attach hermes-agent session baggage: %s", e)
 
+        # Push the turn onto the agent entity stack before the span starts, so
+        # SessionSpanProcessor stamps `netra.agent.name` on the turn span and
+        # every span nested under it (same as an @agent-decorated function).
+        agent_entity_token = SessionManager.push_entity(_AGENT_ENTITY_TYPE, span_name)
         try:
             with tracer.start_as_current_span(span_name, kind=SpanKind.CLIENT) as span:
+                SessionManager.bind_span_to_entity(span, _AGENT_ENTITY_TYPE, agent_entity_token)
                 try:
                     set_turn_request_attributes(span, agent, user_message, task_id, is_subagent)
                 except Exception as e:
@@ -143,6 +151,7 @@ def run_conversation_wrapper(tracer: Tracer) -> Callable[..., Any]:
                     logger.error("Failed to set hermes-agent turn response attributes: %s", e)
                 return result
         finally:
+            SessionManager.pop_entity(_AGENT_ENTITY_TYPE, agent_entity_token)
             if baggage_token is not None:
                 otel_context.detach(baggage_token)
 
