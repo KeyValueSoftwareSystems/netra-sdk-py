@@ -4,6 +4,12 @@ All notable changes to this project will be documented in this file.
 
 The format is based on Keep a Changelog and this project adheres to Semantic Versioning.
 
+## [1.3.1] - 2026-11-27
+
+### Changed
+
+- **Hermes Agent turns are now agent entities** - Each `hermes-agent.turn` and `hermes-agent.subagent.turn` span now opens an agent entity named after the span, the same way an `@agent`-decorated function does. The turn span and every span started inside it, such as LLM calls and tool calls, now carry `netra.agent.name`, so Hermes runs appear in the Agents dashboard and can be selected by agent in online evals. Before, only `netra.span.type: "AGENT"` was set, and the spans had no agent name. The span is still created by the Hermes instrumentation's own tracer, so `root_instruments` and `block_instruments` apply to it as before. The agent entity is removed when the turn ends, including when it raises. **Every Hermes agent is reported under one of these two names**, so separate Hermes agents in one project are not told apart by agent name. When a Hermes turn runs inside an application's own `@agent` span, spans inside the turn take the Hermes name, so they count towards `hermes-agent.turn` in the Agents dashboard instead of the application's agent. The application's own span keeps its name, so online evals scoped to that agent still match the trace.
+
 ## [1.3.0] - 2026-11-24
 
 ### Added

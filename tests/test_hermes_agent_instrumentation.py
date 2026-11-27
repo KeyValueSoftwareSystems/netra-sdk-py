@@ -19,6 +19,7 @@ from opentelemetry.sdk.trace.export.in_memory_span_exporter import InMemorySpanE
 
 from netra.instrumentation.libraries.hermes_agent import NetraHermesAgentInstrumentor
 from netra.processors.session_span_processor import SessionSpanProcessor
+from netra.session_manager import SessionManager
 
 TURN_SPAN_NAME = "hermes-agent.turn"
 SUBAGENT_TURN_SPAN_NAME = "hermes-agent.subagent.turn"
@@ -290,6 +291,25 @@ class TestTurnSpan:
         (span,) = _spans_by_name(exporter, TURN_SPAN_NAME)
         assert not span.status.is_ok
         assert any(e.name == "exception" for e in span.events)
+
+    def test_turn_is_agent_entity_for_itself_and_children(self, hermes_env):
+        modules, exporter = hermes_env
+
+        _run_conversation(modules, FakeAgent(call_tool=True))
+
+        (turn_span,) = _spans_by_name(exporter, TURN_SPAN_NAME)
+        (tool_span,) = _spans_by_name(exporter, "my_tool")
+        assert turn_span.attributes["netra.agent.name"] == TURN_SPAN_NAME
+        assert tool_span.attributes["netra.agent.name"] == TURN_SPAN_NAME
+        assert SessionManager.get_stack_info()["agents"] == []
+
+    def test_agent_entity_popped_when_turn_raises(self, hermes_env):
+        modules, _ = hermes_env
+
+        with pytest.raises(RuntimeError):
+            _run_conversation(modules, FakeAgent(raise_error=True))
+
+        assert SessionManager.get_stack_info()["agents"] == []
 
 
 @pytest.mark.unit
